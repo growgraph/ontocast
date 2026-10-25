@@ -5,8 +5,8 @@ from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from ontocast.onto.identity import OntologyId
 from ontocast.onto.llm_graph_payload import LLMGraphWire
-from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 
@@ -623,10 +623,43 @@ class ExternalEvidenceCacheEntry(BaseModel):
     domains: list[str] = Field(default_factory=list)
 
 
-class OntologyRenderReport(BaseModel):
-    """Ontology rendering output with optional search decision."""
+class OntologyIdentityProposal(BaseModel):
+    """What the model proposes for a document's home ontology.
 
-    ontology: Ontology = Field(description="Rendered ontology payload.")
+    The IRI is never proposed: code mints it from ``ontology_id``. An
+    ``ontology_id`` already in the catalog means the document extends that
+    ontology; any other id names a new one.
+    """
+
+    ontology_id: OntologyId = Field(
+        description=(
+            "Short lowercase handle (2-32 chars, letters, digits, '_' or '-', "
+            "starting with a letter), e.g. 'abc' for a hypothetical A... B... C... "
+            "Ontology. Return an existing id to extend that ontology."
+        )
+    )
+    title: str = Field(
+        min_length=1,
+        max_length=200,
+        description="Ontology title (a short noun phrase).",
+    )
+    description: str = Field(
+        min_length=1,
+        max_length=1200,
+        description="3-4 sentences: domain, purpose, scope, applicability.",
+    )
+
+
+class FreshOntologyRenderReport(BaseModel):
+    """A fresh ontology's terms, rendered under the document's home ontology."""
+
+    graph: LLMGraphWire = Field(
+        default_factory=RDFGraph,
+        description=(
+            "Classes, properties and axioms under the home ontology's namespace. "
+            "No owl:Ontology header: identity and versioning are written by code."
+        ),
+    )
     external_evidence_request: ExternalEvidenceRequest = Field(
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",
@@ -644,11 +677,18 @@ class FactsUnitFindingKind(StrEnum):
     #: A compact IRI written as a plain string on an IRI-valued position,
     #: coerced back to the IRI. Repair-only: never raised as a finding.
     COMPACT_IRI_LITERAL = "compact_iri_literal"
+    #: An ``rdf:type`` the ontology context entails through a predicate's
+    #: ``rdfs:domain`` or ``rdfs:range``, materialised on the node.
+    #: Repair-only: never raised as a finding.
+    ENTAILED_TYPE = "entailed_type"
     NUMERIC_COVERAGE = "numeric_coverage"
     LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"
     UNIT_SYMBOL_CASE_MISMATCH = "unit_symbol_case_mismatch"
     DOMAIN_VIOLATION = "domain_violation"
+    #: A fact-namespace instance with no ``rdf:type`` naming a concrete class
+    #: outside the fact namespaces (a metaclass or ``owl:Thing`` is no type).
+    UNTYPED_INSTANCE = "untyped_instance"
     #: The render used no term from the ontology it was given. Not a
     #: property of any single triple, so no other kind can express it.
     DOMAIN_ADHERENCE = "domain_adherence"
@@ -785,6 +825,9 @@ class FactsGateRepairKind(StrEnum):
     SHACL_PRUNE = "shacl_prune"
     CODE_RESOLVED = "code_resolved"
     LITERAL_VARIANT_PRUNED = "literal_variant_pruned"
+    #: A fact-namespace instance still untyped after aggregation, removed
+    #: with every triple that mentions it.
+    UNTYPED_DROPPED = "untyped_dropped"
 
 
 class GraphRepairRecord(BaseModel):

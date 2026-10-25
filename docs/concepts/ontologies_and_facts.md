@@ -13,30 +13,71 @@ startup (`--ontology-dir` or
 the ones you upload to `/ontologies`, and the ones runs create.
 
 An ontology is identified by its **IRI**, the subject of its `owl:Ontology`
-statement. Two shorter names point to the same entry: its `ontology_id` and the
-prefix its author bound in Turtle. They can differ (an ontology with id
+statement: an absolute `http(s)` IRI with no fragment, since its terms live
+under `<iri>#`. Two shorter names point to the same entry: its `ontology_id`
+and the prefix its author bound in Turtle. They can differ (an ontology with id
 `observation` may use the prefix `obs:`), and wherever OntoCast asks for an
 ontology, such as
 [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](../reference/configuration/pipeline.md#ontology_context_fixed_ontology_id),
 any of the three works.
 
+An `ontology_id` is a lowercase handle matching `^[a-z][a-z0-9_-]{1,31}$`. A
+standard-vocabulary prefix (`owl`, `skos`, `schema`, ...) and the names OntoCast
+uses itself (`cd`, `doc`, `facts`, `vann`, `sh`, `oc`, `ontocast`) are refused.
+
+### The home ontology
+
+Identity is minted by code, never written by the model. A run that can create
+vocabulary (`RENDER_MODE` `ontology` or `ontology_and_facts`) resolves one
+**home ontology** per document before its units are extracted, in one LLM
+call: the model proposes an `ontology_id`, a title and a description. An id
+already in the catalog means the document extends that ontology; any other id
+names a new one, whose IRI is
+[`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain)`/<ontology_id>`.
+Every unit of the document mints its new terms under that one ontology. The
+model never writes an `owl:Ontology` header; one it writes anyway is dropped
+and counted (`ontology/model_header_triples_dropped`).
+
+An ontology you load from a file or upload to `/ontologies` keeps its own IRI.
+The file declares exactly one named `owl:Ontology`, whose IRI has no `#`. Its
+id is its `vann:preferredNamespacePrefix`, else derived from the IRI; its title
+`dcterms:title`, else `rdfs:label`, else the id; its version label
+`owl:versionInfo` when that is a semantic version, else `1.0.0`. It is stored
+as a root version. An upload whose IRI is already in the catalog is refused;
+delete the ontology first, or replace it with `PUT /ontologies/{iri}`.
+
 ## Versions
 
-An ontology is never edited in place. Every change produces a new version,
-stored as a named graph of its own, `<iri>#<hash>`, where the hash is computed
-from the graph's content. Each version records:
+An ontology is never edited in place. Each version is an immutable named graph
+`<iri>#<key>`, its **version IRI**. For versions OntoCast writes, the key is the
+content hash of the graph, so the same content is never stored twice and a run
+that leaves an ontology unchanged writes no version. Inside that graph, the
+ontology IRI carries the version header:
 
 | Triple on the ontology IRI | Value |
 |---|---|
-| `dcterms:identifier` | `hash:<hash>` of this version |
-| `prov:wasDerivedFrom` | The version it was made from; two parents when two versions were merged |
-| `dcterms:created` | When this version was created |
-| `owl:versionInfo` | A semantic version. Major when more than five triples are deleted, including more than two classes or three properties; minor for any other deletion, or for five or more new classes or properties; patch otherwise |
+| `owl:versionIRI` | The named graph, `<iri>#<key>` |
+| `owl:priorVersion` | The version(s) this one was made from: none on a root, one for an update, several for a merge |
+| `owl:versionInfo` | A semantic version label: `1.0.0` on a root, then bumped per ontology from the updates applied to it. Major when more than five triples are deleted, including more than two classes or three properties; minor for any other deletion, or for five or more new classes or properties; patch otherwise |
+| `vann:preferredNamespacePrefix`, `vann:preferredNamespaceUri` | The `ontology_id` and `<iri>#` |
+| `dcterms:title`, `rdfs:label` | The title |
+| `dcterms:description` | The description, when there is one |
+| `dcterms:created` | When the root of the lineage was created, carried forward |
+| `dcterms:modified` | When this version was created |
+| `prov:wasDerivedFrom` | The source document's IRI, for versions a run wrote |
 
-A run always reads the newest version of each ontology, and older versions stay
-in the store, so you can compare what a run changed with what was there before.
-[Ontology catalog](../internals/ontology_catalog.md) describes how the catalog
-picks the newest version safely when several processes share a store.
+Author statements on the ontology IRI outside the header (`owl:imports`, a
+licence) are kept. A removed version keeps its header and is marked
+`<graph> a oc:RemovedVersion` (`oc:` is `https://growgraph.dev/ontocast#`),
+so lineage through it never dangles.
+
+The **head** of an ontology is the version no other version names as prior. A
+run reads one head per ontology, and older versions stay in the store, so you
+can compare what a run changed with what was there before. An ontology with
+several heads is **diverged**: `GET /ontologies` lists it and its versions can
+be read, but no run extracts against it or extends it until a merge gives it
+one head. [Ontology catalog](../internals/ontology_catalog.md) describes how
+the catalog picks heads safely when several processes share a store.
 
 ## Changes are patches
 

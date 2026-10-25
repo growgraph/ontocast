@@ -107,7 +107,7 @@ def build_namespace_owner_map(
             continue
         ontology = (base_overrides or {}).get(iri)
         if ontology is None or ontology.is_null():
-            ontology = ontology_manager.get_freshest_terminal_ontology_by_iri(iri)
+            ontology = ontology_manager.get_head_by_iri(iri)
         if ontology is None or ontology.is_null():
             logger.warning(
                 "No catalog ontology for writable IRI %s; skipping ownership", iri
@@ -217,37 +217,47 @@ def apply_partitioned_updates(
     tools,
     partitioned_deletes: dict[str, RDFGraph] | None = None,
     base_overrides: dict[str, Ontology] | None = None,
-) -> tuple[list[Ontology], dict[str, int], list[GraphUpdate]]:
+) -> tuple[list[Ontology], dict[str, int], dict[str, list[GraphUpdate]]]:
     """Apply each per-IRI delta (delete-then-insert) onto its catalog base.
 
-    The base is the freshest catalog terminal for the IRI unless
-    ``base_overrides`` supplies an in-run artifact (e.g. the map-stage output a
-    consolidation delta must build on). ``normalize_units_fn`` is typically
+    The base is the catalog head for the IRI unless ``base_overrides`` supplies
+    an in-run artifact (e.g. the map-stage output a consolidation delta must
+    build on). ``normalize_units_fn`` is typically
     :func:`ontocast.agent.normalize_ontology.normalize_ontology_units`.
 
-    Returns ``(artifacts, metrics, applied_updates)`` where ``applied_updates``
-    are the GraphUpdates actually executed, for version-bump analysis.
+    Triples whose subject is the ontology IRI itself are dropped before the
+    apply and counted as ``apply_header_triples_dropped``: the version header
+    is written by code, never by a render.
+
+    Returns ``(artifacts, metrics, applied_updates_by_iri)`` where the updates
+    are the GraphUpdates actually executed on each IRI, for its version label.
     """
     deletes_by_iri = partitioned_deletes or {}
     artifacts: list[Ontology] = []
-    applied_updates: list[GraphUpdate] = []
+    applied_updates: dict[str, list[GraphUpdate]] = {}
     metrics: dict[str, int] = {
         "apply_touched_iris": 0,
         "apply_skipped_missing_base": 0,
         "apply_insert_triples": 0,
         "apply_delete_triples": 0,
         "apply_deletes_no_match": 0,
+        "apply_header_triples_dropped": 0,
     }
     for iri in sorted(set(partitioned_inserts) | set(deletes_by_iri)):
         insert_delta = partitioned_inserts.get(iri) or RDFGraph()
         delete_delta = deletes_by_iri.get(iri) or RDFGraph()
+        for delta in (insert_delta, delete_delta):
+            header_triples = list(delta.triples((URIRef(iri), None, None)))
+            for triple in header_triples:
+                delta.remove(triple)
+            metrics["apply_header_triples_dropped"] += len(header_triples)
         if len(insert_delta) == 0 and len(delete_delta) == 0:
             continue
         metrics["apply_insert_triples"] += len(insert_delta)
         metrics["apply_delete_triples"] += len(delete_delta)
         base = (base_overrides or {}).get(iri)
         if base is None or base.is_null():
-            base = ontology_manager.get_freshest_terminal_ontology_by_iri(iri)
+            base = ontology_manager.get_head_by_iri(iri)
         if base is None or base.is_null():
             logger.warning(
                 "Cannot apply %s insert / %s delete triples: no catalog base for %s",
@@ -294,6 +304,7 @@ def apply_partitioned_updates(
         )
         if not result.is_null() and len(result.graph) > 0:
             artifacts.append(result)
-            applied_updates.extend(applied)
+            if applied:
+                applied_updates.setdefault(iri, []).extend(applied)
             metrics["apply_touched_iris"] += 1
     return artifacts, metrics, applied_updates

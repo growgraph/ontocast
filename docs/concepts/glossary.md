@@ -47,6 +47,18 @@ The terms these pages use, each with the page that explains it.
     the triples to delete. See [Ontologies and
     facts](ontologies_and_facts.md#changes-are-patches).
 
+**Head**
+:   The version of an ontology no other version names as prior. A run reads
+    one head per ontology; an ontology with several heads is diverged and
+    read-only until merged. See [Ontologies and
+    facts](ontologies_and_facts.md#versions).
+
+**Home ontology**
+:   Where a document's new vocabulary goes: an existing catalog ontology it
+    extends, or a new one minted under `CURRENT_DOMAIN`, resolved once per
+    document. See [Ontologies and
+    facts](ontologies_and_facts.md#the-home-ontology).
+
 **Ontology**
 :   A graph of classes, properties and declared individuals, identified by its
     IRI and stored in versions. See [Ontologies and
@@ -114,3 +126,8 @@ The terms these pages use, each with the page that explains it.
 :   Choosing a unit's ontology context by searching an index of the whole
     catalog (LanceDB or Qdrant) for the terms the unit needs. See
     [Retrieval](../internals/retrieval.md).
+
+**Version IRI**
+:   The named graph one immutable version of an ontology is stored as,
+    `<iri>#<key>`; its header names the prior version(s) it was made from.
+    See [Ontologies and facts](ontologies_and_facts.md#versions).

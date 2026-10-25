@@ -35,6 +35,11 @@ class Facts(BaseModel):
         description="Semantic version of the facts graph.",
     )
 
+    @property
+    def version_key(self) -> str | None:
+        """A facts graph has no stored versions; atoms fall back on ``hash``."""
+        return None
+
     facts_namespace: str = Field(
         default=DEFAULT_IRI,
         description="Base namespace for `cd:` entities in this facts graph.",

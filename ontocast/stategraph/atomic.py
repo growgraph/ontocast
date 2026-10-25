@@ -63,6 +63,7 @@ from ontocast.tool.facts_validation import (
     collect_unit_findings,
     expand_vocabulary_terms,
     material_defects,
+    materialize_entailed_types,
     repair_compact_iri_literals,
     unit_numeric_inventory,
 )
@@ -104,7 +105,7 @@ def _catalog_ontologies_for_patch_sources(
         iri = mgr.resolve_ontology_ref(ref) or ref
         if iri in seen:
             continue
-        onto = mgr.get_freshest_terminal_ontology_by_iri(iri)
+        onto = mgr.get_head_by_iri(iri)
         if onto is None or onto.is_null():
             continue
         seen.add(onto.iri)
@@ -145,7 +146,8 @@ def _repair_facts_patch(
     """Repairs a critic or completion patch needs before it is judged.
 
     Patches are parsed outside the render, so they miss its parse-time repairs;
-    a bare-string IRI they insert would otherwise read as a missing property.
+    a bare-string IRI they insert would otherwise read as a missing property,
+    and a node they add would miss the type its predicates entail.
     """
     graph = unit_state.content_unit.graph
     context = ontology_access_for_unit_facts(unit_state).effective_ontology_for_prompt()
@@ -153,7 +155,8 @@ def _repair_facts_patch(
         atomic.quantity_fallback_vocabulary, graph, context.graph
     )
     _, records = repair_compact_iri_literals(graph, context.graph, known)
-    return records
+    _, entailed = materialize_entailed_types(graph, context.graph)
+    return [*records, *entailed]
 
 
 def _repair_ontology_patch(

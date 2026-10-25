@@ -2,9 +2,11 @@
 
 import pytest
 
-from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology import bump_version, increment_type_for
+from ontocast.onto.ontology_header import stamp_version
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
+from test.ontology_helpers import stamped_ontology
 
 pytestmark = pytest.mark.unit
 
@@ -21,9 +23,8 @@ def _update(kind: str, body: str) -> GraphUpdate:
 
 
 def _bump(update: GraphUpdate) -> str:
-    ontology = Ontology(iri="https://example.org/onto", version="1.2.3")
-    ontology.mark_as_updated([update])
-    return str(ontology.version)
+    increment, _reason = increment_type_for([update])
+    return bump_version("1.2.3", increment)
 
 
 def test_adding_a_few_classes_is_a_patch() -> None:
@@ -49,3 +50,34 @@ def test_deleting_several_properties_is_a_major() -> None:
         f'ex:p{i} a owl:DatatypeProperty ; rdfs:label "p{i}" .' for i in range(4)
     )
     assert _bump(_update("delete", body)) == "2.0.0"
+
+
+def test_no_updates_is_a_patch() -> None:
+    assert increment_type_for([]) == ("patch", "no updates")
+
+
+def test_bump_version_refuses_a_non_semantic_label() -> None:
+    with pytest.raises(ValueError, match="not a semantic version"):
+        bump_version("3.0", "patch")
+
+
+def test_stamping_a_child_applies_the_increment_to_the_base_label() -> None:
+    base = stamped_ontology(
+        _PREFIXES
+        + """
+        <https://example.org/onto> a owl:Ontology ; owl:versionInfo "1.2.3" .
+        ex:A a owl:Class .
+        """
+    )
+    assert base.version == "1.2.3"
+    updated_graph = base.graph.copy()
+    body = " ".join(f"ex:p{i} a owl:ObjectProperty ." for i in range(5))
+    update = _update("insert", body)
+    for op in update.triple_operations:
+        for triple in op.graph:
+            updated_graph.add(triple)
+
+    child = stamp_version(base.derive_updated_version(updated_graph), updates=[update])
+
+    assert child is not None
+    assert child.version == "1.3.0"

@@ -290,7 +290,7 @@ async def _resolve_fixed_single_ontology_context(
             confidence=0.0,
         )
     mgr = tools.ontology_manager
-    selected = mgr.get_freshest_terminal_ontology(ontology_id=cleaned)
+    selected = mgr.get_head(ontology_id=cleaned)
     if selected is None:
         logger.warning(
             "No catalog ontology match for ontology_context_fixed_ontology_id=%r; "
@@ -539,11 +539,45 @@ async def resolve_unit_ontology_context(
             "deliberately."
         )
     if not len(resolved.snapshot.graph) and can_create_vocabulary:
+        home = _home_ontology_context(context, tools)
+        if home is not None:
+            logger.info(
+                "No ontology context for this unit; using the document's home "
+                "ontology %s",
+                home.primary_writable_iri,
+            )
+            context.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = len(
+                home.snapshot.graph
+            )
+            return home
         logger.info(
             "No ontology context for this unit; rendering a fresh ontology from "
             "its text"
         )
     return resolved
+
+
+def _home_ontology_context(
+    context: UnitLoopContext, tools: ToolBox
+) -> UnitOntologyContext | None:
+    """The head of the document's home ontology as a unit context, if it is stored.
+
+    A home ontology minted for this document is not in the catalog yet; a unit
+    then renders fresh under it instead.
+    """
+    home = context.home_ontology
+    if home is None:
+        return None
+    head = tools.ontology_manager.get_head_by_iri(home.iri)
+    if head is None or head.is_null():
+        return None
+    return UnitOntologyContext(
+        snapshot=OntologySnapshot.from_ontology(
+            head, assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
+        ),
+        writable_iris=[head.iri],
+        confidence=1.0,
+    )
 
 
 def aggregate_writable_metrics(

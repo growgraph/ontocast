@@ -15,8 +15,10 @@ from typing import cast
 import pytest
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
+from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_apply import OntologyDelta, apply_partitioned_updates
+from ontocast.onto.ontology_header import mint_ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.stategraph.helpers import (
     drop_all_deletes,
@@ -148,7 +150,9 @@ def test_insert_only_drops_every_delete_and_keeps_inserts() -> None:
 
 
 def _fresh(iri: str, *triples) -> Ontology:
-    return Ontology(graph=_graph(*triples), iri=iri, ontology_id="fresh-onto")
+    """An unstamped root a fresh unit minted under ``iri``."""
+    identity = OntologyIdentity(ontology_id="fresh-onto", iri=iri, title="Fresh")
+    return mint_ontology(identity, _graph(*triples))
 
 
 def test_same_iri_fresh_ontologies_union_merge_instead_of_last_wins() -> None:
@@ -163,14 +167,25 @@ def test_same_iri_fresh_ontologies_union_merge_instead_of_last_wins() -> None:
     assert len(merged) == 1
     assert (a_term, RDF.type, OWL.Class) in merged[0].graph
     assert (b_term, RDF.type, OWL.Class) in merged[0].graph
-    # A root version: the transient per-unit artifacts never enter the
-    # catalog, so lineage must not point at their hashes.
-    assert merged[0].parent_hashes == []
+    # A root: the transient per-unit artifacts never enter the catalog, so
+    # the union has no bases and no priors.
+    assert merged[0].bases == []
+    assert merged[0].prior_version_iris == []
+    assert merged[0].version_iri is None
     assert merged[0].hash and merged[0].hash != first.hash
 
 
-def test_cross_iri_fresh_overlap_is_counted_not_merged() -> None:
-    shared = (URIRef(f"{ONTO}Sample"),)
+def test_a_single_fresh_ontology_is_returned_as_is() -> None:
+    only = _fresh(f"{ONTO.rstrip('#')}", (URIRef(f"{ONTO}A"), RDF.type, OWL.Class))
+
+    merged, metrics = reconcile_fresh_ontologies([only])
+
+    assert merged == [only]
+    assert metrics == {}
+
+
+def test_cross_iri_fresh_ontologies_are_a_fault() -> None:
+    """A document has one home ontology; a unit minting elsewhere is a fault."""
     first = _fresh(
         "https://example.com/onto-a",
         (URIRef("https://example.com/onto-a#Sample"), RDF.type, OWL.Class),
@@ -181,12 +196,9 @@ def test_cross_iri_fresh_overlap_is_counted_not_merged() -> None:
         (URIRef("https://example.com/onto-b#Sample"), RDF.type, OWL.Class),
         (URIRef("https://example.com/onto-b#Sample"), RDFS.label, Literal("Sample")),
     )
-    _ = shared
 
-    merged, metrics = reconcile_fresh_ontologies([first, second])
-
-    assert len(merged) == 2, "distinct IRIs stay separate artifacts"
-    assert metrics["fresh_minted_duplicates"] == 1
+    with pytest.raises(RuntimeError, match="one home ontology"):
+        reconcile_fresh_ontologies([first, second])
 
 
 def test_deletes_absent_from_the_terminal_are_counted() -> None:
@@ -210,7 +222,7 @@ def test_deletes_absent_from_the_terminal_are_counted() -> None:
         {},
         ontology_manager=cast(
             OntologyManager,
-            SimpleNamespace(get_freshest_terminal_ontology_by_iri=lambda iri: base),
+            SimpleNamespace(get_head_by_iri=lambda iri: base),
         ),
         normalize_units_fn=_normalize,
         tools=None,

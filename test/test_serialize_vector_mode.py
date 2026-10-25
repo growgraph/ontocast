@@ -14,7 +14,9 @@ from typing import cast
 import pytest
 from rdflib import RDFS, Literal, URIRef
 
+from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import mint_ontology, stamp_version
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.tool.ontology_manager import OntologyManager
@@ -26,10 +28,13 @@ pytestmark = pytest.mark.unit
 _IRI = "https://example.com/onto"
 
 
-def _ontology() -> Ontology:
+def _artifact() -> Ontology:
+    """An unstamped root artifact, as the reduce step hands it to serialization."""
     graph = RDFGraph()
     graph.add((URIRef(f"{_IRI}#Sample"), RDFS.label, Literal("Sample")))
-    return Ontology(graph=graph, iri=_IRI, ontology_id="sample-onto")
+    return mint_ontology(
+        OntologyIdentity(ontology_id="sample-onto", iri=_IRI, title="Sample"), graph
+    )
 
 
 def _manager_with_retriever(reindexed: list[Ontology]) -> OntologyManager:
@@ -50,22 +55,30 @@ def _manager_with_retriever(reindexed: list[Ontology]) -> OntologyManager:
 async def test_sync_add_ontology_refuses_to_reindex_inside_a_loop() -> None:
     """The guard this fix routes around: the failure shape, pinned."""
     manager = _manager_with_retriever([])
+    version = stamp_version(_artifact())
+    assert version is not None
     with pytest.raises(RuntimeError, match="aadd_ontology"):
-        manager.add_ontology(_ontology())
+        manager.add_ontology(version)
 
 
 @pytest.mark.anyio
 async def test_aserialize_registers_the_ontology_with_vector_store_live() -> None:
     reindexed: list[Ontology] = []
     manager = _manager_with_retriever(reindexed)
-    ontology = _ontology()
-    assert ontology.hash, "artifact must arrive hashed for serialization"
+    artifact = _artifact()
+    assert artifact.hash, "artifact must arrive hashed for serialization"
 
     state = AgentState()
-    state.reduced_ontology_artifacts = [ontology]
+    state.reduced_ontology_artifacts = [artifact]
 
     stub = SimpleNamespace(ontology_manager=manager, triple_store_manager=None)
     await ToolBox.aserialize(cast(ToolBox, stub), state)
 
-    assert manager.get_freshest_terminal_ontology_by_iri(_IRI) is not None
-    assert [entry.iri for entry in reindexed] == [_IRI]
+    head = manager.get_head_by_iri(_IRI)
+    assert head is not None
+    assert head.version_iri == f"{_IRI}#{artifact.hash}"
+    # What the index receives is the stamped version, not the bare artifact.
+    assert [entry.version_iri for entry in reindexed] == [head.version_iri]
+    assert [(r.iri, r.role) for r in state.ontology_versions_written] == [
+        (_IRI, "created")
+    ]

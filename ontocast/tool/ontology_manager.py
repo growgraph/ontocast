@@ -9,11 +9,11 @@ import asyncio
 import logging
 from collections import OrderedDict
 from collections.abc import Sequence
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
-from rdflib import URIRef
+
+from ontocast.onto.ontology_header import DivergedOntologyError, heads_by_iri
 
 from ..onto.null import NULL_ONTOLOGY
 from ..onto.ontology import Ontology
@@ -23,7 +23,7 @@ from ..onto.util import normalize_ontology_iri
 from .facts_validation.terms import collect_catalog_terms
 from .onto import Tool
 from .triple_manager.core import TripleStoreManager
-from .triple_manager.util import dedupe_terminal_ontologies
+from .triple_manager.util import head_headers
 
 logger = logging.getLogger(__name__)
 
@@ -44,16 +44,15 @@ if TYPE_CHECKING:
 
 
 class OntologyManager(Tool):
-    """Manager for handling multiple ontologies with version tracking.
+    """The catalog: every ontology this process holds, with its versions.
 
-    This class provides functionality for managing a collection of ontologies,
-    tracking version lineage using hash-based identifiers. For each IRI,
-    it maintains a tree/graph of all versions identified by their hashes.
+    For each IRI it holds the stamped versions it has seen, identified by
+    their version IRIs and linked by ``prior_version_iris``. The *head* of an
+    ontology is the version nothing names as prior; an ontology with several
+    heads is diverged and cannot be extended until merged.
 
     Attributes:
-        ontology_versions: Dictionary mapping IRI to list of all
-            ontology versions (identified by hash). Each IRI can have
-            multiple versions forming a lineage tree.
+        ontology_versions: Stamped versions per ontology IRI.
     """
 
     ontology_versions: dict[str, list[Ontology]] = Field(default_factory=dict)
@@ -65,8 +64,7 @@ class OntologyManager(Tool):
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
-        # Cache dictionary mapping IRI to hash of freshest terminal ontology.
-        # Updated incrementally when ontologies are added.
+        # IRI -> version IRI of its head. Updated when a version is added.
         self._cached_ontologies: dict[str, str] = {}
         self._patch_retriever: OntologyPatchRetriever | None = None
         self._triple_store_manager: TripleStoreManager | None = None
@@ -81,10 +79,9 @@ class OntologyManager(Tool):
         # incorrect hit. Both are bounded -- they hold whole rdflib graphs, and
         # a long-lived server would otherwise grow without limit.
         #
-        # _graph_cache is keyed by the header's ``graph_uri`` (see
-        # :meth:`_cache_graph`), *not* by ``versioned_iri``: the two coincide
-        # only while content hashing is round-trip stable. Eviction must use the
-        # same key, so the graph URI each IRI was cached under is tracked here.
+        # _graph_cache is keyed by version IRI (the named graph a version was
+        # read from); the version IRIs cached per ontology are tracked for
+        # eviction.
         self._graph_cache: OrderedDict[str, Ontology] = OrderedDict()
         self._graph_uris_by_iri: dict[str, set[str]] = {}
         self._merged_cache: OrderedDict[
@@ -239,46 +236,35 @@ class OntologyManager(Tool):
         return self.resolve_ontology_ref(str(item)) is not None
 
     def _prepare_ontology_for_catalog(self, ontology: Ontology) -> bool:
-        """Validate and register ``ontology``; return True if a new hash was appended."""
+        """Validate and register a stamped version; True if it is new here.
+
+        Raises:
+            ValueError: the ontology is null, unstamped, or its identity
+                collides with a registered one.
+        """
         if not ontology.iri or ontology.iri == NULL_ONTOLOGY.iri:
-            logger.warning(
-                f"Cannot add ontology without valid IRI (ontology_id: {ontology.ontology_id})"
-            )
-            return False
-
-        if not ontology.hash:
-            logger.warning(f"Cannot add ontology without hash (IRI: {ontology.iri})")
-            return False
-
-        # Author @prefix names die at the triple-store boundary; persisting them
-        # as sh:declare triples here (hash-neutral, idempotent) lets any later
-        # export rebind them instead of inventing synthetic stem-derived names.
-        ontology.graph.materialize_prefix_declarations(URIRef(ontology.iri))
+            raise ValueError("cannot register the null ontology")
+        if not ontology.version_iri:
+            raise ValueError(f"ontology {ontology.iri} is not stamped as a version")
 
         self.validate_identity_uniqueness(ontology)
         self._register_identity(ontology)
 
-        if not ontology.created_at:
-            ontology.created_at = datetime.now(timezone.utc)
-            logger.debug(
-                f"Set created_at for ontology {ontology.iri} with hash {ontology.hash[:8]}..."
-            )
+        # A registered version is a stored one: what derives from it next
+        # derives from this version.
+        if not (
+            len(ontology.bases) == 1
+            and ontology.bases[0].version_iri == ontology.version_iri
+        ):
+            ontology.bases = [OntologyHeader.from_ontology(ontology)]
 
-        if ontology.iri not in self.ontology_versions:
-            self.ontology_versions[ontology.iri] = []
-
-        existing_hashes = {o.hash for o in self.ontology_versions[ontology.iri]}
-        if ontology.hash in existing_hashes:
-            logger.debug(
-                f"Ontology {ontology.iri} with hash {ontology.hash[:8]}... already exists"
-            )
+        versions = self.ontology_versions.setdefault(ontology.iri, [])
+        if any(o.version_iri == ontology.version_iri for o in versions):
+            logger.debug("Version %s already registered", ontology.version_iri)
             return False
-
-        self.ontology_versions[ontology.iri].append(ontology)
-        freshest = self.get_freshest_terminal_ontology_by_iri(ontology.iri)
-        if freshest and freshest.hash:
-            self._cached_ontologies[ontology.iri] = freshest.hash
-        logger.debug(f"Added ontology {ontology.iri} with hash {ontology.hash[:8]}...")
+        versions.append(ontology)
+        self._cached_ontologies.pop(ontology.iri, None)
+        logger.debug("Registered version %s", ontology.version_iri)
         return True
 
     def _reindex_ontology_sync(self, ontology: Ontology) -> None:
@@ -338,24 +324,36 @@ class OntologyManager(Tool):
         if not skip_vector_index:
             await self._reindex_ontology_async(ontology)
 
+    def replace_version(self, ontology: Ontology) -> None:
+        """Replace a tracked version in place (e.g. after writing a tombstone).
+
+        Raises:
+            ValueError: ``ontology`` is unstamped, or no version with its
+                ``version_iri`` is held.
+        """
+        if not ontology.version_iri:
+            raise ValueError(f"ontology {ontology.iri} is not stamped as a version")
+        versions = self.ontology_versions.get(ontology.iri, [])
+        for index, held in enumerate(versions):
+            if held.version_iri == ontology.version_iri:
+                versions[index] = ontology
+                self._cached_ontologies.pop(ontology.iri, None)
+                self._graph_cache[ontology.version_iri] = ontology
+                self._graph_cache.move_to_end(ontology.version_iri)
+                return
+        raise ValueError(f"no tracked version {ontology.version_iri}")
+
     def remove_ontology_by_iri(self, iri: str) -> None:
         """Drop all tracked versions for an ontology IRI and clear caches."""
-        # Evict under the key entries were *inserted* with. Popping
-        # ``versioned_iri`` here -- as this did once -- silently missed every
-        # entry whenever the recomputed hash differed from the stored graph URI,
-        # leaving a removed ontology still resolvable from cache.
         for graph_uri in self._graph_uris_by_iri.pop(iri, set()):
             self._graph_cache.pop(graph_uri, None)
         for ontology in self.ontology_versions.get(iri, []):
-            self._graph_cache.pop(ontology.versioned_iri, None)
+            if ontology.version_iri:
+                self._graph_cache.pop(ontology.version_iri, None)
         stale_merges = [
             key
             for key in self._merged_cache
-            # An ontology with no hash falls back to the bare IRI as its
-            # versioned IRI, so match that exactly as well as the `#hash` form.
-            if any(
-                versioned == iri or versioned.startswith(f"{iri}#") for versioned in key
-            )
+            if any(versioned.startswith(f"{iri}#") for versioned in key)
         ]
         for key in stale_merges:
             del self._merged_cache[key]
@@ -423,11 +421,10 @@ class OntologyManager(Tool):
         return await self._require_triple_store().afetch_ontology_catalog()
 
     async def aget_ontologies_by_iri(self, iris: Sequence[str]) -> list[Ontology]:
-        """Return terminal ontologies for ``iris``, fetching only cache misses.
+        """Return the heads of ``iris``, fetching only cache misses.
 
-        Terminal selection always runs against freshly read headers; only the
-        graph bytes come from cache, keyed by the content-addressed
-        ``versioned_iri``.
+        Head selection always runs against freshly read headers; only the
+        graph bytes come from cache, keyed by version IRI.
 
         Args:
             iris: Ontology IRIs to resolve. Empty means "no restriction", matching
@@ -438,7 +435,7 @@ class OntologyManager(Tool):
             these as shared read-only references.
         """
         store = self._require_triple_store()
-        headers = dedupe_terminal_ontologies(await self.aget_catalog_headers())
+        headers = head_headers(await self.aget_catalog_headers())
         if iris:
             wanted = set(iris)
             headers = [header for header in headers if header.iri in wanted]
@@ -482,7 +479,7 @@ class OntologyManager(Tool):
         """
         from .sparql import merge_ontology_graphs
 
-        key = frozenset(onto.versioned_iri for onto in ontologies)
+        key = frozenset(onto.version_iri or onto.iri for onto in ontologies)
         cached = self._merged_cache.get(key)
         if cached is not None:
             self._merged_cache_hits += 1
@@ -523,8 +520,8 @@ class OntologyManager(Tool):
             set[str]: Shared across units -- treat as read-only.
         """
         held: dict[str, Ontology] = {
-            ontology.versioned_iri: ontology
-            for ontology in self.get_terminal_ontologies_by_iri(None)
+            ontology.version_iri or ontology.iri: ontology
+            for ontology in self.get_heads_by_iri(None)
         }
         for graph_uri, ontology in self._graph_cache.items():
             held.setdefault(graph_uri, ontology)
@@ -549,18 +546,11 @@ class OntologyManager(Tool):
         mixing the two makes retrieval depend on whether a graph happened to be
         written by this process.
 
-        The key must be the *header's* ``graph_uri``, since that is what
-        :meth:`aget_ontologies_by_iri` looks up. Keying on the recomputed
-        ``versioned_iri`` instead is only equivalent while content hashing is
-        round-trip stable; when it is not, the two never coincide and every
-        lookup misses forever.
-
         Args:
             ontology: Ontology materialized from the triple store.
-            graph_uri: Named graph it was read from. Falls back to the
-                content-addressed ``versioned_iri`` when the caller has no header.
+            graph_uri: Named graph it was read from; defaults to its version IRI.
         """
-        key = graph_uri or (ontology.versioned_iri if ontology.hash else None)
+        key = graph_uri or ontology.version_iri
         if not key:
             return
         self._graph_cache.setdefault(key, ontology)
@@ -584,8 +574,8 @@ class OntologyManager(Tool):
     def _fallback_patch_results(
         self, queries: list[str]
     ) -> list[tuple[RDFGraph | None, list[str]]]:
-        """Per-query independent copies of the freshest terminal ontology graph."""
-        fallback = self.get_freshest_terminal_ontology_by_iri(None)
+        """Per-query independent copies of the catalog's one head graph."""
+        fallback = self.get_head_by_iri(None)
         if fallback is None:
             return [(None, []) for _ in queries]
         sources = [fallback.iri]
@@ -738,114 +728,70 @@ class OntologyManager(Tool):
 
         return self._fallback_patch_results(queries)
 
-    def get_terminal_ontologies_by_iri(self, iri: str | None = None) -> list[Ontology]:
-        """Get terminal (leaf) ontologies in the version graph.
+    def get_heads_by_iri(self, iri: str | None = None) -> list[Ontology]:
+        """The heads held for ``iri``, or for every ontology when ``iri`` is None.
 
-        Terminal ontologies are those that are not parents of any other ontology
-        in the version tree. If iri is provided, returns terminals for
-        that ontology only; otherwise returns terminals for all ontologies.
-
-        Args:
-            iri: Optional IRI to filter by.
-
-        Returns:
-            list[Ontology]: List of terminal ontologies.
+        A head is a live version that no live version descends from; descent
+        walks through tombstoned versions.
         """
         if iri:
-            if iri not in self.ontology_versions:
-                return []
-            ontologies = self.ontology_versions[iri]
+            versions = list(self.ontology_versions.get(iri, []))
         else:
-            ontologies = [
-                o for versions in self.ontology_versions.values() for o in versions
-            ]
-
-        if not ontologies:
+            versions = [o for group in self.ontology_versions.values() for o in group]
+        if not versions:
             return []
+        by_version_iri = {o.version_iri: o for o in versions if o.version_iri}
+        heads = heads_by_iri([OntologyHeader.from_ontology(o) for o in versions])
+        return [
+            by_version_iri[header.version_iri]
+            for group in heads.values()
+            for header in group
+            if header.version_iri in by_version_iri
+        ]
 
-        # Build a set of all parent hashes
-        all_parent_hashes = set()
-        for o in ontologies:
-            all_parent_hashes.update(o.parent_hashes)
-
-        # Terminal nodes are those whose hash is not in any parent_hashes
-        terminal_hashes = {o.hash for o in ontologies} - all_parent_hashes
-
-        return [o for o in ontologies if o.hash in terminal_hashes]
-
-    def get_terminal_ontologies(self, ontology_id: str | None = None) -> list[Ontology]:
-        """Get terminal (leaf) ontologies by ontology_id or alias.
-
-        Args:
-            ontology_id: Optional ontology_id / alias / IRI to filter by.
-
-        Returns:
-            list[Ontology]: List of terminal ontologies.
-        """
+    def get_heads(self, ontology_id: str | None = None) -> list[Ontology]:
+        """The heads of the ontology ``ontology_id`` names (id, alias or IRI)."""
         if ontology_id:
             iri = self.resolve_ontology_ref(ontology_id)
             if iri is None:
                 return []
-            return self.get_terminal_ontologies_by_iri(iri)
-        return self.get_terminal_ontologies_by_iri(None)
+            return self.get_heads_by_iri(iri)
+        return self.get_heads_by_iri(None)
 
-    def get_freshest_terminal_ontology_by_iri(
-        self, iri: str | None = None
-    ) -> Ontology | None:
-        """Get the freshest terminal ontology based on created_at timestamp.
+    def get_head_by_iri(self, iri: str | None = None) -> Ontology | None:
+        """The one head of ``iri``, or None when nothing is held for it.
 
-        Returns the terminal ontology with the most recent `created_at` timestamp.
-        If multiple terminal ontologies exist, returns the one that was most recently
-        created. If no created_at is set, falls back to the first terminal ontology.
+        With ``iri`` None, the head of the single held ontology (None when
+        several are held: there is no "the" head across ontologies).
 
-        Args:
-            iri: Optional IRI to filter by. If None, searches across
-                all ontologies.
-
-        Returns:
-            Ontology: The freshest terminal ontology, or None if no terminal
-                ontologies exist.
+        Raises:
+            DivergedOntologyError: the ontology has several heads.
         """
-        terminals = self.get_terminal_ontologies_by_iri(iri)
-
-        if not terminals:
+        heads = self.get_heads_by_iri(iri)
+        if not heads:
             return None
+        if iri is None:
+            iris = {o.iri for o in heads}
+            if len(iris) != 1:
+                return None
+            iri = heads[0].iri
+            heads = [o for o in heads if o.iri == iri]
+        if len(heads) > 1:
+            raise DivergedOntologyError(iri, [o.version_iri or "" for o in heads])
+        return heads[0]
 
-        # Filter out ontologies without created_at and sort by created_at
-        with_timestamp = [o for o in terminals if o.created_at is not None]
-        without_timestamp = [o for o in terminals if o.created_at is None]
+    def get_head(self, ontology_id: str | None = None) -> Ontology | None:
+        """The one head of the ontology ``ontology_id`` names (id, alias or IRI).
 
-        if with_timestamp:
-            # Sort by created_at descending (most recent first)
-            freshest = max(
-                with_timestamp,
-                key=lambda o: cast(datetime, o.created_at),
-            )
-            return freshest
-        elif without_timestamp:
-            # Fallback to first terminal if no timestamps available
-            return without_timestamp[0]
-
-        return None
-
-    def get_freshest_terminal_ontology(
-        self, ontology_id: str | None = None
-    ) -> Ontology | None:
-        """Get the freshest terminal ontology by ontology_id, alias, or IRI.
-
-        Args:
-            ontology_id: Optional ontology_id / alias / IRI to filter by.
-
-        Returns:
-            Ontology: The freshest terminal ontology, or None if no terminal
-                ontologies exist.
+        Raises:
+            DivergedOntologyError: the ontology has several heads.
         """
         if ontology_id:
             iri = self.resolve_ontology_ref(ontology_id)
             if iri is None:
                 return None
-            return self.get_freshest_terminal_ontology_by_iri(iri)
-        return self.get_freshest_terminal_ontology_by_iri(None)
+            return self.get_head_by_iri(iri)
+        return self.get_head_by_iri(None)
 
     def get_ontology_versions_by_iri(self, iri: str) -> list[Ontology]:
         """Get all versions of an ontology by IRI.
@@ -873,17 +819,9 @@ class OntologyManager(Tool):
         return self.get_ontology_versions_by_iri(iri)
 
     def get_lineage_graph_by_iri(self, iri: str) -> "nx.DiGraph | None":
-        """Get the lineage graph for a specific IRI.
-
-        Args:
-            iri: The IRI to get the lineage graph for.
-
-        Returns:
-            networkx.DiGraph: The lineage graph for the ontology, or None if not found.
-        """
+        """The version DAG held for ``iri`` (nodes are version IRIs), or None."""
         if iri not in self.ontology_versions:
             return None
-
         return Ontology.build_lineage_graph(self.ontology_versions[iri])
 
     def get_lineage_graph(self, ontology_id: str) -> "nx.DiGraph | None":
@@ -904,27 +842,20 @@ class OntologyManager(Tool):
         self,
         ontology_id: str | None = None,
         ontology_iri: str | None = None,
-        hash: str | None = None,
+        version_iri: str | None = None,
     ) -> Ontology:
-        """Get an ontology by its IRI, ontology_id/alias, or hash.
+        """Get an ontology by IRI, id/alias, or a specific version IRI.
 
-        If hash is provided, returns the specific version. Otherwise, returns
-        a terminal (most recent) version if multiple versions exist.
-        IRI is preferred over ontology_id for lookup.
-
-        Args:
-            ontology_id: Short name, author prefix, or IRI (optional).
-            ontology_iri: The IRI of the ontology to retrieve (preferred).
-            hash: The hash of a specific version to retrieve (optional).
+        Without ``version_iri`` the head is returned (the newest head of a
+        diverged ontology). IRI is preferred over ``ontology_id``.
 
         Returns:
-            Ontology: The matching ontology if found, NULL_ONTOLOGY otherwise.
+            Ontology: The matching ontology, NULL_ONTOLOGY when none.
         """
-        # If hash is provided, search by hash first
-        if hash:
+        if version_iri:
             for versions in self.ontology_versions.values():
                 for o in versions:
-                    if o.hash == hash:
+                    if o.version_iri == version_iri:
                         return o
 
         resolved_iri: str | None = None
@@ -935,14 +866,10 @@ class OntologyManager(Tool):
 
         if resolved_iri is not None and resolved_iri in self.ontology_versions:
             versions = self.ontology_versions[resolved_iri]
-            if hash:
-                for o in versions:
-                    if o.hash == hash:
-                        return o
-            else:
-                terminals = self.get_terminal_ontologies_by_iri(resolved_iri)
-                if terminals:
-                    return terminals[0]
+            if not version_iri:
+                heads = self.get_heads_by_iri(resolved_iri)
+                if heads:
+                    return heads[0]
                 if versions:
                     return versions[0]
 
@@ -991,36 +918,33 @@ class OntologyManager(Tool):
 
     @property
     def ontologies(self) -> list[Ontology]:
-        """Return the freshest terminal ontology for each catalog IRI.
+        """The head of each held ontology, one per IRI.
 
-        The result is cached per IRI (as hashes) and updated incrementally
-        when ontologies are added.
+        A diverged ontology (several heads) is left out: nothing extracts
+        against it until it is merged.
 
         Returns:
-            list[Ontology]: List of freshest terminal ontologies, one per IRI.
+            list[Ontology]: One head per IRI, in IRI order.
         """
-        result = []
-
-        # Ensure cache is up to date for all IRIs
-        for iri in self.ontology_versions.keys():
-            if iri not in self._cached_ontologies:
-                freshest = self.get_freshest_terminal_ontology_by_iri(iri)
-                if freshest and freshest.hash:
-                    self._cached_ontologies[iri] = freshest.hash
-
-        # Remove entries for IRIs that no longer exist
-        cached_iris = set(self._cached_ontologies.keys())
-        current_iris = set(self.ontology_versions.keys())
-        for removed_iri in cached_iris - current_iris:
+        result: list[Ontology] = []
+        for iri in sorted(self.ontology_versions):
+            cached = self._cached_ontologies.get(iri)
+            if cached is not None:
+                head = next(
+                    (o for o in self.ontology_versions[iri] if o.version_iri == cached),
+                    None,
+                )
+                if head is not None:
+                    result.append(head)
+                    continue
+            try:
+                head = self.get_head_by_iri(iri)
+            except DivergedOntologyError as exc:
+                logger.error("%s", exc)
+                continue
+            if head is not None and head.version_iri:
+                self._cached_ontologies[iri] = head.version_iri
+                result.append(head)
+        for removed_iri in set(self._cached_ontologies) - set(self.ontology_versions):
             del self._cached_ontologies[removed_iri]
-
-        # Look up actual ontology objects by hash
-        for iri, cached_hash in self._cached_ontologies.items():
-            if iri in self.ontology_versions:
-                # Find ontology with matching hash
-                for ontology in self.ontology_versions[iri]:
-                    if ontology.hash == cached_hash:
-                        result.append(ontology)
-                        break
-
         return result

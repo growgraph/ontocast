@@ -2,7 +2,7 @@ import asyncio
 import logging
 import pathlib
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -11,6 +11,7 @@ from rdflib.namespace import OWL, RDF
 from ontocast.config import Config
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
 from ontocast.onto.enum import OntologyContextMode, RenderMode, VectorStoreBackend
+from ontocast.onto.identity import OntologyVersionRecord, VersionRef
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
@@ -90,10 +91,11 @@ async def update_ontology_properties(o: Ontology, llm_tool: LLMTool):
     of a given ontology based on its graph content, but only if any key
     property is missing or empty.
     """
-    # Only update if any key property is missing or empty
-    if (o.title is None) or (o.ontology_id is None) or (o.description is None):
+    # Identity (id, IRI, title) is fixed by the header; only a missing
+    # description is filled, on the in-memory object, for prompts.
+    if o.description is None:
         props = await render_ontology_summary(o, llm_tool)
-        o.set_properties(**props.model_dump())
+        o.description = props.description or None
 
 
 async def update_ontology_manager(
@@ -116,11 +118,7 @@ async def update_ontology_manager(
     import asyncio
     import time
 
-    pending = [
-        o
-        for o in om.ontologies
-        if (o.title is None) or (o.ontology_id is None) or (o.description is None)
-    ]
+    pending = [o for o in om.ontologies if o.description is None]
     if not pending:
         return
 
@@ -817,28 +815,74 @@ class ToolBox:
         asyncio.run(self.aserialize(state))
 
     async def aserialize(self, state: AgentState) -> None:
-        """Persist the document's ontologies and facts (async form)."""
-        ontologies_to_serialize = document_ontology_access(
-            state
-        ).serialization_targets()
-        for ontology in ontologies_to_serialize:
-            if ontology and ontology.hash:
-                # The async variant is not optional here: the sync
-                # add_ontology() refuses to reindex the vector store inside a
-                # running event loop, and aserialize is by definition inside
-                # one — so with vector retrieval registered, the sync call
-                # raised RuntimeError on the first document that actually
-                # produced an ontology version to serialize.
-                await self.ontology_manager.aadd_ontology(ontology)
+        """Persist the document's ontology versions and facts (async form).
+
+        Each artifact is stamped as a version; one whose content equals its
+        base's is not written. Versions are written to the store first, then
+        registered and indexed, then the facts: a refused write raises before
+        anything downstream can point at a version that does not exist.
+
+        Raises:
+            TripleStoreWriteError: the store refused a write.
+        """
+        from ontocast.onto.ontology_header import stamp_version
+
+        artifacts = document_ontology_access(state).serialization_targets()
+        stamped: list[Ontology] = []
+        state.ontology_versions_written = []
+        for artifact in artifacts:
+            if artifact is None or artifact.is_null() or len(artifact.graph) == 0:
+                continue
+            version = stamp_version(
+                artifact,
+                updates=state.ontology_updates_by_iri.get(artifact.iri, []),
+                source_doc=str(state.doc_iri),
+            )
+            if version is None:
+                logger.info("Ontology %s is unchanged; no new version", artifact.iri)
+                continue
+            stamped.append(version)
 
         if self.triple_store_manager is not None:
-            for ontology in ontologies_to_serialize:
-                await self.triple_store_manager.aserialize(ontology)
-            if state.render_facts:
-                await self.triple_store_manager.aserialize(
-                    state.aggregated_facts,
-                    graph_uri=state.graph_uri,
+            for version in stamped:
+                await self.triple_store_manager.aserialize(version)
+        for version in stamped:
+            # The async variant is not optional: the sync add_ontology()
+            # refuses to reindex the vector store inside a running event loop.
+            await self.ontology_manager.aadd_ontology(version)
+            assert version.version_iri is not None
+            state.ontology_versions_written.append(
+                OntologyVersionRecord(
+                    iri=version.iri,
+                    version_iri=version.version_iri,
+                    ontology_id=version.ontology_id or "",
+                    version=version.version or "",
+                    prior_version_iris=list(version.prior_version_iris),
+                    role="updated" if version.prior_version_iris else "created",
                 )
+            )
+
+        written = {record.iri for record in state.ontology_versions_written}
+        read_iris = {
+            iri
+            for lane in state.unit_context_sources.values()
+            for iris in lane.values()
+            for iri in iris
+        }
+        state.ontology_versions_read = []
+        for iri in sorted(read_iris - written):
+            head = self.ontology_manager.get_ontology(ontology_iri=iri)
+            if head.is_null() or not head.version_iri:
+                continue
+            state.ontology_versions_read.append(
+                VersionRef(iri=head.iri, version_iri=head.version_iri)
+            )
+
+        if self.triple_store_manager is not None and state.render_facts:
+            await self.triple_store_manager.aserialize(
+                state.aggregated_facts,
+                graph_uri=state.graph_uri,
+            )
 
     def should_initialize_vector_store(
         self, ontology_context_mode: OntologyContextMode | None
@@ -1396,34 +1440,198 @@ class ToolBox:
             )
         return indexed
 
+    @overload
     async def ingest_ontology_ttl(
-        self, ttl: bytes, *, filename: str | None = None
-    ) -> Ontology:
+        self,
+        ttl: bytes,
+        *,
+        filename: str | None = None,
+        as_new_version: Literal[False] = False,
+    ) -> Ontology: ...
+
+    @overload
+    async def ingest_ontology_ttl(
+        self,
+        ttl: bytes,
+        *,
+        filename: str | None = None,
+        as_new_version: Literal[True],
+    ) -> Ontology | None: ...
+
+    async def ingest_ontology_ttl(
+        self,
+        ttl: bytes,
+        *,
+        filename: str | None = None,
+        as_new_version: bool = False,
+    ) -> Ontology | None:
         """Register Turtle in the triple store and the vector index.
 
         ``ontology_directory`` is a read-only seed fixture consulted once at
         init, so nothing is written there: an ingested ontology lives in the
         triple store and vector index only and does not survive a rebuild from
         seeds.
+
+        With ``as_new_version`` False (POST), the file becomes the root of a
+        new ontology and a collision with an existing IRI raises. With True
+        (PUT), it becomes a new version whose prior is the current single
+        head; several heads raise ``DivergedOntologyError``; unchanged content
+        returns None; an ontology with no live head is adopted as a new root.
+
+        Returns:
+            The stamped version that was written, or None when ``as_new_version``
+            and the file's content equals the current head's.
         """
         import asyncio
 
+        from rdflib import DCTERMS, OWL, RDF, URIRef
+
+        from ontocast.onto.ontology import normalize_semantic_version
+        from ontocast.onto.ontology_header import (
+            DivergedOntologyError,
+            adopt_ontology,
+            stamp_version,
+            without_version_header,
+            write_header,
+        )
+
+        _ = filename
         graph = RDFGraph()
 
         def _parse() -> None:
             graph.parse(BytesIO(ttl), format="turtle")
 
         await asyncio.to_thread(_parse)
-        o = Ontology(graph=graph)
-        if not o.iri or o.iri == ONTOLOGY_NULL_IRI:
-            raise ValueError("Loaded turtle does not define a valid ontology IRI")
-        if not o.hash:
-            raise ValueError("Ontology hash could not be computed")
-        self.ontology_manager.validate_identity_uniqueness(o)
 
-        await self._materialize_ontology(o)
-        self.ontology_manager.add_ontology(o, skip_vector_index=True)
-        return o
+        if not as_new_version:
+            o = adopt_ontology(graph)
+            self.ontology_manager.validate_identity_uniqueness(o)
+            if self.ontology_manager.resolve_ontology_ref(o.iri) is not None:
+                raise ValueError(
+                    f"ontology {o.iri} already exists; delete it before uploading it again"
+                )
+            await self._materialize_ontology(o)
+            self.ontology_manager.add_ontology(o, skip_vector_index=True)
+            return o
+
+        subjects = {
+            s
+            for s, _, _ in graph.triples((None, RDF.type, OWL.Ontology))
+            if isinstance(s, URIRef)
+        }
+        if len(subjects) != 1:
+            raise ValueError(
+                f"an ontology declares exactly one owl:Ontology subject; found {len(subjects)}"
+            )
+        iri = str(next(iter(subjects)))
+        author_label = None
+        for value in graph.objects(URIRef(iri), OWL.versionInfo):
+            author_label = normalize_semantic_version(str(value))
+            if author_label:
+                break
+
+        if self.ontology_manager.resolve_ontology_ref(iri) is None:
+            o = adopt_ontology(graph)
+            await self._materialize_ontology(o)
+            self.ontology_manager.add_ontology(o, skip_vector_index=True)
+            return o
+
+        try:
+            head = self.ontology_manager.get_head_by_iri(iri)
+        except DivergedOntologyError:
+            raise
+        if head is None:
+            o = adopt_ontology(graph)
+            existing = self.ontology_manager.get_ontology(ontology_iri=iri)
+            if not existing.is_null():
+                o.ontology_id = existing.ontology_id or o.ontology_id
+            await self._materialize_ontology(o)
+            self.ontology_manager.add_ontology(o, skip_vector_index=True)
+            return o
+
+        content = without_version_header(graph)
+        # Re-attach a bare owl:Ontology subject so write_header has a subject;
+        # author extras (owl:imports, …) on that subject are kept above.
+        if (URIRef(iri), RDF.type, OWL.Ontology) not in content:
+            content = content.copy()
+            content.add((URIRef(iri), RDF.type, OWL.Ontology))
+        artifact = head.derive_updated_version(content)
+        for value in graph.objects(URIRef(iri), DCTERMS.title):
+            artifact.title = str(value)
+            break
+        stamped = stamp_version(
+            artifact,
+            version_label=author_label,
+            increment="minor",
+        )
+        if stamped is None:
+            return None
+
+        held = self.ontology_manager.get_ontology(version_iri=stamped.version_iri)
+        if not held.is_null() and held.removed:
+            restored = held.model_copy(deep=True)
+            restored.graph = stamped.graph.copy()
+            restored.removed = False
+            write_header(restored.graph, restored, source_doc=None)
+            await self._materialize_ontology(restored)
+            self.ontology_manager.replace_version(restored)
+            return restored
+
+        await self._materialize_ontology(stamped)
+        self.ontology_manager.add_ontology(stamped, skip_vector_index=True)
+        return stamped
+
+    async def aget_version_graph(self, version_iri: str) -> RDFGraph | None:
+        """The named graph of one version, or None when it is not stored."""
+        if self.triple_store_manager is None:
+            return None
+        return await self.triple_store_manager.afetch_named_graph(
+            version_iri, store="ontologies"
+        )
+
+    async def diff_ontology_versions(self, from_iri: str, to_iri: str):
+        """Content diff of two stored versions (header triples excluded)."""
+        from ontocast.onto.ontology_header import diff_versions
+
+        from_graph = await self.aget_version_graph(from_iri)
+        to_graph = await self.aget_version_graph(to_iri)
+        if from_graph is None:
+            raise ValueError(f"no version stored at {from_iri}")
+        if to_graph is None:
+            raise ValueError(f"no version stored at {to_iri}")
+        return diff_versions(from_graph, to_graph, from_iri=from_iri, to_iri=to_iri)
+
+    async def remove_ontology_version(self, version_iri: str) -> list:
+        """Tombstone one version; return the ontology's new heads.
+
+        The version keeps its header and loses its content. Heads are
+        recomputed (walking through tombstones). The vector index is rebuilt
+        from the single remaining head, or cleared when none remain.
+        """
+        import asyncio
+
+        from ontocast.onto.ontology import Ontology
+        from ontocast.onto.ontology_header import ontology_from_version_graph
+
+        if self.triple_store_manager is None:
+            raise RuntimeError("no triple store is configured")
+        await self.triple_store_manager.aremove_version(version_iri)
+        tombstone = await self.triple_store_manager.afetch_named_graph(version_iri)
+        if tombstone is None:
+            raise ValueError(f"no version stored at {version_iri}")
+        removed = ontology_from_version_graph(version_iri, tombstone)
+        try:
+            self.ontology_manager.replace_version(removed)
+        except ValueError:
+            self.ontology_manager.add_ontology(removed, skip_vector_index=True)
+
+        heads: list[Ontology] = self.ontology_manager.get_heads_by_iri(removed.iri)
+        if self.vector_store is not None:
+            if len(heads) == 1:
+                await asyncio.to_thread(self.vector_store.reindex_ontology, heads[0])
+            elif not heads:
+                await asyncio.to_thread(self.vector_store.delete_ontology, removed.iri)
+        return heads
 
     async def delete_ontology_by_iri(self, ontology_iri: str) -> None:
         """Remove ontology from manager, vector store, and triple store.

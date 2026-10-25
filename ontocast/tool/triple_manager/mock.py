@@ -78,21 +78,28 @@ class _InMemoryGraphStoreMixin:
     def fetch_ontologies(self) -> list[Ontology]:
         return self.ontologies.copy()
 
-    def serialize_graph(self, graph: Graph, **kwargs: Any) -> bool:
+    def serialize_graph(self, graph: Graph, **kwargs: Any) -> None:
         self._store_graph(graph, kwargs.get("graph_uri"))
-        return True
 
-    def serialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
+    def serialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> None:
         if isinstance(o, Ontology):
             graph = o.graph
-            graph_uri = o.versioned_iri
+            graph_uri = o.version_iri or o.iri
         elif isinstance(o, RDFGraph):
             graph = o
             graph_uri = kwargs.get("graph_uri")
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
         self.serialize_graph(graph, graph_uri=graph_uri)
-        return True
+
+    async def afetch_named_graph(
+        self, graph_uri: str, *, store: str = "ontologies"
+    ) -> RDFGraph | None:
+        _ = store
+        stored = self.graphs.get(graph_uri)
+        if stored is None:
+            return None
+        return self._create_rdf_graph_from_graph(stored)
 
     async def clean(self, *, include_shapes: bool = False) -> None:
         _ = include_shapes  # the mock keeps no separate shapes partition

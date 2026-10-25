@@ -28,6 +28,7 @@ from ontocast.tool.facts_validation.terms import (
     _STANDARD_NAMESPACES,
     ValidationPolicy,
     _alias_candidates,
+    _catalog_term_roles,
     _declared_domains,
     _described_classes,
     _local_name,
@@ -39,6 +40,7 @@ from ontocast.tool.facts_validation.terms import (
     collect_catalog_terms,
     collect_declared_namespaces,
     expand_vocabulary_terms,
+    untyped_instances,
 )
 from ontocast.util.measurement_lexicon import unit_adjacent_numbers
 from ontocast.util.numeric_inventory import (
@@ -121,7 +123,8 @@ def domain_violation_findings(
 
     Asserting a triple whose predicate declares an ``rdfs:domain`` *entails*
     that the subject belongs to that domain, so an untyped subject is never a
-    violation -- the type is simply left to inference. It becomes one when the
+    violation -- the parse-time repair materialises the domain, and a subject
+    still untyped is ``UNTYPED_INSTANCE``'s to report. It becomes one when the
     subject carries an asserted type that is unrelated to the declared domain:
     inference then adds the domain class on top of an incompatible one, and
     the contradiction surfaces later as a confusing failure somewhere else
@@ -203,6 +206,112 @@ def domain_violation_findings(
                 subject=str(subject),
                 predicate=str(predicate),
                 suggestions=sorted(str(value) for value in declared),
+            )
+        )
+    return findings
+
+
+_UNTYPED_LABEL_SUGGESTIONS = 3
+
+
+def _label_matched_classes(
+    graph: RDFGraph, instance: URIRef, known_classes: set[str]
+) -> list[str]:
+    """Catalog classes whose local name shares a token with the instance's name.
+
+    The instance's name is its ``rdfs:label`` and ``skos:prefLabel`` literals
+    plus the local name of its IRI; a class qualifies when the two token sets
+    intersect. An advisory list, capped at a few entries.
+    """
+    tokens: set[str] = _name_tokens(_local_name(str(instance)))
+    for predicate in (RDFS.label, SKOS.prefLabel):
+        for value in graph.objects(instance, predicate):
+            if isinstance(value, Literal):
+                tokens |= _name_tokens(str(value))
+    if not tokens:
+        return []
+    matched = [
+        candidate
+        for candidate in sorted(known_classes)
+        if _name_tokens(_local_name(candidate)) & tokens
+    ]
+    return matched[:_UNTYPED_LABEL_SUGGESTIONS]
+
+
+def untyped_instance_findings(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    fact_namespaces: Sequence[str],
+) -> list[FactsUnitFinding]:
+    """Report every instance of the graph that has no concrete type.
+
+    An instance is a fact-namespace IRI in subject or IRI-object position
+    (:func:`fact_instances`); it is typed when one of its ``rdf:type`` objects
+    is a class outside the fact namespaces that is neither a schema metaclass
+    nor vacuous (:func:`concrete_types`). Suggested classes are the declared
+    ``rdfs:domain`` of every predicate the instance carries and the declared
+    ``rdfs:range`` of every predicate it is the object of, then catalog
+    classes whose name shares a token with the instance's label or local
+    name.
+
+    Args:
+        graph: Rendered facts graph for one unit.
+        ontology_graph: Ontology context the renderer was given.
+        fact_namespaces: Namespaces holding minted instances.
+
+    Returns:
+        list: One mandatory finding per untyped instance, ordered by IRI.
+    """
+    untyped = untyped_instances(graph, fact_namespaces)
+    if not untyped:
+        return []
+    domains: dict[URIRef, set[URIRef]] = {}
+    ranges: dict[URIRef, set[URIRef]] = {}
+    known_classes: set[str] = set()
+    if ontology_graph is not None and len(ontology_graph):
+        domains = _declared_domains(ontology_graph)
+        for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
+            if isinstance(predicate, URIRef) and isinstance(range_iri, URIRef):
+                ranges.setdefault(predicate, set()).add(range_iri)
+        _, known_classes = _catalog_term_roles(ontology_graph)
+    findings: list[FactsUnitFinding] = []
+    for instance in untyped:
+        entailed: set[URIRef] = set()
+        for predicate in graph.predicates(instance, None):
+            if isinstance(predicate, URIRef):
+                entailed |= domains.get(predicate, set())
+        for predicate in graph.predicates(None, instance):
+            if isinstance(predicate, URIRef):
+                entailed |= ranges.get(predicate, set())
+        suggestions = sorted(str(value) for value in entailed)
+        suggestions.extend(
+            candidate
+            for candidate in _label_matched_classes(graph, instance, known_classes)
+            if candidate not in suggestions
+        )
+        asserted = sorted(
+            f"<{value}>"
+            for value in graph.objects(instance, RDF.type)
+            if isinstance(value, URIRef)
+        )
+        situation = (
+            f"is typed only {', '.join(asserted)}, which names no concrete class"
+            if asserted
+            else "has no rdf:type"
+        )
+        findings.append(
+            FactsUnitFinding(
+                kind=FactsUnitFindingKind.UNTYPED_INSTANCE,
+                message=(
+                    f"<{instance}> {situation}. Type it with the class from the "
+                    "ONTOLOGY section that fits what the text says it is, or, "
+                    "only if none fits, with a specific class from a core "
+                    "vocabulary such as schema.org. Not owl:Thing, not a "
+                    "metaclass, not a class minted in the facts namespace. "
+                    "Keep the instance and its statements."
+                ),
+                subject=str(instance),
+                suggestions=suggestions,
             )
         )
     return findings
@@ -635,8 +744,9 @@ def collect_unit_findings(
     Mandatory: quarantined literals (with closed-range individual
     suggestions), forbidden-namespace terms (``example.org``), doc-namespace
     predicates, unresolved catalog near-misses, predicates asserted on a
-    subject whose type contradicts their ``rdfs:domain``, and value nodes
-    whose only numeric content sits in a label. Advisory by default: numeric
+    subject whose type contradicts their ``rdfs:domain``, instances with no
+    concrete type, and value nodes whose only numeric content sits in a
+    label. Advisory by default: numeric
     mentions of the source text absent from the graph, as two findings --
     measurements (a number with its unit, in text order with context) and
     bare numbers -- whose mandatory flag ``coverage_mandatory`` sets
@@ -826,6 +936,9 @@ def collect_unit_findings(
         )
     )
     findings.extend(domain_violation_findings(graph, ontology_graph))
+    findings.extend(
+        untyped_instance_findings(graph, ontology_graph, normalized_fact_namespaces)
+    )
     if not is_citation_metadata and not is_non_content:
         findings.extend(
             _domain_adherence_findings(

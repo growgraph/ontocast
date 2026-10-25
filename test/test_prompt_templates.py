@@ -311,6 +311,17 @@ def test_quantitative_completeness_rule_is_stated() -> None:
     assert "Do NOT mint an entity for a bare number" in text
 
 
+def test_facts_guidelines_never_permit_an_untyped_instance() -> None:
+    """Rule 2 must not undercut rule 4: a concept the ontology lacks is typed
+    with a generic class, never left without a type."""
+    from ontocast.prompt import facts_guidelines
+
+    text = facts_guidelines.facts_instruction_shared
+    assert "untyped" not in text.lower()
+    assert "must be linked via `rdf:type`" in text
+    assert "owl:Thing" in text
+
+
 def test_critic_completeness_guideline_routes_misses_to_the_completion_pass() -> None:
     """The critic lists what it judges missed; it does not mint nodes for it.
 

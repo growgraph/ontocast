@@ -17,6 +17,7 @@ from ontocast.onto.enum import (
     Status,
     WorkflowNode,
 )
+from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.model import (
     BasePydanticModel,
     ExternalEvidenceCacheEntry,
@@ -403,7 +404,14 @@ class UnitOntologyState(UnitState[SourceUnit]):
     )
     fresh_ontology: Ontology | None = Field(
         default=None,
-        description="Full Ontology produced on the fresh-create path (empty seed).",
+        description="Root artifact produced on the fresh path (empty seed).",
+    )
+    home_ontology: OntologyIdentity | None = Field(
+        default=None,
+        description=(
+            "The document's home ontology: where fresh terms are minted. None "
+            "when the document cannot create vocabulary."
+        ),
     )
     ontology_updates: list[GraphUpdate] = Field(default_factory=list)
     ontology_updates_applied: list[GraphUpdate] = Field(default_factory=list)

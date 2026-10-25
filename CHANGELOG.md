@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0]
+
+### Changed (breaking)
+
+- Every instance in the facts is typed: untyped instances are repaired against the ontology
+  context, and whatever stays untyped after aggregation is dropped and counted
+  (`facts_untyped_dropped`).
+- **Ontology identity is minted by code.** A run that can create vocabulary resolves one
+  home ontology per document (`RESOLVE_HOME_ONTOLOGY`, LLM phase `ontology_identity`): the
+  model proposes `ontology_id`, title and description; an id in the catalog extends that
+  ontology, any other is minted as `<CURRENT_DOMAIN>/<ontology_id>`. `ontology_id` must match
+  `^[a-z][a-z0-9_-]{1,31}$` and may not be a standard prefix or `cd`/`doc`/`facts`/`vann`/
+  `sh`/`oc`/`ontocast`. A model-written `owl:Ontology` header is dropped
+  (`ontology/model_header_triples_dropped`, `apply_header_triples_dropped`).
+- **Version header contract.** A version is the named graph `<iri>#<key>` whose ontology IRI
+  carries `owl:versionIRI`, `owl:priorVersion` (none on a root, several for a merge),
+  `owl:versionInfo`, `vann:preferredNamespacePrefix`/`vann:preferredNamespaceUri`,
+  `dcterms:title`/`rdfs:label`, `dcterms:description`, `dcterms:created`, `dcterms:modified`
+  and `prov:wasDerivedFrom`. `dcterms:identifier "hash:…"` and `urn:hash:` parents are gone;
+  the semantic version is a per-ontology label. A removed version keeps its header and is
+  typed `oc:RemovedVersion`.
+- **Catalog reads are strict and writes raise.** A graph in the ontologies dataset that is not
+  a version raises `CatalogContractError`; a store that refuses a write raises
+  `TripleStoreWriteError`.
+- **Heads replace terminals.** The head of an ontology is a live version that no live
+  version descends from (descent walks through tombstones); an ontology with several
+  heads is diverged, listed and readable but excluded from extraction until merged
+  (`DivergedOntologyError`). `OntologyManager.get_head`, `get_head_by_iri`, `get_heads`,
+  `get_heads_by_iri` replace `get_freshest_terminal_ontology*` and
+  `get_terminal_ontologies*`.
+- **HTTP.** `GET /ontologies` returns `iri`, `ontology_id`, `title`, `description`, `versions`,
+  `heads[]` and `diverged`; `GET /ontologies/{ontology_id}/versions` lists the version
+  history newest first; `GET /ontologies/{ontology_id}/versions/{key}` returns one version as
+  Turtle; `DELETE /ontologies/{ontology_id}/versions/{key}` tombstones a version and returns
+  the new heads; `GET /ontologies/{ontology_id}/diff` returns added and removed N-Triples;
+  `PUT /ontologies/{iri}` uploads a new version under the current head (unchanged content
+  writes nothing; several heads answer `409`); `POST /ontologies` returns `version_iri`
+  instead of `hash` and answers `409` when the IRI already exists. `/process` and
+  `/process_unit` add `metadata.ontology_versions` (versions written, `role` `created`/
+  `updated`, and read, `role` `read`), and each `ontology_artifacts[]` entry carries
+  `version` and `version_iri` (`null` when nothing was written).
+- **`CURRENT_DOMAIN`** must be an absolute http(s) IRI with no fragment, query or trailing slash.
+- `FreshOntologyRenderReport` (terms only) replaces `OntologyRenderReport`;
+  `OntologyIdentityProposal` is the home-ontology response model.
+- `AgentState.ontology_updates_by_iri` replaces `ontology_updates_applied`;
+  `ontology_versions_written` records each stored version (`iri`, `version_iri`,
+  `ontology_id`, `version`, `prior_version_iris`, `role`).
+- `Ontology.version_iri`, `prior_version_iris` and `modified_at` replace `versioned_iri`,
+  `parent_hashes` and the old meaning of `created_at`, which is now the root's creation time.
+
+### Fixed
+
+- An unchanged ontology is no longer rewritten as a new version with a bumped label.
+- Versions are written to the store before they are registered and indexed, and before the
+  facts; a version's prior is always a stored version.
+- Each ontology's version label is bumped from the updates applied to that ontology, not from
+  the run's updates as a whole.
+
 ## [0.7.0]
 
 ### Changed (breaking)

@@ -57,6 +57,7 @@ from ontocast.tool.atomic import AtomicToolBox, SearchHit
 from ontocast.tool.facts_validation import CriticPatchPolicy
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.toolbox import ToolBox
+from test.ontology_helpers import stamped_ontology
 from test.snapshot_helpers import empty_snapshot, snapshot_from_ontology
 
 pytestmark = pytest.mark.unit
@@ -75,17 +76,22 @@ def _build_content_unit() -> ContentUnit:
     )
 
 
-def _build_ontology() -> Ontology:
+def _build_ontology(
+    iri: str = "https://example.com/onto", ontology_id: str = "company"
+) -> Ontology:
+    """An unstamped artifact with an identity, so it can be stamped as a version."""
     graph = RDFGraph()
     graph.parse(
-        data="""
-        @prefix onto: <https://example.com/onto#> .
+        data=f"""
+        @prefix onto: <{iri}#> .
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         onto:CompanyOntology a owl:Ontology .
         """,
         format="turtle",
     )
-    return Ontology(graph=graph, iri="https://example.com/onto")
+    return Ontology(
+        graph=graph, iri=iri, ontology_id=ontology_id, title="Company ontology"
+    )
 
 
 def test_unit_facts_loop_isolates_input_state() -> None:
@@ -896,6 +902,7 @@ def test_agent_graph_topology_is_pinned() -> None:
         "__end__",
         str(WorkflowNode.CONVERT_TO_TEXT),
         str(WorkflowNode.CHUNK),
+        str(WorkflowNode.RESOLVE_HOME_ONTOLOGY),
         str(WorkflowNode.RENDER_ONTOLOGY_UPDATE),
         str(WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES),
         str(WorkflowNode.CONSOLIDATE_ONTOLOGY),
@@ -914,9 +921,14 @@ def test_agent_graph_topology_is_pinned() -> None:
     } == {
         ("__start__", str(WorkflowNode.CONVERT_TO_TEXT), False),
         (str(WorkflowNode.CONVERT_TO_TEXT), str(WorkflowNode.CHUNK), False),
-        # route_after_tag_or_chunk: ontology block, or straight to facts.
-        (str(WorkflowNode.CHUNK), str(WorkflowNode.RENDER_ONTOLOGY_UPDATE), True),
+        # route_after_tag_or_chunk: the home-ontology step, or straight to facts.
+        (str(WorkflowNode.CHUNK), str(WorkflowNode.RESOLVE_HOME_ONTOLOGY), True),
         (str(WorkflowNode.CHUNK), str(WorkflowNode.RENDER_FACTS), True),
+        (
+            str(WorkflowNode.RESOLVE_HOME_ONTOLOGY),
+            str(WorkflowNode.RENDER_ONTOLOGY_UPDATE),
+            False,
+        ),
         (
             str(WorkflowNode.RENDER_ONTOLOGY_UPDATE),
             str(WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES),
@@ -1035,7 +1047,10 @@ def test_toolbox_serialize_persists_all_ontology_artifacts() -> None:
             self.calls.append((payload, graph_uri))
 
     state = AgentState(render_mode=RenderMode.ONTOLOGY)
-    state.ontology_artifacts = [_build_ontology(), _build_ontology()]
+    state.ontology_artifacts = [
+        _build_ontology(),
+        _build_ontology(iri="https://example.com/other", ontology_id="other"),
+    ]
     store = RecordingStore()
     manager = RecordingOntologyManager()
     toolbox = SimpleNamespace(
@@ -1259,7 +1274,7 @@ async def test_consolidate_ontology_node_applies_delta_on_map_stage_artifact(
     terminal_graph.bind("ex", ns)
     terminal_graph.add((URIRef(iri), RDF.type, OWL.Ontology))
     terminal_graph.add((URIRef(f"{ns}Thing"), RDF.type, owl_class))
-    terminal = Ontology(graph=terminal_graph, iri=iri)
+    terminal = stamped_ontology(terminal_graph, ontology_id="onto")
     manager.add_ontology(terminal, skip_vector_index=True)
 
     primary_graph = terminal_graph.copy()
@@ -1321,7 +1336,7 @@ async def test_consolidate_ontology_node_applies_delta_on_map_stage_artifact(
     assert (consolidated_class, RDF.type, owl_class) in result_graph
     # The regression: map-stage additions used to be dropped here.
     assert (map_stage_class, RDF.type, owl_class) in result_graph
-    assert updated.ontology_updates_applied
+    assert updated.ontology_updates_by_iri[iri]
 
 
 def test_a_rejected_request_stops_the_document_graph(monkeypatch) -> None:

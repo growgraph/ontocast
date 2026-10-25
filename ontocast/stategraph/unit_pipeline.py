@@ -30,6 +30,7 @@ import logging
 from copy import deepcopy
 
 from ontocast.agent.convert_document import convert_document
+from ontocast.agent.resolve_home_ontology import resolve_home_ontology
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
 from ontocast.onto.ontology_snapshot import OntologySnapshot
@@ -135,6 +136,7 @@ async def run_unit_pipeline(
     max_visits = agent_state.max_visits
 
     if agent_state.render_ontology:
+        await resolve_home_ontology(agent_state, tools)
         ontology_state = UnitOntologyState(
             content_unit=unit,
             ontology_snapshot=_empty_snapshot(),
@@ -143,6 +145,7 @@ async def run_unit_pipeline(
             budget_tracker=deepcopy(agent_state.budget_tracker),
             max_visits_per_node=max_visits,
             current_domain=agent_state.current_domain,
+            home_ontology=agent_state.home_ontology,
             ontology_max_triples=tools.config.server.ontology_max_triples,
             llm_graph_format=agent_state.llm_graph_format,
             llm_output_layout=tools.config.server.llm_output_layout,

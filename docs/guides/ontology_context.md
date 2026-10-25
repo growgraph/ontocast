@@ -31,7 +31,7 @@ An empty context means different things to the two kinds of unit:
 
 | Unit | What an empty context means | What happens |
 |---|---|---|
-| Ontology unit | No catalog ontology fits this text yet | OntoCast creates a new ontology from the text, with IRIs under [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain). This is how a run that starts with an empty catalog builds its first ontology |
+| Ontology unit | No catalog ontology fits this text yet | The unit renders under the document's home ontology: an existing catalog ontology the document extends, or a new one minted under [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain) (see [The home ontology](../concepts/ontologies_and_facts.md#the-home-ontology)). This is how a run that starts with an empty catalog builds its first ontology |
 | Facts unit | There is nothing to extract against | The model falls back on generic vocabulary. The result is well-formed and passes validation, because no shape targets its terms, so the pass tells you nothing |
 
 To stop on the second case, set

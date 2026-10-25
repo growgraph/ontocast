@@ -229,6 +229,7 @@ def make_render_ontology_node(tools: ToolBox):
                     budget_tracker=unit_budget,
                     max_visits_per_node=state.max_visits,
                     current_domain=state.current_domain,
+                    home_ontology=state.home_ontology,
                     ontology_max_triples=tools.config.server.ontology_max_triples,
                     llm_graph_format=state.llm_graph_format,
                     llm_output_layout=tools.config.server.llm_output_layout,
@@ -429,11 +430,7 @@ def make_render_ontology_node(tools: ToolBox):
             terminal_graphs = {
                 iri: terminal.graph
                 for iri in all_writable
-                if (
-                    terminal
-                    := tools.ontology_manager.get_freshest_terminal_ontology_by_iri(iri)
-                )
-                is not None
+                if (terminal := tools.ontology_manager.get_head_by_iri(iri)) is not None
                 and not terminal.is_null()
             }
             duplicates = detect_minted_duplicates(merged_delta.inserts, terminal_graphs)
@@ -486,7 +483,8 @@ def make_render_ontology_node(tools: ToolBox):
                 partitioned_deletes=partitioned_deletes,
             )
             artifacts.extend(applied)
-            state.ontology_updates_applied.extend(applied_updates)
+            for iri, updates in applied_updates.items():
+                state.ontology_updates_by_iri.setdefault(iri, []).extend(updates)
             state.ontology_reduce_metrics.update(apply_metrics)
         elif not merged_delta.is_empty() and not all_writable:
             logger.warning(
@@ -595,6 +593,7 @@ def make_consolidate_ontology_node(tools: ToolBox):
             budget_tracker=state.budget_tracker,
             max_visits_per_node=1,
             current_domain=state.current_domain,
+            home_ontology=state.home_ontology,
             ontology_max_triples=tools.config.server.ontology_max_triples,
             llm_graph_format=state.llm_graph_format,
             llm_output_layout=tools.config.server.llm_output_layout,
@@ -640,10 +639,13 @@ def make_consolidate_ontology_node(tools: ToolBox):
                         applied
                     )
                     state.ontology_artifacts = applied
-                    state.ontology_updates_applied.extend(applied_updates)
+                    for iri, updates in applied_updates.items():
+                        state.ontology_updates_by_iri.setdefault(iri, []).extend(
+                            updates
+                        )
                     logger.info(
                         "Ontology consolidation applied %s update operation(s).",
-                        len(applied_updates),
+                        sum(len(updates) for updates in applied_updates.values()),
                     )
                 else:
                     logger.warning(

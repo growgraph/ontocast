@@ -35,7 +35,7 @@ from ontocast.tool.sparql import (
     select_relevant_ontologies,
 )
 from ontocast.tool.triple_manager.core import TripleStoreManager
-from ontocast.tool.triple_manager.util import dedupe_terminal_ontologies
+from ontocast.tool.triple_manager.util import head_headers
 from ontocast.tool.vector_store.core import (
     GraphAtom,
     OntologySearchHit,
@@ -787,7 +787,7 @@ async def _aexpand_ontology_iris_by_reference(
         union of hit and referenced ontologies.
     """
     headers = await triple_store_manager.afetch_ontology_catalog()
-    terminal_headers = dedupe_terminal_ontologies(headers)
+    terminal_headers = head_headers(headers)
     # Both hops see every stored version; restricting to terminal graphs keeps
     # parity with the fallback, which iterates the deduped catalog.
     terminal_graph_uris = {header.graph_uri for header in terminal_headers}
@@ -1267,9 +1267,7 @@ class OntologyPatchRetriever(Tool):
                     resolved.append((onto_iri, cached))
                 continue
             ontology = (
-                manager.get_freshest_terminal_ontology_by_iri(onto_iri)
-                if manager is not None
-                else None
+                manager.get_head_by_iri(onto_iri) if manager is not None else None
             )
             if ontology is None or ontology.is_null():
                 missing.append(onto_iri)
@@ -1325,7 +1323,7 @@ class OntologyPatchRetriever(Tool):
         assert manager is not None and self.sparql_tool is not None
         store = self.sparql_tool.triple_store_manager
         headers = select_relevant_ontologies(
-            dedupe_terminal_ontologies(await manager.aget_catalog_headers()),
+            head_headers(await manager.aget_catalog_headers()),
             ontology_iris,
             ontology_version_filters,
             ontology_hash_filters,

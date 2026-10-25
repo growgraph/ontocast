@@ -1,576 +1,469 @@
-"""Test suite for OntologyManager.
+"""The catalog held in memory: stamped versions keyed by version IRI.
 
-This test suite ensures that:
-1. Every ontology in the manager has a created_at field set (not None)
-2. Version tracking works correctly
-3. Terminal ontology detection works
-4. Freshest ontology selection works
-5. Lineage graphs are built correctly
+Covers registration (stamped versions only), heads per IRI, the one head the
+``ontologies`` property serves, the lineage DAG, lookups by id / IRI /
+version IRI, and the header round trip through a version graph.
 """
 
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
+import networkx as nx
 import pytest
+from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
+from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import (
+    ontology_from_version_graph,
+    stamp_version,
+)
+from ontocast.onto.ontology_operations import merge_ontologies
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import OntologyManager
+from test.ontology_helpers import next_version, stamped_ontology
 
 pytestmark = pytest.mark.unit
 
+T0 = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+T1 = datetime(2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc)
+T2 = datetime(2024, 1, 3, 12, 0, 0, tzinfo=timezone.utc)
+
+IRI = "https://example.org/test"
+IRI2 = "https://example.org/test2"
+
+ROOT_TTL = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://example.org/test> a owl:Ontology ;
+    rdfs:label "Test Ontology" .
+
+<https://example.org/test#Thing> a owl:Class ;
+    rdfs:label "Thing" .
+"""
+
+SECOND_TTL = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<https://example.org/test2> a owl:Ontology ;
+    rdfs:label "Test Ontology 2" .
+
+<https://example.org/test2#Other> a owl:Class .
+"""
+
+
+def _with_class(base: Ontology, local: str) -> RDFGraph:
+    graph = base.graph.copy()
+    term = URIRef(f"{base.iri}#{local}")
+    graph.add((term, RDF.type, OWL.Class))
+    graph.add((term, RDFS.label, Literal(local)))
+    return graph
+
 
 @pytest.fixture
-def ontology_manager():
-    """Create a fresh OntologyManager for each test."""
+def ontology_manager() -> OntologyManager:
     return OntologyManager()
 
 
 @pytest.fixture
-def sample_ontology():
-    """Create a sample ontology with minimal required fields."""
-    graph = RDFGraph()
-    graph.parse(
-        data="""
-        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-        @prefix owl: <http://www.w3.org/2002/07/owl#> .
-        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-        
-        <https://example.org/test> a owl:Ontology ;
-            rdfs:label "Test Ontology" .
-        """,
-        format="turtle",
-    )
-    ontology = Ontology(
-        graph=graph,
-        ontology_id="test",
-        iri="https://example.org/test",
-        title="Test Ontology",
-        version="1.0.0",
-    )
-    # Compute hash if not set
-    if not ontology.hash:
-        ontology._compute_and_set_hash()
-    return ontology
+def sample_ontology() -> Ontology:
+    """A stamped root version of ``https://example.org/test``."""
+    return stamped_ontology(ROOT_TTL, now=T0)
 
 
 @pytest.fixture
-def ontology_with_parent(sample_ontology):
-    """Create an ontology that has sample_ontology as parent."""
-    graph = RDFGraph()
-    graph.parse(
-        data="""
-        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-        @prefix owl: <http://www.w3.org/2002/07/owl#> .
-        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-        
-        <https://example.org/test> a owl:Ontology ;
-            rdfs:label "Test Ontology v2" .
-        
-        <https://example.org/test#NewClass> a owl:Class ;
-            rdfs:label "New Class" .
-        """,
-        format="turtle",
+def ontology_with_parent(sample_ontology: Ontology) -> Ontology:
+    """A stamped child of ``sample_ontology`` with one more class."""
+    return next_version(
+        sample_ontology, _with_class(sample_ontology, "NewClass"), now=T1
     )
-    ontology = Ontology(
-        graph=graph,
-        ontology_id="test",
-        iri="https://example.org/test",
-        title="Test Ontology v2",
-        version="2.0.0",
-        parent_hashes=[sample_ontology.hash] if sample_ontology.hash else [],
-    )
-    if not ontology.hash:
-        ontology._compute_and_set_hash()
-    return ontology
 
 
-class TestOntologyManagerCreatedAt:
-    """Test that created_at is always set when adding ontologies."""
+@pytest.fixture
+def second_ontology() -> Ontology:
+    """A stamped root of a different ontology, ``https://example.org/test2``."""
+    return stamped_ontology(SECOND_TTL, now=T0)
 
-    def test_add_ontology_sets_created_at_if_missing(
-        self, ontology_manager, sample_ontology
-    ):
-        """Test that add_ontology sets created_at if it's None."""
-        assert sample_ontology.created_at is None
-        ontology_manager.add_ontology(sample_ontology)
 
-        # Check that created_at was set
-        assert sample_ontology.created_at is not None
-        assert isinstance(sample_ontology.created_at, datetime)
+class TestVersionTimestamps:
+    """``created_at`` is the start of a lineage; ``modified_at`` the version's."""
 
-        # Check that it's in the manager
-        versions = ontology_manager.get_ontology_versions("test")
-        assert len(versions) == 1
-        assert versions[0].created_at is not None
+    def test_root_version_is_created_and_modified_at_its_stamp_time(
+        self, sample_ontology: Ontology
+    ) -> None:
+        assert sample_ontology.created_at == T0
+        assert sample_ontology.modified_at == T0
 
-    def test_add_ontology_preserves_existing_created_at(
-        self, ontology_manager, sample_ontology
-    ):
-        """Test that add_ontology preserves existing created_at."""
-        original_time = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-        sample_ontology.created_at = original_time
+    def test_child_version_keeps_the_root_created_at(
+        self, sample_ontology: Ontology, ontology_with_parent: Ontology
+    ) -> None:
+        assert ontology_with_parent.created_at == sample_ontology.created_at
+        assert ontology_with_parent.modified_at == T1
 
-        ontology_manager.add_ontology(sample_ontology)
-
-        # Check that created_at was preserved
-        assert sample_ontology.created_at == original_time
-
-        versions = ontology_manager.get_ontology_versions("test")
-        assert versions[0].created_at == original_time
-
-    def test_get_ontology_versions_all_have_created_at(
-        self, ontology_manager, sample_ontology, ontology_with_parent
-    ):
-        """Test that all versions returned have created_at set."""
+    def test_every_registered_version_has_timestamps(
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        ontology_with_parent: Ontology,
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
         ontology_manager.add_ontology(ontology_with_parent)
 
         versions = ontology_manager.get_ontology_versions("test")
         assert len(versions) == 2
         for version in versions:
-            assert version.created_at is not None, (
-                f"Version with hash {version.hash} should have created_at set"
-            )
+            assert version.created_at is not None
+            assert version.modified_at is not None
 
 
-class TestOntologyManagerVersionTracking:
-    """Test version tracking functionality."""
+class TestVersionRegistration:
+    """Only stamped versions enter the catalog, once each."""
 
-    def test_add_ontology_creates_version_tree(self, ontology_manager, sample_ontology):
-        """Test that adding an ontology creates a version tree."""
+    def test_add_ontology_creates_version_tree(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
 
         assert sample_ontology.iri in ontology_manager.ontology_versions
         assert len(ontology_manager.ontology_versions[sample_ontology.iri]) == 1
 
-    def test_add_duplicate_hash_not_added(self, ontology_manager, sample_ontology):
-        """Test that adding the same ontology twice doesn't create duplicates."""
+    def test_same_version_iri_is_not_added_twice(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
         ontology_manager.add_ontology(sample_ontology)
 
-        versions = ontology_manager.get_ontology_versions("test")
-        assert len(versions) == 1
+        assert len(ontology_manager.get_ontology_versions("test")) == 1
 
-    def test_add_ontology_without_hash_rejected(self, ontology_manager):
-        """Test that adding ontology without hash is rejected."""
-        ontology = Ontology(
-            ontology_id="test",
-            iri="https://example.org/test",
+    def test_unstamped_artifact_is_refused(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
+        derived = sample_ontology.derive_updated_version(
+            _with_class(sample_ontology, "Unstamped")
         )
-        assert ontology.hash is None
+        assert derived.version_iri is None
 
-        ontology_manager.add_ontology(ontology)
+        with pytest.raises(ValueError, match="not stamped"):
+            ontology_manager.add_ontology(derived)
+        assert ontology_manager.ontology_versions == {}
 
-        # Should not be added
-        assert ontology.iri not in ontology_manager.ontology_versions
+    def test_null_ontology_is_refused(self, ontology_manager: OntologyManager) -> None:
+        with pytest.raises(ValueError, match="null ontology"):
+            ontology_manager.add_ontology(NULL_ONTOLOGY)
+        assert ontology_manager.ontology_versions == {}
 
-    def test_add_ontology_without_iri_rejected(self, ontology_manager, sample_ontology):
-        """Test that adding ontology without valid IRI is rejected."""
-        sample_ontology.iri = None
-
+    def test_registered_version_becomes_its_own_base(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
 
-        # Should not be added
-        assert len(ontology_manager.ontology_versions) == 0
+        held = ontology_manager.get_ontology_versions("test")[0]
+        assert [base.version_iri for base in held.bases] == [held.version_iri]
 
 
-class TestTerminalOntologies:
-    """Test terminal ontology detection."""
+class TestHeads:
+    """A head is a version no held version names as prior."""
 
-    def test_single_ontology_is_terminal(self, ontology_manager, sample_ontology):
-        """Test that a single ontology is terminal."""
+    def test_single_version_is_the_head(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
 
-        terminals = ontology_manager.get_terminal_ontologies("test")
-        assert len(terminals) == 1
-        assert terminals[0].hash == sample_ontology.hash
+        heads = ontology_manager.get_heads("test")
+        assert [head.version_iri for head in heads] == [sample_ontology.version_iri]
 
-    def test_parent_is_not_terminal_when_child_exists(
-        self, ontology_manager, sample_ontology, ontology_with_parent
-    ):
-        """Test that parent is not terminal when child exists."""
+    def test_prior_is_not_a_head_once_its_child_is_held(
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        ontology_with_parent: Ontology,
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
         ontology_manager.add_ontology(ontology_with_parent)
 
-        terminals = ontology_manager.get_terminal_ontologies("test")
-        assert len(terminals) == 1
-        assert terminals[0].hash == ontology_with_parent.hash
-        assert sample_ontology.hash not in [t.hash for t in terminals]
+        heads = ontology_manager.get_heads("test")
+        assert [head.version_iri for head in heads] == [
+            ontology_with_parent.version_iri
+        ]
 
-    def test_multiple_terminals_for_different_ontology_ids(
-        self, ontology_manager, sample_ontology
-    ):
-        """Test that we can have terminals for different ontology_ids."""
-        # Create second ontology with different ID
-        graph2 = RDFGraph()
-        graph2.parse(
-            data="""
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-            
-            <https://example.org/test2> a owl:Ontology ;
-                rdfs:label "Test Ontology 2" .
-            """,
-            format="turtle",
-        )
-        ontology2 = Ontology(
-            graph=graph2,
-            ontology_id="test2",
-            iri="https://example.org/test2",
-        )
-        if not ontology2.hash:
-            ontology2._compute_and_set_hash()
-
+    def test_one_head_per_ontology(
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        second_ontology: Ontology,
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
-        ontology_manager.add_ontology(ontology2)
+        ontology_manager.add_ontology(second_ontology)
 
-        terminals = ontology_manager.get_terminal_ontologies()
-        assert len(terminals) == 2
-        assert {t.ontology_id for t in terminals} == {"test", "test2"}
+        heads = ontology_manager.get_heads()
+        assert {head.ontology_id for head in heads} == {"test", "test2"}
 
 
-class TestFreshestTerminalOntology:
-    """Test freshest terminal ontology selection."""
+class TestHead:
+    """``get_head`` is the one head of an ontology, whatever its timestamps."""
 
-    def test_freshest_single_ontology(self, ontology_manager, sample_ontology):
-        """Test that freshest returns the only ontology when there's one."""
+    def test_head_of_a_single_version(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
 
-        freshest = ontology_manager.get_freshest_terminal_ontology("test")
-        assert freshest is not None
-        assert freshest.hash == sample_ontology.hash
+        head = ontology_manager.get_head("test")
+        assert head is not None
+        assert head.version_iri == sample_ontology.version_iri
 
-    def test_freshest_selects_most_recent(
-        self, ontology_manager, sample_ontology, ontology_with_parent
-    ):
-        """Test that freshest selects the most recently created ontology."""
-        # Set explicit timestamps
-        sample_ontology.created_at = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-        ontology_with_parent.created_at = datetime(
-            2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc
-        )
-
-        ontology_manager.add_ontology(sample_ontology)
+    def test_head_is_the_child_whatever_the_registration_order(
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        ontology_with_parent: Ontology,
+    ) -> None:
         ontology_manager.add_ontology(ontology_with_parent)
+        ontology_manager.add_ontology(sample_ontology)
 
-        freshest = ontology_manager.get_freshest_terminal_ontology("test")
-        assert freshest is not None
-        assert freshest.hash == ontology_with_parent.hash
+        head = ontology_manager.get_head("test")
+        assert head is not None
+        assert head.version_iri == ontology_with_parent.version_iri
 
-    def test_freshest_handles_no_timestamps(self, ontology_manager, sample_ontology):
-        """Test that freshest falls back when no timestamps."""
-        sample_ontology.created_at = None
-        # Register identity/aliases without going through add_ontology's timestamp set.
-        ontology_manager.validate_identity_uniqueness(sample_ontology)
-        ontology_manager._register_identity(sample_ontology)
-        if sample_ontology.iri not in ontology_manager.ontology_versions:
-            ontology_manager.ontology_versions[sample_ontology.iri] = []
-        ontology_manager.ontology_versions[sample_ontology.iri].append(sample_ontology)
-
-        freshest = ontology_manager.get_freshest_terminal_ontology("test")
-        assert freshest is not None
-        assert freshest.hash == sample_ontology.hash
-
-    def test_freshest_returns_none_when_no_ontologies(self, ontology_manager):
-        """Test that freshest returns None when no ontologies exist."""
-        freshest = ontology_manager.get_freshest_terminal_ontology("nonexistent")
-        assert freshest is None
+    def test_head_is_none_when_nothing_is_held(
+        self, ontology_manager: OntologyManager
+    ) -> None:
+        assert ontology_manager.get_head("nonexistent") is None
 
 
 class TestOntologiesProperty:
-    """Test the ontologies property."""
+    """``ontologies`` serves one head per IRI and tracks it by version IRI."""
 
-    def test_ontologies_returns_freshest_per_ontology_id(
-        self, ontology_manager, sample_ontology, ontology_with_parent
-    ):
-        """Test that ontologies property returns one per ontology_id."""
-        sample_ontology.created_at = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-        ontology_with_parent.created_at = datetime(
-            2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc
-        )
-
+    def test_ontologies_returns_the_head_per_iri(
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        ontology_with_parent: Ontology,
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
         ontology_manager.add_ontology(ontology_with_parent)
 
         ontologies = ontology_manager.ontologies
-        assert len(ontologies) == 1  # One per ontology_id
-        assert ontologies[0].hash == ontology_with_parent.hash
+        assert [o.version_iri for o in ontologies] == [ontology_with_parent.version_iri]
 
     def test_ontologies_cache_is_updated_incrementally(
-        self, ontology_manager, sample_ontology
-    ):
-        """Test that cache is updated incrementally when adding ontologies."""
-        # Initially empty
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        second_ontology: Ontology,
+    ) -> None:
         assert not ontology_manager.has_ontologies
         assert len(ontology_manager.ontologies) == 0
 
-        # Add first ontology
         ontology_manager.add_ontology(sample_ontology)
         assert ontology_manager.has_ontologies
         assert len(ontology_manager.ontologies) == 1
-        assert sample_ontology.iri in ontology_manager._cached_ontologies
         assert (
             ontology_manager._cached_ontologies[sample_ontology.iri]
-            == sample_ontology.hash
+            == sample_ontology.version_iri
         )
 
-        # Add second ontology with different ID
-        graph2 = RDFGraph()
-        graph2.parse(
-            data="""
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-            
-            <https://example.org/test2> a owl:Ontology .
-            """,
-            format="turtle",
-        )
-        ontology2 = Ontology(
-            graph=graph2,
-            ontology_id="test2",
-            iri="https://example.org/test2",
-        )
-        if not ontology2.hash:
-            ontology2._compute_and_set_hash()
-
-        ontology_manager.add_ontology(ontology2)
+        ontology_manager.add_ontology(second_ontology)
         assert len(ontology_manager.ontologies) == 2
-        assert sample_ontology.iri in ontology_manager._cached_ontologies
-        assert ontology2.iri in ontology_manager._cached_ontologies
-        assert ontology_manager._cached_ontologies[ontology2.iri] == ontology2.hash
+        assert (
+            ontology_manager._cached_ontologies[second_ontology.iri]
+            == second_ontology.version_iri
+        )
 
-    def test_ontologies_cache_updates_when_new_version_added(
-        self, ontology_manager, sample_ontology, ontology_with_parent
-    ):
-        """Test that cache is updated when a new version is added for existing ontology_id."""
-        # Add initial ontology
-        sample_ontology.created_at = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    def test_ontologies_cache_moves_to_the_new_head(
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        ontology_with_parent: Ontology,
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
-
-        # Check cache has initial hash
+        assert len(ontology_manager.ontologies) == 1
         assert (
             ontology_manager._cached_ontologies[sample_ontology.iri]
-            == sample_ontology.hash
+            == sample_ontology.version_iri
         )
 
-        # Add newer version (same IRI)
-        ontology_with_parent.created_at = datetime(
-            2024, 1, 2, 12, 0, 0, tzinfo=timezone.utc
-        )
         ontology_manager.add_ontology(ontology_with_parent)
-
-        # Cache should be updated to newer hash
+        assert sample_ontology.iri not in ontology_manager._cached_ontologies
+        assert len(ontology_manager.ontologies) == 1
         assert (
             ontology_manager._cached_ontologies[sample_ontology.iri]
-            == ontology_with_parent.hash
-        )
-        assert (
-            ontology_manager._cached_ontologies[sample_ontology.iri]
-            != sample_ontology.hash
+            == ontology_with_parent.version_iri
         )
 
 
 class TestHasOntologies:
-    """Test the has_ontologies property."""
-
-    def test_has_ontologies_works_with_cache(self, ontology_manager, sample_ontology):
-        """Test that has_ontologies works correctly with caching."""
-        # Initially false
+    def test_has_ontologies_works_with_cache(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         assert not ontology_manager.has_ontologies
 
-        # Add ontology
         ontology_manager.add_ontology(sample_ontology)
         assert ontology_manager.has_ontologies
 
-        # Should still be true after accessing ontologies property
         _ = ontology_manager.ontologies
         assert ontology_manager.has_ontologies
 
 
 class TestLineageGraph:
-    """Test lineage graph building."""
+    """The version DAG: nodes are version IRIs, edges go child -> prior."""
 
-    def test_get_lineage_graph_creates_graph(
-        self, ontology_manager, sample_ontology, ontology_with_parent
-    ):
-        """Test that lineage graph is created correctly."""
+    def test_get_lineage_graph_links_child_to_prior(
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        ontology_with_parent: Ontology,
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
         ontology_manager.add_ontology(ontology_with_parent)
 
         lineage = ontology_manager.get_lineage_graph("test")
-        assert lineage is not None
-        import networkx as nx
-
         assert isinstance(lineage, nx.DiGraph)
+        assert set(lineage.nodes()) == {
+            sample_ontology.version_iri,
+            ontology_with_parent.version_iri,
+        }
+        assert lineage.has_edge(
+            ontology_with_parent.version_iri, sample_ontology.version_iri
+        )
 
-        # Check nodes exist
-        assert sample_ontology.hash in lineage.nodes()
-        assert ontology_with_parent.hash in lineage.nodes()
-
-        # Check edge from child to parent
-        assert lineage.has_edge(ontology_with_parent.hash, sample_ontology.hash)
-
-    def test_get_lineage_graph_returns_none_for_missing_id(self, ontology_manager):
-        """Test that lineage graph returns None for missing ontology_id."""
-        lineage = ontology_manager.get_lineage_graph("nonexistent")
-        assert lineage is None
+    def test_get_lineage_graph_returns_none_for_missing_id(
+        self, ontology_manager: OntologyManager
+    ) -> None:
+        assert ontology_manager.get_lineage_graph("nonexistent") is None
 
 
 class TestGetOntology:
-    """Test get_ontology method."""
-
-    def test_get_ontology_by_hash(self, ontology_manager, sample_ontology):
-        """Test getting ontology by hash."""
+    def test_get_ontology_by_version_iri(
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        ontology_with_parent: Ontology,
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
+        ontology_manager.add_ontology(ontology_with_parent)
 
-        retrieved = ontology_manager.get_ontology(hash=sample_ontology.hash)
-        assert retrieved.hash == sample_ontology.hash
+        retrieved = ontology_manager.get_ontology(
+            version_iri=sample_ontology.version_iri
+        )
+        assert retrieved.version_iri == sample_ontology.version_iri
 
-    def test_get_ontology_by_ontology_id_returns_terminal(
-        self, ontology_manager, sample_ontology, ontology_with_parent
-    ):
-        """Test that getting by ontology_id returns terminal."""
+    def test_get_ontology_by_ontology_id_returns_the_head(
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        ontology_with_parent: Ontology,
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
         ontology_manager.add_ontology(ontology_with_parent)
 
         retrieved = ontology_manager.get_ontology(ontology_id="test")
-        assert retrieved.hash == ontology_with_parent.hash
+        assert retrieved.version_iri == ontology_with_parent.version_iri
 
-    def test_get_ontology_by_iri(self, ontology_manager, sample_ontology):
-        """Test getting ontology by IRI."""
+    def test_get_ontology_by_iri(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
 
         retrieved = ontology_manager.get_ontology(ontology_iri=sample_ontology.iri)
         assert retrieved.iri == sample_ontology.iri
 
+    def test_get_ontology_unknown_is_the_null_ontology(
+        self, ontology_manager: OntologyManager
+    ) -> None:
+        assert ontology_manager.get_ontology(ontology_id="nonexistent").is_null()
+
 
 class TestGetOntologyNames:
-    """Test get_ontology_names method."""
-
     def test_get_ontology_names_returns_all_ids(
-        self, ontology_manager, sample_ontology
-    ):
-        """Test that get_ontology_names returns all ontology IDs."""
+        self,
+        ontology_manager: OntologyManager,
+        sample_ontology: Ontology,
+        second_ontology: Ontology,
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
+        ontology_manager.add_ontology(second_ontology)
 
-        # Create second ontology
-        graph2 = RDFGraph()
-        graph2.parse(
-            data="""
-            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
-            @prefix owl: <http://www.w3.org/2002/07/owl#> .
-            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-            
-            <https://example.org/test2> a owl:Ontology .
-            """,
-            format="turtle",
-        )
-        ontology2 = Ontology(
-            graph=graph2,
-            ontology_id="test2",
-            iri="https://example.org/test2",
-        )
-        if not ontology2.hash:
-            ontology2._compute_and_set_hash()
-        ontology_manager.add_ontology(ontology2)
-
-        names = ontology_manager.get_ontology_names()
-        assert "test" in names
-        assert "test2" in names
-        assert len(names) == 2
+        assert ontology_manager.get_ontology_names() == ["test", "test2"]
 
 
 class TestContains:
-    """Test __contains__ method."""
-
-    def test_contains_by_ontology_id(self, ontology_manager, sample_ontology):
-        """Test checking containment by ontology_id."""
+    def test_contains_by_ontology_id(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
 
         assert "test" in ontology_manager
         assert "nonexistent" not in ontology_manager
 
-    def test_contains_by_iri(self, ontology_manager, sample_ontology):
-        """Test checking containment by IRI."""
+    def test_contains_by_iri(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
 
         assert sample_ontology.iri in ontology_manager
         assert "https://example.org/nonexistent" not in ontology_manager
 
 
-class TestRecreateFromRDFGraph:
-    """Test recreating Ontology from RDF graph with parent_hashes and created_at."""
+class TestVersionGraphRoundTrip:
+    """A version graph carries its whole header: lineage survives the store."""
 
-    @pytest.mark.parametrize(
-        ("parent_hashes", "created_at"),
-        [
-            pytest.param(
-                ["parent1234567890abcdef"],
-                datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
-                id="single-parent",
-            ),
-            pytest.param(
-                ["parent1", "parent2", "parent3"],
-                datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
-                id="merge-multiple-parents",
-            ),
-            pytest.param(
-                [],
-                datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
-                id="root-no-parents",
-            ),
-            pytest.param(
-                [],
-                datetime(2023, 12, 25, 15, 45, 0, tzinfo=timezone.utc),
-                id="preserves-a-different-timestamp",
-            ),
-        ],
-    )
-    def test_parent_hashes_and_created_at_survive_a_graph_round_trip(
-        self, parent_hashes: list[str], created_at: datetime
+    @staticmethod
+    def _versions() -> dict[str, Ontology]:
+        root = stamped_ontology(ROOT_TTL, now=T0)
+        child = next_version(root, _with_class(root, "Child"), now=T1)
+        sibling = next_version(root, _with_class(root, "Sibling"), now=T2)
+        merged = stamp_version(merge_ontologies(child, sibling), now=T2)
+        assert merged is not None
+        return {"root": root, "child": child, "merge": merged}
+
+    @pytest.mark.parametrize("kind", ["root", "child", "merge"])
+    def test_lineage_and_timestamps_survive_a_version_graph_round_trip(
+        self, kind: str
     ) -> None:
-        """`sync_properties_to_graph` -> `Ontology(graph=...)` is lossless.
+        version = self._versions()[kind]
+        assert version.version_iri is not None
 
-        This is the load-from-triple-store path: the properties live only as
-        triples in between, so a serialization change silently drops lineage
-        unless it is asserted here.
-        """
-        original = Ontology(
-            graph=RDFGraph(),
-            ontology_id="test",
-            iri="https://example.org/test",
-            title="Test Ontology",
-            version="1.0.0",
+        recreated = ontology_from_version_graph(
+            version.version_iri, version.graph.copy()
         )
-        if not original.hash:
-            original._compute_and_set_hash()
-        original.parent_hashes = list(parent_hashes)
-        original.created_at = created_at
 
-        original.sync_properties_to_graph()
-        recreated = Ontology(graph=original.graph)
+        assert recreated.version_iri == version.version_iri
+        assert recreated.prior_version_iris == sorted(version.prior_version_iris)
+        assert recreated.created_at == version.created_at
+        assert recreated.modified_at == version.modified_at
+        assert recreated.version == version.version
+        assert recreated.ontology_id == version.ontology_id
+        assert recreated.title == version.title
+        assert recreated.hash == version.hash
+        assert [base.version_iri for base in recreated.bases] == [version.version_iri]
 
-        assert set(recreated.parent_hashes) == set(parent_hashes)
-        assert len(recreated.parent_hashes) == len(parent_hashes)
-        assert recreated.created_at == created_at
+    def test_merge_round_trip_names_both_priors(self) -> None:
+        merged = self._versions()["merge"]
+        assert merged.version_iri is not None
+        assert len(merged.prior_version_iris) == 2
+
+        recreated = ontology_from_version_graph(merged.version_iri, merged.graph.copy())
+
+        assert set(recreated.prior_version_iris) == set(merged.prior_version_iris)
 
 
 class TestOntologyManagerVectorAndRemoval:
     """Vector indexing flags and IRI removal."""
 
     def test_add_ontology_skip_vector_index_skips_reindex(
-        self, ontology_manager, sample_ontology
-    ):
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         patch_retriever = MagicMock()
         patch_retriever.vector_store = MagicMock()
         ontology_manager.register_vector_store(patch_retriever)
         ontology_manager.add_ontology(sample_ontology, skip_vector_index=True)
         patch_retriever.vector_store.reindex_ontology.assert_not_called()
 
-    def test_add_ontology_reindexes_by_default(self, ontology_manager, sample_ontology):
+    def test_add_ontology_reindexes_by_default(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         patch_retriever = MagicMock()
         patch_retriever.vector_store = MagicMock()
         ontology_manager.register_vector_store(patch_retriever)
@@ -579,8 +472,8 @@ class TestOntologyManagerVectorAndRemoval:
 
     @pytest.mark.anyio
     async def test_aadd_ontology_reindexes_off_loop(
-        self, ontology_manager, sample_ontology
-    ):
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         patch_retriever = MagicMock()
         patch_retriever.vector_store = MagicMock()
         ontology_manager.register_vector_store(patch_retriever)
@@ -591,8 +484,8 @@ class TestOntologyManagerVectorAndRemoval:
 
     @pytest.mark.anyio
     async def test_add_ontology_reindex_refuses_running_loop(
-        self, ontology_manager, sample_ontology
-    ):
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         patch_retriever = MagicMock()
         patch_retriever.vector_store = MagicMock()
         ontology_manager.register_vector_store(patch_retriever)
@@ -602,14 +495,16 @@ class TestOntologyManagerVectorAndRemoval:
         assert sample_ontology.iri not in ontology_manager.ontology_versions
 
     @pytest.mark.anyio
-    async def test_get_patch_contexts_refuses_running_loop(self, ontology_manager):
+    async def test_get_patch_contexts_refuses_running_loop(
+        self, ontology_manager: OntologyManager
+    ) -> None:
         with pytest.raises(RuntimeError, match="aget_patch_contexts_with_sources"):
             ontology_manager.get_patch_contexts_with_sources(queries=["q"])
 
     @pytest.mark.anyio
     async def test_aget_patch_contexts_fallback_copies_graph(
-        self, ontology_manager, sample_ontology
-    ):
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology, skip_vector_index=True)
         results = await ontology_manager.aget_patch_contexts_with_sources(
             queries=["a", "b"]
@@ -622,23 +517,17 @@ class TestOntologyManagerVectorAndRemoval:
         assert sources0 == sources1 == [sample_ontology.iri]
 
     def test_remove_ontology_by_iri_clears_versions(
-        self, ontology_manager, sample_ontology
-    ):
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         ontology_manager.add_ontology(sample_ontology)
         ontology_manager.remove_ontology_by_iri(sample_ontology.iri)
         assert sample_ontology.iri not in ontology_manager.ontology_versions
         assert sample_ontology.iri not in ontology_manager._cached_ontologies
 
     def test_remove_ontology_by_iri_evicts_the_graph_cache(
-        self, ontology_manager, sample_ontology
-    ):
-        """Eviction must use the key entries were inserted under.
-
-        Entries are cached by the header's ``graph_uri``; popping
-        ``versioned_iri`` instead silently missed whenever the recomputed hash
-        differed from the stored graph URI, leaving a removed ontology still
-        resolvable from cache.
-        """
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
+        """Eviction uses the key entries were inserted under (the graph URI)."""
         graph_uri = "urn:tenant:acme:onto:test-v1"
         ontology_manager._cache_graph(sample_ontology, graph_uri)
         assert graph_uri in ontology_manager._graph_cache
@@ -648,7 +537,9 @@ class TestOntologyManagerVectorAndRemoval:
         assert graph_uri not in ontology_manager._graph_cache
         assert sample_ontology.iri not in ontology_manager._graph_uris_by_iri
 
-    def test_graph_cache_is_bounded(self, ontology_manager, sample_ontology):
+    def test_graph_cache_is_bounded(
+        self, ontology_manager: OntologyManager, sample_ontology: Ontology
+    ) -> None:
         """It holds whole rdflib graphs, so a long-lived server needs a bound."""
         from ontocast.tool.ontology_manager import _GRAPH_CACHE_MAX_ENTRIES
 
@@ -656,7 +547,6 @@ class TestOntologyManagerVectorAndRemoval:
             ontology_manager._cache_graph(sample_ontology, f"urn:graph:{index}")
 
         assert len(ontology_manager._graph_cache) == _GRAPH_CACHE_MAX_ENTRIES
-        # Oldest evicted, newest retained.
         assert "urn:graph:0" not in ontology_manager._graph_cache
         assert (
             f"urn:graph:{_GRAPH_CACHE_MAX_ENTRIES + 9}" in ontology_manager._graph_cache

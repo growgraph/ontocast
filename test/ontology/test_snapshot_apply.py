@@ -16,6 +16,7 @@ from ontocast.onto.ontology_apply import (
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import OntologyManager
+from test.ontology_helpers import stamped_ontology
 
 pytestmark = pytest.mark.unit
 
@@ -29,9 +30,14 @@ def _onto_graph(iri: str, local: str, prefix: str) -> RDFGraph:
     return g
 
 
+def _catalog_ontology(iri: str, local: str, prefix: str) -> Ontology:
+    """A stamped root over ``_onto_graph``, registered under ``prefix`` as id."""
+    return stamped_ontology(_onto_graph(iri, local, prefix), ontology_id=prefix)
+
+
 def test_ontology_snapshot_from_ontology_copies_graph_and_source() -> None:
     iri = "https://example.org/a"
-    ontology = Ontology(graph=_onto_graph(iri, "A", "exa"), iri=iri)
+    ontology = _catalog_ontology(iri, "A", "exa")
     snap = OntologySnapshot.from_ontology(
         ontology, assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
     )
@@ -77,14 +83,8 @@ def test_partition_triples_by_namespace_routes_to_owner() -> None:
     iri_a = "https://example.org/a"
     iri_b = "https://example.org/b"
     mgr = OntologyManager()
-    mgr.add_ontology(
-        Ontology(graph=_onto_graph(iri_a, "A", "exa"), iri=iri_a),
-        skip_vector_index=True,
-    )
-    mgr.add_ontology(
-        Ontology(graph=_onto_graph(iri_b, "B", "exb"), iri=iri_b),
-        skip_vector_index=True,
-    )
+    mgr.add_ontology(_catalog_ontology(iri_a, "A", "exa"), skip_vector_index=True)
+    mgr.add_ontology(_catalog_ontology(iri_b, "B", "exb"), skip_vector_index=True)
 
     inserts = RDFGraph()
     inserts.add((URIRef(f"{iri_a}#NewA"), RDF.type, OWL.Class))
@@ -117,7 +117,7 @@ def test_apply_partitioned_updates_deletes_then_inserts_on_catalog_base() -> Non
     base_graph = _onto_graph(iri, "A", "exa")
     obsolete = URIRef(f"{ns}Obsolete")
     base_graph.add((obsolete, RDF.type, OWL.Class))
-    base = Ontology(graph=base_graph, iri=iri)
+    base = stamped_ontology(base_graph, ontology_id="exa")
     mgr.add_ontology(base, skip_vector_index=True)
 
     new_class = URIRef(f"{ns}New")
@@ -140,10 +140,13 @@ def test_apply_partitioned_updates_deletes_then_inserts_on_catalog_base() -> Non
     result = artifacts[0]
     assert (new_class, RDF.type, OWL.Class) in result.graph
     assert (obsolete, RDF.type, OWL.Class) not in result.graph
+    assert result.version_iri is None, "the applied artifact is not yet stamped"
+    assert [b.version_iri for b in result.bases] == [base.version_iri]
     assert metrics["apply_delete_triples"] == 1
     assert metrics["apply_insert_triples"] == 1
+    assert list(applied_updates) == [iri]
     op_types = [
-        op.type for update in applied_updates for op in update.triple_operations
+        op.type for update in applied_updates[iri] for op in update.triple_operations
     ]
     assert op_types == ["delete", "insert"]
 
@@ -156,7 +159,9 @@ def test_apply_partitioned_updates_delete_only_produces_artifact() -> None:
     base_graph = _onto_graph(iri, "A", "exa")
     obsolete = URIRef(f"{ns}Obsolete")
     base_graph.add((obsolete, RDF.type, OWL.Class))
-    mgr.add_ontology(Ontology(graph=base_graph, iri=iri), skip_vector_index=True)
+    mgr.add_ontology(
+        stamped_ontology(base_graph, ontology_id="exa"), skip_vector_index=True
+    )
 
     deletes = RDFGraph()
     deletes.bind("exa", ns)
@@ -173,7 +178,7 @@ def test_apply_partitioned_updates_delete_only_produces_artifact() -> None:
     assert len(artifacts) == 1
     assert (obsolete, RDF.type, OWL.Class) not in artifacts[0].graph
     assert metrics["apply_delete_triples"] == 1
-    assert [op.type for u in applied_updates for op in u.triple_operations] == [
+    assert [op.type for u in applied_updates[iri] for op in u.triple_operations] == [
         "delete"
     ]
 
@@ -183,7 +188,7 @@ def test_apply_partitioned_updates_base_override_wins_over_terminal() -> None:
     iri = "https://example.org/a"
     ns = f"{iri}#"
     mgr = OntologyManager()
-    stale = Ontology(graph=_onto_graph(iri, "A", "exa"), iri=iri)
+    stale = _catalog_ontology(iri, "A", "exa")
     mgr.add_ontology(stale, skip_vector_index=True)
 
     map_stage_class = URIRef(f"{ns}MapStage")

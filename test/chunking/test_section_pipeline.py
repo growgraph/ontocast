@@ -127,11 +127,11 @@ def test_agent_state_optional_routing_flags() -> None:
     default = AgentState()
     assert default.needs_section_prepare is False
     assert default.use_summarization is False
-    assert route_after_tag_or_chunk(default) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
+    assert route_after_tag_or_chunk(default) == WorkflowNode.RESOLVE_HOME_ONTOLOGY
 
     tagged = AgentState(target_sections=["results"])
     assert tagged.needs_section_prepare is True
-    assert route_after_tag_or_chunk(tagged) == WorkflowNode.RENDER_ONTOLOGY_UPDATE
+    assert route_after_tag_or_chunk(tagged) == WorkflowNode.RESOLVE_HOME_ONTOLOGY
 
     # Summarization no longer diverts the graph: it runs inside the extraction
     # fan-outs, so enabling it must not change routing.

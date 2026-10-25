@@ -47,6 +47,7 @@ from ontocast.prompt.web_grounding import persist_search_request, search_guideli
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import (
     expand_vocabulary_terms,
+    materialize_entailed_types,
     normalize_literals_against_schema,
     promote_degenerate_bounds_from_vocabulary,
     repair_compact_iri_literals,
@@ -113,6 +114,9 @@ def _normalize_and_repair_graph(
     resolved, code_records = resolve_code_literals(
         graph, ontology_context_graph, tools.code_predicates
     )
+    entailed, entailed_records = materialize_entailed_types(
+        graph, ontology_context_graph
+    )
     promote_degenerate_bounds_from_vocabulary(
         graph, ontology_context_graph, tools.quantity_fallback_vocabulary
     )
@@ -120,18 +124,26 @@ def _normalize_and_repair_graph(
         budget_tracker.add_duration(
             "repair/deterministic", time.perf_counter() - started
         )
-    if retyped or rewritten or type_repaired or iri_repaired or resolved:
+    if retyped or rewritten or type_repaired or iri_repaired or resolved or entailed:
         logger.info(
             "Deterministic graph repair: retyped %d literal(s), coerced %d "
             "rdf:type literal(s), coerced %d compact-IRI literal(s), rewrote %d "
-            "alias triple(s), resolved %d code(s)",
+            "alias triple(s), resolved %d code(s), materialised %d entailed "
+            "type(s)",
             retyped,
             type_repaired,
             iri_repaired,
             rewritten,
             resolved,
+            entailed,
         )
-    return graph, [*type_records, *iri_records, *alias_records, *code_records]
+    return graph, [
+        *type_records,
+        *iri_records,
+        *alias_records,
+        *code_records,
+        *entailed_records,
+    ]
 
 
 async def render_facts(

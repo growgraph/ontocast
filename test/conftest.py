@@ -169,7 +169,7 @@ def model_name():
 
 @pytest.fixture
 def test_ontology():
-    from ontocast.onto.ontology import Ontology
+    from ontocast.onto.ontology_header import adopt_ontology
 
     graph = RDFGraph._from_turtle_str(
         """
@@ -190,7 +190,7 @@ def test_ontology():
         rdfs:comment "Some kind of event with spacetime coordinates" ;
         rdfs:subClassOf schema:Event .    """
     )
-    return Ontology(graph=graph)
+    return adopt_ontology(graph)
 
 
 @pytest.fixture(scope="session")

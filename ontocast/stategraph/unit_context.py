@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import ConfigDict, Field
 
 from ontocast.onto.enum import OntologyContextMode
+from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.model import BasePydanticModel
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
@@ -34,6 +35,7 @@ class UnitLoopContext(BasePydanticModel):
     ontology_context_mode: OntologyContextMode
     ontology_selection_user_instruction: str = ""
     ontology_context_fixed_ontology_id: str = ""
+    home_ontology: OntologyIdentity | None = None
     reduced_ontology_artifacts: list[Ontology] = Field(default_factory=list)
     budget_tracker: BudgetTracker = Field(default_factory=BudgetTracker)
     retrieval_metrics: dict[str, int | float | str | dict[str, Any]] = Field(
@@ -61,6 +63,7 @@ class UnitLoopContext(BasePydanticModel):
             ontology_context_fixed_ontology_id=(
                 state.ontology_context_fixed_ontology_id
             ),
+            home_ontology=state.home_ontology,
             reduced_ontology_artifacts=document_ontology_access(
                 state
             ).reduced_artifacts(),

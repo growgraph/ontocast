@@ -13,7 +13,7 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 from pydantic import Field
-from rdflib import Graph, URIRef
+from rdflib import Graph
 
 from ontocast.onto.constants import (
     DEFAULT_DATASET,
@@ -21,7 +21,7 @@ from ontocast.onto.constants import (
     DEFAULT_SHAPES_DATASET,
 )
 from ontocast.onto.ontology import Ontology
-from ontocast.onto.ontology_header import OntologyHeader
+from ontocast.onto.ontology_header import CatalogContractError, OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.tenancy import (
     TENANCY_SEP,
@@ -33,11 +33,11 @@ from ontocast.onto.tenancy import (
 from ontocast.tool.triple_manager.core import (
     TripleStoreManagerWithAuth,
     TripleStoreUnavailableError,
+    TripleStoreWriteError,
 )
 from ontocast.tool.triple_manager.util import (
-    LIST_NAMED_GRAPHS_QUERY,
     ONTOLOGY_HEADER_QUERY,
-    dedupe_terminal_ontologies,
+    head_headers,
     headers_from_select_rows,
     ontology_from_named_graph,
 )
@@ -515,6 +515,29 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                     response.text,
                 )
 
+    async def afetch_named_graph(
+        self, graph_uri: str, *, store: StoreKind = "ontologies"
+    ) -> RDFGraph | None:
+        """Fetch one named graph from the Fuseki dataset as Turtle."""
+        dataset_url = self._dataset_url_for(store)
+        encoded = quote(str(graph_uri), safe="/:")
+        export_url = f"{dataset_url}/get?graph={encoded}"
+        async with httpx.AsyncClient(auth=self._prepare_auth(), timeout=30.0) as client:
+            response = await client.get(export_url, headers={"Accept": "text/turtle"})
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            logger.warning(
+                "Fuseki GET graph failed for %s: %s %s",
+                graph_uri,
+                response.status_code,
+                response.text[:500],
+            )
+            return None
+        graph = RDFGraph()
+        graph.parse(data=response.text, format="turtle")
+        return graph
+
     async def drop_all_ontology_graphs_for_iri(
         self, ontology_iri: str, *, store: StoreKind = "ontologies"
     ) -> None:
@@ -600,13 +623,25 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
     async def _sparql_select_rows(
         self, client: httpx.AsyncClient, sparql_url: str, query: str
     ) -> list[dict[str, str]]:
-        """POST a SPARQL SELECT and flatten its JSON bindings to lexical values."""
+        """POST a SPARQL SELECT and flatten its JSON bindings to lexical values.
+
+        Raises:
+            TripleStoreUnavailableError: the store could not be reached or
+                answered an error. Never an empty result: an empty catalog is
+                indistinguishable from "nothing stored", and
+                ``ToolBox.initialize`` prunes the vector index against it.
+        """
         self._select_queries += 1
-        response = await client.post(
-            sparql_url,
-            data={"query": query, "format": "application/sparql-results+json"},
-        )
-        response.raise_for_status()
+        try:
+            response = await client.post(
+                sparql_url,
+                data={"query": query, "format": "application/sparql-results+json"},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise TripleStoreUnavailableError(
+                f"SPARQL SELECT against {sparql_url} failed: {exc}"
+            ) from exc
         return [
             {var: binding[var]["value"] for var in binding}
             for binding in response.json().get("results", {}).get("bindings", [])
@@ -668,7 +703,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         if not iris:
             return await self.afetch_ontologies()
         wanted = set(iris)
-        headers = dedupe_terminal_ontologies(await self.afetch_ontology_catalog())
+        headers = head_headers(await self.afetch_ontology_catalog())
         graph_uris = [header.graph_uri for header in headers if header.iri in wanted]
         if not graph_uris:
             return []
@@ -683,33 +718,6 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             "select_queries": self._select_queries,
             "construct_queries": self._construct_queries,
         }
-
-    async def _list_ontology_graph_uris(self, client: httpx.AsyncClient) -> list[str]:
-        """List every named graph in the ontologies dataset.
-
-        Raises:
-            TripleStoreUnavailableError: the listing could not be performed.
-                This deliberately does **not** degrade to an empty list: an
-                empty catalog is indistinguishable from "no ontologies stored",
-                and ``ToolBox.initialize`` treats an empty catalog as grounds to
-                prune every indexed ontology IRI from the vector store. A
-                transient network error must not be able to wipe the index.
-                Mirrors the contract stated for ``aselect``/``aconstruct`` on
-                :class:`~ontocast.tool.triple_manager.core.TripleStoreManager`.
-        """
-        sparql_url = f"{self._get_ontologies_dataset_url()}/sparql"
-        try:
-            rows = await self._sparql_select_rows(
-                client, sparql_url, LIST_NAMED_GRAPHS_QUERY
-            )
-        except httpx.HTTPError as exc:
-            logger.error("Failed to list graphs from Fuseki: %s", exc)
-            raise TripleStoreUnavailableError(
-                f"Could not list named graphs in {sparql_url}: {exc}"
-            ) from exc
-        graph_uris = [row["g"] for row in rows if "g" in row]
-        logger.debug("Found %d named graphs: %s", len(graph_uris), graph_uris)
-        return graph_uris
 
     async def _fetch_ontology_graphs(
         self, client: httpx.AsyncClient, graph_uris: Sequence[str]
@@ -735,6 +743,8 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                     logger.warning(
                         f"Failed to fetch graph {graph_uri}: {export_resp.status_code}"
                     )
+            except CatalogContractError:
+                raise
             except Exception as e:
                 logger.warning(f"Error fetching ontology from {graph_uri}: {e}")
             return None
@@ -745,6 +755,9 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
 
         ontologies: list[Ontology] = []
         for result in results:
+            if isinstance(result, CatalogContractError):
+                # A foreign graph in the ontologies dataset is a fault, not a gap.
+                raise result
             if isinstance(result, Exception):
                 logger.warning(f"Exception fetching ontology: {result}")
             elif isinstance(result, Ontology):
@@ -789,17 +802,19 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """
         self._full_catalog_fetches += 1
         client = await self._get_client()
-        graph_uris = await self._list_ontology_graph_uris(client)
-        if not graph_uris:
+        headers = head_headers(await self.afetch_ontology_catalog())
+        if not headers:
+            self._last_catalog_was_partial = False
             return []
-        all_ontologies = await self._fetch_ontology_graphs(client, graph_uris)
-        ontologies = dedupe_terminal_ontologies(all_ontologies)
+        ontologies = await self._fetch_ontology_graphs(
+            client, [header.graph_uri for header in headers]
+        )
         logger.info(
             "Successfully loaded %d unique ontologies from Fuseki", len(ontologies)
         )
         return ontologies
 
-    def serialize_graph(self, graph: Graph, **kwargs: Any) -> bool:
+    def serialize_graph(self, graph: Graph, **kwargs: Any) -> None:
         """Synchronous wrapper for serialize_graph.
 
         For async usage, use aserialize_graph() instead.
@@ -812,16 +827,16 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             "FusekiTripleStoreManager.serialize_graph",
             "FusekiTripleStoreManager.aserialize_graph",
         )
-        return asyncio.run(self._serialize_graph_with_cleanup(graph, **kwargs))
+        asyncio.run(self._serialize_graph_with_cleanup(graph, **kwargs))
 
-    async def aserialize_graph(self, graph: Graph, **kwargs: Any) -> bool:
+    async def aserialize_graph(self, graph: Graph, **kwargs: Any) -> None:
         """Async version of serialize_graph.
 
         This is the preferred method when running in an async context.
         """
-        return await self._serialize_graph_async(graph, **kwargs)
+        await self._serialize_graph_async(graph, **kwargs)
 
-    async def _serialize_graph_with_cleanup(self, graph: Graph, **kwargs: Any) -> bool:
+    async def _serialize_graph_with_cleanup(self, graph: Graph, **kwargs: Any) -> None:
         """Wrapper that ensures proper cleanup when using asyncio.run().
 
         This method creates a temporary client and ensures it's properly closed
@@ -834,24 +849,21 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             original_client = self._client
             self._client = temp_client
             try:
-                return await self._serialize_graph_async(graph, **kwargs)
+                await self._serialize_graph_async(graph, **kwargs)
             finally:
                 # Restore original client
                 self._client = original_client
 
-    async def _serialize_graph_async(self, graph: Graph, **kwargs: Any) -> bool:
+    async def _serialize_graph_async(self, graph: Graph, **kwargs: Any) -> None:
         """Store an RDF graph as a named graph in a specific Fuseki dataset.
-
-        This is a private helper method that handles the common logic for storing
-        graphs in Fuseki datasets.
 
         Args:
             graph: The RDF graph to store.
             **kwargs: ``graph_uri``, ``store`` (a :data:`StoreKind`, default
                 ``"facts"``), ``default_graph_uri`` and ``log_prefix``.
 
-        Returns:
-            bool: True if the graph was successfully stored, False otherwise.
+        Raises:
+            TripleStoreWriteError: Fuseki did not accept the graph.
         """
         client = await self._get_client()
         graph_uri = kwargs.get("graph_uri")
@@ -876,19 +888,15 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         url = f"{dataset_url}/data?graph={encoded_graph_uri}"
         headers = {"Content-Type": "text/turtle;charset=utf-8"}
         response = await client.put(url, headers=headers, content=turtle_data)
-        if response.status_code in (200, 201, 204):
-            logger.info(
-                f"{log_prefix} graph {graph_uri} uploaded to Fuseki as named graph."
+        if response.status_code not in (200, 201, 204):
+            raise TripleStoreWriteError(
+                str(graph_uri), response.status_code, response.text
             )
-            return True
-        else:
-            logger.error(
-                f"Failed to upload {log_prefix.lower() if log_prefix else 'unknown'} graph {graph_uri}. Status code: {response.status_code}"
-            )
-            logger.error(f"Response: {response.text}")
-            return False
+        logger.info(
+            f"{log_prefix} graph {graph_uri} uploaded to Fuseki as named graph."
+        )
 
-    def serialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
+    def serialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> None:
         """Synchronous wrapper for serialize.
 
         For async usage, use aserialize() instead.
@@ -901,18 +909,18 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             "FusekiTripleStoreManager.serialize",
             "FusekiTripleStoreManager.aserialize",
         )
-        return asyncio.run(self._serialize_with_cleanup(o, **kwargs))
+        asyncio.run(self._serialize_with_cleanup(o, **kwargs))
 
-    async def aserialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
+    async def aserialize(self, o: Ontology | RDFGraph, **kwargs: Any) -> None:
         """Async version of serialize.
 
         This is the preferred method when running in an async context.
         """
-        return await self._serialize_async(o, **kwargs)
+        await self._serialize_async(o, **kwargs)
 
     async def _serialize_with_cleanup(
         self, o: Ontology | RDFGraph, **kwargs: Any
-    ) -> bool:
+    ) -> None:
         """Wrapper that ensures proper cleanup when using asyncio.run().
 
         This method creates a temporary client and ensures it's properly closed
@@ -925,17 +933,16 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             original_client = self._client
             self._client = temp_client
             try:
-                return await self._serialize_async(o, **kwargs)
+                await self._serialize_async(o, **kwargs)
             finally:
                 # Restore original client
                 self._client = original_client
 
-    async def _serialize_async(self, o: Ontology | RDFGraph, **kwargs: Any) -> bool:
-        """Store an RDF graph as a named graph in Fuseki.
+    async def _serialize_async(self, o: Ontology | RDFGraph, **kwargs: Any) -> None:
+        """Store a stamped ontology version, or a graph, as a named graph.
 
-        This method stores the given RDF graph as a named graph in Fuseki.
-        The graph name is taken from the graph_uri parameter or defaults to
-        "urn:data:default".
+        An ontology is stored under its ``version_iri``; a graph under
+        ``graph_uri`` (default ``urn:data:default``).
 
         Args:
             o: RDF graph or Ontology object.
@@ -943,26 +950,18 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 partition the payload type would otherwise imply -- an
                 ``Ontology`` carrying SHACL shapes goes to ``"shapes"``.
 
-        Returns:
-            bool: True if the graph was successfully stored, False otherwise.
-
-        Example:
-            >>> graph = RDFGraph()
-            >>> success = await manager.serialize(graph)
-
-            >>> success = await manager.serialize(graph, graph_uri="http://example.org/chunk1")
+        Raises:
+            TripleStoreWriteError: Fuseki did not accept the graph.
+            ValueError: the ontology was never stamped.
         """
         graph_uri = kwargs.get("graph_uri")
         requested: StoreKind | None = kwargs.get("store")
 
         if isinstance(o, Ontology):
-            if o.iri and not o.is_null():
-                # Persist author @prefix names as triples before they die at
-                # the store boundary (idempotent, excluded from content hash).
-                o.graph.materialize_prefix_declarations(URIRef(o.iri))
+            if not o.version_iri:
+                raise ValueError(f"ontology {o.iri} is not stamped as a version")
             graph = o.graph
-            # Use versioned IRI for storage to enable multiple versions to coexist
-            graph_uri = o.versioned_iri
+            graph_uri = o.version_iri
             default_graph_uri = "urn:ontology:default"
             log_prefix = "Ontology"
             store: StoreKind = requested or "ontologies"
@@ -974,7 +973,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         else:
             raise TypeError(f"unsupported obj of type {type(o)} received")
 
-        return await self._serialize_graph_async(
+        await self._serialize_graph_async(
             graph=graph,
             graph_uri=graph_uri,
             store=store,

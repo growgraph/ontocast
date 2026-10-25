@@ -6,7 +6,6 @@ This module provides functionality for serializing the knowledge graph
 
 import logging
 
-from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
@@ -33,24 +32,6 @@ def serialize(state: AgentState, tools: ToolBox) -> AgentState:
     if state.aggregated_facts is None:
         state.aggregated_facts = RDFGraph()
         logger.info("No facts to serialize (ontology-only render mode)")
-
-    # Ontology versioning now supports multiple per-anchor artifacts.
-    ontologies_for_versioning = document_ontology_access(state).serialization_targets()
-    if state.ontology_updates_applied and ontologies_for_versioning:
-        logger.info(
-            "Ontology updates produced %d operation(s); updating %d artifact(s).",
-            len(state.ontology_updates_applied),
-            len(ontologies_for_versioning),
-        )
-        for ontology in ontologies_for_versioning:
-            ontology.mark_as_updated(state.ontology_updates_applied)
-            ontology.sync_properties_to_graph()
-    elif state.ontology_units:
-        logger.debug(
-            "Ontology units present without explicit updates; skipping version bump"
-        )
-    else:
-        logger.debug("Ontology unchanged during processing")
 
     # Report LLM budget usage
     if state.budget_tracker:

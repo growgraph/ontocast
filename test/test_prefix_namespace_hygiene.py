@@ -3,11 +3,12 @@
 import pytest
 from rdflib import OWL, RDF, URIRef
 
-from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology import content_hash
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.util import RDFLIB_DEFAULT_NAMESPACE_URIS
 from ontocast.prompt.facts_guidelines import format_facts_operational_guidelines
 from ontocast.prompt.ontology_context import extract_domain_prefix_pairs
+from test.ontology_helpers import stamped_ontology
 
 pytestmark = pytest.mark.unit
 
@@ -33,7 +34,7 @@ def test_extract_domain_prefix_pairs_excludes_rdflib_defaults() -> None:
     graph.bind("brick", URIRef("https://brickschema.org/schema/Brick#"))
     graph.bind("csvw", URIRef("http://www.w3.org/ns/csvw#"))
     graph.bind("geo", URIRef("http://www.opengis.net/ont/geosparql#"))
-    ontology = Ontology(graph=graph)
+    ontology = stamped_ontology(graph)
 
     pairs = extract_domain_prefix_pairs(ontology)
     prefixes = {p for p, _ in pairs}
@@ -47,10 +48,10 @@ def test_extract_domain_prefix_pairs_excludes_rdflib_defaults() -> None:
     assert namespaces.isdisjoint(RDFLIB_DEFAULT_NAMESPACE_URIS)
 
 
-def test_author_short_prefix_kept_not_rebound_to_ontology_id() -> None:
+def test_adopted_id_is_derived_from_the_iri_and_bound_once() -> None:
     graph = RDFGraph()
     graph.parse(data=_matsci_turtle(prefix="matsci"), format="turtle")
-    ontology = Ontology(graph=graph)
+    ontology = stamped_ontology(graph)
 
     assert ontology.ontology_id == "matsci"
     domain_bindings = [
@@ -73,7 +74,8 @@ def test_degenerate_ns_prefix_is_rebound_and_old_binding_removed() -> None:
             OWL.Ontology,
         )
     )
-    ontology = Ontology(graph=graph)
+    graph.add((URIRef(f"{ns}Material"), RDF.type, OWL.Class))
+    ontology = stamped_ontology(graph)
 
     assert ontology.ontology_id == "matsci"
     domain_prefixes = [
@@ -143,22 +145,25 @@ myunits:otherUnit a owl:NamedIndividual, qudt:Unit ;
     rdfs:label "other unit"@en .
 """
 
-_MY_UNITS_NS = "https://example.org/ontologies/my-units#"
+_MY_UNITS_IRI = "https://example.org/ontologies/my-units"
+_MY_UNITS_NS = f"{_MY_UNITS_IRI}#"
+_EXTRA_NS = "https://example.org/ontologies/my-units-extra#"
 
 
-def _author_ontology() -> Ontology:
+def _author_graph() -> RDFGraph:
+    """The author's graph as parsed, before any stamp rewrites its prefixes."""
     graph = RDFGraph()
     graph.parse(data=_AUTHOR_PREFIX_TTL, format="turtle")
-    return Ontology(graph=graph)
+    return graph
 
 
 def test_materialize_prefix_declarations_targets_used_author_bindings() -> None:
-    ontology = _author_ontology()
-    ontology.graph.bind("unused", URIRef("https://example.org/never-used#"))
+    graph = _author_graph()
+    graph.bind("unused", URIRef("https://example.org/never-used#"))
 
-    added = ontology.graph.materialize_prefix_declarations(URIRef(ontology.iri))
+    added = graph.materialize_prefix_declarations(URIRef(_MY_UNITS_IRI))
 
-    declared = ontology.graph.declared_prefix_map()
+    declared = graph.declared_prefix_map()
     assert added == 1
     assert declared == {_MY_UNITS_NS: "myunits"}
     # Well-known namespaces (qudt) are recoverable from the canonical tables and
@@ -168,35 +173,48 @@ def test_materialize_prefix_declarations_targets_used_author_bindings() -> None:
 
 
 def test_materialize_prefix_declarations_idempotent_and_hash_neutral() -> None:
-    ontology = _author_ontology()
-    hash_before = ontology.hash
+    graph = _author_graph()
+    hash_before = content_hash(graph, _MY_UNITS_IRI)
 
-    first = ontology.graph.materialize_prefix_declarations(URIRef(ontology.iri))
-    second = ontology.graph.materialize_prefix_declarations(URIRef(ontology.iri))
+    first = graph.materialize_prefix_declarations(URIRef(_MY_UNITS_IRI))
+    second = graph.materialize_prefix_declarations(URIRef(_MY_UNITS_IRI))
 
     assert first == 1
     assert second == 0
-    rehashed = Ontology(graph=ontology.graph, iri=ontology.iri)
-    assert rehashed.hash == hash_before
+    assert content_hash(graph, _MY_UNITS_IRI) == hash_before
 
 
 @pytest.mark.anyio
 async def test_author_prefix_survives_store_round_trip() -> None:
+    """Prefix names live only as ``sh:declare`` triples past the store.
+
+    The ontology's own namespace is rebound from the header's id; a foreign
+    author namespace comes back only through its declaration.
+    """
     from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
 
-    ontology = _author_ontology()
+    graph = _author_graph()
+    graph.bind("muex", URIRef(_EXTRA_NS))
+    graph.add((URIRef(f"{_EXTRA_NS}Extra"), RDF.type, OWL.Class))
+    ontology = stamped_ontology(graph, ontology_id="myunits")
     hash_before = ontology.hash
+    assert ontology.graph.declared_prefix_map() == {
+        _MY_UNITS_NS: "myunits",
+        _EXTRA_NS: "muex",
+    }
 
     manager = InMemoryTripleStoreManager()
     await manager.aserialize(ontology)
     fetched = (await manager.afetch_ontologies())[0]
 
-    bindings = [p for p, u in fetched.graph.namespaces() if str(u) == _MY_UNITS_NS]
-    assert bindings == ["myunits"]
+    bindings = {p: str(u) for p, u in fetched.graph.namespaces()}
+    assert [p for p, u in bindings.items() if u == _MY_UNITS_NS] == ["myunits"]
+    assert [p for p, u in bindings.items() if u == _EXTRA_NS] == ["muex"]
     assert fetched.prefix == "myunits"
     # Declarations are hash-neutral, so identity survives the round trip too
     # (content is float-free, so no literal-lexical-form drift interferes).
     assert fetched.hash == hash_before
+    assert fetched.version_iri == ontology.version_iri
 
 
 def test_bind_used_prefixes_prefers_declared_over_heuristic() -> None:

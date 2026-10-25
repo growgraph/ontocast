@@ -103,6 +103,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `rdf/turtle_repair` | `ontocast/onto/rdfgraph.py` | Turtle payloads that parsed only after repair (truncated statement, unknown prefix, update-query wrapper) |
 | `rdf/jsonld_rdflib_fallback` | `ontocast/onto/rdfgraph.py` | JSON-LD payloads that failed URDNA2015 normalization and were parsed by rdflib instead |
 | `repair/compact_iri_literal` | `ontocast/tool/facts_validation/literal_repair.py` | Compact IRIs written as plain strings on an IRI-valued position and coerced back to IRIs, in renders and in critic and completion patches |
+| `repair/entailed_type` | `ontocast/tool/facts_validation/literal_repair.py` | `rdf:type` triples added from a predicate's `rdfs:domain` or `rdfs:range`, in renders and in critic and completion patches |
 | `llm/ontology_selection` | `ontocast/agent/select_ontology_catalog.py` | Ontology selection calls, one per unit in `selected_single_ontology` mode |
 | `chapter/text_chars_before` | `ontocast/agent/render_facts.py` | Summed length of capped text literals before the text caps |
 | `chapter/text_chars_after` | `ontocast/agent/render_facts.py` | The same after the caps |
@@ -114,6 +115,8 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `<node>/unit_errors` | `ontocast/stategraph/node_factories.py` | Units of a fan-out node that raised |
 | `ontology/update_rejected_over_budget` | `ontocast/agent/render_ontology.py` | Ontology updates discarded for exceeding `ONTOLOGY_MAX_TRIPLES` |
 | `ontology/deletes_dropped_insert_only` | `ontocast/agent/render_ontology.py`, `ontocast/stategraph/node_factories.py` | Ontology delete triples dropped under `ONTOLOGY_UPDATE_MODE=insert_only` |
+| `ontology/model_header_triples_dropped` | `ontocast/agent/render_ontology.py` | `owl:Ontology` header triples a fresh render wrote and that were dropped: identity and the version header are written by code |
+| `llm/ontology_identity` | `ontocast/agent/resolve_home_ontology.py` | Home-ontology calls, one per document that can create vocabulary |
 
 `calls_count` equals `llm/calls_timed + llm/timeouts`: a call that raised for
 any other reason is not counted in `calls_count`. The
@@ -173,6 +176,7 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | `facts_validation_findings`, `facts_validation_errors` | Findings after validation, and those of error severity |
 | `facts_shacl_violations_before`, `facts_shacl_violations_after` | SHACL violations around the automatic repair. Present only when the repair ran |
 | `facts_shacl_repairs`, `facts_shacl_autofix_passes`, `facts_shacl_autofix_reverted` | Repairs applied, passes kept, and whether a pass was reverted. Present only when the repair ran |
+| `facts_untyped_dropped` | Instances dropped at the gate for carrying no concrete `rdf:type` after aggregation; their IRIs are `AgentState.facts_untyped_dropped` |
 | `structural_ontology_components_max` | The highest connected-component count among the ontologies the structural check examined |
 | `consistency_conflicts` | Conflicts the consistency critic reported |
 
@@ -216,7 +220,7 @@ left out.
 | `completion` | `calls`, `units`, `subjects_inserted`, `subjects_rolled_back`, `triples_inserted`, `measurements_recovered` |
 | `selection` | `target_sections`, `exclude_sections`, `summarize_sections`, `summary_max_sentences`, `bibliography_mode`, `non_content_mode`, `labeled_units`, `unlabeled_units`, `section_label_histogram`, and the units skipped as bibliography, undersized or non-content |
 | `validation_config` | `context_from_units`, `json_mode`, `shapes_prompt_contract`, `shapes_prompt_selection`, `shapes_triples`, `shacl_inference`, `numeric_coverage_mandatory`, and the length (not the text) of the facts user instruction |
-| `ontology_reduce_metrics` | Counts from reducing the units' ontology updates: duplicate minted terms and their pairs, deletes dropped, unattributed inserts and deletes, artifacts produced, and the apply step's own counts |
+| `ontology_reduce_metrics` | Counts from reducing the units' ontology updates: duplicate minted terms and their pairs, deletes dropped, unattributed inserts and deletes, fresh graphs unioned, artifacts produced, and the apply step's own counts (`apply_deletes_no_match`, `apply_header_triples_dropped`) |
 | `graph_metrics` | The written facts graph: `nodes`, `edges`, `components`, `largest_component`, `isolated_nodes` |
 | `ontology_triples`, `facts_triples`, `facts_triples_serialized` | Ontology triples written; facts triples in memory, provenance included; facts triples in the `.facts.ttl` file |
 | `retrieval_metrics` | The same mapping `/process` returns |

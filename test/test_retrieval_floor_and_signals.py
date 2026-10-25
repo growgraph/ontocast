@@ -227,9 +227,7 @@ async def test_small_module_closure_merges_whole_module() -> None:
     )
     ontology = Ontology(graph=module_graph, iri="https://x.org/qqval")
     manager = SimpleNamespace(
-        get_freshest_terminal_ontology_by_iri=lambda iri: (
-            ontology if iri == "https://x.org/qqval" else None
-        )
+        get_head_by_iri=lambda iri: ontology if iri == "https://x.org/qqval" else None
     )
     retriever = _closure_retriever(manager, closure_max=10)
     snapshot = RDFGraph()
@@ -286,9 +284,7 @@ def _qqval_manager():
     )
     ontology = Ontology(graph=module_graph, iri="https://x.org/qqval")
     return SimpleNamespace(
-        get_freshest_terminal_ontology_by_iri=lambda iri: (
-            ontology if iri == "https://x.org/qqval" else None
-        )
+        get_head_by_iri=lambda iri: ontology if iri == "https://x.org/qqval" else None
     )
 
 
@@ -310,9 +306,7 @@ def _multi_module_manager(*modules):
     from types import SimpleNamespace
 
     by_iri = {module.iri: module for module in modules}
-    return SimpleNamespace(
-        get_freshest_terminal_ontology_by_iri=lambda iri: by_iri.get(iri)
-    )
+    return SimpleNamespace(get_head_by_iri=lambda iri: by_iri.get(iri))
 
 
 BIG = "https://x.org/big"

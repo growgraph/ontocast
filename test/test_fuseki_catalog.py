@@ -6,13 +6,29 @@ server is required.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Sequence
+from types import SimpleNamespace
+from typing import Any, cast
+from urllib.parse import unquote
 
 import httpx
 import pytest
+from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
-from ontocast.tool.triple_manager.core import TripleStoreUnavailableError
+from ontocast.onto.identity import OntologyIdentity
+from ontocast.onto.ontology import Ontology, OntologyHeader
+from ontocast.onto.ontology_header import mint_ontology
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.state import AgentState
+from ontocast.tool.ontology_manager import OntologyManager
+from ontocast.tool.triple_manager.core import (
+    TripleStoreUnavailableError,
+    TripleStoreWriteError,
+)
 from ontocast.tool.triple_manager.fuseki import FusekiTripleStoreManager
+from ontocast.tool.vector_store.patch_retriever import OntologyPatchRetriever
+from ontocast.toolbox import ToolBox
+from test.ontology_helpers import next_version, stamped_ontology
 
 pytestmark = pytest.mark.unit
 
@@ -29,11 +45,61 @@ ex:Thing a owl:Class ; rdfs:label "Thing" .
 """
 
 
-class _RecordingTransport:
-    """Captures SPARQL POSTs and answers Graph Store GETs with fixed Turtle."""
+def _terms(iri: str, *names: str) -> RDFGraph:
+    graph = RDFGraph()
+    graph.add((URIRef(iri), RDF.type, OWL.Ontology))
+    for name in names:
+        term = URIRef(f"{iri}#{name}")
+        graph.add((term, RDF.type, OWL.Class))
+        graph.add((term, RDFS.label, Literal(name)))
+    return graph
 
-    def __init__(self, bindings: list[dict[str, Any]]) -> None:
+
+def _stored_version(iri: str = _ONTO_IRI, *names: str) -> Ontology:
+    """A stamped root version of the ontology ``iri`` declaring ``names``."""
+    return stamped_ontology(
+        _terms(iri, *(names or ("Thing",))), ontology_id=iri.rsplit("/", 1)[-1]
+    )
+
+
+def _header_rows(
+    ontology: Ontology, *, priors: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """The SPARQL JSON bindings the header query yields for one stored version.
+
+    One row per prior version (the query's small cross product), or one row
+    for a root.
+    """
+    header = OntologyHeader.from_ontology(ontology)
+    assert header.created_at and header.modified_at
+    base = {
+        "g": header.graph_uri,
+        "onto": header.iri,
+        "versionIri": header.version_iri,
+        "version": header.version,
+        "prefix": header.ontology_id,
+        "title": header.title,
+        "created": header.created_at.isoformat(),
+        "modified": header.modified_at.isoformat(),
+    }
+    if header.description:
+        base["description"] = header.description
+    prior_iris = header.prior_version_iris if priors is None else priors
+    rows = [dict(base, prior=prior) for prior in prior_iris] or [base]
+    return [{name: {"value": value} for name, value in row.items()} for row in rows]
+
+
+class _RecordingTransport:
+    """Captures SPARQL POSTs and answers Graph Store GETs with stored versions."""
+
+    def __init__(
+        self, bindings: list[dict[str, Any]], versions: list[Ontology]
+    ) -> None:
         self.bindings = bindings
+        self.turtle_by_graph = {
+            cast(str, version.version_iri): version.graph.serialize(format="turtle")
+            for version in versions
+        }
         self.posted_queries: list[str] = []
         self.posted_urls: list[str] = []
         self.fetched_graph_urls: list[str] = []
@@ -54,15 +120,28 @@ class _RecordingTransport:
 
     async def get(self, url: str, **kwargs: Any) -> httpx.Response:
         self.fetched_graph_urls.append(url)
-        return httpx.Response(200, text=_TURTLE, request=httpx.Request("GET", url))
+        graph_uri = unquote(url.split("graph=", 1)[1])
+        turtle = self.turtle_by_graph.get(graph_uri)
+        if turtle is None:
+            return httpx.Response(404, text="", request=httpx.Request("GET", url))
+        return httpx.Response(200, text=turtle, request=httpx.Request("GET", url))
 
 
 @pytest.fixture
 def manager_and_transport(monkeypatch: pytest.MonkeyPatch):
-    """A Fuseki manager whose httpx client is replaced by a recorder."""
+    """A Fuseki manager whose httpx client is replaced by a recorder.
 
-    def _make(bindings: list[dict[str, Any]]):
-        transport = _RecordingTransport(bindings)
+    ``versions`` are the stored versions the Graph Store serves; ``bindings``
+    default to their header rows.
+    """
+
+    def _make(
+        bindings: list[dict[str, Any]] | None = None,
+        versions: Sequence[Ontology] = (),
+    ):
+        if bindings is None:
+            bindings = [row for version in versions for row in _header_rows(version)]
+        transport = _RecordingTransport(bindings, list(versions))
         manager = FusekiTripleStoreManager(
             uri="http://fuseki.invalid:3030",
             dataset="facts",
@@ -123,7 +202,7 @@ async def test_aselect_raises_on_http_error(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(httpx.AsyncClient, "post", failing_post)
     manager = FusekiTripleStoreManager(uri="http://fuseki.invalid:3030")
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(TripleStoreUnavailableError):
         await manager.aselect("SELECT ?g WHERE { GRAPH ?g { ?s ?p ?o } }")
 
 
@@ -131,62 +210,67 @@ async def test_aselect_raises_on_http_error(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_ontology_catalog_reads_headers_without_fetching_graphs(
     manager_and_transport,
 ) -> None:
+    root = _stored_version()
+    merged = next_version(root, _terms(_ONTO_IRI, "Thing", "Gadget"))
+    root_iri = cast(str, root.version_iri)
+    other_prior = f"{_ONTO_IRI}#other"
     manager, transport = manager_and_transport(
+        _header_rows(merged, priors=[root_iri, other_prior])
+    )
+
+    headers = await manager.afetch_ontology_catalog()
+
+    # The two prior rows are one ontology version, not two.
+    assert len(headers) == 1
+    assert headers[0].iri == _ONTO_IRI
+    assert headers[0].graph_uri == merged.version_iri
+    assert headers[0].version_iri == merged.version_iri
+    assert headers[0].prior_version_iris == sorted([root_iri, other_prior])
+    assert headers[0].ontology_id == "catalog"
+    assert headers[0].version == merged.version
+    assert transport.fetched_graph_urls == []
+    assert manager.catalog_io_stats()["graph_fetches"] == 0
+
+
+@pytest.mark.anyio
+async def test_catalog_rejects_a_graph_without_the_version_header(
+    manager_and_transport,
+) -> None:
+    """A foreign graph in the ontologies dataset is a fault, never a gap."""
+    from ontocast.onto.ontology_header import CatalogContractError
+
+    manager, _ = manager_and_transport(
         [
             {
                 "g": {"value": _GRAPH_URI},
                 "onto": {"value": _ONTO_IRI},
                 "version": {"value": "1.0.0"},
-                "identifier": {"value": "hash:abc123"},
-                "parent": {"value": "urn:hash:parent1"},
-            },
-            {
-                "g": {"value": _GRAPH_URI},
-                "onto": {"value": _ONTO_IRI},
-                "version": {"value": "1.0.0"},
-                "identifier": {"value": "hash:abc123"},
-                "parent": {"value": "urn:hash:parent2"},
-            },
+            }
         ]
     )
 
-    headers = await manager.afetch_ontology_catalog()
-
-    # The two parent rows are one ontology version, not two.
-    assert len(headers) == 1
-    assert headers[0].iri == _ONTO_IRI
-    assert headers[0].graph_uri == _GRAPH_URI
-    assert headers[0].hash == "abc123"
-    assert headers[0].parent_hashes == ["parent1", "parent2"]
-    assert transport.fetched_graph_urls == []
-    assert manager.catalog_io_stats()["graph_fetches"] == 0
+    with pytest.raises(CatalogContractError) as excinfo:
+        await manager.afetch_ontology_catalog()
+    assert excinfo.value.graph_uri == _GRAPH_URI
 
 
 @pytest.mark.anyio
 async def test_afetch_ontologies_by_iri_fetches_only_requested_graph(
     manager_and_transport,
 ) -> None:
-    other_graph = "https://example.org/other#def456"
-    manager, transport = manager_and_transport(
-        [
-            {
-                "g": {"value": _GRAPH_URI},
-                "onto": {"value": _ONTO_IRI},
-                "identifier": {"value": "hash:abc123"},
-            },
-            {
-                "g": {"value": other_graph},
-                "onto": {"value": "https://example.org/other"},
-                "identifier": {"value": "hash:def456"},
-            },
-        ]
-    )
+    wanted = _stored_version()
+    other = _stored_version("https://example.org/other")
+    manager, transport = manager_and_transport(versions=[wanted, other])
 
     ontologies = await manager.afetch_ontologies_by_iri([_ONTO_IRI])
 
     assert [onto.iri for onto in ontologies] == [_ONTO_IRI]
+    assert ontologies[0].version_iri == wanted.version_iri
     assert len(transport.fetched_graph_urls) == 1
-    assert _GRAPH_URI.replace("#", "%23") in transport.fetched_graph_urls[0]
+    assert (
+        cast(str, wanted.version_iri).replace("#", "%23")
+        in (transport.fetched_graph_urls[0])
+    )
     assert manager.catalog_io_stats()["full_catalog_fetches"] == 0
 
 
@@ -194,9 +278,7 @@ async def test_afetch_ontologies_by_iri_fetches_only_requested_graph(
 async def test_afetch_ontologies_by_iri_skips_io_when_nothing_matches(
     manager_and_transport,
 ) -> None:
-    manager, transport = manager_and_transport(
-        [{"g": {"value": _GRAPH_URI}, "onto": {"value": _ONTO_IRI}}]
-    )
+    manager, transport = manager_and_transport(versions=[_stored_version()])
 
     assert await manager.afetch_ontologies_by_iri(["https://example.org/absent"]) == []
     assert transport.fetched_graph_urls == []
@@ -300,23 +382,21 @@ async def test_partial_catalog_fetch_is_reported_as_incomplete(
     The absent ontologies would otherwise look like orphans to the vector-store
     prune and be deleted.
     """
-    manager, _ = manager_and_transport(
-        [
-            {"g": {"value": f"{_ONTO_IRI}-a#v1"}},
-            {"g": {"value": f"{_ONTO_IRI}-b#v1"}},
-        ]
-    )
+    served = _stored_version(f"{_ONTO_IRI}-a")
+    lost = _stored_version(f"{_ONTO_IRI}-b")
+    manager, transport = manager_and_transport(versions=[served, lost])
+    serve = transport.get
 
     async def get(_self: Any, url: str, **kwargs: Any) -> httpx.Response:
         if "-b" in url:
             return httpx.Response(503, text="", request=httpx.Request("GET", url))
-        return httpx.Response(200, text=_TURTLE, request=httpx.Request("GET", url))
+        return await serve(url, **kwargs)
 
     monkeypatch.setattr(httpx.AsyncClient, "get", get)
 
     ontologies = await manager.afetch_ontologies()
 
-    assert len(ontologies) == 1
+    assert [onto.iri for onto in ontologies] == [served.iri]
     assert manager.last_catalog_was_complete() is False
 
 
@@ -324,11 +404,91 @@ async def test_partial_catalog_fetch_is_reported_as_incomplete(
 async def test_complete_catalog_fetch_reports_authoritative(
     manager_and_transport,
 ) -> None:
-    manager, _ = manager_and_transport([{"g": {"value": _GRAPH_URI}}])
+    manager, _ = manager_and_transport(versions=[_stored_version()])
 
-    await manager.afetch_ontologies()
+    ontologies = await manager.afetch_ontologies()
 
+    assert [onto.iri for onto in ontologies] == [_ONTO_IRI]
     assert manager.last_catalog_was_complete() is True
+
+
+@pytest.mark.anyio
+async def test_aserialize_refuses_an_unstamped_ontology(manager_and_transport) -> None:
+    manager, _ = manager_and_transport([])
+    unstamped = Ontology(graph=_terms(_ONTO_IRI, "Thing"), iri=_ONTO_IRI)
+
+    with pytest.raises(ValueError, match="not stamped as a version"):
+        await manager.aserialize(unstamped)
+
+
+def _refusing_put(monkeypatch: pytest.MonkeyPatch, status: int) -> list[str]:
+    """Answer every Graph Store PUT with ``status``; returns the URLs seen."""
+    put_urls: list[str] = []
+
+    async def put(_self: Any, url: str, **kwargs: Any) -> httpx.Response:
+        put_urls.append(url)
+        return httpx.Response(
+            status, text="disk full", request=httpx.Request("PUT", url)
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "put", put)
+    return put_urls
+
+
+@pytest.mark.anyio
+async def test_a_refused_write_raises_a_write_error(
+    manager_and_transport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _ = manager_and_transport([])
+    put_urls = _refusing_put(monkeypatch, 500)
+    version = _stored_version()
+
+    with pytest.raises(TripleStoreWriteError) as excinfo:
+        await manager.aserialize(version)
+
+    assert excinfo.value.graph_uri == version.version_iri
+    assert excinfo.value.status == 500
+    assert len(put_urls) == 1
+    assert "/ontologies/data?graph=" in put_urls[0]
+
+
+@pytest.mark.anyio
+async def test_a_refused_write_leaves_no_version_registered_or_indexed(
+    manager_and_transport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store is written before anything downstream can point at a version."""
+    manager, _ = manager_and_transport([])
+    _refusing_put(monkeypatch, 500)
+
+    indexed: list[Ontology] = []
+    ontology_manager = OntologyManager()
+    ontology_manager.register_vector_store(
+        cast(
+            OntologyPatchRetriever,
+            SimpleNamespace(
+                vector_store=SimpleNamespace(
+                    reindex_ontology=lambda o: indexed.append(o) or 1
+                )
+            ),
+        )
+    )
+    artifact = mint_ontology(
+        OntologyIdentity(ontology_id="catalog", iri=_ONTO_IRI, title="Catalog"),
+        _terms(_ONTO_IRI, "Thing"),
+    )
+    state = AgentState()
+    state.reduced_ontology_artifacts = [artifact]
+    stub = SimpleNamespace(
+        ontology_manager=ontology_manager, triple_store_manager=manager
+    )
+
+    with pytest.raises(TripleStoreWriteError):
+        await ToolBox.aserialize(cast(ToolBox, stub), state)
+
+    assert ontology_manager.get_heads_by_iri(_ONTO_IRI) == []
+    assert ontology_manager.get_ontology_versions_by_iri(_ONTO_IRI) == []
+    assert indexed == []
+    assert state.ontology_versions_written == []
 
 
 @pytest.mark.parametrize(

@@ -16,9 +16,9 @@ from ontocast.onto.llm_graph_payload import (
 from ontocast.onto.model import (
     FactsCritiqueReport,
     FactsRenderReport,
+    FreshOntologyRenderReport,
     GraphUpdateRenderReport,
     OntologyCritiqueReport,
-    OntologyRenderReport,
     Suggestions,
 )
 from ontocast.onto.rdfgraph import RDFGraph
@@ -378,7 +378,7 @@ def test_parsed_graph_update_applies_via_unit_facts_state() -> None:
 def test_format_instructions_no_dual_or_on_graph_fields() -> None:
     for fmt in LLMGraphFormat:
         profile = get_graph_format_profile(fmt)
-        instructions = profile.format_instructions(OntologyRenderReport)
+        instructions = profile.format_instructions(FreshOntologyRenderReport)
         assert "Turtle string OR" not in instructions
         assert "OR a compact JSON-LD" not in instructions
 
@@ -390,7 +390,7 @@ _SEARCH_MARKERS = (
 )
 
 _REPORT_MODELS = (
-    OntologyRenderReport,
+    FreshOntologyRenderReport,
     GraphUpdateRenderReport,
     FactsRenderReport,
     OntologyCritiqueReport,

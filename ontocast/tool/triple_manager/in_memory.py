@@ -10,7 +10,7 @@ from typing import Literal, overload
 
 import pyoxigraph as ox
 from oxrdflib._converter import to_ox
-from rdflib import Graph, URIRef
+from rdflib import Graph
 from rdflib.term import Node
 
 from ontocast.onto.ontology import Ontology
@@ -25,7 +25,7 @@ from ontocast.onto.tenancy import (
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.tool.triple_manager.util import (
     ONTOLOGY_HEADER_QUERY,
-    dedupe_terminal_ontologies,
+    head_headers,
     headers_from_select_rows,
     ontology_from_named_graph,
 )
@@ -290,6 +290,16 @@ class InMemoryTripleStoreManager(TripleStoreManager):
             ox_store = _partition_store(partition, store)
             _clear_named_graph(ox_store, _to_ox_graph(graph_uri))
 
+    async def afetch_named_graph(
+        self, graph_uri: str, *, store: StoreKind = "ontologies"
+    ) -> RDFGraph | None:
+        async with self._lock:
+            partition = self._active_partition()
+            ox_store = _partition_store(partition, store)
+            if graph_uri not in _list_named_graph_uris(ox_store):
+                return None
+            return _export_named_graph(ox_store, graph_uri)
+
     async def drop_all_ontology_graphs_for_iri(
         self, ontology_iri: str, *, store: StoreKind = "ontologies"
     ) -> None:
@@ -336,7 +346,7 @@ class InMemoryTripleStoreManager(TripleStoreManager):
         if not iris:
             return await self.afetch_ontologies()
         wanted = set(iris)
-        headers = dedupe_terminal_ontologies(await self.afetch_ontology_catalog())
+        headers = head_headers(await self.afetch_ontology_catalog())
         graph_uris = [header.graph_uri for header in headers if header.iri in wanted]
         if not graph_uris:
             return []
@@ -349,9 +359,7 @@ class InMemoryTripleStoreManager(TripleStoreManager):
         for graph_uri in graph_uris:
             self._graph_fetches += 1
             graph = _export_named_graph(partition.ontologies, graph_uri)
-            onto = ontology_from_named_graph(graph_uri, graph)
-            if onto is not None:
-                ontologies.append(onto)
+            ontologies.append(ontology_from_named_graph(graph_uri, graph))
         return ontologies
 
     def catalog_io_stats(self) -> dict[str, int]:
@@ -366,13 +374,16 @@ class InMemoryTripleStoreManager(TripleStoreManager):
     def fetch_ontologies(self) -> list[Ontology]:
         self._full_catalog_fetches += 1
         partition = self._active_partition()
-        result = dedupe_terminal_ontologies(
-            self._materialize_graphs(_list_named_graph_uris(partition.ontologies))
+        headers = head_headers(
+            headers_from_select_rows(
+                _run_select(partition.ontologies, ONTOLOGY_HEADER_QUERY)
+            )
         )
+        result = self._materialize_graphs([header.graph_uri for header in headers])
         logger.info("Loaded %d unique ontologies from in-memory store", len(result))
         return result
 
-    def serialize_graph(self, graph: Graph, **kwargs) -> bool:
+    def serialize_graph(self, graph: Graph, **kwargs) -> None:
         graph_uri = kwargs.get("graph_uri")
         store: StoreKind = kwargs.pop("store", "facts")
         if graph_uri is None:
@@ -385,24 +396,23 @@ class InMemoryTripleStoreManager(TripleStoreManager):
         quads = _rdflib_graph_to_quads(graph, graph_ctx)
         if quads:
             ox_store.extend(quads)
-        return True
 
-    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> bool:
+    def serialize(self, o: Ontology | RDFGraph, **kwargs) -> None:
         if isinstance(o, Ontology):
-            if o.iri and not o.is_null():
-                # Persist author @prefix names as triples before they die at
-                # the store boundary (idempotent, excluded from content hash).
-                o.graph.materialize_prefix_declarations(URIRef(o.iri))
-            return self.serialize_graph(
+            if not o.version_iri:
+                raise ValueError(f"ontology {o.iri} is not stamped as a version")
+            self.serialize_graph(
                 o.graph,
-                graph_uri=o.versioned_iri,
+                graph_uri=o.version_iri,
                 store=kwargs.get("store", "ontologies"),
             )
+            return
         if isinstance(o, RDFGraph):
             graph_uri = kwargs.get("graph_uri", "urn:data:default")
-            return self.serialize_graph(
+            self.serialize_graph(
                 o,
                 graph_uri=graph_uri,
                 store=kwargs.get("store", "facts"),
             )
+            return
         raise TypeError(f"unsupported obj of type {type(o)} received")

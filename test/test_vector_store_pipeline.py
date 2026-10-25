@@ -54,6 +54,7 @@ from ontocast.tool.vector_store.util import (
     point_id_for_atom,
 )
 from ontocast.util.hash import render_text_hash
+from test.ontology_helpers import next_version, stamped_ontology
 
 pytestmark = pytest.mark.unit
 
@@ -1468,8 +1469,8 @@ def _cross_ontology_fixture(*, dangling: bool) -> list[Ontology]:
         """
     )
     return [
-        Ontology(iri=_MATSCI_IRI, graph=matsci_graph, title="matsci"),
-        Ontology(iri=_PEROV_IRI, graph=perov_graph, title="perov"),
+        stamped_ontology(matsci_graph, ontology_id="matsci"),
+        stamped_ontology(perov_graph, ontology_id="perovskitemat"),
     ]
 
 
@@ -1685,25 +1686,27 @@ async def test_catalog_reuses_graphs_across_units() -> None:
 
 
 @pytest.mark.anyio
-async def test_catalog_cache_sees_a_new_terminal_version() -> None:
+async def test_catalog_cache_sees_a_new_head_version() -> None:
     """Headers are read fresh, so a newly written version supersedes the cached one."""
     ontologies = _cross_ontology_fixture(dangling=False)
     store, catalog = _catalog_manager(ontologies)
 
     first = await catalog.aget_ontologies_by_iri([_PEROV_IRI])
     assert len(first) == 1
-    original_hash = first[0].hash
+    original_version_iri = first[0].version_iri
 
     next_graph = RDFGraph()
     next_graph += ontologies[1].graph
     next_graph.add((URIRef(f"{_PEROV_IRI}#Extra"), RDFS.label, Literal("extra")))
-    store.serialize(ontologies[1].derive_updated_version(next_graph))
+    child = next_version(ontologies[1], next_graph)
+    store.serialize(child)
 
     second = await catalog.aget_ontologies_by_iri([_PEROV_IRI])
     assert len(second) == 1
-    assert second[0].hash != original_hash
-    # The superseded version stays cached under its own content address.
-    assert first[0].versioned_iri in catalog._graph_cache
+    assert second[0].version_iri == child.version_iri
+    assert second[0].prior_version_iris == [original_version_iri]
+    # The superseded version stays cached under its own version IRI.
+    assert original_version_iri in catalog._graph_cache
 
 
 @pytest.mark.anyio
@@ -1805,7 +1808,7 @@ async def test_candidate_pushdown_preserves_owl_restrictions() -> None:
             ] .
         """
     )
-    ontologies = [Ontology(iri=_MATSCI_IRI, graph=restriction_graph, title="matsci")]
+    ontologies = [stamped_ontology(restriction_graph, ontology_id="matsci")]
 
     snapshots = {}
     for pushdown in (False, True):

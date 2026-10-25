@@ -296,6 +296,9 @@ class GraphAtomizer(Tool):
         hash: str | None
         version: str | None
 
+        @property
+        def version_key(self) -> str | None: ...
+
     def _merged_excluded_vocab_prefixes(self) -> frozenset[str]:
         extra = (
             _normalize_vocab_exclude_prefix(p)
@@ -378,8 +381,9 @@ class GraphAtomizer(Tool):
                 if payload_key in seen_payload_keys:
                     continue
                 seen_payload_keys.add(payload_key)
+                version_key = source.version_key or source.hash
                 atom_key = (
-                    f"{source.iri}|{source.hash}|{source.version}|{entity}|"
+                    f"{source.iri}|{version_key}|{source.version}|{entity}|"
                     f"{variant_index}|{core_representation}|{neighborhood_representation}"
                 )
                 atom_id = render_text_hash(atom_key, digits=None)
@@ -389,7 +393,7 @@ class GraphAtomizer(Tool):
                     atom_id=atom_id,
                     ontology_iri=source.iri,
                     ontology_id=source.ontology_id,
-                    ontology_hash=source.hash,
+                    ontology_hash=version_key,
                     ontology_version=source.version,
                     iri=str(entity),
                     entity_role=role,

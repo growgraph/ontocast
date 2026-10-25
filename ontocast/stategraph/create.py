@@ -11,6 +11,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
 from ontocast.agent import chunk_text, convert_document
+from ontocast.agent.resolve_home_ontology import resolve_home_ontology
 from ontocast.agent.serialize import serialize
 from ontocast.onto.enum import WorkflowNode
 from ontocast.onto.state import AgentState
@@ -82,7 +83,7 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     :func:`create_agent_graph`, which compiles for you.
 
     Flow: CONVERT -> CHUNK (prepare: segment, tag, filter, size) ->
-          (conditional extraction)
+          RESOLVE_HOME_ONTOLOGY (ontology modes only) -> (conditional extraction)
 
     Per-unit ontology context is assembled inside ``ontology_loop`` (not at a
     document-level select node). For ``ONTOLOGY_AND_FACTS``, the full ontology
@@ -105,6 +106,7 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     convert_document_node = partial(convert_document, tools=tools)
     chunk_text_node = partial(chunk_text, tools=tools)
     serialize_node = partial(serialize, tools=tools)
+    resolve_home_ontology_node = partial(resolve_home_ontology, tools=tools)
 
     render_ontology_node = make_render_ontology_node(tools)
     normalize_ontology_node = make_normalize_ontology_node(tools)
@@ -118,6 +120,7 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     node_callables: dict[WorkflowNode, Callable[..., Any]] = {
         WorkflowNode.CONVERT_TO_TEXT: convert_document_node,
         WorkflowNode.CHUNK: chunk_text_node,
+        WorkflowNode.RESOLVE_HOME_ONTOLOGY: resolve_home_ontology_node,
         WorkflowNode.RENDER_ONTOLOGY_UPDATE: render_ontology_node,
         WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES: normalize_ontology_node,
         WorkflowNode.CONSOLIDATE_ONTOLOGY: consolidate_ontology_node,
@@ -136,9 +139,12 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
         WorkflowNode.CHUNK,
         route_after_tag_or_chunk,
         {
-            WorkflowNode.RENDER_ONTOLOGY_UPDATE: WorkflowNode.RENDER_ONTOLOGY_UPDATE,
+            WorkflowNode.RESOLVE_HOME_ONTOLOGY: WorkflowNode.RESOLVE_HOME_ONTOLOGY,
             WorkflowNode.RENDER_FACTS: WorkflowNode.RENDER_FACTS,
         },
+    )
+    workflow.add_edge(
+        WorkflowNode.RESOLVE_HOME_ONTOLOGY, WorkflowNode.RENDER_ONTOLOGY_UPDATE
     )
     workflow.add_edge(
         WorkflowNode.RENDER_ONTOLOGY_UPDATE, WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES
