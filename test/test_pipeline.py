@@ -39,7 +39,7 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_apply import OntologyDelta
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.context_resolver import UnitOntologyContext
@@ -1374,7 +1374,9 @@ def test_a_rejected_request_stops_the_document_graph(monkeypatch) -> None:
     )
     app = create_agent_graph(ToolBox(config))
     text = "Perovskite films aged at 85 C for 500 hours lost 20% of their PCE. " * 20
-    state = AgentState(raw_input={"doc.txt": text.encode("utf-8")})
+    state = AgentState(
+        input_document=InputDocument(filename="doc.txt", data=text.encode("utf-8"))
+    )
 
     seen: list[Any] = []
 

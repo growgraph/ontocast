@@ -7,7 +7,7 @@ explains which fields answer which question.
 
 ## Budget fields
 
-`BudgetTracker` (`ontocast/onto/state.py`) is returned as `metadata.budget` by
+`BudgetTracker` (`ontocast/onto/state.py`) is returned as `outcome.metadata.budget` by
 `/process` and `/process_unit` and written as the run manifest's `budget`. Each
 content unit runs with its own tracker, merged into the document's when the
 unit finishes: fields and counters are summed, and duration keys ending in
@@ -123,7 +123,7 @@ built](prompt_construction.md#text-caps) describes the caps.
 
 ## Retrieval metrics
 
-`AgentState.retrieval_metrics` is returned as `metadata.retrieval_metrics` and
+`AgentState.retrieval_metrics` is returned as `outcome.metadata.retrieval_metrics` and
 written into the run manifest. Its top-level keys are the members of
 `RetrievalMetric` in `ontocast/onto/enum.py`. A key appears only when the stage
 that writes it ran.

@@ -1,6 +1,6 @@
 """Pydantic models for the OntoCast HTTP API."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -147,17 +147,34 @@ class ProcessResultMetadata(BaseModel):
 
 
 class ProcessOkResponse(BaseModel):
-    status: str = "success"
+    status: Literal["success"] = "success"
     data: ProcessResultData
     metadata: ProcessResultMetadata
 
 
 class ProcessErrorResponse(BaseModel):
-    status: str = "error"
+    status: Literal["error"] = "error"
     error: str
     error_type: str | None = None
     error_code: str | None = None
     error_details: dict | None = None
+
+
+class ProcessItemResult(BaseModel):
+    """One uploaded document's outcome."""
+
+    filename: str
+    status_code: int = Field(
+        description="200 when the document was extracted, 422 when it could not "
+        "be, 500 on an unexpected error."
+    )
+    outcome: ProcessOkResponse | ProcessErrorResponse = Field(discriminator="status")
+
+
+class ProcessBatchResponse(BaseModel):
+    """``/process`` and ``/process_unit``: one result per document, in upload order."""
+
+    results: list[ProcessItemResult]
 
 
 class OntologyMutationResponse(BaseModel):

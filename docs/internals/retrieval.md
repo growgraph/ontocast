@@ -413,7 +413,7 @@ SHACL](../guides/validation.md).
 `test/test_retrieval_recall.py` reports the retrieval funnel for a corpus you
 point it at; [Contributing](../contributing.md) describes its setup. Measured
 results for reference corpora live in `ontocast-validation`. In production,
-read `metadata.retrieval_metrics.patch_retrieval` and, with
+read `outcome.metadata.retrieval_metrics.patch_retrieval` and, with
 [`ONTOLOGY_PATCH_DUMP_ONTOLOGY_RANKS`](../reference/configuration/ontology-retrieval.md#ontology_patch_dump_ontology_ranks),
 the per-ontology rank table; [Choosing ontology
 context](../guides/ontology_context.md#diagnostics) lists the keys.

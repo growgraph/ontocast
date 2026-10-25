@@ -397,7 +397,8 @@ async def _resolve_ensemble_context(
 ) -> UnitOntologyContext:
     """Stitched induced subgraphs from vector retrieval."""
     mode = OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
-    queries = _unit_queries(unit, tools)
+    # Off the loop: a token budget counts on the encoder, under its lock.
+    queries = await asyncio.to_thread(_unit_queries, unit, tools)
     if not queries:
         return UnitOntologyContext(
             snapshot=OntologySnapshot.empty(

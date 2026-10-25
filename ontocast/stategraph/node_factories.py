@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, TypeVar
 
@@ -85,7 +85,7 @@ def _count_insert_only_drops(state: AgentState, dropped: int) -> None:
 
 
 @asynccontextmanager
-async def _unit_slot(semaphore: asyncio.Semaphore) -> AsyncIterator[float]:
+async def _unit_slot(semaphore: asyncio.Semaphore) -> AsyncGenerator[float, None]:
     """Hold a unit-worker slot, yielding how long acquiring it took.
 
     The wait is yielded rather than recorded, because the unit loops deep-copy

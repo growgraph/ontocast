@@ -1215,9 +1215,18 @@ class ServerConfig(BaseSettings):
         default=None,
         ge=1,
         description=(
-            "When set, limit concurrent /process and /process_unit handlers. "
-            "Requests beyond the limit queue until a slot frees up; they are "
+            "When set, limit concurrent /process and /process_unit document "
+            "runs. Runs beyond the limit queue until a slot frees up; they are "
             "not rejected."
+        ),
+    )
+    max_files_per_request: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Most files one /process or /process_unit request may upload. The "
+            "documents run one after another, so a request holds its "
+            "connection for all of them."
         ),
     )
     max_tenancy_scopes: int = Field(

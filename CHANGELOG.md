@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0]
+
+### Changed (breaking)
+
+- **`/process` and `/process_unit` take several files** and answer
+  `{"results": [{"filename", "status_code", "outcome"}]}`, one per document in upload order,
+  with HTTP 200; a document's failure is its result's `422`/`500`, not the response's.
+- **Uploaded files are named by their filename**, not their form field, so `-F file=@a.pdf`
+  converts as a PDF and two parts named `file` stay two documents.
+- **`AgentState.raw_input` is replaced by `input_document: InputDocument`** (`filename`, `data`;
+  exported from `ontocast`). `build_agent_state_from_parsed` is now
+  `build_agent_states_from_parsed`, one state per document.
+- **`SharedEncoder`** no longer exposes `.model` or takes `serialize=`; use `encode`,
+  `token_lengths` and `max_seq_length`.
+
+### Added
+
+- **`MAX_FILES_PER_REQUEST`** (default 20): files one `/process` or `/process_unit` request
+  may upload; more is a `400` `too_many_files`.
+
+### Fixed
+
+- **`RuntimeError: Already borrowed`** from the fast tokenizer when token counting ran beside
+  an encode: every use of a shared encoder's tokenizer now holds its lock, and docling's
+  hybrid chunker is serialised the same way.
+
 ## [0.6.9]
 
 ### Added

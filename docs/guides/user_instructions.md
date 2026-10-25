@@ -68,10 +68,10 @@ share a manifest without sharing your instructions.
 **Python.** Set the fields on the `AgentState` you pass to the pipeline:
 
 ```python
-from ontocast import AgentState, run_unit_pipeline
+from ontocast import AgentState, InputDocument, run_unit_pipeline
 
 state = AgentState(
-    raw_input={"report.txt": text.encode()},
+    input_document=InputDocument(filename="report.txt", data=text.encode()),
     ontology_user_instruction="Model companies, products and the deals between them.",
     facts_user_instruction="Extract every monetary amount with its currency and period.",
 )

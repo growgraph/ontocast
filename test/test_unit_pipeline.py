@@ -16,7 +16,7 @@ from ontocast.onto.enum import (
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_condense import TextCaps
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph import unit_pipeline
 from ontocast.stategraph.context_resolver import UnitOntologyContext
@@ -41,7 +41,9 @@ def _build_ontology(iri: str = "https://example.com/onto") -> Ontology:
 
 def _minimal_agent_state() -> AgentState:
     return AgentState(
-        raw_input={"doc.txt": b'"Alice works for ACME."'},
+        input_document=InputDocument(
+            filename="doc.txt", data=b'"Alice works for ACME."'
+        ),
         docling_doc=plain_text_to_docling_doc("Alice works for ACME.", "doc.txt"),
         doc_iri=URIRef("https://example.com/doc/d1"),
         render_mode=RenderMode.ONTOLOGY_AND_FACTS,

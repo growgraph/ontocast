@@ -151,11 +151,11 @@ pydantic in and out, with no LangGraph graph and so no recursion limit to set.
 Each loop inside it is bounded by the critic and retry budgets.
 
 ```python
-from ontocast import AgentState, run_unit_pipeline
+from ontocast import AgentState, InputDocument, run_unit_pipeline
 from ontocast.onto.enum import RenderMode
 
 state = AgentState(
-    raw_input={"note.txt": text.encode()},
+    input_document=InputDocument(filename="note.txt", data=text.encode()),
     render_mode=RenderMode.ONTOLOGY_AND_FACTS,
     facts_user_instruction="Extract every measurement with its unit.",
 )

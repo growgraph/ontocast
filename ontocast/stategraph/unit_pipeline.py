@@ -7,13 +7,13 @@ as **one** content unit without chunking, normalization, or the full LangGraph
 workflow.
 
 The pipeline is self-contained: it accepts a raw ``AgentState`` (with
-``raw_input`` populated) and handles document conversion internally, mirroring
+``input_document`` set) and handles document conversion internally, mirroring
 the ``CONVERT_TO_MD`` first-node contract of the full
 :func:`~ontocast.stategraph.create.create_agent_graph` workflow.
 
 The loops run sequentially:
 
-1. **Conversion**: raw bytes in ``raw_input`` are converted to text via
+1. **Conversion**: the bytes of ``input_document`` are converted to text via
    :func:`~ontocast.agent.convert_document.convert_document`.
 2. **Ontology loop** (if ``render_mode`` includes ontology): extracts / improves
    ontology from the input text.  The initial ontology context is guided by

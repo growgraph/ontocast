@@ -81,6 +81,10 @@ def _probe_app(server_config: ServerConfig | None = None) -> FastAPI:
             return parsed
         assert isinstance(parsed, ParsedProcessRequest)
         return {
+            "documents": [
+                [document.filename, document.data.decode()]
+                for document in parsed.documents
+            ],
             "render_mode": parsed.render_mode,
             "llm_graph_format": parsed.llm_graph_format,
             "ontology_context_mode_value": str(parsed.ontology_context_mode_value),
@@ -224,3 +228,46 @@ def test_unknown_strip_provenance_is_a_400(client: TestClient) -> None:
     response = client.post("/probe", json={"text": "hi", "strip_provenance": "maybe"})
     assert response.status_code == 400
     assert response.json()["error_code"] == "invalid_param:strip_provenance"
+
+
+def test_each_uploaded_file_is_its_own_document_named_by_filename(
+    client: TestClient,
+) -> None:
+    """Parts sharing a form field name stay separate, in upload order."""
+    response = client.post(
+        "/probe",
+        files=[
+            ("file", ("a.txt", b"first", "text/plain")),
+            ("file", ("b.md", b"second", "text/markdown")),
+        ],
+    )
+    assert response.status_code == 200
+    assert response.json()["documents"] == [["a.txt", "first"], ["b.md", "second"]]
+
+
+def test_a_json_body_is_one_document(client: TestClient) -> None:
+    response = client.post("/probe", json={"text": "hi"})
+    assert response.json()["documents"] == [["input.json", '{"text":"hi"}']]
+
+
+def test_an_upload_without_a_filename_is_a_400(client: TestClient) -> None:
+    body = (
+        b'--b\r\nContent-Disposition: form-data; name=file; filename=""\r\n\r\n'
+        b"x\r\n--b--\r\n"
+    )
+    response = client.post(
+        "/probe",
+        content=body,
+        headers={"content-type": "multipart/form-data; boundary=b"},
+    )
+    assert response.status_code == 400
+
+
+def test_more_files_than_the_cap_is_a_400() -> None:
+    capped = TestClient(_probe_app(ServerConfig(max_files_per_request=2)))
+    response = capped.post(
+        "/probe",
+        files=[("file", (f"{i}.txt", b"x", "text/plain")) for i in range(3)],
+    )
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "too_many_files"

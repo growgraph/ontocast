@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Collection, Generator, Mapping
 from contextlib import contextmanager
 from enum import StrEnum
 
@@ -68,7 +68,7 @@ def declared_env_names() -> dict[str, SettingsField]:
 @contextmanager
 def _environment(
     assignments: Mapping[str, str], declared: Collection[str]
-) -> Iterator[None]:
+) -> Generator[None, None, None]:
     """Run with only ``assignments`` among the declared names; restore after.
 
     Settings read names case-insensitively, so any spelling of a declared name

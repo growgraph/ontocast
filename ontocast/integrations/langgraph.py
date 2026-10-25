@@ -2,7 +2,7 @@
 
 ``AgentState`` declares no ``Annotated[..., reducer]`` channels and every node
 returns the whole state, so adding the compiled graph directly to a parent
-``StateGraph`` only works when the parent's state literally has ``raw_input``,
+``StateGraph`` only works when the parent's state literally has ``input_document``,
 ``docling_doc``, ``aggregated_facts`` and the rest. ``input_schema`` and
 ``output_schema`` narrow which of ``AgentState``'s own keys cross the boundary
 but cannot rename them, so they do not bridge a foreign state either.
@@ -22,7 +22,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from ontocast.onto.run_meter import run_meter_scope
-from ontocast.onto.state import AgentState
+from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph.create import create_agent_graph
 
 if TYPE_CHECKING:
@@ -130,7 +130,11 @@ def text_in_turtle_out(
             raise TypeError(
                 f"Expected a string at {text_key!r}, got {type(text).__name__}"
             )
-        return AgentState(raw_input={f"{text_key}.txt": text.encode("utf-8")})
+        return AgentState(
+            input_document=InputDocument(
+                filename=f"{text_key}.txt", data=text.encode("utf-8")
+            )
+        )
 
     def from_agent_state(final: AgentState, _parent: Any) -> dict[str, Any]:
         ontology_ttl = ""

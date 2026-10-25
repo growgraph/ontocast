@@ -18,8 +18,8 @@ FastAPI serves interactive documentation at `/docs` and the OpenAPI schema at
 | `GET /health` | Liveness probe |
 | `GET /info` | Version, accepted input types, cache statistics |
 | `GET /config` | Every setting the server runs with, credentials redacted |
-| `POST /process` | Extract an ontology and facts from one document |
-| `POST /process_unit` | Extract from a short text as a single content unit, without chunking |
+| `POST /process` | Extract an ontology and facts from each uploaded document |
+| `POST /process_unit` | Extract from short texts, each as a single content unit, without chunking |
 | `GET /ontologies` | List the catalog's ontologies |
 | `POST /ontologies` | Add an ontology to the catalog |
 | `PUT /ontologies/{iri}` | Replace a catalog ontology |
@@ -85,17 +85,21 @@ for that request only; they are not reflected here.
 
 ### `POST /process`
 
-Runs the whole pipeline on one document: convert, chunk, extract the
-ontology, extract facts, merge. The request returns when the document is done.
+Runs the whole pipeline on each document: convert, chunk, extract the
+ontology, extract facts, merge. Documents run one after another, and the
+request returns when the last one is done.
 
-Send the document in one of two ways:
+Send the documents in one of two ways:
 
 | Content type | Body |
 |---|---|
-| `multipart/form-data` | One uploaded file (`.txt`, `.json`, or a suffix in [`CONVERTER_SUPPORTED_EXTENSIONS`](configuration/conversion.md#converter_supported_extensions) such as `.pdf`, `.docx` or `.md`; `/info` lists what this install accepts) plus any parameters as form fields |
-| `application/json` | A JSON object. The document text is its `text` field, or else its longest top-level string field. A `url` field is recorded as the document's source |
+| `multipart/form-data` | One or more uploaded files, under any field name, plus any parameters as form fields. Each file's name selects its converter: `.txt`, `.json`, or a suffix in [`CONVERTER_SUPPORTED_EXTENSIONS`](configuration/conversion.md#converter_supported_extensions) such as `.pdf`, `.docx` or `.md` (`/info` lists what this install accepts) |
+| `application/json` | One document as a JSON object. Its text is the `text` field, or else its longest top-level string field. A `url` field is recorded as the document's source |
 
-Any other content type, or a form with no file, returns `400`.
+These return `400`: any other content type, a form with no file, a file with
+no name, or more files than
+[`MAX_FILES_PER_REQUEST`](configuration/pipeline.md#max_files_per_request).
+The parameters apply to every document in the request.
 
 #### Parameters
 
@@ -155,23 +159,41 @@ curl -X POST http://127.0.0.1:8999/process \
 
 #### Response
 
+A request that passes the checks above returns `200` with one result per
+document, in upload order:
+
 ```json
 {
-  "status": "success",
-  "data": {
-    "facts": "@prefix cd: <...> . ...",
-    "ontology": null,
-    "ontology_artifacts": [
-      {"iri": "https://...", "ontology_id": "...", "title": "...", "triples": 42, "ttl": "..."}
-    ]
-  },
-  "metadata": {"status": "...", "chunks_processed": 7, "chunks_remaining": 0, "budget": {}, "...": "..."}
+  "results": [
+    {
+      "filename": "paper.pdf",
+      "status_code": 200,
+      "outcome": {
+        "status": "success",
+        "data": {
+          "facts": "@prefix cd: <...> . ...",
+          "ontology": null,
+          "ontology_artifacts": [
+            {"iri": "https://...", "ontology_id": "...", "title": "...", "triples": 42, "ttl": "..."}
+          ]
+        },
+        "metadata": {"status": "...", "chunks_processed": 7, "chunks_remaining": 0, "budget": {}, "...": "..."}
+      }
+    }
+  ]
 }
 ```
 
-`data.facts` is the merged facts graph in Turtle; it is empty in `ontology`
-mode. `data.ontology_artifacts` holds one entry per ontology the run created or
-changed. `data.ontology` is always `null`.
+Check every result: `status_code` is `200` when the document was extracted,
+`422` when it could not be (it could not be converted, its section selection
+matched nothing, it reached its token cap, or no content unit produced
+output), and `500` on an unexpected error. A failed `outcome` has
+`"status": "error"` with `error`, `error_type`, `error_code` and
+`error_details`; one document's failure does not stop the others.
+
+In a successful `outcome`, `data.facts` is the merged facts graph in Turtle; it
+is empty in `ontology` mode. `data.ontology_artifacts` holds one entry per
+ontology the run created or changed. `data.ontology` is always `null`.
 
 | `metadata` field | Content |
 |---|---|
@@ -186,13 +208,13 @@ changed. `data.ontology` is always `null`.
 | `facts_validation_findings` | The findings behind that summary, after every repair |
 | `facts_gate_repairs` | LLM-free repairs applied to the merged graph |
 
-A run in which no content unit produced output returns `422`, not an empty
-`200`.
+A document in which no content unit produced output is a `422` result
+(`error_code` `no_units_extracted`), not an empty success.
 
 ### `POST /process_unit`
 
-Treats the whole input as one content unit: no chunking, section tagging,
-summarization or normalization. Use it for a single passage, or to debug
+Treats each document as one content unit: no chunking, section tagging,
+summarization or normalization. Use it for single passages, or to debug
 prompts. It takes the same body and parameters as `/process`; the section
 parameters have no effect.
 
@@ -202,10 +224,10 @@ curl -X POST http://127.0.0.1:8999/process_unit \
   -d '{"text": "Single paragraph to process."}'
 ```
 
-The response has the shape of `/process`. `ontology_artifacts` holds at most
-one entry, the triples the unit added. The facts go through the same
+The response has the shape of `/process`. Each `ontology_artifacts` holds at
+most one entry, the triples the unit added. The facts go through the same
 validation gate as in `/process`, except the repair that splits wrongly merged
-entities, which needs more than one unit. A failed unit returns `422`.
+entities, which needs more than one unit. A failed unit is a `422` result.
 
 ## Ontology catalog
 

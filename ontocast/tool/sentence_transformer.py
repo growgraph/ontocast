@@ -37,26 +37,19 @@ _CACHE_LOCK = threading.Lock()
 
 
 class SharedEncoder:
-    """A process-shared ``SentenceTransformer`` plus the lock that serialises it.
+    """A process-shared ``SentenceTransformer`` and the only way to use it.
 
-    Concurrent ``encode()`` on one model instance is *correct* with default
-    arguments — ``torch.inference_mode()`` is thread-local, ``eval()`` and
-    ``to(self.device)`` are idempotent, and all sorting state is call-local. The
-    lock is therefore not buying correctness; it buys a bound on peak memory
-    (every concurrent encode allocates its own activation batch, and the unit
-    fan-out is ``PARALLEL_WORKERS`` wide) and it forecloses the cases that
-    *would* corrupt: a caller passing an explicit ``device=``, or using
-    ``truncate_embeddings()``. On CPU the cost is close to zero, since parallel
-    encodes contend for one intra-op thread pool anyway.
+    The model is private: every use of it *or its tokenizer* goes through this
+    handle, under one lock. A HuggingFace fast tokenizer keeps its truncation
+    setting as mutable state, and ``encode`` (which truncates) and
+    :meth:`token_lengths` (which must not) each set it. Two threads doing so at
+    once raise ``RuntimeError: Already borrowed`` from the tokenizer. The lock
+    also bounds peak memory: every concurrent encode allocates its own
+    activation batch, and the unit fan-out is ``PARALLEL_WORKERS`` wide.
     """
 
     def __init__(
-        self,
-        model_name: str,
-        model: Any,
-        *,
-        device: str | None = None,
-        serialize: bool = True,
+        self, model_name: str, model: Any, *, device: str | None = None
     ) -> None:
         """Wrap a loaded model.
 
@@ -64,24 +57,18 @@ class SharedEncoder:
             model_name: Checkpoint id this was loaded from.
             model: The loaded ``SentenceTransformer``.
             device: Device it was requested on; ``None`` means auto-select.
-            serialize: Whether to hold a lock across inference. The GPU opt-out,
-                where concurrent encodes are genuine parallelism rather than
-                contention.
         """
         self.model_name = model_name
         self.device = device
         self._model = model
-        self._lock: threading.Lock | None = threading.Lock() if serialize else None
+        self._lock = threading.Lock()
 
     @property
-    def model(self) -> Any:
-        """The underlying model, for **non-inference** attribute reads only.
-
-        Reading ``get_sentence_embedding_dimension()`` or ``max_seq_length`` here
-        is fine. Calling ``encode()`` on it bypasses the lock this class exists
-        to hold — use :meth:`encode`.
-        """
-        return self._model
+    def max_seq_length(self) -> int | None:
+        """Tokens the model sees before truncating; ``None`` if it states none."""
+        with self._lock:
+            limit = getattr(self._model, "max_seq_length", None)
+        return int(limit) if limit else None
 
     def encode(self, texts: list[str], **kwargs: Any) -> Any:
         """Encode ``texts``, serialised against other users of this model.
@@ -95,10 +82,21 @@ class SharedEncoder:
         Returns:
             Whatever ``SentenceTransformer.encode`` returns for those arguments.
         """
-        if self._lock is None:
-            return self._model.encode(texts, **kwargs)
         with self._lock:
             return self._model.encode(texts, **kwargs)
+
+    def token_lengths(self, texts: list[str]) -> list[int]:
+        """Word pieces per text, special tokens included, without truncation.
+
+        Args:
+            texts: Strings to measure, exactly as they would be encoded.
+
+        Returns:
+            list[int]: One length per text.
+        """
+        with self._lock:
+            encoded = self._model.tokenizer(texts, add_special_tokens=True)
+        return [len(ids) for ids in encoded["input_ids"]]
 
 
 def get_shared_encoder(
@@ -106,7 +104,6 @@ def get_shared_encoder(
     *,
     device: str | None = None,
     feature: str = "Local sentence-transformer models",
-    serialize: bool = True,
 ) -> SharedEncoder:
     """Return the process-wide guarded encoder for ``(model_name, device)``.
 
@@ -117,8 +114,6 @@ def get_shared_encoder(
             checkpoint on different devices get different handles rather than
             one silently pinned to whichever loaded first.
         feature: What needs the model, used in the missing-dependency message.
-        serialize: Whether the handle serialises inference. Only consulted when
-            the handle is first created.
 
     Returns:
         SharedEncoder: The shared handle.
@@ -141,7 +136,7 @@ def get_shared_encoder(
         )
         kwargs: dict[str, Any] = {} if device is None else {"device": device}
         model = sentence_transformers.SentenceTransformer(model_name, **kwargs)
-        encoder = SharedEncoder(model_name, model, device=device, serialize=serialize)
+        encoder = SharedEncoder(model_name, model, device=device)
         _ENCODER_CACHE[key] = encoder
         return encoder
 

@@ -88,7 +88,7 @@ act on these.
 
 ## Which units failed
 
-`metadata.failed_units` lists each content unit that produced nothing, with
+`outcome.metadata.failed_units` lists each content unit that produced nothing, with
 its `unit_index`, `phase` (`ontology`, `facts` or `summarize`), `stage` and
 `reason`. It is empty on a fully successful run. When no unit produced output,
 `/process` answers `422` and `ontocast process` records the file as failed and

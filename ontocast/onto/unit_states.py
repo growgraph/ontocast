@@ -2,7 +2,7 @@
 
 import logging
 from collections import defaultdict
-from typing import Literal
+from typing import Generic, Literal, TypeVar
 
 from pydantic import Field
 
@@ -48,16 +48,19 @@ def _render_updated_graph(
     return AgentState.render_updated_graph(graph, updates, max_triples=max_triples)
 
 
-class UnitState(BasePydanticModel):
+UnitT = TypeVar("UnitT", bound=SourceUnit)
+
+
+class UnitState(BasePydanticModel, Generic[UnitT]):
     """Common per-unit workflow state.
 
-    ``content_unit`` is typed to the :class:`SourceUnit` base here and narrowed
-    to :class:`ContentUnit` by :class:`UnitFactsState`, which needs the mutable
-    graph. Declaring it once keeps the progress string and the context-assembly
-    fields below from being written twice.
+    ``content_unit`` is bound to :class:`ContentUnit` by :class:`UnitFactsState`,
+    which needs the mutable graph, and to the :class:`SourceUnit` base by
+    :class:`UnitOntologyState`. Declaring it once keeps the progress string and
+    the context-assembly fields below from being written twice.
     """
 
-    content_unit: SourceUnit = Field(description="Unit under processing")
+    content_unit: UnitT = Field(description="Unit under processing")
     assembly_anchor_iri: str = Field(
         default="",
         description="Primary writable IRI from context assembly (metrics / logging).",
@@ -294,10 +297,9 @@ class UnitState(BasePydanticModel):
         raise NotImplementedError
 
 
-class UnitFactsState(UnitState):
+class UnitFactsState(UnitState[ContentUnit]):
     """Independent per-unit state for facts extraction and critique."""
 
-    content_unit: ContentUnit = Field(description="Unit under processing (mutable)")
     facts_user_instruction: str = Field(default="")
     conformance_chapter: str = Field(
         default="",
@@ -391,7 +393,7 @@ class UnitFactsState(UnitState):
         self.facts_updates = []
 
 
-class UnitOntologyState(UnitState):
+class UnitOntologyState(UnitState[SourceUnit]):
     """Independent per-unit state for ontology improvement loop."""
 
     ontology_user_instruction: str = Field(default="")
