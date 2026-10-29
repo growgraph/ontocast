@@ -1474,9 +1474,10 @@ class ToolBox:
 
         With ``as_new_version`` False (POST), the file becomes the root of a
         new ontology and a collision with an existing IRI raises. With True
-        (PUT), it becomes a new version whose prior is the current single
-        head; several heads raise ``DivergedOntologyError``; unchanged content
-        returns None; an ontology with no live head is adopted as a new root.
+        (PUT), it becomes a new version derived from every current head, so a
+        file the author wrote whole also merges a diverged ontology; content
+        equal to a single head's returns None; an ontology with no live head
+        is adopted as a new root.
 
         Returns:
             The stamped version that was written, or None when ``as_new_version``
@@ -1486,9 +1487,8 @@ class ToolBox:
 
         from rdflib import DCTERMS, OWL, RDF, URIRef
 
-        from ontocast.onto.ontology import normalize_semantic_version
+        from ontocast.onto.ontology import OntologyHeader, normalize_semantic_version
         from ontocast.onto.ontology_header import (
-            DivergedOntologyError,
             adopt_ontology,
             stamp_version,
             without_version_header,
@@ -1536,11 +1536,8 @@ class ToolBox:
             self.ontology_manager.add_ontology(o, skip_vector_index=True)
             return o
 
-        try:
-            head = self.ontology_manager.get_head_by_iri(iri)
-        except DivergedOntologyError:
-            raise
-        if head is None:
+        heads = self.ontology_manager.get_heads_by_iri(iri)
+        if not heads:
             o = adopt_ontology(graph)
             existing = self.ontology_manager.get_ontology(ontology_iri=iri)
             if not existing.is_null():
@@ -1555,7 +1552,11 @@ class ToolBox:
         if (URIRef(iri), RDF.type, OWL.Ontology) not in content:
             content = content.copy()
             content.add((URIRef(iri), RDF.type, OWL.Ontology))
-        artifact = head.derive_updated_version(content)
+        newest = max(heads, key=lambda h: (h.modified_at is not None, h.modified_at))
+        artifact = newest.derive_updated_version(content)
+        # The author's file supersedes every head: one head is an update, several
+        # a merge of the branches.
+        artifact.bases = [OntologyHeader.from_ontology(h) for h in heads]
         for value in graph.objects(URIRef(iri), DCTERMS.title):
             artifact.title = str(value)
             break

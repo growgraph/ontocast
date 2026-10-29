@@ -42,6 +42,10 @@ from ontocast.tool.facts_validation import (
     collect_shacl_shapes,
     count_shacl_focus_nodes,
     dedupe_literal_variants,
+    facts_connectivity,
+    instance_links,
+    links_lost,
+    materialize_entailed_types,
     record_facts_gate_metrics,
     shacl_catalog_contradictions,
     summarize_conformance,
@@ -192,10 +196,14 @@ def run_facts_gate(
     resulted from an identity merge turn the offending cluster into pair vetoes
     and the retained facts units are re-aggregated, up to
     ``FACTS_MERGE_REPAIR_PASSES`` times. Then, on both paths, SHACL autofix
-    (``FACTS_SHACL_AUTOFIX``) repairs constraint violations in code, and
-    instances still untyped after aggregation are dropped
-    (:func:`drop_untyped_instances`; ``facts_untyped_dropped``). Residual
-    findings stay on the state as telemetry.
+    (``FACTS_SHACL_AUTOFIX``) repairs constraint violations in code, instances
+    still untyped take the types their links' domains and ranges entail in the
+    whole ontology context (``facts_untyped_inferred``), and those still
+    untyped are dropped (:func:`drop_untyped_instances`;
+    ``facts_untyped_dropped``). The links these repairs removed
+    (``facts_links_removed``) and how the served instances hang together
+    (``facts_components``, ``facts_isolated``) are recorded. Residual findings
+    stay on the state as telemetry.
 
     Args:
         state: Document state carrying ``aggregated_facts`` and the facts units.
@@ -365,6 +373,7 @@ def run_facts_gate(
     # resolve codes to catalog IRIs, drop placeholder nodes. Runs after
     # un-merging so it sees the graph that will actually be served, and
     # reuses the violations the reporting pass just computed.
+    links_before = instance_links(state.aggregated_facts, fact_namespaces)
     repair_result = ShaclRepairResult(graph=state.aggregated_facts)
     if shapes_graph is not None:
         repair_result = apply_shacl_repairs(
@@ -385,8 +394,20 @@ def run_facts_gate(
         if repair_result.records:
             state.aggregated_facts = repair_result.graph
 
-    # Every instance the served graph holds is typed: whatever is still
-    # untyped once all units have contributed their types is removed.
+    # Every instance the served graph holds is typed. An instance still
+    # untyped once all units have contributed their types takes the class its
+    # links entail; whatever stays untyped is removed, with its links.
+    # Units materialise entailed types against their own context, which may
+    # lack the domain or range the whole context declares.
+    inferred_records: list[GraphRepairRecord] = []
+    untyped_before = set(untyped_instances(state.aggregated_facts, fact_namespaces))
+    if untyped_before:
+        _, inferred_records = materialize_entailed_types(
+            state.aggregated_facts, ontology_graph
+        )
+    state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_INFERRED] = len(
+        untyped_before - set(untyped_instances(state.aggregated_facts, fact_namespaces))
+    )
     _, untyped_dropped = drop_untyped_instances(state.aggregated_facts, fact_namespaces)
     untyped_records = [
         GraphRepairRecord(
@@ -399,12 +420,21 @@ def run_facts_gate(
         untyped_dropped
     )
 
-    if repair_result.records or untyped_dropped:
+    state.retrieval_metrics[RetrievalMetric.FACTS_LINKS_REMOVED] = links_lost(
+        links_before, state.aggregated_facts
+    )
+    connectivity = facts_connectivity(
+        state.aggregated_facts, fact_namespaces, document=state.doc_iri
+    )
+    state.retrieval_metrics[RetrievalMetric.FACTS_COMPONENTS] = connectivity.components
+    state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED] = connectivity.isolated
+
+    if repair_result.records or untyped_dropped or inferred_records:
         report = run_validation()
 
-    if dedupe_records or repair_result.records or untyped_records:
+    if dedupe_records or repair_result.records or untyped_records or inferred_records:
         state.facts_gate_repairs = (
-            dedupe_records + repair_result.records + untyped_records
+            dedupe_records + repair_result.records + inferred_records + untyped_records
         )
 
     state.facts_validation_findings = report.findings

@@ -13,6 +13,12 @@ from ontocast.tool.facts_validation.acceptance import (
     accept_reason,
     material_defects,
 )
+from ontocast.tool.facts_validation.connectivity import (
+    FactsConnectivity,
+    facts_connectivity,
+    instance_links,
+    links_lost,
+)
 from ontocast.tool.facts_validation.critic_patch import (
     CompiledFixes,
     CriticPatchPolicy,
@@ -64,6 +70,10 @@ from ontocast.tool.facts_validation.unit_findings import (
 )
 
 __all__ = [
+    "FactsConnectivity",
+    "facts_connectivity",
+    "instance_links",
+    "links_lost",
     "CompiledFixes",
     "CriticPatchPolicy",
     "FactsAcceptancePolicy",

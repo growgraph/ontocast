@@ -383,7 +383,7 @@ def test_gate_records_dropped_instances_on_the_state() -> None:
     state.doc_hid = "1"
     state.aggregated_facts = _facts(
         """
-        cd:s a ex:Sample ; rdfs:label "s" ; ex:measuredOn cd:ghost_b, cd:ghost_a .
+        cd:s a ex:Sample ; rdfs:label "s" ; ex:relatesTo cd:ghost_b, cd:ghost_a .
         cd:ghost_a rdfs:label "a" .
         cd:ghost_b rdfs:label "b" .
         """
@@ -415,3 +415,50 @@ def test_gate_metric_is_zero_when_nothing_is_dropped() -> None:
     assert state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_DROPPED] == 0
     assert state.facts_untyped_dropped == []
     assert state.facts_gate_repairs == []
+
+
+def test_gate_types_an_instance_its_link_entails_instead_of_dropping_it() -> None:
+    # The unit's context lacked ex:measuredOn's range; the gate's whole context
+    # declares it, so the device is typed and the sample keeps its link.
+    state = AgentState()
+    state.current_domain = "https://x.org"
+    state.doc_hid = "1"
+    state.aggregated_facts = _facts(
+        """
+        cd:s a ex:Sample ; rdfs:label "s" ; ex:measuredOn cd:rig .
+        cd:rig rdfs:label "rig" .
+        cd:loose rdfs:label "loose" ; ex:relatesTo cd:s .
+        """
+    )
+
+    run_facts_gate(state, _ontology(), _fake_tools(), merge_repair=False)
+
+    facts = state.aggregated_facts
+    assert (_cd("rig"), RDF.type, URIRef(f"{EX}Device")) in facts
+    assert (_cd("s"), URIRef(f"{EX}measuredOn"), _cd("rig")) in facts
+    assert state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_INFERRED] == 1
+    assert state.facts_untyped_dropped == [f"{CD}loose"]
+    # The dropped instance took its link to the sample with it.
+    assert state.retrieval_metrics[RetrievalMetric.FACTS_LINKS_REMOVED] == 1
+    assert state.retrieval_metrics[RetrievalMetric.FACTS_COMPONENTS] == 1
+    assert state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED] == 0
+
+
+def test_gate_counts_components_and_isolated_instances() -> None:
+    state = AgentState()
+    state.current_domain = "https://x.org"
+    state.doc_hid = "1"
+    state.aggregated_facts = _facts(
+        """
+        cd:s a ex:Sample ; ex:measuredOn cd:d .
+        cd:d a ex:Device .
+        cd:alone a ex:Process ; rdfs:label "alone" .
+        """
+    )
+
+    run_facts_gate(state, _ontology(), _fake_tools(), merge_repair=False)
+
+    assert state.retrieval_metrics[RetrievalMetric.FACTS_COMPONENTS] == 2
+    assert state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED] == 1
+    assert state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_INFERRED] == 0
+    assert state.retrieval_metrics[RetrievalMetric.FACTS_LINKS_REMOVED] == 0

@@ -42,10 +42,12 @@ The merged working graph is cached the same way, keyed by the `frozenset` of
 contributing version IRIs. That is safe because the induced-subgraph builder
 treats its merged input as read-only and writes only to its own result graph.
 
-A diverged ontology (several heads) is read-only: it is listed, its versions
-can be read, and `get_head` raises `DivergedOntologyError` until a merge makes
-one head. `ontologies` leaves it out, so nothing extracts against it or
-extends it.
+A diverged ontology (several heads) is read-only to runs: it is listed, its
+versions can be read, and `get_head` raises `DivergedOntologyError` until a
+merge makes one head. `ontologies` leaves it out, so nothing extracts against
+it or extends it. `ingest_ontology_ttl(..., as_new_version=True)` (`PUT
+/ontologies/{iri}`) stamps the uploaded file as a version derived from every
+head, which is that merge.
 
 ## Shapes partition
 

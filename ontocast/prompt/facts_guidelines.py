@@ -49,6 +49,7 @@ facts_instruction_shared = """\n\n
    - If the ONTOLOGY section is empty or has no term for a concept, type the instance with a specific class from a generic core vocabulary (e.g. `schema:Person`, `schema:Organization`) that states what it is — never with an ontology term whose meaning differs from what the text asserts, and never with `owl:Thing`, `rdfs:Resource` or `schema:Thing`, which state nothing. An instance without a concrete type is dropped downstream.
 3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in the provided ontology
 3a. QUANTITATIVE COMPLETENESS: extract EVERY quantitative statement in the text — every measured value, duration, condition, concentration, ratio, threshold, and uncertainty — even when the provided ontology has no term for it (the quantity fallback of rule 8 applies in that case). A number attached to a stated quantity is a fact and must reach the graph with its verbatim value and unit; a bare citation, page, figure, or equation token is typography and must not (rule 4). Completeness of the measured content is judged, so silently skipping a stated measurement is a defect, not a simplification.
+3b. CONNECT WHAT THE TEXT CONNECTS: when the text relates two instances — one is part of, belongs to, takes part in, measures, or describes the other — assert that link with a property of the provided ontology. A `cd:` instance left with only its type, label and literal values often means a stated relation was missed; look for it. Assert only relations the text states or directly entails: never invent or guess a link to connect an instance, and leave an instance unlinked when the text relates it to nothing. When the text mentions one thing in several places, use one `cd:` IRI for it throughout this extraction instead of minting one per mention.
 4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class — from the provided ontology wherever one fits (e.g. `onto:Trial`), and only otherwise from a generic core vocabulary (e.g. `schema:Person`).
    - CRITICAL: NEVER type a `cd:` instance as `rdfs:Class` or `rdf:Property` (you are extracting data occurrences, not rewriting or defining the schema), nor as `owl:Thing` alone — a vacuous type is no type.
    - Do NOT mint an entity for a bare number, a citation marker, or a reference token (`[12]`, "19", equation numbers). These are typography, not facts.
@@ -133,6 +134,7 @@ facts_instruction_shared = """\n\n
 Before finalizing output, verify:
 - Are there any PascalCase IRIs acting as graph subjects or objects (excluding `rdf:type` targets)? If yes, fix them into `cd:` instances.
 - Did you use `rdfs:Class` or `rdf:Property` anywhere as an instance type? If yes, replace it with its meaningful domain-specific concept class.
+- For each `cd:` instance not linked to any other instance: does the text state a relation you missed? Add it only if the text states it (rule 3b); never invent one.
 """
 
 facts_literal_rules_turtle = """\

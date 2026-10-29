@@ -71,6 +71,10 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_SHACL_AUTOFIX_PASSES": "facts_shacl_autofix_passes",
     "FACTS_SHACL_AUTOFIX_REVERTED": "facts_shacl_autofix_reverted",
     "FACTS_UNTYPED_DROPPED": "facts_untyped_dropped",
+    "FACTS_UNTYPED_INFERRED": "facts_untyped_inferred",
+    "FACTS_LINKS_REMOVED": "facts_links_removed",
+    "FACTS_COMPONENTS": "facts_components",
+    "FACTS_ISOLATED": "facts_isolated",
     "STRUCTURAL_ONTOLOGY_COMPONENTS_MAX": "structural_ontology_components_max",
     "CONSISTENCY_CONFLICTS": "consistency_conflicts",
 }

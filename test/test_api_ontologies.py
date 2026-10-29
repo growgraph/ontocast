@@ -240,3 +240,57 @@ def test_diff_reports_added_and_removed_triples(client: TestClient) -> None:
     assert body["added_count"] >= 1
     assert any("Ledger" in line for line in body["added"])
     assert body["removed_count"] == 0
+
+
+def test_put_onto_a_diverged_ontology_merges_its_heads() -> None:
+    import asyncio
+
+    from ontocast.onto.ontology_header import stamp_version
+    from ontocast.onto.rdfgraph import RDFGraph
+
+    tools = ToolBox(
+        Config(tool_config=ToolConfig(path_config=PathConfig(ontology_directory=None)))
+    )
+    app = FastAPI()
+    app.include_router(
+        build_ontology_router(
+            tools,
+            active_tenant="startup_t",
+            active_project="startup_p",
+            server_config=ServerConfig(),
+        )
+    )
+    client = TestClient(app)
+    root = _upload(client)
+
+    async def branch(cls: str) -> str:
+        head = tools.ontology_manager.get_ontology(version_iri=root["version_iri"])
+        graph = RDFGraph()
+        for triple in head.graph:
+            graph.add(triple)
+        graph.parse(
+            data=f"<{_IRI}#{cls}> a <http://www.w3.org/2002/07/owl#Class> .",
+            format="turtle",
+        )
+        version = stamp_version(head.derive_updated_version(graph))
+        assert version is not None and version.version_iri
+        await tools._materialize_ontology(version)
+        tools.ontology_manager.add_ontology(version, skip_vector_index=True)
+        return version.version_iri
+
+    left, right = asyncio.run(branch("Loan")), asyncio.run(branch("Card"))
+    assert len(tools.ontology_manager.get_heads_by_iri(_IRI)) == 2
+
+    merged = _TURTLE + f"<{_IRI}#Loan> a owl:Class .\n<{_IRI}#Card> a owl:Class .\n"
+    response = client.put(
+        f"/ontologies/{quote(_IRI, safe='')}",
+        files={"file": ("finance.ttl", merged.encode("utf-8"), "text/turtle")},
+    )
+
+    assert response.status_code == 200, response.text
+    tip = response.json()["version_iri"]
+    versions = client.get("/ontologies/finance/versions").json()["versions"]
+    entry = next(v for v in versions if v["version_iri"] == tip)
+    assert sorted(entry["prior_version_iris"]) == sorted([left, right])
+    [head] = tools.ontology_manager.get_heads_by_iri(_IRI)
+    assert head.version_iri == tip

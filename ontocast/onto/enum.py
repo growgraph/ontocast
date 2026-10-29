@@ -123,6 +123,17 @@ class RetrievalMetric(StrEnum):
     #: Fact-namespace instances dropped for carrying no concrete type after
     #: aggregation; the IRIs are on ``AgentState.facts_untyped_dropped``.
     FACTS_UNTYPED_DROPPED = "facts_untyped_dropped"
+    #: Instances untyped after aggregation that the gate typed from the
+    #: domains and ranges of their links (against the whole ontology context,
+    #: which a unit's context may have lacked), instead of dropping them.
+    FACTS_UNTYPED_INFERRED = "facts_untyped_inferred"
+    #: Links between instances the gate's repairs removed (SHACL prune and
+    #: the untyped drop), counted after any un-merge pass.
+    FACTS_LINKS_REMOVED = "facts_links_removed"
+    #: Connected groups of instances in the served facts, the document node
+    #: joining what it links, and instances linked to nothing.
+    FACTS_COMPONENTS = "facts_components"
+    FACTS_ISOLATED = "facts_isolated"
 
     # Post-aggregation checks.
     STRUCTURAL_ONTOLOGY_COMPONENTS_MAX = "structural_ontology_components_max"

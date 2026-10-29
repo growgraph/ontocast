@@ -176,7 +176,10 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | `facts_validation_findings`, `facts_validation_errors` | Findings after validation, and those of error severity |
 | `facts_shacl_violations_before`, `facts_shacl_violations_after` | SHACL violations around the automatic repair. Present only when the repair ran |
 | `facts_shacl_repairs`, `facts_shacl_autofix_passes`, `facts_shacl_autofix_reverted` | Repairs applied, passes kept, and whether a pass was reverted. Present only when the repair ran |
+| `facts_untyped_inferred` | Instances untyped after aggregation that the gate typed from the domains and ranges of their links, against the whole ontology context |
 | `facts_untyped_dropped` | Instances dropped at the gate for carrying no concrete `rdf:type` after aggregation; their IRIs are `AgentState.facts_untyped_dropped` |
+| `facts_links_removed` | Links between instances that the gate's SHACL prune and untyped drop removed |
+| `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance |
 | `structural_ontology_components_max` | The highest connected-component count among the ontologies the structural check examined |
 | `consistency_conflicts` | Conflicts the consistency critic reported |
 

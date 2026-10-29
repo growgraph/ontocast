@@ -6,13 +6,10 @@ including connectivity validation and graph structure verification.
 
 import logging
 from collections import defaultdict, deque
-from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field
 from rdflib import OWL, RDF, RDFS, XSD, Graph, Literal, URIRef
 
-from ontocast.onto.constants import PROV, SCHEMA
-from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 
 logger = logging.getLogger(__name__)
@@ -154,63 +151,6 @@ class ConnectivityResult(BaseModel):
     missing_labels: list[str] = Field(default_factory=list)
     domain_range_violations: list[str] = Field(default_factory=list)
     predicate_stats: PredicateStats = Field(default_factory=PredicateStats)
-
-
-def validate_and_connect_content_unit(
-    unit: ContentUnit,
-    auto_connect: bool = True,
-) -> ContentUnit:
-    """Validate and optionally connect a content unit graph.
-
-    This function validates the connectivity of a content unit RDF graph and
-    optionally connects any disconnected components.
-
-    Args:
-        unit: The content unit containing the RDF graph to validate.
-        auto_connect: Whether to automatically connect disconnected graphs.
-
-    Returns:
-        ContentUnit: The content unit with a validated and optionally connected graph.
-    """
-
-    # Ensure an RDFGraph instance
-    if not isinstance(unit.graph, RDFGraph):
-        logger.warning("received an redflib.Graph rather than RDFGraph")
-        new_graph = RDFGraph()
-        # Cast to Graph to satisfy type checker
-        graph = cast(Graph, unit.graph)
-        for triple in graph:
-            new_graph.add(triple)
-        for prefix, namespace in graph.namespaces():
-            new_graph.bind(prefix, namespace)
-        unit.graph = new_graph
-
-    validator = RDFGraphConnectivityValidator(unit.graph)
-
-    result = validator.validate_connectivity()
-
-    logger.debug(f"\n=== Connectivity Analysis for Content Unit {unit.iri} ===")
-    logger.debug(f"Fully connected: {result.is_fully_connected}")
-    logger.debug(f"Number of components: {result.num_components}")
-    logger.debug(f"Total entities: {result.total_entities}")
-    logger.debug(f"Largest component size: {result.largest_component_size}")
-
-    if result.isolated_entities:
-        logger.debug(f"Isolated entities: {[str(e) for e in result.isolated_entities]}")
-
-    # Create a new RDFGraph instance instead of using deepcopy
-    final_graph = RDFGraph()
-    for triple in unit.graph:
-        final_graph.add(triple)
-    # Copy namespace bindings
-    for prefix, namespace in unit.graph.namespaces():
-        final_graph.bind(prefix, namespace)
-
-    if not result.is_fully_connected and auto_connect:
-        final_graph = validator.make_graph_connected(unit.iri)
-
-    unit.graph = final_graph
-    return unit
 
 
 class RDFGraphConnectivityValidator:
@@ -427,102 +367,3 @@ class RDFGraphConnectivityValidator:
         result.predicate_stats = predicate_validation.predicate_stats
 
         return result
-
-    def make_graph_connected(self, chunk_iri: str) -> RDFGraph:
-        """Make a disconnected graph connected by adding bridging relationships.
-
-        Args:
-            chunk_iri: The IRI of the chunk to use for the hub entity.
-
-        Returns:
-            RDFGraph: A new connected graph.
-        """
-        components = self.find_connected_components()
-
-        if len(components) <= 1:
-            logger.info("RDFGraph is already connected")
-            return self.graph
-
-        # Create a new graph with all original triples
-        connected_graph = RDFGraph()
-        for triple in self.graph:
-            connected_graph.add(triple)
-
-        # Copy namespace bindings
-        for prefix, namespace in self.graph.namespaces():
-            connected_graph.bind(prefix, namespace)
-
-        connected_graph = self._connect_via_chunk_hub(
-            connected_graph, components, chunk_iri
-        )
-
-        logger.info(f"Connected {len(components)} components")
-        return connected_graph
-
-    def _connect_via_chunk_hub(
-        self, graph: RDFGraph, components: list[set[URIRef]], chunk_iri: str
-    ) -> RDFGraph:
-        """Connect components by creating a chunk hub entity.
-
-        Args:
-            graph: The graph to modify.
-            components: List of connected components to connect.
-            chunk_iri: The IRI to use for the hub entity.
-
-        Returns:
-            RDFGraph: The modified graph with connected components.
-        """
-        # Create or use existing chunk URI
-        hub_uri = URIRef(chunk_iri)
-        hub_id = hub_uri.split("/")[-1]
-
-        # Add hub entity metadata
-        graph.add((hub_uri, RDF.type, SCHEMA.TextDigitalDocument))
-        graph.add((hub_uri, RDFS.label, Literal(f"Chunk {hub_id}")))
-
-        # Connect hub to one representative entity from each component
-        for i, component in enumerate(components):
-            # Choose representative entity (could be improved with better heuristics)
-            representative = self._choose_representative_entity(component, graph)
-
-            if representative is not None:
-                # Add bidirectional connections
-                graph.add((hub_uri, SCHEMA.hasPart, representative))
-                graph.add((representative, PROV.wasQuotedFrom, hub_uri))
-
-        return graph
-
-    def _choose_representative_entity(
-        self, component: set[URIRef], graph: RDFGraph
-    ) -> URIRef | None:
-        """Choose the best representative entity from a component.
-
-        Args:
-            component: Set of entities in the component.
-            graph: The RDF graph containing the entities.
-
-        Returns:
-            URIRef | None: The chosen representative entity, or None if empty.
-        """
-        if not component:
-            return None
-
-        entity_degrees = {}
-        entities_with_labels = set()
-
-        for entity in component:
-            # Count connections
-            degree = sum(1 for s, p, o in graph if s == entity or o == entity)
-            entity_degrees[entity] = degree
-
-            # Check if entity has a label
-            for s, p, o in graph:
-                if s == entity and p in [RDFS.label, RDFS.comment]:
-                    entities_with_labels.add(entity)
-                    break
-
-        # Prefer entities with labels and high degree
-        if entities_with_labels:
-            return max(entities_with_labels, key=lambda e: entity_degrees.get(e, 0))
-        else:
-            return max(component, key=lambda e: entity_degrees.get(e, 0))

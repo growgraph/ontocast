@@ -308,14 +308,25 @@ The passes stop as soon as nothing is missing.
    prune leaves empty, and repairs touch only nodes in the facts namespaces.
    Rewrites move the statement's RDF 1.2 reifier onto the replacement; prunes
    delete it.
-5. **Untyped instances** (`drop_untyped_instances`): every instance still
-   without a concrete type (the `untyped_instance` rule, over the aggregated
-   graph so a type asserted in any unit counts) is removed with every triple it
-   is the subject or object of, the blank nodes reachable only through those
-   triples, and the reifiers quoting them. Each drop is a `facts_gate_repairs`
-   record of kind `untyped_dropped`; the IRIs are on `facts_untyped_dropped`
-   (capped at 200) and the count is the `facts_untyped_dropped` metric.
-6. **Summary**: `facts_conformance`, `facts_validation_findings` and
+5. **Untyped instances**. While any instance lacks a concrete type (the
+   `untyped_instance` rule, over the aggregated graph so a type asserted in any
+   unit counts), the gate first materialises the types the domains and ranges
+   of their links entail (`materialize_entailed_types`, the parse-time repair)
+   against the whole ontology context, which a unit's own context may have
+   lacked; instances it types are counted as `facts_untyped_inferred` and their
+   records are kind `entailed_type`. Then every instance still untyped
+   (`drop_untyped_instances`) is removed with every triple it is the subject or
+   object of, the blank nodes reachable only through those triples, and the
+   reifiers quoting them. Each drop is a `facts_gate_repairs` record of kind
+   `untyped_dropped`; the IRIs are on `facts_untyped_dropped` (capped at 200)
+   and the count is the `facts_untyped_dropped` metric.
+6. **Connectivity**: `facts_links_removed` counts the links between instances
+   that steps 4 and 5 removed; `facts_components` and `facts_isolated` count the
+   connected groups of instances in the served graph and the instances linked
+   to no other instance (links run through blank nodes; the document node joins
+   what it links but is not an instance; typing, `owl:sameAs` and `prov:` arcs
+   link nothing).
+7. **Summary**: `facts_conformance`, `facts_validation_findings` and
    `facts_gate_repairs`, plus the gate counters in `retrieval_metrics`.
 
 SHACL runs on a copy of the data graph with the ontology context mixed in and
