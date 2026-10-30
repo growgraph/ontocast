@@ -36,6 +36,12 @@ Equations stay placeholders unless the `lean` profile or
 [`CONVERTER_DO_FORMULA_ENRICHMENT`](../reference/configuration/conversion.md#converter_do_formula_enrichment)
 decodes them to LaTeX, which runs a model per equation.
 
+A library caller that already holds the converted document (for example one
+kept from an earlier run, as `DoclingDocument` JSON) sets it on the state
+(`AgentState(docling_doc=...)`), and the run skips conversion. The same document
+gives the same document namespace and the same units, so its entity IRIs match
+the earlier run's.
+
 ## Chunk
 
 A document is too long for one prompt, so OntoCast cuts it into parts (content

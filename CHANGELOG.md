@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `AgentState.facts_graph_iri` names the graph a run's facts are written to; unset, it stays the document namespace.
+- A run whose state already carries `docling_doc` skips conversion, so a converted document kept from an earlier run is chunked and namespaced as that run was.
 - Run metrics `facts_untyped_inferred`, `facts_links_removed`, `facts_components` and `facts_isolated`: instances the gate typed instead of dropping, links its repairs removed, and how the served facts hang together.
 
 ### Changed
