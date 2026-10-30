@@ -49,8 +49,8 @@ The terms these pages use, each with the page that explains it.
 
 **Head**
 :   The version of an ontology no other version names as prior. A run reads
-    one head per ontology; an ontology with several heads is diverged and
-    read-only until merged. See [Ontologies and
+    one head per ontology; an ontology with several heads is diverged, and runs
+    cannot extend it until an upload (`PUT`) merges it. See [Ontologies and
     facts](ontologies_and_facts.md#versions).
 
 **Home ontology**

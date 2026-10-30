@@ -98,7 +98,10 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
     """Convert the state's input document into a DoclingDocument.
 
     One state is one document; a caller with several (a batch request, JSONL
-    lines) builds one state per document before this node runs.
+    lines) builds one state per document before this node runs. A state that
+    already carries ``docling_doc`` is not converted again: the document is
+    kept and only its hash (``doc_hid``) is set, so a document kept from an
+    earlier run is chunked and namespaced exactly as that run was.
 
     Args:
         state: The current agent state, carrying ``input_document``.
@@ -111,6 +114,13 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
     logger.debug("Converting document")
 
     state.status = Status.SUCCESS
+    if state.docling_doc is not None:
+        # Converted by the caller (e.g. kept from an earlier run): the same
+        # document gives the same hash, so the same namespace and entity IRIs.
+        state.set_docling_doc(state.docling_doc)
+        blocked = _fail_when_fixed_catalog_ontology_missing(state)
+        return blocked if blocked is not None else state
+
     if state.input_document is None:
         logger.error("convert_document needs an input document; the state has none")
         state.status = Status.FAILED

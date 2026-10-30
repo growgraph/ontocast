@@ -20,7 +20,7 @@ from ontocast.api.schemas import (
 from ontocast.api.tenancy_resolution import make_scoped_toolbox_resolver
 from ontocast.config import ServerConfig
 from ontocast.onto.ontology import Ontology, OntologyHeader
-from ontocast.onto.ontology_header import DivergedOntologyError, heads_by_iri
+from ontocast.onto.ontology_header import heads_by_iri
 from ontocast.toolbox import ToolBox
 
 
@@ -221,7 +221,7 @@ def build_ontology_router(
     @router.put(
         "/{ontology_iri:path}",
         response_model=OntologyMutationResponse,
-        summary="Upload a new version of an ontology (prior = current head)",
+        summary="Upload a new version of an ontology, derived from every current head",
     )
     async def put_ontology_version(
         request: Request,
@@ -235,8 +235,6 @@ def build_ontology_router(
             o = await scoped.ingest_ontology_ttl(
                 ttl, filename=file.filename, as_new_version=True
             )
-        except DivergedOntologyError as e:
-            raise HTTPException(status_code=409, detail=str(e)) from e
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         if o is None:

@@ -581,6 +581,29 @@ class AgentState(BasePydanticModel):
         description="An almost unique hash / id for the parent document of the current unit",
         default="default_doc",
     )
+    facts_graph_iri: str | None = Field(
+        default=None,
+        description=(
+            "Named graph the facts are written to. Unset, it is the document "
+            "namespace, so two runs over the same converted document write one "
+            "graph and the later replaces the earlier; set it per run to keep "
+            "each run's facts. Entity IRIs stay in the document namespace "
+            "either way."
+        ),
+    )
+
+    @field_validator("facts_graph_iri")
+    @classmethod
+    def _validate_facts_graph_iri(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        if not re.match(r"^(https?://[^\s/]+|urn:)\S*$", text):
+            raise ValueError(
+                f"facts_graph_iri {value!r} must be an absolute http(s) IRI or a URN"
+            )
+        return text
+
     input_document: InputDocument | None = Field(
         default=None,
         description="The one document this run extracts from.",
@@ -1151,8 +1174,10 @@ class AgentState(BasePydanticModel):
         return normalize_namespace_iri(self.doc_iri, context="facts")
 
     @property
-    def graph_uri(self):
-        return self.doc_namespace
+    def graph_uri(self) -> str:
+        """The named graph the facts are written to: ``facts_graph_iri`` when
+        set, else the document namespace."""
+        return self.facts_graph_iri or self.doc_namespace
 
     @property
     def ontology_ids(self) -> list[str]:

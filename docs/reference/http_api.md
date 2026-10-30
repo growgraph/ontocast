@@ -244,13 +244,13 @@ are Turtle files in a `file` form field. The path IRI is URL-encoded.
 
 | Route | Behavior |
 |---|---|
-| `GET /ontologies` | Lists every ontology: `iri`, `ontology_id`, `title`, `description`, `versions` (how many are stored), `heads` and `diverged` (`true` when it has more than one head and is read-only until merged). Each head is a version summary: `version_iri`, `version`, `prior_version_iris`, `created_at`, `modified_at`, `removed` |
+| `GET /ontologies` | Lists every ontology: `iri`, `ontology_id`, `title`, `description`, `versions` (how many are stored), `heads` and `diverged` (`true` when it has more than one head; runs cannot extend it until a `PUT` merges it). Each head is a version summary: `version_iri`, `version`, `prior_version_iris`, `created_at`, `modified_at`, `removed` |
 | `GET /ontologies/{ontology_id}/versions` | The version history of the ontology the id (or IRI, or prefix) names, newest first: `iri`, `ontology_id` and one summary per version, as above. `404` for an unknown ontology |
 | `GET /ontologies/{ontology_id}/versions/{key}` | The named graph of that version as Turtle. `{key}` is the fragment of `version_iri` (`<iri>#<key>`). A tombstone returns its header only. `404` when the version is unknown |
 | `DELETE /ontologies/{ontology_id}/versions/{key}` | Tombstones the version: content dropped, header kept, typed `oc:RemovedVersion`. Returns `version_iri` and the ontology's new `heads` (nearest live ancestors become heads when a head is removed). `404` when the version is unknown |
 | `GET /ontologies/{ontology_id}/diff?from=<key>&to=<key>` | Content triples added and removed between two versions, header excluded: `from_iri`, `to_iri`, `added` and `removed` as sorted N-Triples lines, plus their counts. `404` when either version is unknown |
 | `POST /ontologies` | Adds the ontology as the root version of a new ontology. Returns `iri`, `ontology_id`, `version` and `version_iri`. `409` when an ontology with that IRI already exists: delete it first, or use `PUT` |
-| `PUT /ontologies/{iri}` | Uploads a new version whose prior is the current single head. Unchanged content writes nothing and returns the head. An ontology with no live head is adopted as a new root. The file must declare the same ontology IRI as the path (`400` otherwise). `409` when the ontology has several heads |
+| `PUT /ontologies/{iri}` | Uploads a new version derived from every current head, so it also merges a diverged ontology. Content equal to a single head's writes nothing and returns the head. An ontology with no live head is adopted as a new root. The file must declare the same ontology IRI as the path (`400` otherwise) |
 | `DELETE /ontologies/{iri}` | Removes the ontology, every version included. Returns its `iri` |
 
 ```bash
@@ -350,7 +350,7 @@ an upload route called without `file`, gets FastAPI's standard `422` with a
 | `400` | `fixed_single_ontology` mode with no ontology id in the request or in `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID` | none |
 | `400` | No store configured on `/flush`; a Turtle file that does not parse, or whose ontology IRI does not match the path, on `/ontologies` or `/shapes` | none |
 | `409` | `selected_vector_search_ontology` requested but no vector store is configured and ready | `VECTOR_STORE_UNAVAILABLE` |
-| `409` | `POST /ontologies` with an IRI the catalog already holds; `PUT /ontologies/{iri}` when the ontology has several heads | none |
+| `409` | `POST /ontologies` with an IRI the catalog already holds | none |
 | `422` | No content unit produced output, including when the document could not be converted (`/process`) | `no_units_extracted` |
 | `422` | The uploaded file could not be converted (`/process_unit`) | `conversion_failed:<stage>` |
 | `422` | The single unit failed (`/process_unit`) | none |

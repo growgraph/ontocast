@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1]
+
+### Added
+
+- `AgentState.facts_graph_iri` names the graph a run's facts are written to; unset, it stays the document namespace.
+- A run whose state already carries `docling_doc` skips conversion, so a converted document kept from an earlier run is chunked and namespaced as that run was.
+- Run metrics `facts_untyped_inferred`, `facts_links_removed`, `facts_components` and `facts_isolated`: instances the gate typed instead of dropping, links its repairs removed, and how the served facts hang together.
+
+### Changed
+
+- The facts gate types an instance still untyped after aggregation from the domains and ranges of its links in the whole ontology context, before dropping what stays untyped.
+- The facts prompt asks for every relation the text states between instances to be asserted (never an invented one), and for one IRI per thing within an extraction.
+- `PUT /ontologies/{iri}` (`ingest_ontology_ttl(..., as_new_version=True)`) derives the new version from every head, so it merges a diverged ontology instead of answering `409`.
+
+### Removed
+
+- `validate_and_connect_content_unit` and `RDFGraphConnectivityValidator.make_graph_connected`, which nothing called.
+
 ## [0.8.0]
 
 ### Changed (breaking)

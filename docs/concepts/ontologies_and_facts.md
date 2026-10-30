@@ -76,7 +76,8 @@ run reads one head per ontology, and older versions stay in the store, so you
 can compare what a run changed with what was there before. An ontology with
 several heads is **diverged**: `GET /ontologies` lists it and its versions can
 be read, but no run extracts against it or extends it until a merge gives it
-one head. [Ontology catalog](../internals/ontology_catalog.md) describes how
+one head. Uploading the ontology with `PUT /ontologies/{iri}` is that merge: the
+new version derives from every head. [Ontology catalog](../internals/ontology_catalog.md) describes how
 the catalog picks heads safely when several processes share a store.
 
 ## Changes are patches
@@ -207,6 +208,12 @@ in two documents is one person.
 Document metadata is always in the facts graph, even when the text never
 mentions it, and it stays there when provenance is stripped. Without
 `document_metadata`, `ontocast process` sets `dcterms:title` to the file name.
+
+The facts are written to a named graph: by default the document namespace, so
+two runs over the same converted document write one graph and the later one
+replaces the earlier. A library caller that wants each run's facts kept apart
+sets `AgentState.facts_graph_iri` (an absolute IRI or a URN) for the run; entity
+IRIs stay in the document namespace either way, so the runs can be compared.
 
 ## What to read next
 
