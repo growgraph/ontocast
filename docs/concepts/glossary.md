@@ -59,6 +59,15 @@ The terms these pages use, each with the page that explains it.
     document. See [Ontologies and
     facts](ontologies_and_facts.md#the-home-ontology).
 
+**IRI**
+:   The web-style name of anything in a graph, such as
+    `https://example.org/onto#Device`. Two things with the same IRI are the same
+    thing, wherever they appear.
+
+**Label**
+:   The readable name of a term or entity (`rdfs:label`). The IRI identifies it;
+    the label is what a person reads.
+
 **Ontology**
 :   A graph of classes, properties and declared individuals, identified by its
     IRI and stored in versions. See [Ontologies and
@@ -70,9 +79,18 @@ The terms these pages use, each with the page that explains it.
     (`ONTOLOGY_CONTEXT_MODE`). See [Choosing ontology
     context](../guides/ontology_context.md).
 
+**Prefix**
+:   A short alias for the start of an IRI, so `ex:Device` can stand for
+    `https://example.org/onto#Device` in Turtle. It changes how a file reads, not
+    what it means.
+
 **Provenance**
 :   The link from each fact to the content unit it came from, written with RDF
     1.2 reifiers. See [Ontologies and facts](ontologies_and_facts.md#provenance).
+
+**RDF**
+:   The W3C standard data model for graphs: a graph is a set of triples. OWL and
+    SHACL are written in it, and Turtle is one way to write it down.
 
 **Render**
 :   The LLM call that extracts an ontology patch or a unit's facts. See [How
@@ -111,6 +129,16 @@ The terms these pages use, each with the page that explains it.
 :   A compact form of the ontology context in facts prompts: one line per term
     instead of a serialized graph (`ONTOLOGY_CHAPTER_FORMAT`). See [Performance
     tuning](../guides/performance.md).
+
+**Triple**
+:   One statement in three parts: subject, predicate, object. In `ex:Device_C
+    ex:madeOf ex:Perovskite .` the subject and object are entities and the
+    predicate is the link between them. The object can also be a value, such as a
+    number or text.
+
+**Turtle**
+:   A compact text format for RDF: triples ending in `.`, with prefixes keeping
+    IRIs short. It is the format OntoCast's models read and write.
 
 **Unit pipeline**
 :   The per-unit loops run on a single piece of text, with no conversion,

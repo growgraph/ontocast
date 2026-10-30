@@ -992,6 +992,31 @@ class ToolBox:
                 sorted(orphans),
             )
 
+    async def _drop_diverged_from_index(self) -> None:
+        """Remove diverged ontologies from the vector index, naming each.
+
+        Nothing extracts against an ontology with several heads, so its atoms
+        must not be retrieved. Handled apart from the orphan prune, which refuses
+        an empty catalog: a catalog emptied only by divergence was read correctly.
+        """
+        from ontocast.onto.ontology_header import catalog_heads
+
+        triple = self.triple_store_manager
+        store = self.vector_store
+        if triple is None or store is None:
+            return
+        _, diverged = catalog_heads(await triple.afetch_ontology_catalog())
+        if not diverged:
+            return
+        indexed = await asyncio.to_thread(store.list_indexed_ontology_iris)
+        for iri in sorted(diverged.keys() & indexed):
+            await asyncio.to_thread(store.delete_ontology, iri)
+            logger.warning(
+                "Ontology %s has diverged: its terms left the vector index, and "
+                "nothing extracts against it until a merge makes one head.",
+                iri,
+            )
+
     def _catalog_sources_description(self) -> str:
         """Name the places a catalog could have come from, for an error message."""
         directory = self.config.tool_config.path_config.ontology_directory
@@ -1237,6 +1262,7 @@ class ToolBox:
                     "deletion."
                 )
             else:
+                await self._drop_diverged_from_index()
                 keep_iris = {o.iri for o in synchronized_ontologies if o.iri}
                 orphans = await asyncio.to_thread(
                     self.vector_store.prune_orphan_ontology_iris, keep_iris

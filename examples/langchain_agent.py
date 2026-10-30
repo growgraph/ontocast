@@ -84,7 +84,7 @@ async def main() -> None:
         agent = create_agent(
             model,
             tools=[*ontocast_tools(tools, mutating=True)],
-            prompt=(
+            system_prompt=(
                 "You are a helpful agent that edits an ontology based on input. "
                 "Inspect the existing ontology before proposing changes, and "
                 "reuse existing terms rather than minting near-duplicates."

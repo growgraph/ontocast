@@ -8,11 +8,10 @@ no Fuseki, no Qdrant, no Docker.
 
 ```bash
 pip install "ontocast[openai]"
-export OPENAI_API_KEY=sk-...
+export LLM_API_KEY=sk-...
 ```
 
-Any provider extra works; set `LLM_PROVIDER` and the matching key if you are not
-using OpenAI.
+Any provider extra works; set `LLM_PROVIDER` too if you are not using OpenAI.
 
 ## The scripts
 

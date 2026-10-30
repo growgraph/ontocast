@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,8 @@ class LanceDBVectorStoreManager(VectorStoreManager):
     sparse_embedding: FastembedBm25SparseTool | None = Field(default=None, exclude=True)
     atomizer: GraphAtomizer = Field(default_factory=GraphAtomizer, exclude=True)
     _lexical_trigger_index: LexicalTriggerIndex | None = PrivateAttr(default=None)
+    # Ontologies index concurrently; a table being created is listed before it can be opened.
+    _table_create_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     @model_validator(mode="after")
     def _sync_atomizer_with_store_config(self) -> "LanceDBVectorStoreManager":
@@ -381,17 +384,19 @@ class LanceDBVectorStoreManager(VectorStoreManager):
 
         db = self._connect()
         table_name = self._ontology_table_name()
-        tables = self._list_tables(db)
-        if table_name not in tables:
-            db.create_table(
-                table_name,
-                data=pa.Table.from_pylist(records, schema=self._atom_table_schema()),
-            )
-            self._write_embedding_meta()
-            table = db.open_table(table_name)
-            self._ensure_indexes(table)
-            self._register_lexical_triggers(atoms)
-            return len(records)
+        with self._table_create_lock:
+            if table_name not in self._list_tables(db):
+                db.create_table(
+                    table_name,
+                    data=pa.Table.from_pylist(
+                        records, schema=self._atom_table_schema()
+                    ),
+                )
+                self._write_embedding_meta()
+                table = db.open_table(table_name)
+                self._ensure_indexes(table)
+                self._register_lexical_triggers(atoms)
+                return len(records)
 
         table = db.open_table(table_name)
         table.merge_insert(

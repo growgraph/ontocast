@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2]
+
+### Fixed
+
+- A catalog whose only ontology has diverged no longer fails `ToolBox.initialize`: a diverged ontology leaves the vector index with a warning naming it.
+- The LanceDB store no longer fails when several ontologies are first indexed at once.
+- A missing API key ends the CLI with a one-line error (exit code 78) instead of a traceback.
+- An unsupported file fails with a reason listing the accepted types (`FailureStage.UNSUPPORTED_DOCUMENT`).
+- README and `examples/langchain_agent.py` pass `system_prompt=` to `create_agent`, and the README names the `langchain` install.
+- `examples/` set `LLM_API_KEY`; the quickstart lists every accepted file type.
+
+### Added
+
+- Glossary entries for IRI, label, prefix, RDF, triple and Turtle.
+
 ## [0.8.1]
 
 ### Added

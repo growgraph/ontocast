@@ -5,7 +5,7 @@ LangGraph. Runs against the in-memory triple store, so nothing external is
 needed.
 
     pip install "ontocast[openai]"
-    export OPENAI_API_KEY=sk-...
+    export LLM_API_KEY=sk-...
     python examples/unit_pipeline.py
 
 `run_unit_pipeline` treats its input as a single content unit. That is why it
