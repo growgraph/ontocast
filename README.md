@@ -85,6 +85,10 @@ curl -X POST http://127.0.0.1:8999/ontologies -F "file=@my-ontology.ttl"
 
 ## Embed in your agent
 
+```bash
+pip install "ontocast[openai]" langchain
+```
+
 ```python
 from langchain.agents import create_agent
 from ontocast import Config, ToolBox, ontocast_tools
@@ -95,7 +99,7 @@ await tools.initialize()
 agent = create_agent(
     model,
     tools=[*ontocast_tools(tools)],
-    prompt="Edit the ontology from the user's text.",
+    system_prompt="Edit the ontology from the user's text.",
 )
 ```
 

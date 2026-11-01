@@ -40,15 +40,16 @@ curl -X POST http://localhost:8999/process \
 ```
 
 The response will include extracted facts and ontology in Turtle format.
-`ttl/response.json` is a recorded response you can inspect without running the
-server.
+`ttl/response.json` is a response you can inspect without running the server. It
+was recorded with an older version, so its shape and namespaces differ from what
+a current server returns.
 
 ---
 
 ### 3. Visualize the Output
 
-1. Use neo4j built-in graph navigator
-2. Copy the Turtle output from the `facts` or `ontology` field in the response.
+Copy the Turtle from the `facts` or `ontology` field of the response into any RDF
+viewer or triple store.
 
 **Example Screenshot:**
 
@@ -59,7 +60,7 @@ server.
 ## Files in This Directory
 - `A_Brief_Introduction_To_AI.pdf` – Example document for the demo
 - `water-resources-management-plan-overview.pdf` – Second example document
-- `ttl/response.json` – Recorded `/process` response for reference
+- `ttl/response.json` – `/process` response recorded with an older version
 - `figs/thames-water.png` – Screenshot used above
 
 ---

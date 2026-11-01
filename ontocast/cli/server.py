@@ -295,7 +295,10 @@ def _bootstrap_tools(
             ``POST /ontologies``, so neither is.
     """
     config = Config()
-    config.validate_llm_config()
+    try:
+        config.validate_llm_config()
+    except ValueError as exc:
+        raise LLMConfigAbort(str(exc)) from exc
     _configure_logging(config)
     _prepare_path_config(
         config,

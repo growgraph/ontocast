@@ -107,6 +107,9 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
         def _catalog_sources_description(self):
             return ToolBox._catalog_sources_description(cast(ToolBox, self))
 
+        async def _drop_diverged_from_index(self):
+            await ToolBox._drop_diverged_from_index(cast(ToolBox, self))
+
         vector_store = None
         triple_store_manager = None
         llm = MagicMock()
@@ -198,6 +201,9 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
         def _catalog_sources_description(self):
             return ToolBox._catalog_sources_description(cast(ToolBox, self))
 
+        async def _drop_diverged_from_index(self):
+            await ToolBox._drop_diverged_from_index(cast(ToolBox, self))
+
         triple_store_manager = None
         llm = MagicMock()
         ontology_manager: MagicMock
@@ -260,6 +266,9 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
 
         def _catalog_sources_description(self):
             return ToolBox._catalog_sources_description(cast(ToolBox, self))
+
+        async def _drop_diverged_from_index(self):
+            await ToolBox._drop_diverged_from_index(cast(ToolBox, self))
 
         triple_store_manager = None
         llm = MagicMock()
@@ -403,6 +412,9 @@ def test_initialize_materializes_with_bounded_concurrency(
         def _catalog_sources_description(self):
             return ToolBox._catalog_sources_description(cast(ToolBox, self))
 
+        async def _drop_diverged_from_index(self):
+            await ToolBox._drop_diverged_from_index(cast(ToolBox, self))
+
         vector_store = None
         triple_store_manager = None
         llm = MagicMock()
@@ -471,6 +483,9 @@ def test_initialize_wipe_and_prune_follow_their_flags(
 
         def _catalog_sources_description(self):
             return ToolBox._catalog_sources_description(cast(ToolBox, self))
+
+        async def _drop_diverged_from_index(self):
+            await ToolBox._drop_diverged_from_index(cast(ToolBox, self))
 
         triple_store_manager = None
         llm = MagicMock()
@@ -759,6 +774,9 @@ def _readiness_toolbox(
 
         def _catalog_sources_description(self):
             return ToolBox._catalog_sources_description(cast(ToolBox, self))
+
+        async def _drop_diverged_from_index(self):
+            await ToolBox._drop_diverged_from_index(cast(ToolBox, self))
 
     return Stub()
 

@@ -64,8 +64,9 @@ curl http://127.0.0.1:8999/health
 curl -X POST http://127.0.0.1:8999/process -F "file=@paper.pdf" -o result.json
 ```
 
-OntoCast accepts `.pdf`, `.pptx`, `.txt`, `.json` and `.jsonl` files, or text
-in a JSON body:
+OntoCast accepts `.txt` and `.json` files, and with `doc-processing` also `.pdf`,
+`.docx`, `.pptx`, `.xlsx`, `.html`, `.md`, `.csv`, `.adoc` and images (`ontocast
+process` also reads `.jsonl`, one document per line), or text in a JSON body:
 
 ```bash
 curl -X POST http://127.0.0.1:8999/process \

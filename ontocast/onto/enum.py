@@ -246,6 +246,7 @@ class FailureStage(StrEnum):
     """Enumeration of possible failure stages in the workflow."""
 
     NO_CHUNKS_TO_PROCESS = "No chunks to process"
+    UNSUPPORTED_DOCUMENT = "The document type is not supported"
     ONTOLOGY_CRITIQUE = "The produced ontology did not pass the critique stage."
     FACTS_CRITIQUE = "The produced graph of facts did not pass the critique stage."
     GENERATE_TTL_FOR_ONTOLOGY = (

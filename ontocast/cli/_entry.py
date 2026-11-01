@@ -20,7 +20,7 @@ not part of the base install.
     pip install "ontocast[server]"
 
 The base install is deliberately light so that OntoCast can be embedded in
-another application. See the "Using OntoCast from your own agent" guide for
+another application. See the "Embedding OntoCast in your agent" guide for
 what each extra adds.
 
 (missing module: {missing})\

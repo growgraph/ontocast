@@ -9,7 +9,7 @@ import logging
 import pathlib
 
 from ontocast.onto.docling_helpers import json_payload_text, plain_text_to_docling_doc
-from ontocast.onto.enum import OntologyContextMode, Status
+from ontocast.onto.enum import FailureStage, OntologyContextMode, Status
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
 
@@ -154,5 +154,10 @@ def convert_document(state: AgentState, tools: ToolBox) -> AgentState:
         return blocked if blocked is not None else state
 
     logger.error("Unsupported file extension %s for %s", file_extension, filename)
-    state.status = Status.FAILED
+    accepted = sorted({*tools.converter.supported_extensions, ".json", ".txt"})
+    state.set_failure(
+        FailureStage.UNSUPPORTED_DOCUMENT,
+        f"{filename} is not a supported file type. Accepted: {', '.join(accepted)}. "
+        "PDF, Office, HTML, Markdown and image files need the `doc-processing` extra.",
+    )
     return state
