@@ -404,7 +404,7 @@ def test_target_sections_selects_only_the_requested_section():
 def test_undersized_unlabeled_chunks_merge_and_stay_unlabeled():
     """Unresolved neighbours are sized together; the result claims no label."""
     doc = doc_from_markdown_lines(
-        "# Notes\nFirst unnamed section body text here.\n\n"
+        "# Miscellany\nFirst unnamed section body text here.\n\n"
         "# Vocabulary\nSecond unnamed section body text here.\n"
     )
     chunks = asyncio.run(

@@ -66,12 +66,15 @@ class BatchSectionClassification(BasePydanticModel):
 
 
 def fragment_for_text(text: str) -> str:
-    """Return a short excerpt suitable for LLM section classification."""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            return stripped[:_FRAGMENT_MAX_CHARS]
+    """Return a short excerpt suitable for LLM section classification.
+
+    The leading heading when the segment opens with one, else the segment's
+    opening text. A heading further down names a later section, not this one.
+    """
     snippet = text.strip()
+    first = snippet.splitlines()[0].strip() if snippet else ""
+    if first.startswith("#"):
+        return first[:_FRAGMENT_MAX_CHARS]
     return snippet[:_FRAGMENT_MAX_CHARS]
 
 

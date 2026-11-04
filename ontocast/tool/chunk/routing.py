@@ -20,7 +20,10 @@ Rules, first match wins:
 4. with the schema's default exclusions in force (no ``exclude_sections``, a
    schema that was chosen rather than fallen back to), a strong
    boilerplate-class label on text that states no measurement is skipped;
-5. front/back matter recognised from the content takes the non-content route;
+5. front/back matter -- a strong non-content-class label, or a heading the
+   schema names as front/back matter, on text that states no measurement, or
+   identifier and licence boilerplate recognised from the content alone --
+   takes the non-content route. A fallback schema lends no vocabulary;
 6. everything else is extracted, with a reason saying why a label that might
    have dropped it did not.
 """
@@ -158,7 +161,14 @@ def route_unit(
         ):
             return RoutingDecision(UnitRoute.SKIP, RouteReason.BOILERPLATE)
 
-    if is_non_content_unit(text, unit.headings):
+    vocabulary = None if schema_fallback else schema
+    strong_non_content = (
+        route_class is RouteClass.NON_CONTENT
+        and strong
+        and not schema_fallback
+        and not states_measurement(text)
+    )
+    if strong_non_content or is_non_content_unit(text, unit.headings, vocabulary):
         route = (
             UnitRoute.SKIP
             if config.non_content_mode == "skip"
@@ -195,11 +205,10 @@ def _extract_reason(
         return RouteReason.CONTENT
     if not strong:
         return RouteReason.WEAK_LABEL
-    if route_class is RouteClass.BOILERPLATE:
-        if exclusions_replaced:
-            return RouteReason.EXCLUSION_OVERRIDDEN
-        if schema_fallback:
-            return RouteReason.FALLBACK_SCHEMA
+    if route_class is RouteClass.BOILERPLATE and exclusions_replaced:
+        return RouteReason.EXCLUSION_OVERRIDDEN
+    if route_class is not RouteClass.CITATIONS and schema_fallback:
+        return RouteReason.FALLBACK_SCHEMA
     return RouteReason.LABEL_CONTRADICTED
 
 

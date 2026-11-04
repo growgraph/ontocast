@@ -145,19 +145,53 @@ labels:
     -   funding
     -   disclosure
     -   corresponding authors
+    -   declaration of competing interest
+    -   declarations of interest
+-   id: back_matter
+    route_class: non_content
+    heading_patterns:
+    -   '^authors?\s*$'
+    -   '^authors?[’'']?s?\s+(?:details|addresses)\s*$'
+    -   '^affiliations?\s*$'
+    -   '^notes?\s*$'
+    -   '^orcid(?:\s*i\.?d\.?s?)?\s*$'
+    -   '^(?:data|code|materials?)(?:\s+and\s+(?:code|materials?|software))?\s+availability(?:\s+statement)?\s*$'
+    -   '^availability\s+of\s+(?:data|code|materials?)(?:\s+and\s+(?:code|materials?))?\s*$'
+    -   '^licen[cs]e(?:\s+information)?\s*$'
+    -   '^open\s+access\s*$'
+    -   '^rights\s+and\s+permissions\s*$'
+    -   '^additional\s+information\s*$'
+    -   '^publisher[’'']?s?\s+note\s*$'
+    -   '^copyright\s*$'
+    -   '^disclaimer\s*$'
+    -   '^associated\s+content\s*$'
+    -   '^ethics\s+(?:declarations?|statement|approval)\s*$'
+    keywords:
+    -   orcid
+    -   author details
+    -   affiliations
+    -   data availability
+    -   code availability
+    -   data and code availability
+    -   open access
+    -   rights and permissions
+    -   additional information
+    -   publisher's note
+    -   disclaimer
+    -   associated content
+    -   ethics declarations
+    -   ethics statement
 -   id: data
     order: 95
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?data(?:set|sets)?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:corpus|data\s+(?:collection|description))\s*$'
     keywords:
-    -   data availability
     -   data collection
     -   data description
     -   dataset
     -   datasets
     -   corpus
-    -   code availability
 -   id: appendix
     order: 100
     heading_patterns:
@@ -169,9 +203,11 @@ labels:
     -   supplementary material
     -   supplementary information
     -   supporting information
-    -   associated content
+    -   supplementary note
+    -   supplementary notes
 -   id: references
     route_class: citations
+    terminal: true
     order: 110
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?references\s*$'

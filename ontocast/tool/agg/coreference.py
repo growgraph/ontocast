@@ -119,7 +119,9 @@ def coreference_candidates(
 ) -> list[CoreferenceCandidate]:
     """The pairs to put to the model, at most ``max_pairs``.
 
-    Only entities units minted are asked about; catalog terms are not. The
+    Only entities units minted are asked about; catalog terms are not, and
+    neither are entities of a citation-metadata unit: authors and venues of a
+    reference list would spend the cap on bibliography. The
     three kinds take turns, so none crowds the others out: the least similar
     unconfirmed merges first (the likeliest wrong), the most similar near
     misses first (the likeliest right), then shared links.
@@ -143,17 +145,23 @@ def coreference_candidates(
     ]
     links = _shared_link_candidates(units, final_uri)
 
+    def from_citations(iri: str) -> bool:
+        unit = _unit_of(iri, units)
+        return unit is not None and unit.is_citation_metadata
+
     def minted(candidates: list[CoreferenceCandidate]) -> list[CoreferenceCandidate]:
         return [
             c
             for c in candidates
             if unit_scope_index(c.left) is not None
             and unit_scope_index(c.right) is not None
+            and not from_citations(c.left)
+            and not from_citations(c.right)
         ]
 
     asked: set[frozenset[str]] = set()
     out: list[CoreferenceCandidate] = []
-    for round_ in zip_longest(minted(merges), minted(near), links):
+    for round_ in zip_longest(minted(merges), minted(near), minted(links)):
         for candidate in round_:
             if candidate is None or len(out) >= max_pairs:
                 continue

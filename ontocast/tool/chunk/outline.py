@@ -33,6 +33,8 @@ import re
 
 from ontocast.config.section_labels import (
     SectionLabelSchema,
+    heading_head,
+    label_is_terminal,
     normalise_heading_line,
     resolve_heading_label,
 )
@@ -218,11 +220,23 @@ def label_outline(outline: DocumentOutline, schema: SectionLabelSchema) -> None:
     gated on ``sectionlike``: applying keyword matching to a descriptive
     subsection title mislabels it from an incidental word -- a title containing
     "limitation" is not a limitations section.
+
+    A subtitled heading ("Appendix A: Derivation of the rate") is judged by its
+    head: when the head is section-like and names a label, the heading opens
+    that section instead of reading as a descriptive title.
     """
     for node in outline.nodes:
-        if node.label is not None or not node.sectionlike:
+        if node.label is not None:
             continue
-        resolved = resolve_heading_label(node.text, schema)
+        resolved = None
+        if node.sectionlike:
+            resolved = resolve_heading_label(node.text, schema)
+        else:
+            head = heading_head(node.normalised)
+            if head is not None and heading_is_sectionlike(head):
+                resolved = resolve_heading_label(head, schema)
+                if resolved is not None:
+                    node.sectionlike = True
         if resolved is None:
             continue
         label, confidence, source = resolved
@@ -235,18 +249,24 @@ def label_outline(outline: DocumentOutline, schema: SectionLabelSchema) -> None:
         )
 
 
-def inherit_subsection_labels(outline: DocumentOutline) -> None:
+def inherit_subsection_labels(
+    outline: DocumentOutline, schema: SectionLabelSchema
+) -> None:
     """Propagate the enclosing section's label onto descriptive subheadings.
 
     A non-section-like heading (a descriptive subsection title) sits inside the
     section opened by the last section-like heading, so it takes that label.
     Without this, such a heading would open an unresolved span and its body
-    text would be lost from the parent section.
+    text would be lost from the parent section. A terminal section (a
+    reference list) has no subsections: a descriptive heading after it opens
+    an unresolved span instead.
     """
     current_label: str | None = None
     for node in outline.nodes:
         if node.sectionlike:
-            current_label = node.label
+            current_label = (
+                None if label_is_terminal(node.label, schema) else node.label
+            )
             continue
         if node.label is None and current_label is not None:
             node.label = current_label
@@ -301,7 +321,7 @@ def build_document_outline(
         nodes=detect_headings(text, include_text_headings=include_text_headings),
     )
     label_outline(outline, schema)
-    inherit_subsection_labels(outline)
+    inherit_subsection_labels(outline, schema)
     return outline
 
 

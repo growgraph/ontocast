@@ -138,6 +138,7 @@ labels:
     -   appendix
 -   id: references
     route_class: citations
+    terminal: true
     order: 100
     heading_patterns:
     -   '^references\s*$'

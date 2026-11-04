@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A reference list at a unit's start or end is cut into a unit of its own, so the prose around it is extracted. Reference lists are recognised per paragraph: table rows and entries that state a measurement are not cited works.
 - Section schemas mark each label's route class (`content`, `boilerplate`, `citations`) in place of `default_exclude`. Academic appendices and Supporting Information are now extracted; a schema used only as the fallback drops no boilerplate.
 - `summarize_sections` only chooses which units are summarized; it no longer limits extraction to those sections.
+- Front- and back-matter headings (authors, affiliations, ORCID, notes, data availability, licence, publisher's note…) are a `back_matter` label of route class `non_content` in the academic and clinical schemas instead of one list for every document type, so `Notes` in a manual is content. `is_non_content_unit` takes the schema.
+- Heading keywords resolve by head noun ("Characterization Results" is results, "Summary of Results" a summary), and the head of a subtitled heading is typed ("Appendix A: Derivation …" opens the appendix). "Data Availability" and "Associated Content" are back matter, no longer data and appendix.
+- `references` is terminal: descriptive headings after a reference list no longer inherit its label, and the keyword names it only as a whole part of a heading ("Notes and References"), never inside a phrase ("Comparison with literature references").
 - `max_chunks` counts units kept for extraction.
 
 - An ontology's namespace is where its terms live, read from the file at adoption (`vann:preferredNamespaceUri` when terms live there, else the namespace with the most described terms) and stored in its header, instead of `<iri>#`. Ontologies whose terms sit under `<iri>/` (OM-2) or elsewhere (PROV-O) get the right prefix in prompts.
@@ -36,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sections were dropped whole when they mentioned references: headings such as "Comparison with literature references", descriptive sections after a References heading, literature-comparison tables with a DOI column, and units whose prose ended in a reference list.
 - Keyword-matched headings such as "Funding Mechanisms" or "Supporting Information" no longer drop their section through the default exclusions.
 - The home-ontology excerpt samples only units routed to extraction, never a reference list or an author block.
+- LLM section classification judged a segment by the first heading anywhere in it; it now reads the leading heading only.
+- Coreference resolution no longer spends its pairs on entities of citation-metadata units (`CHUNK_BIBLIOGRAPHY_MODE=citations_only`).
 - The facts gate's un-merge repair dissolves only the cluster a finding implicates: a multi-valued or functional-property finding no longer splits the correctly merged entities its subject points at.
 - Within that cluster, the repair splits only the members whose values on the finding's predicate disagree; members that carried no value keep their merges.
 - An ontology whose IRI ends in an empty fragment (`http://www.w3.org/ns/prov#`) is adopted under the IRI without it; a header that is only typed `owl:Ontology` beside a described one (W3C PROV-O) is dropped.

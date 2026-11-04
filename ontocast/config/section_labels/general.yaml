@@ -31,6 +31,7 @@ labels:
     -   '^attachments?\s*$'
 -   id: references
     route_class: citations
+    terminal: true
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'

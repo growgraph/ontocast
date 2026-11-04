@@ -128,8 +128,49 @@ labels:
     -   data collection
     -   tissue collection
     -   data handling
+-   id: back_matter
+    route_class: non_content
+    heading_patterns:
+    -   '^authors?\s*$'
+    -   '^authors?[’'']?s?\s+(?:details|addresses)\s*$'
+    -   '^affiliations?\s*$'
+    -   '^notes?\s*$'
+    -   '^orcid(?:\s*i\.?d\.?s?)?\s*$'
+    -   '^(?:data|code|materials?)(?:\s+and\s+(?:code|materials?|software))?\s+availability(?:\s+statement)?\s*$'
+    -   '^availability\s+of\s+(?:data|code|materials?)(?:\s+and\s+(?:code|materials?))?\s*$'
+    -   '^licen[cs]e(?:\s+information)?\s*$'
+    -   '^open\s+access\s*$'
+    -   '^rights\s+and\s+permissions\s*$'
+    -   '^additional\s+information\s*$'
+    -   '^publisher[’'']?s?\s+note\s*$'
+    -   '^copyright\s*$'
+    -   '^disclaimer\s*$'
+    -   '^author\s+(?:information|contributions?)\s*$'
+    -   '^acknowledg(?:e?ments?|ments?)\s*$'
+    -   '^funding(?:\s+(?:information|statement|sources?))?\s*$'
+    -   '^(?:competing|conflicts?\s+of)\s+(?:financial\s+)?interests?(?:\s+statement)?\s*$'
+    -   '^declarations?\s+of\s+(?:competing\s+)?interests?\s*$'
+    keywords:
+    -   orcid
+    -   author details
+    -   affiliations
+    -   data availability
+    -   code availability
+    -   data and code availability
+    -   open access
+    -   rights and permissions
+    -   additional information
+    -   publisher's note
+    -   disclaimer
+    -   author information
+    -   author contributions
+    -   acknowledgements
+    -   acknowledgments
+    -   competing interests
+    -   conflicts of interest
 -   id: references
     route_class: citations
+    terminal: true
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'

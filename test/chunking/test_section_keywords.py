@@ -36,10 +36,12 @@ RECOGNISED = [
     ("## Characterization", "methods"),
     ("## 4 Discussion and Conclusions", "discussion"),
     ("## Conclusions and Outlook", "conclusion"),
-    ("## Data Availability", "data"),
+    ("## Data Availability", "back_matter"),
     ("## Supporting Information", "appendix"),
     ("## *sı Supporting Information", "appendix"),
-    ("## ■ ASSOCIATED CONTENT", "appendix"),
+    ("## ■ ASSOCIATED CONTENT", "back_matter"),
+    ("## ORCID", "back_matter"),
+    ("## Notes", "back_matter"),
     ("## Author Contributions", "acknowledgements"),
     ("## Competing Interests", "acknowledgements"),
     ("## ■ ACKNOWLEDGMENTS", "acknowledgements"),
@@ -49,8 +51,6 @@ RECOGNISED = [
 
 UNRECOGNISED = [
     "## ARTICLE",
-    "## ORCID",
-    "## Notes",
     "## ACCESS",
     "## Cooperative ensemble breaks the population-inversion limitation",
 ]

@@ -9,6 +9,7 @@ from typing import Literal, cast
 import pytest
 
 from ontocast.config import ChunkConfig
+from ontocast.config.section_labels import load_section_label_schema
 from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 from ontocast.onto.state import AgentState
 from ontocast.tool.chunk.non_content import (
@@ -22,6 +23,10 @@ from ontocast.tool.chunk.routing import route_unit
 from ontocast.toolbox import ToolBox
 
 pytestmark = pytest.mark.unit
+
+#: The fixtures are scholarly front and back matter; the heading vocabulary
+#: comes from the schema the document is read against.
+ACADEMIC = load_section_label_schema("academic")
 
 _ORCID_BLOCK = """## ORCID
 John Doe: 0000-0001-2345-6789
@@ -101,7 +106,7 @@ doi:10.1021/acs.chemrev.8b00539
     ids=["orcid", "notes", "authors", "data_availability", "licence", "glyph"],
 )
 def test_front_matter_units_detected(text: str) -> None:
-    assert is_non_content_unit(text, None)
+    assert is_non_content_unit(text, None, ACADEMIC)
 
 
 @pytest.mark.parametrize(
@@ -111,27 +116,29 @@ def test_front_matter_units_detected(text: str) -> None:
 )
 def test_content_units_kept(text: str) -> None:
     """A measurement anywhere keeps a unit; prose about licences is prose."""
-    assert not is_non_content_unit(text, None)
+    assert not is_non_content_unit(text, None, ACADEMIC)
 
 
 def test_heading_matches_via_breadcrumb_when_text_has_no_heading_line() -> None:
     body = "Jane Roe and John Doe contributed equally to this work."
-    assert not has_non_content_heading(body, None)
-    assert has_non_content_heading(body, ["Results", "Author Contributions"])
-    assert is_non_content_unit(body, ["Author Contributions"])
+    assert not has_non_content_heading(body, None, ACADEMIC)
+    assert has_non_content_heading(body, ["Results", "Author Contributions"], ACADEMIC)
+    assert is_non_content_unit(body, ["Author Contributions"], ACADEMIC)
 
 
 def test_heading_normalisation_strips_glyphs_and_numbering() -> None:
-    assert has_non_content_heading("## ■ AUTHOR INFORMATION\nbody", None)
-    assert has_non_content_heading("7. Conflicts of Interest\nbody", None)
-    assert has_non_content_heading("**Publisher's Note**\nbody", None)
-    assert not has_non_content_heading("## Results and Discussion\nbody", None)
+    assert has_non_content_heading("## ■ AUTHOR INFORMATION\nbody", None, ACADEMIC)
+    assert has_non_content_heading("7. Conflicts of Interest\nbody", None, ACADEMIC)
+    assert has_non_content_heading("**Publisher's Note**\nbody", None, ACADEMIC)
+    assert not has_non_content_heading(
+        "## Results and Discussion\nbody", None, ACADEMIC
+    )
 
 
 def test_detection_reads_content_not_labels() -> None:
     """A boilerplate label is routed from its schema; this heuristic never sees it."""
     body = "We thank the beamline staff for their support during the campaign."
-    assert not is_non_content_unit(body, None)
+    assert not is_non_content_unit(body, None, ACADEMIC)
 
 
 def test_metadata_token_share() -> None:
@@ -157,11 +164,11 @@ def test_metadata_heavy_unit_with_a_measurement_is_kept() -> None:
         "A. B. Jones measured 300 K samples."
     )
     assert metadata_token_share(text) >= NON_CONTENT_TOKEN_SHARE
-    assert not is_non_content_unit(text, None)
+    assert not is_non_content_unit(text, None, ACADEMIC)
 
 
 def test_empty_text_is_not_non_content() -> None:
-    assert not is_non_content_unit("   ", None)
+    assert not is_non_content_unit("   ", None, ACADEMIC)
 
 
 def test_non_content_mode_default_is_extract() -> None:
@@ -188,8 +195,8 @@ async def _run_chunk_text(
         for chunk in chunks:
             decision = route_unit(
                 chunk,
-                schema=None,
-                schema_fallback=True,
+                schema=ACADEMIC,
+                schema_fallback=False,
                 exclude_sections=None,
                 config=config,
             )

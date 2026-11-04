@@ -113,8 +113,9 @@ The terms these pages use, each with the page that explains it.
 
 **Route class**
 :   What a section label's sections hold, set in its section schema:
-    `content`, `boilerplate` or `citations` (a reference list). Evidence for
-    the route, never a decision on its own.
+    `content`, `boilerplate`, `non_content` (front and back matter) or
+    `citations` (a reference list). Evidence for the route, never a decision
+    on its own.
 
 **Section label**
 :   The section a content unit came from, such as `methods` or `results`, used

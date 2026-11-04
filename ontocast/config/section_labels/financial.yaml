@@ -133,6 +133,7 @@ labels:
     -   mine safety disclosures
 -   id: references
     route_class: citations
+    terminal: true
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'

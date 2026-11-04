@@ -26,22 +26,25 @@ Labels only mean something for a kind of document. A **section schema** is the
 set of labels for one kind, with the headings that identify each label. Every
 document is read against one schema:
 
-| Schema | Documents | Boilerplate | Reference lists |
-|---|---|---|---|
-| `academic` (default) | Research articles, conference papers, theses, reviews | `acknowledgements` | `references` |
-| `financial` | Annual and quarterly reports, filings | | `references` |
-| `clinical` | Trial protocols and study reports | | `references` |
-| `legal` | Contracts and other agreements between parties | | |
-| `patent` | Patents and patent applications | `citations` | |
-| `standard` | Specifications and standards for implementers | `acknowledgements` | `references` |
-| `manual` | User guides, installation guides, runbooks | | |
-| `fiction` | Novels and short fiction | `acknowledgements` | |
-| `news` | News articles and press releases | `boilerplate`, `contact` | |
-| `general` | Anything else | | `references` |
+| Schema | Documents | Boilerplate | Front and back matter | Reference lists |
+|---|---|---|---|---|
+| `academic` (default) | Research articles, conference papers, theses, reviews | `acknowledgements` | `back_matter` | `references` |
+| `financial` | Annual and quarterly reports, filings | | | `references` |
+| `clinical` | Trial protocols and study reports | | `back_matter` | `references` |
+| `legal` | Contracts and other agreements between parties | | | |
+| `patent` | Patents and patent applications | `citations` | | |
+| `standard` | Specifications and standards for implementers | `acknowledgements` | | `references` |
+| `manual` | User guides, installation guides, runbooks | | | |
+| `fiction` | Novels and short fiction | `acknowledgements` | | |
+| `news` | News articles and press releases | `boilerplate`, `contact` | | |
+| `general` | Anything else | | | `references` |
 
 Each label has a route class in its schema file: `content` (every label not
-listed above), `boilerplate` or `citations`. The class is evidence for
-routing, never a decision on its own.
+listed above), `boilerplate`, `non_content` (front and back matter: author
+blocks, ORCID, notes, availability and licence statements) or `citations`.
+The class is evidence for routing, never a decision on its own. Because the
+vocabulary belongs to the schema, `Notes` is back matter in a paper and
+content in a manual.
 
 Use `ontocast sections` (below) to see a schema's labels on a real document.
 
@@ -55,8 +58,12 @@ nothing. In order:
    word: `10-K` and `annual report` mean `financial`, `thesis` means
    `academic`, `RFC` means `standard`.
 3. Detection from the document's own headings.
-4. `academic`, as a fallback: nothing chose it, so its boilerplate sections are
-   not dropped.
+4. `academic`, as a fallback: nothing chose it, so its boilerplate and
+   front- and back-matter sections are routed as content.
+
+A thesis whose headings are only `Chapter 1`, `Chapter 2`… is detected as
+`fiction`, whose novels have the same headings; pass `document_type_hint=thesis`
+for such documents.
 
 Detection is set by
 [`CHUNK_SECTION_SCHEMA_DETECT`](../reference/configuration/chunking.md#chunk_section_schema_detect):
@@ -88,7 +95,14 @@ steps before it left unlabeled:
 | `llm` | The above, plus one batched call over whatever is still unlabeled | About one per document |
 
 A heading OntoCast does not recognize still ends the section before it, so a
-label never runs on into the next section.
+label never runs on into the next section. A descriptive heading (`Spin
+coating of the precursor solution`) belongs to the section before it, except
+after a reference list, which has no subsections. A heading with a subtitle is
+read by its head: `Appendix A: Derivation of the rate` opens the appendix.
+A keyword is read as the heading's head noun: `Characterization Results` is
+`results`, `Summary of Results` a summary, `Results and Discussion` `results`.
+`References` is recognized only as a whole part of a heading (`Notes and
+References`), never inside a phrase (`Comparison with literature references`).
 
 Two settings refine this:
 
@@ -170,7 +184,7 @@ drops a unit.
 | A reference list, by its content (nearly every paragraph is one cited work), or under a strong reference-list label its content agrees with | [`CHUNK_BIBLIOGRAPHY_MODE`](../reference/configuration/chunking.md#chunk_bibliography_mode): `skip` (default) drops it; `citations_only` extracts bibliographic records (works, authors, venues), never domain facts; `domain_facts` treats it like any other unit |
 | A strong boilerplate label on text that states no measurement, when `exclude_sections` is unset and the schema was not a fallback | Dropped |
 | A strong label `exclude_sections` names | Dropped |
-| Front or back matter recognized from its content: author information, notes, licence, data availability, competing interests | [`CHUNK_NON_CONTENT_MODE`](../reference/configuration/chunking.md#chunk_non_content_mode): `extract` (default) keeps it, marked as non-content; `skip` drops it |
+| Front or back matter that states no measurement: a strong `non_content`-class label, or a leading heading the schema names as front or back matter or boilerplate; or, under any schema, text made mostly of identifiers (emails, ORCIDs) or a licence notice | [`CHUNK_NON_CONTENT_MODE`](../reference/configuration/chunking.md#chunk_non_content_mode): `extract` (default) keeps it, marked as non-content; `skip` drops it |
 | Shorter than [`CHUNK_MIN_UNIT_CHARS`](../reference/configuration/chunking.md#chunk_min_unit_chars) | Dropped |
 | Anything else | Extracted |
 

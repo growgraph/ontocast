@@ -65,7 +65,7 @@ _BACK_MATTER_DOC = """## Results
 
 The measured yield was stable across the series.
 
-## Notes
+## Miscellany
 
 The authors declare no competing financial interest.
 
@@ -115,13 +115,13 @@ def test_descriptive_subsection_inherits_parent_label():
 
 
 def test_sectionlike_unrecognized_heading_stays_unresolved():
-    """An unnamed back-matter section is explicitly unresolved, not inherited."""
+    """An unrecognised section-like heading is explicitly unresolved, not inherited."""
     spans = detect_section_spans(_BACK_MATTER_DOC, SCHEMA)
 
     notes = next(
         span
         for span in spans
-        if "Notes" in _BACK_MATTER_DOC[span.start : span.end][:20]
+        if "Miscellany" in _BACK_MATTER_DOC[span.start : span.end][:20]
     )
     assert notes.label is None
     assert notes.source is SectionLabelSource.OUTLINE_UNRESOLVED
