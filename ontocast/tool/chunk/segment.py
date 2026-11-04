@@ -24,22 +24,9 @@ class PrepareSegment:
 
     text: str
     headings: list[str] | None = None
-    doc_item_refs: tuple[str, ...] = ()
     section_label: str | None = None
     section_label_source: SectionLabelSource | None = None
     section_label_confidence: float = 0.0
-
-
-def merge_doc_item_refs(
-    left: tuple[str, ...], right: tuple[str, ...]
-) -> tuple[str, ...]:
-    seen: set[str] = set()
-    merged: list[str] = []
-    for ref in left + right:
-        if ref not in seen:
-            seen.add(ref)
-            merged.append(ref)
-    return tuple(merged)
 
 
 def _first_non_empty_line(text: str) -> str:
@@ -88,7 +75,6 @@ def merge_into_right(left: PrepareSegment, right: PrepareSegment) -> PrepareSegm
     return PrepareSegment(
         text=combined_text,
         headings=right.headings or left.headings,
-        doc_item_refs=merge_doc_item_refs(left.doc_item_refs, right.doc_item_refs),
         section_label=winner.section_label,
         section_label_source=winner.section_label_source,
         section_label_confidence=winner.section_label_confidence,
@@ -120,7 +106,6 @@ def merge_into_left(left: PrepareSegment, right: PrepareSegment) -> PrepareSegme
     return PrepareSegment(
         text=combined_text,
         headings=left.headings or right.headings,
-        doc_item_refs=merge_doc_item_refs(left.doc_item_refs, right.doc_item_refs),
         section_label=winner.section_label,
         section_label_source=winner.section_label_source,
         section_label_confidence=winner.section_label_confidence,

@@ -13,10 +13,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from ontocast.config import ChunkConfig
@@ -39,16 +37,10 @@ from ontocast.tool.chunk.outline import markdown_headings
 from ontocast.tool.chunk.routing import RouteReason, UnitRoute, route_unit
 from ontocast.tool.chunk.schema_detect import SchemaDetection, detect_document_schema
 from ontocast.tool.chunk.section_llm import llm_backfill_section_labels
-from ontocast.tool.chunk.sections import (
-    detect_section_spans,
-    document_text_for_section_tagging,
-    label_from_headings,
-    label_text_from_spans,
-)
+from ontocast.tool.chunk.sections import detect_section_spans
 from ontocast.tool.chunk.segment import (
     PrepareSegment,
     coalesce_small_segments_right,
-    merge_doc_item_refs,
     starts_with_section_heading,
 )
 from ontocast.tool.chunk.sizing import (
@@ -56,18 +48,19 @@ from ontocast.tool.chunk.sizing import (
     merge_small_parts,
     split_by_measurement_density,
 )
+from ontocast.tool.chunk.structure import (
+    BlockKinds,
+    build_document_structure,
+    item_refs,
+)
 from ontocast.util.measurement_lexicon import unit_adjacent_numbers
-from ontocast.util.optional import require
 
 if TYPE_CHECKING:
-    from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
     from docling_core.types.doc import DoclingDocument
 
     from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
-
-_HYBRID_CHUNKER_LOCK = threading.Lock()
 
 # Relative trust in each classification tier, used when merging chunks: the
 # merged chunk inherits the weakest evidence in the run.
@@ -79,7 +72,6 @@ _SOURCE_STRENGTH: dict[SectionLabelSource, int] = {
     SectionLabelSource.CONTENT_BLOCK: 3,
     SectionLabelSource.LLM: 4,
     SectionLabelSource.HEADING_INHERITED: 5,
-    SectionLabelSource.SPAN_OVERLAP: 6,
     SectionLabelSource.HEADING_KEYWORD: 7,
     SectionLabelSource.HEADING_PATTERN: 8,
 }
@@ -97,6 +89,7 @@ class PreparedChunk:
 
     text: str
     headings: list[str] | None
+    #: Docling items whose blocks the unit holds whole, set after trimming.
     doc_item_refs: tuple[str, ...] = ()
     section_label: str | None = None
     section_label_source: SectionLabelSource | None = None
@@ -246,37 +239,6 @@ def _filter_segments(
     ]
 
 
-def _hybrid_segments(
-    docling_doc: DoclingDocument, hybrid_chunker: HybridChunker
-) -> list[PrepareSegment]:
-    segments: list[PrepareSegment] = []
-    # Cached chunkers share one fast tokenizer, whose state concurrent calls
-    # would corrupt; ``chunk`` is lazy, so the lock covers draining it.
-    with _HYBRID_CHUNKER_LOCK:
-        chunks = list(hybrid_chunker.chunk(docling_doc))
-    for chunk in chunks:
-        text = chunk.text.strip()
-        if not text:
-            continue
-        headings: list[str] | None = None
-        doc_item_refs: tuple[str, ...] = ()
-        meta = chunk.meta
-        doc_meta_cls = require(
-            "docling_core.transforms.chunker.doc_chunk", feature="Hybrid chunking"
-        ).DocMeta
-        if isinstance(meta, doc_meta_cls):
-            headings = meta.headings
-            doc_item_refs = tuple(item.self_ref for item in meta.doc_items)
-        segments.append(
-            PrepareSegment(
-                text=text,
-                headings=headings,
-                doc_item_refs=doc_item_refs,
-            )
-        )
-    return segments
-
-
 def _semantic_full_doc_segments(
     document_text: str, splitter: ChunkerTool, max_size: int
 ) -> list[PrepareSegment]:
@@ -371,59 +333,6 @@ def _semantic_section_segments(
     return segments
 
 
-def _tag_segments(
-    segments: list[PrepareSegment],
-    document_text: str,
-    spans: list[SectionSpan],
-    schema: "SectionLabelSchema",
-) -> None:
-    """Assign section_label to each segment.
-
-    Strategy (cheapest to most expensive):
-    1. Docling heading breadcrumb — reliable structural metadata, no text search.
-    2. Character-span overlap against the markdown export — catches segments
-       whose text does match the markdown representation.
-
-    Span-search cursor is preserved when a segment text is not found so
-    subsequent segments are not mis-anchored to the document start.
-    """
-    search_from = 0
-    for segment in segments:
-        if segment.section_label is not None:
-            # Sections-first segmentation labels at split time; keep the label
-            # but advance the cursor so span search stays ordered.
-            _, search_from = label_text_from_spans(
-                segment.text, document_text, spans, search_from
-            )
-            continue
-        if segment.section_label_source is SectionLabelSource.OUTLINE_UNRESOLVED:
-            # The outline knows this region belongs to an unrecognised section.
-            # Guessing from a neighbouring span would recreate label smearing;
-            # leave it for the content and LLM tiers.
-            _, search_from = label_text_from_spans(
-                segment.text, document_text, spans, search_from
-            )
-            continue
-        heading_label = label_from_headings(segment.headings, schema)
-        if heading_label is not None:
-            segment.section_label = heading_label
-            segment.section_label_source = SectionLabelSource.HEADING_PATTERN
-            segment.section_label_confidence = 0.95
-            # Still advance the search cursor so span-based tagging stays
-            # ordered for segments that do need it.
-            _, search_from = label_text_from_spans(
-                segment.text, document_text, spans, search_from
-            )
-        else:
-            label, search_from = label_text_from_spans(
-                segment.text, document_text, spans, search_from
-            )
-            segment.section_label = label
-            if label is not None:
-                segment.section_label_source = SectionLabelSource.SPAN_OVERLAP
-                segment.section_label_confidence = 0.8
-
-
 def _forward_fill_section_labels(
     segments: list[PrepareSegment],
     schema: "SectionLabelSchema",
@@ -496,15 +405,11 @@ def _attach_bare_headings(segments: list[PrepareSegment]) -> list[PrepareSegment
             pending.append(segment)
             continue
         if pending:
-            refs: tuple[str, ...] = ()
-            for part in (*pending, segment):
-                refs = merge_doc_item_refs(refs, part.doc_item_refs)
             segment = replace(
                 segment,
                 text=DEFAULT_PART_SEPARATOR.join(
                     part.text.strip() for part in (*pending, segment)
                 ),
-                doc_item_refs=refs,
             )
             pending = []
         attached.append(segment)
@@ -693,7 +598,6 @@ def _expand_segment(
             PreparedChunk(
                 text=segment.text,
                 headings=segment.headings,
-                doc_item_refs=segment.doc_item_refs,
                 section_label=segment.section_label,
                 section_label_source=segment.section_label_source,
                 section_label_confidence=segment.section_label_confidence,
@@ -713,7 +617,6 @@ def _expand_segment(
                 PreparedChunk(
                     text=sized_text,
                     headings=segment.headings,
-                    doc_item_refs=segment.doc_item_refs,
                     section_label=segment.section_label,
                     section_label_source=segment.section_label_source,
                     section_label_confidence=segment.section_label_confidence,
@@ -745,9 +648,6 @@ def _merge_prepared_chunks(
             max_size,
         )
         headings = next((chunk.headings for chunk in run if chunk.headings), None)
-        refs: tuple[str, ...] = ()
-        for chunk in run:
-            refs = merge_doc_item_refs(refs, chunk.doc_item_refs)
         # A merged chunk is only as trustworthy as its weakest constituent.
         source = min(
             (chunk.section_label_source for chunk in run if chunk.section_label_source),
@@ -761,7 +661,6 @@ def _merge_prepared_chunks(
                 PreparedChunk(
                     text=text,
                     headings=headings,
-                    doc_item_refs=refs,
                     section_label=label,
                     section_label_source=source,
                     section_label_confidence=confidence,
@@ -815,81 +714,13 @@ def _size_segments(
     return _split_dense_chunks(merged, config)
 
 
-def _build_hybrid_chunker(config: ChunkConfig) -> HybridChunker:
-    """Docling HybridChunker sized to our chunk budget.
-
-    A bare ``HybridChunker()`` inherits the MiniLM tokenizer's 512-token limit
-    while OntoCast re-merges segments up to ``config.max_size`` chars, which
-    floods logs with "headers and captions … will be ignored" warnings. Budget
-    the tokenizer from the configured chunk size instead (~4 chars per token).
-    """
-    return _hybrid_chunker_for_max_tokens(max(512, config.max_size // 4))
-
-
-@lru_cache(maxsize=4)
-def _hybrid_chunker_for_max_tokens(max_tokens: int) -> HybridChunker:
-    """Build (and cache) a HybridChunker for one token budget.
-
-    The chunker holds a HuggingFace tokenizer and carries no per-document
-    state, so rebuilding it per document meant an ``AutoTokenizer`` load on
-    every request for an object that only ever depends on ``max_tokens``.
-    """
-    hybrid_module = require(
-        "docling_core.transforms.chunker.hybrid_chunker", feature="Hybrid chunking"
-    )
-    try:
-        tokenizer_module = require(
-            "docling_core.transforms.chunker.tokenizer.huggingface",
-            feature="Hybrid chunking",
-        )
-        transformers_module = require("transformers", feature="Hybrid chunking")
-        hf_tokenizer = transformers_module.AutoTokenizer.from_pretrained(
-            "sentence-transformers/all-MiniLM-L6-v2",
-            model_max_length=max_tokens,
-        )
-        tokenizer = tokenizer_module.HuggingFaceTokenizer(
-            tokenizer=hf_tokenizer, max_tokens=max_tokens
-        )
-        return hybrid_module.HybridChunker(tokenizer=tokenizer)
-    except Exception as exc:  # pragma: no cover - environment dependent
-        logger.debug("Falling back to default HybridChunker tokenizer: %s", exc)
-        return hybrid_module.HybridChunker()
-
-
-def _primary_segments(
-    docling_doc: DoclingDocument,
-    document_text: str,
-    spans: list[SectionSpan],
-    splitter: ChunkerTool,
-    config: ChunkConfig,
-) -> list[PrepareSegment]:
-    """Segment via the configured segmenter, falling back to the other one."""
-    if config.segmenter == "docling":
-        segments = _hybrid_segments(docling_doc, _build_hybrid_chunker(config))
-        if not segments:
-            segments = _semantic_section_segments(
-                document_text, spans, splitter, config.max_size
-            )
-        return segments
-    segments = _semantic_section_segments(
-        document_text, spans, splitter, config.max_size
-    )
-    if not segments:
-        segments = _hybrid_segments(docling_doc, _build_hybrid_chunker(config))
-    return segments
-
-
 def _simple_prepare(
-    docling_doc: DoclingDocument,
     document_text: str,
     splitter: ChunkerTool,
     config: ChunkConfig,
 ) -> list[PreparedChunk]:
     """Untagged preparation (section classifier off)."""
-    if config.segmenter == "docling":
-        segments = _hybrid_segments(docling_doc, _build_hybrid_chunker(config))
-    else:
-        segments = _semantic_full_doc_segments(document_text, splitter, config.max_size)
+    segments = _semantic_full_doc_segments(document_text, splitter, config.max_size)
     if not segments:
         text = document_text.strip()
         if not text:
@@ -937,7 +768,9 @@ def _allowlist_report(
 
 
 def _trim_citation_runs(
-    chunks: list[PreparedChunk], schema: SectionLabelSchema | None
+    chunks: list[PreparedChunk],
+    schema: SectionLabelSchema | None,
+    block_kinds: BlockKinds | None = None,
 ) -> list[PreparedChunk]:
     """Cut citation runs at a unit's start or end into units of their own.
 
@@ -949,7 +782,7 @@ def _trim_citation_runs(
     citation_label = citation_labels[0] if citation_labels else None
     trimmed: list[PreparedChunk] = []
     for chunk in chunks:
-        pieces = trim_citation_runs(chunk.text)
+        pieces = trim_citation_runs(chunk.text, block_kinds)
         if len(pieces) == 1:
             trimmed.append(chunk)
             continue
@@ -985,8 +818,9 @@ def _route_chunks(
     schema_fallback: bool,
     exclude_sections: list[str] | None,
     config: ChunkConfig,
+    block_kinds: BlockKinds | None = None,
 ) -> list[PreparedChunk]:
-    """Route every chunk, in order, recording its route and reason.
+    """Route every chunk, in order, recording its route, reason and item refs.
 
     Every decision other than a plain extract is logged with the unit's size,
     label and labelling tier: a wrong route changes what is extracted, and
@@ -1000,6 +834,7 @@ def _route_chunks(
             schema_fallback=schema_fallback,
             exclude_sections=exclude_sections,
             config=config,
+            block_kinds=block_kinds,
         )
         if decision.reason is not RouteReason.CONTENT:
             logger.info(
@@ -1014,7 +849,12 @@ def _route_chunks(
                 decision.reason.value,
             )
         routed.append(
-            replace(chunk, route=decision.route, route_reason=decision.reason)
+            replace(
+                chunk,
+                route=decision.route,
+                route_reason=decision.reason,
+                doc_item_refs=item_refs(chunk.text, block_kinds),
+            )
         )
     return routed
 
@@ -1090,9 +930,9 @@ async def prepare_content_units(
     # Segmentation is CPU-bound and runs local embedding models, but this
     # coroutine is awaited on the event loop -- inline, it would freeze every
     # concurrent document's in-flight provider sockets for its whole duration.
-    document_text = await asyncio.to_thread(
-        document_text_for_section_tagging, docling_doc
-    )
+    structure = await asyncio.to_thread(build_document_structure, docling_doc)
+    document_text = structure.text
+    block_kinds = structure.block_kinds
 
     if config.section_classifier == "off":
         if options.needs_section_prepare():
@@ -1101,14 +941,15 @@ async def prepare_content_units(
                 "section filters are ignored"
             )
         chunks = await asyncio.to_thread(
-            _simple_prepare, docling_doc, document_text, splitter, config
+            _simple_prepare, document_text, splitter, config
         )
         routed = _route_chunks(
-            _trim_citation_runs(chunks, None),
+            _trim_citation_runs(chunks, None, block_kinds),
             schema=None,
             schema_fallback=True,
             exclude_sections=None,
             config=config,
+            block_kinds=block_kinds,
         )
         return PreparedDocument(routed=routed)
 
@@ -1124,7 +965,7 @@ async def prepare_content_units(
     )
 
     segments = await asyncio.to_thread(
-        _primary_segments, docling_doc, document_text, spans, splitter, config
+        _semantic_section_segments, document_text, spans, splitter, config.max_size
     )
     if not segments:
         return PreparedDocument(
@@ -1137,7 +978,6 @@ async def prepare_content_units(
         config.section_tag_min_chars,
         schema,
     )
-    await asyncio.to_thread(_tag_segments, segments, document_text, spans, schema)
     if config.section_classifier in ("heuristic", "llm"):
         await asyncio.to_thread(_density_label_segments, segments, schema, config)
     if config.section_classifier == "llm" and tools is not None:
@@ -1186,13 +1026,14 @@ async def prepare_content_units(
         )
 
     chunks = await asyncio.to_thread(_size_segments, segments, splitter, config)
-    chunks = _trim_citation_runs(chunks, schema)
+    chunks = _trim_citation_runs(chunks, schema, block_kinds)
     routed = _route_chunks(
         chunks,
         schema=schema,
         schema_fallback=decision.source == "default",
         exclude_sections=options.exclude_sections,
         config=config,
+        block_kinds=block_kinds,
     )
     document = PreparedDocument(
         routed=routed,

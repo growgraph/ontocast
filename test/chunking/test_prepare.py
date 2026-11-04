@@ -329,39 +329,6 @@ def test_sections_first_semantic_labels_inherited_without_llm() -> None:
     assert all(chunk.section_label is not None for chunk in chunks)
 
 
-@pytest.mark.slow  # the docling segmenter loads a HuggingFace tokenizer
-def test_docling_segmenter_option_still_supported() -> None:
-    doc = doc_from_markdown_lines(_EXCLUDABLE_DOC)
-    config = ChunkConfig(min_size=40, max_size=500, segmenter="docling")
-
-    async def default_llm(_prompt):
-        raise AssertionError("LLM should not be called")
-
-    tools = cast(
-        ToolBox,
-        SimpleNamespace(
-            chunker=ChunkerTool(chunk_config=config),
-            config=SimpleNamespace(
-                chunk_config=config,
-                server=SimpleNamespace(parallel_workers=2),
-            ),
-            llm=default_llm,
-        ),
-    )
-    chunks = asyncio.run(
-        prepare_content_units(
-            doc,
-            tools.chunker,
-            tools.chunker.config,
-            PrepareOptions(document_type_hint="research article"),
-            tools,
-        )
-    ).units
-    labels = {chunk.section_label for chunk in chunks}
-    assert "results" in labels
-    assert "acknowledgements" not in labels
-
-
 _UNRECOGNISED_HEADINGS_DOC = """# Introduction
 Perovskite solar cells have attracted attention for a decade now.
 

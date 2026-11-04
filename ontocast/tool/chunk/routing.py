@@ -46,6 +46,7 @@ from ontocast.tool.chunk.bibliography import (
     looks_like_bibliography,
 )
 from ontocast.tool.chunk.non_content import is_non_content_unit, states_measurement
+from ontocast.tool.chunk.structure import BlockKinds
 
 if TYPE_CHECKING:
     from ontocast.config import ChunkConfig
@@ -103,6 +104,7 @@ def route_unit(
     schema_fallback: bool,
     exclude_sections: list[str] | None,
     config: ChunkConfig,
+    block_kinds: BlockKinds | None = None,
 ) -> RoutingDecision:
     """Decide one unit's route from its label, the label's strength and its content.
 
@@ -116,6 +118,8 @@ def route_unit(
             boilerplate exclusions, a list (``[]`` included) replaces them.
         config: Chunk configuration (bibliography and non-content modes, the
             unit-size floor).
+        block_kinds: Docling block kinds of the document, when it was
+            converted: a caption or formula is never a citation entry.
 
     Returns:
         The route and its reason.
@@ -137,12 +141,12 @@ def route_unit(
 
     if config.bibliography_mode != "domain_facts":
         reason: RouteReason | None = None
-        if looks_like_bibliography(text):
+        if looks_like_bibliography(text, block_kinds):
             reason = RouteReason.CITATION_LIST
         elif (
             route_class is RouteClass.CITATIONS
             and strong
-            and citation_share(text) >= LABEL_AGREEMENT_SHARE
+            and citation_share(text, block_kinds) >= LABEL_AGREEMENT_SHARE
         ):
             reason = RouteReason.CITATION_LABEL
         if reason is not None:

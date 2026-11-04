@@ -95,9 +95,14 @@ steps before it left unlabeled:
 | `llm` | The above, plus one batched call over whatever is still unlabeled | About one per document |
 
 A heading OntoCast does not recognize still ends the section before it, so a
-label never runs on into the next section. A descriptive heading (`Spin
-coating of the precursor solution`) belongs to the section before it, except
-after a reference list, which has no subsections. A heading with a subtitle is
+label never runs on into the next section. Where a document numbers its
+headings, the numbers say where each belongs: `2.1` sits inside `2` and takes
+its label unless it names its own, while a numbered top-level heading
+OntoCast does not recognize (`4 Aging of encapsulated films`) opens an
+unlabeled section of its own. Markdown heading levels place headings the same
+way in documents that use more than one level below the title. Elsewhere a
+descriptive heading (`Spin coating of the precursor solution`) belongs to the
+section before it. A reference list has no subsections either way. A heading with a subtitle is
 read by its head: `Appendix A: Derivation of the rate` opens the appendix.
 A keyword is read as the heading's head noun: `Characterization Results` is
 `results`, `Summary of Results` a summary, `Results and Discussion` `results`.
@@ -191,7 +196,8 @@ drops a unit.
 A reference list at the start or end of a unit, such as an unheaded
 bibliography after a conclusion, is first cut into a unit of its own, so the
 prose around it is kept. Table rows never count as cited works: a table that
-cites its sources holds data. Nor does an entry that states a measurement,
+cites its sources holds data. Nor do captions, formulas and code, which a
+converted document marks as such, or an entry that states a measurement,
 which is how a discussion of prior studies differs from a reference list.
 
 Every unit records the reason for its route (`route_reason`), every route
@@ -214,8 +220,9 @@ ontocast sections --input-path ./paper.pdf --target-sections results --as-json
 ```
 
 It prints the schema (with the step that chose it and the evidence for the
-runners-up), the document's outline, and every unit's label with the step that
-decided it and its confidence, and its route with the reason, so you see what
+runners-up), the document's outline with each heading's number and parent,
+and every unit's label with the step that decided it and its confidence, its
+route with the reason, and how many converted items it holds, so you see what
 would be dropped and why. It makes no LLM calls and needs no credentials,
 unless you pass `--section-classifier llm`.
 

@@ -16,9 +16,11 @@ Two heading kinds must be told apart, because they need opposite treatment:
   breaks population-inversion limitation``) sit *inside* a section and must
   inherit its label, or their body text is lost from the parent section.
 
-Docling gives no usable hierarchy to make this call -- PDF conversions report a
-flat heading level for every header -- so the discriminator is heading
-genericity: the number of content words after stopword removal.
+Where the document states its hierarchy, the tree decides: a heading's section
+number ("2.1" sits under "2"), or its markdown level in documents whose levels
+vary. Docling reports one level for every PDF heading, so many documents state
+nothing; there the discriminator is heading genericity, the number of content
+words after stopword removal.
 
 Subject-domain-agnostic but, like :mod:`ontocast.tool.chunk.bibliography`, not
 language-agnostic: the stopword list and the sentence-punctuation cues are
@@ -89,6 +91,18 @@ _TEXT_HEADING_NUMBERED = re.compile(r"^(?:\d+|[IVXLivxl]+)(?:\.\d+)*[.)]?\s+\S")
 
 _TEXT_HEADING_MAX_CHARS = 120
 
+# A section number at the start of a raw heading: "2.1", "3.2.1.", "1)",
+# "II.", "A.2", optionally after "Chapter"/"Section"/"Part". Components have at
+# most three digits, so a year ("2020 Annual report") is not a number; a single
+# letter or a roman numeral needs a separator, as in normalise_heading_line.
+_HEADING_NUMBER = re.compile(
+    r"^(?:(?i:chapter|section|part)\s+)?"
+    r"(?P<number>(?:\d{1,3}|[A-Z])(?:\.\d{1,3})+|\d{1,3}"
+    r"|(?:[IVXL]{1,6}|[A-Z])(?=[.):]))"
+    r"[.):]?\s+\S"
+)
+_HEADING_DECORATION = re.compile(r"^[#\s*_`]+|^[^\w(\[]+")
+
 
 def content_words(normalised: str) -> list[str]:
     """Topical words of a normalised heading, with closed-class words removed."""
@@ -122,6 +136,18 @@ def heading_is_sectionlike(normalised: str) -> bool:
     return len(words) <= SECTIONLIKE_MAX_CONTENT_WORDS
 
 
+def heading_number(text: str) -> str | None:
+    """The section number a raw heading opens with ("2.1", "II", "A.2"), if any."""
+    stripped = text.strip()
+    while True:
+        bare = _HEADING_DECORATION.sub("", stripped)
+        if bare == stripped:
+            break
+        stripped = bare
+    match = _HEADING_NUMBER.match(stripped)
+    return match.group("number") if match else None
+
+
 def _make_node(text: str, start: int, body_start: int, level: int) -> HeadingNode:
     normalised = normalise_heading_line(text)
     return HeadingNode(
@@ -130,6 +156,7 @@ def _make_node(text: str, start: int, body_start: int, level: int) -> HeadingNod
         start=start,
         body_start=body_start,
         level=level,
+        number=heading_number(text),
         sectionlike=heading_is_sectionlike(normalised),
     )
 
@@ -213,6 +240,59 @@ def detect_headings(
     return nodes
 
 
+def _place_by_number(nodes: list[HeadingNode]) -> None:
+    for index, node in enumerate(nodes):
+        if node.number is None:
+            continue
+        parts = node.number.split(".")
+        if len(parts) == 1:
+            node.tree_placed = True
+            continue
+        for back in range(index - 1, -1, -1):
+            number = nodes[back].number
+            if number is None:
+                continue
+            prefix = number.split(".")
+            if len(prefix) < len(parts) and parts[: len(prefix)] == prefix:
+                node.parent = back
+                node.tree_placed = True
+                break
+
+
+def _place_by_level(nodes: list[HeadingNode]) -> None:
+    # A lone shallowest heading at the start is the document title, not a level.
+    first = (
+        1
+        if (len(nodes) > 1 and nodes[0].level < min(node.level for node in nodes[1:]))
+        else 0
+    )
+    ranked = nodes[first:]
+    if len({node.level for node in ranked}) < 2:
+        return
+    for index in range(first, len(nodes)):
+        node = nodes[index]
+        if node.tree_placed:
+            continue
+        node.tree_placed = True
+        for back in range(index - 1, first - 1, -1):
+            if nodes[back].level < node.level:
+                node.parent = back
+                break
+
+
+def link_heading_tree(outline: DocumentOutline) -> None:
+    """Place headings in a tree where the document states one (mutates in place).
+
+    A section number places a heading: "2.1" hangs under the nearest "2"
+    before it, and a one-part number is top level. A numbered heading whose
+    parent number is absent stays unplaced. In a document whose markdown
+    levels vary, the remaining headings hang under the nearest shallower
+    heading before them. Unplaced headings are judged by genericity.
+    """
+    _place_by_number(outline.nodes)
+    _place_by_level(outline.nodes)
+
+
 def label_outline(outline: DocumentOutline, schema: SectionLabelSchema) -> None:
     """Assign labels to outline headings from the schema (mutates in place).
 
@@ -252,27 +332,35 @@ def label_outline(outline: DocumentOutline, schema: SectionLabelSchema) -> None:
 def inherit_subsection_labels(
     outline: DocumentOutline, schema: SectionLabelSchema
 ) -> None:
-    """Propagate the enclosing section's label onto descriptive subheadings.
+    """Propagate the enclosing section's label onto headings inside it.
 
-    A non-section-like heading (a descriptive subsection title) sits inside the
-    section opened by the last section-like heading, so it takes that label.
-    Without this, such a heading would open an unresolved span and its body
-    text would be lost from the parent section. A terminal section (a
-    reference list) has no subsections: a descriptive heading after it opens
-    an unresolved span instead.
+    A heading the tree places under a parent takes the parent's label unless
+    it names its own; a heading the tree places at top level opens a section
+    of its own and inherits nothing. An unplaced heading that is not
+    section-like (a descriptive subsection title) sits inside the section
+    opened by the last section-like or placed heading, and takes its label.
+    A terminal section (a reference list) has no subsections.
     """
     current_label: str | None = None
     for node in outline.nodes:
-        if node.sectionlike:
-            current_label = (
-                None if label_is_terminal(node.label, schema) else node.label
-            )
+        if node.tree_placed:
+            if node.label is None and node.parent is not None:
+                parent_label = outline.nodes[node.parent].label
+                if not label_is_terminal(parent_label, schema):
+                    _inherit(node, parent_label)
+        elif not node.sectionlike:
+            _inherit(node, current_label)
             continue
-        if node.label is None and current_label is not None:
-            node.label = current_label
-            node.source = SectionLabelSource.HEADING_INHERITED
-            # Inherited labels are weaker than the heading they came from.
-            node.confidence = 0.6
+        current_label = None if label_is_terminal(node.label, schema) else node.label
+
+
+def _inherit(node: HeadingNode, label: str | None) -> None:
+    if node.label is not None or label is None:
+        return
+    node.label = label
+    node.source = SectionLabelSource.HEADING_INHERITED
+    # Inherited labels are weaker than the heading they came from.
+    node.confidence = 0.6
 
 
 def outline_to_spans(outline: DocumentOutline) -> list[SectionSpan]:
@@ -320,6 +408,7 @@ def build_document_outline(
         text_len=len(text),
         nodes=detect_headings(text, include_text_headings=include_text_headings),
     )
+    link_heading_tree(outline)
     label_outline(outline, schema)
     inherit_subsection_labels(outline, schema)
     return outline
@@ -328,7 +417,8 @@ def build_document_outline(
 def format_outline(outline: DocumentOutline) -> list[str]:
     """Render the outline as human-readable lines for logging and the CLI."""
     return [
-        f"{node.start:>8}  {'#' * node.level:<6} "
+        f"{node.start:>8}  {'#' * node.level:<6} {node.number or '':<7} "
+        f"{'' if node.parent is None else node.parent:>4} "
         f"{('section' if node.sectionlike else 'sub/desc'):<8} "
         f"{str(node.label):<16} {node.source.value:<18} "
         f"{node.confidence:.2f}  {node.text[:70]}"
@@ -343,8 +433,10 @@ __all__ = [
     "detect_headings",
     "format_outline",
     "heading_is_sectionlike",
+    "heading_number",
     "inherit_subsection_labels",
     "label_outline",
+    "link_heading_tree",
     "markdown_headings",
     "outline_to_spans",
     "text_headings",

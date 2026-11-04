@@ -23,7 +23,6 @@ class SectionLabelSource(StrEnum):
     HEADING_KEYWORD = "heading_keyword"
     HEADING_INHERITED = "heading_inherited"
     FRONT_MATTER = "front_matter"
-    SPAN_OVERLAP = "span_overlap"
     CONTENT_DENSITY = "content_density"
     #: A citation run cut out of a unit by the block classifier.
     CONTENT_BLOCK = "content_block"

@@ -60,11 +60,14 @@ class SourceUnit(BaseModel):
     )
     headings: list[str] | None = Field(
         default=None,
-        description="Docling heading breadcrumb for this chunk (tagging hint).",
+        description="The heading that opens this unit's section, if any.",
     )
     doc_item_refs: list[str] = Field(
         default_factory=list,
-        description="Docling doc_item self_refs covered by this chunk (tagging hint).",
+        description=(
+            "References (self_ref) of the docling items whose text this unit "
+            "holds whole, in document order."
+        ),
     )
     summary: str | None = Field(
         default=None,

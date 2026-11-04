@@ -552,15 +552,6 @@ class ChunkConfig(BaseSettings):
             "it invalidates the on-disk chunk cache and shifts chunk boundaries."
         ),
     )
-    segmenter: Literal["semantic", "docling"] = Field(
-        default="semantic",
-        description=(
-            "Primary segmenter: 'semantic' splits the markdown export inside "
-            "detected section boundaries with the built-in semantic chunker "
-            "(naive fallback without torch extras); 'docling' uses docling's "
-            "HybridChunker structural segments."
-        ),
-    )
     chunking_mode: Literal["semantic", "naive"] = Field(
         default="semantic",
         description=(

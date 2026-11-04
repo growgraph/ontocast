@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Heading keywords resolve by head noun ("Characterization Results" is results, "Summary of Results" a summary), and the head of a subtitled heading is typed ("Appendix A: Derivation …" opens the appendix). "Data Availability" and "Associated Content" are back matter, no longer data and appendix.
 - `references` is terminal: descriptive headings after a reference list no longer inherit its label, and the keyword names it only as a whole part of a heading ("Notes and References"), never inside a phrase ("Comparison with literature references").
 - `max_chunks` counts units kept for extraction.
+- Numbered headings are placed by their number: "2.1" takes the label of "2" unless it names its own, and a numbered top-level heading the schema does not name opens an unlabeled section instead of inheriting the previous one. Markdown levels place headings the same way in documents that use more than one level.
+- Converted documents mark captions, footnotes, formulas, code and pictures; captions, formulas and code never count as cited works. Every unit's `doc_item_refs` lists the docling items whose text it holds whole. `ontocast sections` shows heading numbers and parents.
 
 - An ontology's namespace is where its terms live, read from the file at adoption (`vann:preferredNamespaceUri` when terms live there, else the namespace with the most described terms) and stored in its header, instead of `<iri>#`. Ontologies whose terms sit under `<iri>/` (OM-2) or elsewhere (PROV-O) get the right prefix in prompts.
 - An ontology contributes to the vector index the terms of its own namespace, so a standard vocabulary uploaded as an ontology (PROV-O, SKOS, schema.org) is indexed, and terms an ontology only reuses are not. `VECTOR_STORE_EMBED_STANDARD_VOCAB_IRIS` is removed; `VECTOR_STORE_INDEX_UNDESCRIBED_IRIS` widens only the ontology's own namespace. The surface-form contract is now `sf7`: existing vector stores need a reindex.
@@ -33,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The `default_exclude` field of section schemas (replaced by `route_class`).
+- `CHUNK_SEGMENTER` and docling's HybridChunker segmentation: units are always cut at section boundaries of the markdown export. The `span_overlap` section-label source goes with it.
 
 ### Fixed
 

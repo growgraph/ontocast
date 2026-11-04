@@ -73,6 +73,8 @@ def _outline_rows(document_text: str, schema, text_headings: bool) -> list[dict]
         {
             "offset": node.start,
             "level": node.level,
+            "number": node.number,
+            "parent": node.parent,
             "kind": "section" if node.sectionlike else "sub/desc",
             "heading": node.text,
             "normalised": node.normalised,
@@ -98,6 +100,7 @@ def _chunk_rows(chunks) -> list[dict]:
             "confidence": round(chunk.section_label_confidence, 2),
             "route": chunk.route.value,
             "reason": chunk.route_reason.value,
+            "items": len(chunk.doc_item_refs),
             "preview": " ".join(chunk.text.split())[:70],
         }
         for index, chunk in enumerate(chunks)
@@ -306,6 +309,8 @@ def main(
         outline,
         [
             ("offset", 7),
+            ("number", 6),
+            ("parent", 6),
             ("kind", 8),
             ("label", 16),
             ("source", 18),
@@ -324,6 +329,7 @@ def main(
             ("confidence", 5),
             ("route", 11),
             ("reason", 20),
+            ("items", 5),
             ("preview", 50),
         ],
     )

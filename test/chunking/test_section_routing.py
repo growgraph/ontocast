@@ -170,7 +170,6 @@ def test_a_unit_that_is_all_citations_is_not_split() -> None:
         (SectionLabelSource.CONTENT_BLOCK, LabelStrength.STRONG),
         (SectionLabelSource.HEADING_KEYWORD, LabelStrength.WEAK),
         (SectionLabelSource.HEADING_INHERITED, LabelStrength.WEAK),
-        (SectionLabelSource.SPAN_OVERLAP, LabelStrength.WEAK),
         (SectionLabelSource.FRONT_MATTER, LabelStrength.WEAK),
         (SectionLabelSource.LLM, LabelStrength.WEAK),
         (SectionLabelSource.FORWARD_FILL, LabelStrength.WEAK),
@@ -232,7 +231,6 @@ def _route(
         SectionLabelSource.HEADING_INHERITED,
         SectionLabelSource.LLM,
         SectionLabelSource.FORWARD_FILL,
-        SectionLabelSource.SPAN_OVERLAP,
     ],
 )
 def test_weak_references_label_never_drops_prose(source) -> None:

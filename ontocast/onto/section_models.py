@@ -24,7 +24,13 @@ class HeadingNode(BasePydanticModel):
         start: Character offset of the heading line itself.
         body_start: Character offset just past the heading line.
         level: Markdown heading depth (1 = top). Docling reports a flat level
-            for PDF conversions, so this is informational only.
+            for PDF conversions, so levels place a heading only in documents
+            whose levels vary.
+        number: The heading's section number ("2.1", "II", "A.2"), if any.
+        parent: Index in the outline of the heading this one sits under.
+        tree_placed: Whether numbering or markdown levels place this heading;
+            ``parent is None`` then means top level. Unplaced headings are
+            judged by genericity.
         sectionlike: Whether the heading reads as a generic section name rather
             than a descriptive subsection title or a document title.
         label: Canonical section label, when resolved.
@@ -37,6 +43,9 @@ class HeadingNode(BasePydanticModel):
     start: int
     body_start: int
     level: int = 1
+    number: str | None = None
+    parent: int | None = None
+    tree_placed: bool = False
     sectionlike: bool = True
     label: str | None = None
     source: SectionLabelSource = SectionLabelSource.OUTLINE_UNRESOLVED
