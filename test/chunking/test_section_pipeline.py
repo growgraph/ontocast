@@ -279,7 +279,7 @@ def _sample_units() -> list[ContentUnit]:
 
 
 @pytest.mark.anyio
-async def test_chunk_prepare_filters_summarize_sections_allowlist() -> None:
+async def test_summarize_sections_does_not_filter_chunking() -> None:
     doc = doc_from_markdown_lines(_SAMPLE_DOC)
     state = AgentState(
         docling_doc=doc,
@@ -288,9 +288,7 @@ async def test_chunk_prepare_filters_summarize_sections_allowlist() -> None:
     result = await chunk_text(state, _chunk_tools())
     assert result.status == Status.SUCCESS
     labels = {unit.section_label for unit in result.content_units}
-    assert labels <= {"methods", "results"}
-    assert "methods" in labels
-    assert "results" in labels
+    assert {"introduction", "methods", "results"} <= labels
 
 
 @pytest.mark.anyio

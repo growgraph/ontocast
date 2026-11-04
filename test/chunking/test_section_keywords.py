@@ -107,6 +107,25 @@ class TestPrecisionBoundary:
         assert resolved is not None
         assert resolved[2] == "heading_keyword"
 
+    def test_heading_that_is_a_keyword_resolves_at_pattern_strength(self):
+        """A section's name is exact evidence; a keyword inside a heading is not."""
+        for heading, label in [
+            ("## Author Contributions", "acknowledgements"),
+            ("## ■ AUTHOR INFORMATION", "acknowledgements"),
+            ("## Competing Interests", "acknowledgements"),
+            ("## *sı Supporting Information", "appendix"),
+        ]:
+            assert resolve_heading_label(heading, SCHEMA) == (
+                label,
+                0.95,
+                "heading_pattern",
+            )
+        assert resolve_heading_label("Funding Mechanisms", SCHEMA) == (
+            "acknowledgements",
+            0.7,
+            "heading_keyword",
+        )
+
     def test_exact_heading_prefers_the_pattern_tier(self):
         resolved = resolve_heading_label("Results", SCHEMA)
         assert resolved is not None

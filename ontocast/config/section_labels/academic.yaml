@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.2"
 id: academic
 description: IMRaD and common paper or report section headings
 document_profile: >-
@@ -6,9 +6,6 @@ document_profile: >-
     original research carried out by its authors -- experiments, measurements or
     analysis -- and written for a research audience.
 ordered: true
-default_exclude:
--   acknowledgements
--   appendix
 labels:
 -   id: abstract
     order: 10
@@ -131,6 +128,7 @@ labels:
     -   limitations
     -   threats to validity
 -   id: acknowledgements
+    route_class: boilerplate
     order: 90
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?acknowledg(?:e?ments?|ments?)\s*$'
@@ -173,6 +171,7 @@ labels:
     -   supporting information
     -   associated content
 -   id: references
+    route_class: citations
     order: 110
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?references\s*$'

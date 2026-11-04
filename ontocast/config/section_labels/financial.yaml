@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.2"
 id: financial
 description: SEC filings, annual and quarterly reports, investor documents
 document_profile: >-
@@ -132,6 +132,7 @@ labels:
     -   defaults upon senior securities
     -   mine safety disclosures
 -   id: references
+    route_class: citations
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'

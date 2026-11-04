@@ -12,7 +12,7 @@ from pydantic import (
 from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.enum import SectionLabelSource
+from ontocast.onto.enum import RouteReason, SectionLabelSource
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.util.hash import render_text_hash
@@ -69,6 +69,14 @@ class SourceUnit(BaseModel):
     summary: str | None = Field(
         default=None,
         description="LLM-compressed summary of this chunk used for extraction prompts",
+    )
+    route_reason: RouteReason = Field(
+        default=RouteReason.CONTENT,
+        description=(
+            "Why routing kept this unit: plain content, a weak or contradicted "
+            "label, a fallback schema, or the citation and non-content routes "
+            "that is_citation_metadata and is_non_content record."
+        ),
     )
     is_citation_metadata: bool = Field(
         default=False,

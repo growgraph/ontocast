@@ -574,8 +574,9 @@ class ChunkConfig(BaseSettings):
         default="heuristic",
         description=(
             "Chunk section classification cascade, in increasing cost: "
-            "'off' = no section tagging (disables section filters and schema "
-            "default exclusions); 'heading' = document outline plus heading "
+            "'off' = no section tagging (section filters and boilerplate "
+            "exclusions are off; reference lists and front/back matter are "
+            "still recognised from content); 'heading' = document outline plus heading "
             "pattern/keyword matching; 'heuristic' (default) = heading plus "
             "content-density classification for regions with no usable "
             "heading; 'llm' = heuristic plus a batched LLM pass over whatever "
@@ -658,23 +659,24 @@ class ChunkConfig(BaseSettings):
     section_filter_on_empty: Literal["warn", "error"] = Field(
         default="warn",
         description=(
-            "What to do when a section selection removes every segment. 'warn' "
+            "What to do when a section selection removes every unit. 'warn' "
             "(default) logs and continues, which yields an empty facts graph "
             "indistinguishable from a document that genuinely had nothing to "
             "extract; 'error' fails the request instead (HTTP 422, non-zero "
-            "exit for a batch run). Covers both the target_sections / "
-            "summarize_sections allowlist and the exclude_sections denylist, "
-            "including a schema's default_exclude."
+            "exit for a batch run). Covers the target_sections allowlist and "
+            "the exclusions: exclude_sections, or the schema's boilerplate "
+            "sections when it is unset."
         ),
     )
     bibliography_mode: Literal["domain_facts", "citations_only", "skip"] = Field(
         default="skip",
         description=(
-            "Routing for chunks detected as bibliography/reference lists "
-            "(section label or citation-density heuristics): 'skip' (default) "
-            "drops the chunks before extraction, 'citations_only' extracts "
-            "bibliographic metadata only, 'domain_facts' disables special "
-            "handling."
+            "Routing for units detected as reference lists: by their content "
+            "alone, or by a References heading their content agrees with; "
+            "a reference list at a unit's start or end is first cut into a "
+            "unit of its own. 'skip' (default) drops those units before "
+            "extraction, 'citations_only' extracts bibliographic metadata "
+            "only, 'domain_facts' disables special handling."
         ),
     )
     min_unit_chars: int = Field(

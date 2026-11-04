@@ -10,8 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Coreference resolution (`Resolve Coreference` node, `AGG_LLM_COREFERENCE`, on by default): after merging, one LLM call per document of two or more units decides the entity pairs the symbolic tiers cannot settle; a verdict merges like a shared key or vetoes, and every guard still applies. Pairs per call: `AGG_LLM_COREFERENCE_MAX_PAIRS`; counters `facts_coreference_*`, phase `facts_coreference`.
+- Every content unit records why it was routed (`route_reason`). The run manifest's `selection` block adds `route_histogram` (units and characters per route and reason) and, under `target_sections`, the characters it removed and how many were unlabeled. `ontocast sections` shows each unit's route and reason.
 
 ### Changed
+
+- A section label alone no longer drops a unit. Dropping needs a strong label (an exact heading, or content evidence) that the content agrees with, or content that is conclusive on its own; a keyword inside a longer heading, inherited, forward-filled and model labels never drop. A heading that is exactly one of a label's keywords ("Author Contributions") counts as an exact heading.
+- A reference list at a unit's start or end is cut into a unit of its own, so the prose around it is extracted. Reference lists are recognised per paragraph: table rows and entries that state a measurement are not cited works.
+- Section schemas mark each label's route class (`content`, `boilerplate`, `citations`) in place of `default_exclude`. Academic appendices and Supporting Information are now extracted; a schema used only as the fallback drops no boilerplate.
+- `summarize_sections` only chooses which units are summarized; it no longer limits extraction to those sections.
+- `max_chunks` counts units kept for extraction.
 
 - An ontology's namespace is where its terms live, read from the file at adoption (`vann:preferredNamespaceUri` when terms live there, else the namespace with the most described terms) and stored in its header, instead of `<iri>#`. Ontologies whose terms sit under `<iri>/` (OM-2) or elsewhere (PROV-O) get the right prefix in prompts.
 - An ontology contributes to the vector index the terms of its own namespace, so a standard vocabulary uploaded as an ontology (PROV-O, SKOS, schema.org) is indexed, and terms an ontology only reuses are not. `VECTOR_STORE_EMBED_STANDARD_VOCAB_IRIS` is removed; `VECTOR_STORE_INDEX_UNDESCRIBED_IRIS` widens only the ontology's own namespace. The surface-form contract is now `sf7`: existing vector stores need a reindex.
@@ -20,8 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Two entities one unit minted are never merged (`same_unit`), and names that carry different numbers ("June 2021", "29 June 2021") are never variants of one name, in aggregation and in the facts gate.
 - The facts prompt asks a node standing for a date or a time to carry its ISO 8601 value (the ontology's property, else `rdf:value`), so date nodes are told apart by value.
 
+### Removed
+
+- The `default_exclude` field of section schemas (replaced by `route_class`).
+
 ### Fixed
 
+- Sections were dropped whole when they mentioned references: headings such as "Comparison with literature references", descriptive sections after a References heading, literature-comparison tables with a DOI column, and units whose prose ended in a reference list.
+- Keyword-matched headings such as "Funding Mechanisms" or "Supporting Information" no longer drop their section through the default exclusions.
+- The home-ontology excerpt samples only units routed to extraction, never a reference list or an author block.
 - The facts gate's un-merge repair dissolves only the cluster a finding implicates: a multi-valued or functional-property finding no longer splits the correctly merged entities its subject points at.
 - Within that cluster, the repair splits only the members whose values on the finding's predicate disagree; members that carried no value keep their merges.
 - An ontology whose IRI ends in an empty fragment (`http://www.w3.org/ns/prov#`) is adopted under the IRI without it; a header that is only typed `owl:Ontology` beside a described one (W3C PROV-O) is dropped.

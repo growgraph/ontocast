@@ -358,6 +358,13 @@ def _selection_manifest(state: AgentState, config: Config) -> RunManifestSelecti
         bibliography_units_skipped=state.bibliography_units_skipped,
         undersized_units_skipped=state.undersized_units_skipped,
         non_content_units_skipped=state.non_content_units_skipped,
+        route_histogram=state.route_histogram or None,
+        allowlist_excluded_chars=(
+            state.allowlist_excluded_chars if state.target_sections else None
+        ),
+        allowlist_excluded_unlabeled_chars=(
+            state.allowlist_excluded_unlabeled_chars if state.target_sections else None
+        ),
     )
 
 
@@ -809,10 +816,15 @@ def _merge_workflow_state_into_agent_state(
         "bibliography_units_skipped",
         "undersized_units_skipped",
         "non_content_units_skipped",
+        "allowlist_excluded_chars",
+        "allowlist_excluded_unlabeled_chars",
     ):
         value = workflow_state.get(counter)
         if value:
             setattr(state, counter, int(value))
+    route_histogram = workflow_state.get("route_histogram")
+    if route_histogram:
+        state.route_histogram = dict(route_histogram)
     # The manifest's critic blocks read these; without this copy the manifest
     # would report no critic calls while retrieval_metrics recorded them.
     facts_telemetry = workflow_state.get("facts_loop_telemetry")

@@ -25,9 +25,46 @@ class SectionLabelSource(StrEnum):
     FRONT_MATTER = "front_matter"
     SPAN_OVERLAP = "span_overlap"
     CONTENT_DENSITY = "content_density"
+    #: A citation run cut out of a unit by the block classifier.
+    CONTENT_BLOCK = "content_block"
     LLM = "llm"
     FORWARD_FILL = "forward_fill"
     OUTLINE_UNRESOLVED = "outline_unresolved"
+
+
+class UnitRoute(StrEnum):
+    """What happens to a unit before extraction. Values are wire names."""
+
+    EXTRACT = "extract"
+    #: Kept; the facts renderer extracts bibliographic metadata only.
+    CITATIONS = "citations"
+    #: Kept and flagged ``is_non_content``; checks that presume domain prose stand down.
+    NON_CONTENT = "non_content"
+    SKIP = "skip"
+
+
+class RouteReason(StrEnum):
+    """Why a unit took its route. Values are wire names (run manifest, logs)."""
+
+    CONTENT = "content"
+    #: A label that could have dropped the unit was weak.
+    WEAK_LABEL = "weak_label"
+    #: A strong citations or boilerplate label the content disagrees with.
+    LABEL_CONTRADICTED = "label_contradicted"
+    #: A boilerplate label under a schema nobody chose: no default exclusions.
+    FALLBACK_SCHEMA = "fallback_schema"
+    #: A boilerplate label the request's exclude_sections did not name.
+    EXCLUSION_OVERRIDDEN = "exclusion_overridden"
+    #: The content alone is a reference list.
+    CITATION_LIST = "citation_list"
+    #: A strong citations-class label and content that agrees.
+    CITATION_LABEL = "citation_label"
+    #: A strong boilerplate-class label on text that states no measurement.
+    BOILERPLATE = "boilerplate"
+    #: Front/back matter recognised from the content.
+    NON_CONTENT = "non_content"
+    EXCLUDED_BY_REQUEST = "excluded_by_request"
+    UNDERSIZED = "undersized"
 
 
 class RetrievalMetric(StrEnum):

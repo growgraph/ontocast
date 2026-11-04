@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.2"
 id: news
 description: News article and press release section headings
 document_profile: >-
@@ -6,9 +6,6 @@ document_profile: >-
     dateline, quotations attributed to named people, and closing organisational
     boilerplate about the issuing company.
 ordered: true
-default_exclude:
--   boilerplate
--   contact
 labels:
 -   id: headline
     order: 10
@@ -62,6 +59,7 @@ labels:
     -   background
     -   related news
 -   id: boilerplate
+    route_class: boilerplate
     order: 60
     heading_patterns:
     -   '^about\s+.{0,60}$'
@@ -71,6 +69,7 @@ labels:
     -   forward-looking statements
     -   about the company
 -   id: contact
+    route_class: boilerplate
     order: 70
     heading_patterns:
     -   '^(?:media\s+|press\s+|investor\s+)?contacts?\s*$'

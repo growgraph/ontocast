@@ -1,4 +1,12 @@
-"""Prepare content units: segment, tag, filter, and size within section boundaries."""
+"""Prepare content units: segment, tag, select, size, trim and route.
+
+Labelling and routing are separate. The section cascade labels segments; the
+caller's ``target_sections`` selects among them; sizing builds units; citation
+runs at a unit's edge are trimmed into units of their own; and
+:func:`ontocast.tool.chunk.routing.route_unit` decides each unit's route from
+its label, the label's strength and its content. Every unit leaves with a
+route and a reason, kept or dropped.
+"""
 
 from __future__ import annotations
 
@@ -13,17 +21,22 @@ from typing import TYPE_CHECKING
 
 from ontocast.config import ChunkConfig
 from ontocast.config.section_labels import (
+    RouteClass,
     SectionLabelSchema,
     label_order,
+    label_route_class,
+    labels_of_class,
     load_section_label_schema,
     resolve_section_schema_id,
     schema_id_from_hint,
 )
 from ontocast.onto.enum import SectionLabelSource
 from ontocast.onto.section_models import SectionSpan
+from ontocast.tool.chunk.bibliography import trim_citation_runs
 from ontocast.tool.chunk.chunker import ChunkerTool
 from ontocast.tool.chunk.density import classify_by_density
 from ontocast.tool.chunk.outline import markdown_headings
+from ontocast.tool.chunk.routing import RouteReason, UnitRoute, route_unit
 from ontocast.tool.chunk.schema_detect import SchemaDetection, detect_document_schema
 from ontocast.tool.chunk.section_llm import llm_backfill_section_labels
 from ontocast.tool.chunk.sections import (
@@ -63,6 +76,7 @@ _SOURCE_STRENGTH: dict[SectionLabelSource, int] = {
     SectionLabelSource.FORWARD_FILL: 1,
     SectionLabelSource.FRONT_MATTER: 2,
     SectionLabelSource.CONTENT_DENSITY: 3,
+    SectionLabelSource.CONTENT_BLOCK: 3,
     SectionLabelSource.LLM: 4,
     SectionLabelSource.HEADING_INHERITED: 5,
     SectionLabelSource.SPAN_OVERLAP: 6,
@@ -73,11 +87,12 @@ _SOURCE_STRENGTH: dict[SectionLabelSource, int] = {
 
 @dataclass(frozen=True)
 class PreparedChunk:
-    """A prepared text chunk with optional structural metadata and section label.
+    """A prepared text chunk with optional structural metadata, label and route.
 
     ``section_label_source`` and ``section_label_confidence`` record which tier
     of the classification cascade decided the label, so a run can be audited
-    and weak labels can be told from strong ones.
+    and weak labels can be told from strong ones. ``route`` and
+    ``route_reason`` record what routing decided and why.
     """
 
     text: str
@@ -86,6 +101,41 @@ class PreparedChunk:
     section_label: str | None = None
     section_label_source: SectionLabelSource | None = None
     section_label_confidence: float = 0.0
+    route: UnitRoute = UnitRoute.EXTRACT
+    route_reason: RouteReason = RouteReason.CONTENT
+
+
+@dataclass(frozen=True)
+class PreparedDocument:
+    """A document's prepared units, each with its route and reason, in order.
+
+    Attributes:
+        routed: Every prepared unit in document order, kept or dropped.
+        schema_id: The section schema the document was labelled against;
+            ``None`` when section classification is off.
+        schema_source: How the schema was chosen: ``explicit``, ``hint``,
+            ``detected`` or ``default`` (a fallback, which applies no default
+            exclusions); ``None`` when classification is off.
+        allowlist_excluded_chars: Characters ``target_sections`` removed.
+        allowlist_excluded_unlabeled_chars: The part of those that carried no
+            label at all -- text a missing label, not the caller, kept out.
+    """
+
+    routed: list[PreparedChunk]
+    schema_id: str | None = None
+    schema_source: str | None = None
+    allowlist_excluded_chars: int = 0
+    allowlist_excluded_unlabeled_chars: int = 0
+
+    @property
+    def units(self) -> list[PreparedChunk]:
+        """Units kept for extraction (routed extract, citations or non-content)."""
+        return [unit for unit in self.routed if unit.route is not UnitRoute.SKIP]
+
+    @property
+    def dropped(self) -> list[PreparedChunk]:
+        """Units routed to skip, each with its reason."""
+        return [unit for unit in self.routed if unit.route is UnitRoute.SKIP]
 
 
 # Backward-compatible alias
@@ -115,33 +165,12 @@ class PrepareOptions:
         )
 
     def filter_allowlist(self) -> list[str] | None:
-        if self.target_sections is not None:
-            return self.target_sections
-        if (
-            self.summarize_sections is not None
-            and self.summarize_sections
-            and "*" not in self.summarize_sections
-        ):
-            return self.summarize_sections
-        return None
+        """The extraction allowlist: ``target_sections`` only.
 
-    def filter_allowlist_param(self) -> str:
-        """Name of the request option that produced :meth:`filter_allowlist`."""
-        return (
-            "target_sections"
-            if self.target_sections is not None
-            else "summarize_sections"
-        )
-
-    def filter_denylist(self, schema: SectionLabelSchema) -> list[str]:
-        """Effective exclusion denylist.
-
-        ``None`` means "use the resolved schema's default_exclude"; an explicit
-        ``[]`` opts out of exclusion entirely; a non-empty list is used as-is.
+        ``summarize_sections`` chooses which units are summarized and never
+        what is extracted.
         """
-        if self.exclude_sections is not None:
-            return list(self.exclude_sections)
-        return list(schema.default_exclude)
+        return self.target_sections
 
 
 class SectionSelectionEmptyError(ValueError):
@@ -162,6 +191,11 @@ class SectionSelectionEmptyError(ValueError):
     def __init__(self, param: str, message: str) -> None:
         super().__init__(message)
         self.param = param
+
+
+#: Share of a document's text an allowlist may remove before a warning: past
+#: it, a selection that rests on missing or wrong labels is likely.
+ALLOWLIST_WARN_SHARE = 0.5
 
 
 def _guard_empty_selection(
@@ -188,7 +222,7 @@ def _guard_empty_selection(
     if before == 0 or after > 0:
         return
     message = (
-        f"{param}={sorted(selection)} removed all {before} segment(s); the "
+        f"{param}={sorted(selection)} removed all {before} part(s); the "
         "document's detected sections do not match the selection"
     )
     if on_empty == "error":
@@ -210,44 +244,6 @@ def _filter_segments(
         if segment.section_label is not None
         and segment.section_label.lower() in allowed
     ]
-
-
-def _filter_segments_excluding(
-    segments: list[PrepareSegment], denylist: list[str]
-) -> list[PrepareSegment]:
-    """Drop labeled segments whose label is in the denylist; keep unlabeled ones."""
-    denied = {section.strip().lower() for section in denylist if section.strip()}
-    if not denied:
-        return segments
-    kept: list[PrepareSegment] = []
-    dropped: dict[str, list[PrepareSegment]] = {}
-    for segment in segments:
-        label = segment.section_label
-        if label is not None and label.lower() in denied:
-            dropped.setdefault(label, []).append(segment)
-        else:
-            kept.append(segment)
-    if dropped:
-        # Per label, with size and labelling tier: a content-density misfire
-        # drops real text, and this line is where it shows.
-        detail = "; ".join(
-            f"{label}: {len(group)} segment(s), "
-            f"{sum(len(s.text) for s in group)} chars "
-            f"({', '.join(sorted({_source_name(s) for s in group}))})"
-            for label, group in sorted(dropped.items())
-        )
-        logger.info(
-            "Section exclusion dropped %s/%s segment(s) before sizing: %s",
-            len(segments) - len(kept),
-            len(segments),
-            detail,
-        )
-    return kept
-
-
-def _source_name(segment: PrepareSegment) -> str:
-    source = segment.section_label_source
-    return source.value if source is not None else "unknown"
 
 
 def _hybrid_segments(
@@ -434,7 +430,7 @@ def _forward_fill_section_labels(
 ) -> None:
     """Propagate the nearest preceding label to unlabeled segments.
 
-    Propagation is blocked in three cases:
+    Propagation is blocked in four cases:
 
     - the segment's section is *explicitly unresolved* — the outline saw a
       heading it could not name, so the preceding label is known to be wrong.
@@ -442,18 +438,19 @@ def _forward_fill_section_labels(
     - the segment opens with a recognised section heading of its own;
     - the fill would run backwards against the schema's canonical section order
       (filling ``results`` into a region that precedes the ``introduction``);
-    - the preceding label is excluded by default and came from content density:
-      density already judged the neighbour and declined, and spreading the
-      label would silently drop text no tier recognised.
+    - the preceding label came from content density and names a reference
+      list or boilerplate: density already judged the neighbour and declined,
+      so the label would only be wrong there. Forward-filled labels are weak
+      and never drop a unit, but they still steer ``target_sections``.
     """
-    excluded = set(schema.default_exclude)
     last_label: str | None = None
     fill_count = 0
     for index, segment in enumerate(segments):
         if segment.section_label is not None:
             spreads = not (
-                segment.section_label in excluded
-                and segment.section_label_source is SectionLabelSource.CONTENT_DENSITY
+                segment.section_label_source is SectionLabelSource.CONTENT_DENSITY
+                and label_route_class(segment.section_label, schema)
+                is not RouteClass.CONTENT
             )
             last_label = segment.section_label if spreads else None
             continue
@@ -901,19 +898,171 @@ def _simple_prepare(
     return _size_segments(segments, splitter, config)
 
 
+def _allowlist_report(
+    before: list[PrepareSegment],
+    after: list[PrepareSegment],
+    allowlist: list[str],
+) -> tuple[int, int]:
+    """Characters an allowlist removed, and how many of them carried no label.
+
+    Warns when the allowlist removed most of the document: a strict selection
+    resting on missing or wrong labels loses text without any other trace.
+    """
+    kept_ids = {id(segment) for segment in after}
+    removed = [segment for segment in before if id(segment) not in kept_ids]
+    removed_chars = sum(len(segment.text) for segment in removed)
+    unlabeled_chars = sum(
+        len(segment.text) for segment in removed if segment.section_label is None
+    )
+    total_chars = sum(len(segment.text) for segment in before)
+    logger.info(
+        "target_sections=%s kept %s/%s segment(s); removed %s chars, %s of them "
+        "unlabeled",
+        sorted(allowlist),
+        len(after),
+        len(before),
+        removed_chars,
+        unlabeled_chars,
+    )
+    if after and total_chars and removed_chars / total_chars > ALLOWLIST_WARN_SHARE:
+        logger.warning(
+            "target_sections=%s removed %.0f%% of the document's text (%s of "
+            "%s chars unlabeled); check the labels with `ontocast sections`",
+            sorted(allowlist),
+            100 * removed_chars / total_chars,
+            unlabeled_chars,
+            removed_chars,
+        )
+    return removed_chars, unlabeled_chars
+
+
+def _trim_citation_runs(
+    chunks: list[PreparedChunk], schema: SectionLabelSchema | None
+) -> list[PreparedChunk]:
+    """Cut citation runs at a unit's start or end into units of their own.
+
+    The cut-out run is labelled with the schema's citations-class label, by the
+    content-block tier; the rest of the unit keeps its label. A unit that is all
+    citations is left whole: routing reads its content directly.
+    """
+    citation_labels = labels_of_class(schema, RouteClass.CITATIONS) if schema else []
+    citation_label = citation_labels[0] if citation_labels else None
+    trimmed: list[PreparedChunk] = []
+    for chunk in chunks:
+        pieces = trim_citation_runs(chunk.text)
+        if len(pieces) == 1:
+            trimmed.append(chunk)
+            continue
+        for piece, is_run in pieces:
+            if not is_run:
+                trimmed.append(replace(chunk, text=piece))
+                continue
+            trimmed.append(
+                replace(
+                    chunk,
+                    text=piece,
+                    section_label=citation_label,
+                    section_label_source=SectionLabelSource.CONTENT_BLOCK,
+                    section_label_confidence=0.9,
+                )
+            )
+        logger.info(
+            "Trimmed a citation run out of a unit (%d chars, section_label=%r): %s",
+            len(chunk.text),
+            chunk.section_label,
+            [
+                (len(piece), "citations" if is_run else "kept")
+                for piece, is_run in pieces
+            ],
+        )
+    return trimmed
+
+
+def _route_chunks(
+    chunks: list[PreparedChunk],
+    *,
+    schema: SectionLabelSchema | None,
+    schema_fallback: bool,
+    exclude_sections: list[str] | None,
+    config: ChunkConfig,
+) -> list[PreparedChunk]:
+    """Route every chunk, in order, recording its route and reason.
+
+    Every decision other than a plain extract is logged with the unit's size,
+    label and labelling tier: a wrong route changes what is extracted, and
+    this line is where it shows without a dry run.
+    """
+    routed: list[PreparedChunk] = []
+    for index, chunk in enumerate(chunks):
+        decision = route_unit(
+            chunk,
+            schema=schema,
+            schema_fallback=schema_fallback,
+            exclude_sections=exclude_sections,
+            config=config,
+        )
+        if decision.reason is not RouteReason.CONTENT:
+            logger.info(
+                "Unit %d (%d chars, section_label=%r, source=%s) routed %s: %s",
+                index,
+                len(chunk.text),
+                chunk.section_label,
+                chunk.section_label_source.value
+                if chunk.section_label_source is not None
+                else None,
+                decision.route.value,
+                decision.reason.value,
+            )
+        routed.append(
+            replace(chunk, route=decision.route, route_reason=decision.reason)
+        )
+    return routed
+
+
+_EXCLUSION_REASONS = frozenset(
+    {RouteReason.EXCLUDED_BY_REQUEST, RouteReason.BOILERPLATE}
+)
+
+
+def _guard_excluded_everything(
+    document: PreparedDocument,
+    options: PrepareOptions,
+    schema: SectionLabelSchema,
+    on_empty: str,
+) -> None:
+    """Warn or raise when exclusions, not content, left nothing to extract."""
+    dropped = document.dropped
+    if document.units or not any(
+        unit.route_reason in _EXCLUSION_REASONS for unit in dropped
+    ):
+        return
+    _guard_empty_selection(
+        param=(
+            "exclude_sections"
+            if options.exclude_sections is not None
+            else f"exclude_sections (schema '{schema.id}' boilerplate)"
+        ),
+        selection=options.exclude_sections
+        or labels_of_class(schema, RouteClass.BOILERPLATE),
+        before=len(dropped),
+        after=0,
+        on_empty=on_empty,
+    )
+
+
 async def prepare_content_units(
     docling_doc: DoclingDocument,
     splitter: ChunkerTool,
     config: ChunkConfig,
     options: PrepareOptions,
     tools: "ToolBox | None" = None,
-) -> list[PreparedChunk]:
-    """Segment, tag, filter, and size document text into prepared chunks.
+) -> PreparedDocument:
+    """Segment, tag, select, size, trim and route document text into units.
 
     Section tagging is default-on: the sections-first flow runs unless
-    ``CHUNK_SECTION_CLASSIFIER=off`` (which also disables section filters and
-    schema default exclusions; explicit section options are ignored with a
-    warning in that case).
+    ``CHUNK_SECTION_CLASSIFIER=off`` (which leaves only the content rules of
+    routing; explicit section options are ignored with a warning in that
+    case).
 
     Args:
         docling_doc: Converted source document.
@@ -924,11 +1073,15 @@ async def prepare_content_units(
             ``config.section_classifier == "llm"``; the deterministic tiers
             need no LLM, so callers that only inspect sections may omit it.
 
+    Returns:
+        The kept and dropped units, each with its route and reason, and how the
+        schema was chosen.
+
     Raises:
         ValueError: ``section_classifier`` is ``"llm"`` but no ToolBox was
             supplied.
-        SectionSelectionEmptyError: A section allowlist or denylist removed
-            every segment and ``CHUNK_SECTION_FILTER_ON_EMPTY=error``.
+        SectionSelectionEmptyError: ``target_sections`` or the exclusions
+            removed every unit and ``CHUNK_SECTION_FILTER_ON_EMPTY=error``.
     """
     if config.section_classifier == "llm" and tools is None:
         raise ValueError(
@@ -947,9 +1100,17 @@ async def prepare_content_units(
                 "Section options requested but CHUNK_SECTION_CLASSIFIER=off; "
                 "section filters are ignored"
             )
-        return await asyncio.to_thread(
+        chunks = await asyncio.to_thread(
             _simple_prepare, docling_doc, document_text, splitter, config
         )
+        routed = _route_chunks(
+            _trim_citation_runs(chunks, None),
+            schema=None,
+            schema_fallback=True,
+            exclude_sections=None,
+            config=config,
+        )
+        return PreparedDocument(routed=routed)
 
     decision = await asyncio.to_thread(
         resolve_prepare_schema, document_text, config, options, splitter
@@ -966,7 +1127,9 @@ async def prepare_content_units(
         _primary_segments, docling_doc, document_text, spans, splitter, config
     )
     if not segments:
-        return []
+        return PreparedDocument(
+            routed=[], schema_id=schema.id, schema_source=decision.source
+        )
 
     segments = await asyncio.to_thread(
         coalesce_small_segments_right,
@@ -1004,41 +1167,39 @@ async def prepare_content_units(
 
     on_empty = config.section_filter_on_empty
 
+    excluded_chars = 0
+    excluded_unlabeled_chars = 0
     allowlist = options.filter_allowlist()
     if allowlist is not None:
         before = len(segments)
-        segments = _filter_segments(segments, allowlist)
-        logger.info(
-            "Section filter %s: kept %s/%s segments before sizing",
-            allowlist,
-            len(segments),
-            before,
+        kept = _filter_segments(segments, allowlist)
+        excluded_chars, excluded_unlabeled_chars = _allowlist_report(
+            segments, kept, allowlist
         )
+        segments = kept
         _guard_empty_selection(
-            param=options.filter_allowlist_param(),
+            param="target_sections",
             selection=allowlist,
             before=before,
             after=len(segments),
             on_empty=on_empty,
         )
 
-    denylist = options.filter_denylist(schema)
-    if denylist:
-        before = len(segments)
-        segments = _filter_segments_excluding(segments, denylist)
-        # The denylist can come entirely from the resolved schema's
-        # default_exclude with no caller involvement, so name the source: this
-        # path had no empty guard at all and could blank the document silently.
-        _guard_empty_selection(
-            param=(
-                "exclude_sections"
-                if options.exclude_sections is not None
-                else f"exclude_sections (schema '{schema.id}' default)"
-            ),
-            selection=denylist,
-            before=before,
-            after=len(segments),
-            on_empty=on_empty,
-        )
-
-    return await asyncio.to_thread(_size_segments, segments, splitter, config)
+    chunks = await asyncio.to_thread(_size_segments, segments, splitter, config)
+    chunks = _trim_citation_runs(chunks, schema)
+    routed = _route_chunks(
+        chunks,
+        schema=schema,
+        schema_fallback=decision.source == "default",
+        exclude_sections=options.exclude_sections,
+        config=config,
+    )
+    document = PreparedDocument(
+        routed=routed,
+        schema_id=schema.id,
+        schema_source=decision.source,
+        allowlist_excluded_chars=excluded_chars,
+        allowlist_excluded_unlabeled_chars=excluded_unlabeled_chars,
+    )
+    _guard_excluded_everything(document, options, schema, on_empty)
+    return document

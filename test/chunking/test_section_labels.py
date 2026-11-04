@@ -24,7 +24,7 @@ def _clear_caches():
 
 def test_manifest_loads_all_schemas() -> None:
     manifest = load_manifest()
-    assert manifest.catalog_version == "1.1"
+    assert manifest.catalog_version == "1.2"
     assert manifest.default_schema == "academic"
     schema_ids = {entry.id for entry in manifest.schemas}
     assert schema_ids == {

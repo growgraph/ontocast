@@ -12,10 +12,9 @@ from ontocast.onto.model import FactsUnitFindingKind
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.stategraph.atomic import _collect_facts_findings
-from ontocast.tool.chunk.bibliography import (
-    is_bibliography_unit,
-    looks_like_bibliography,
-)
+from ontocast.tool.chunk.bibliography import looks_like_bibliography
+from ontocast.tool.chunk.prepare import PreparedChunk, PreparedDocument
+from ontocast.tool.chunk.routing import RouteReason, UnitRoute
 from ontocast.toolbox import ToolBox
 
 pytestmark = pytest.mark.unit
@@ -56,13 +55,6 @@ def test_short_text_not_detected() -> None:
     assert not looks_like_bibliography("[1] one citation (2015). doi:10.1/x")
 
 
-def test_section_label_overrides_heuristics() -> None:
-    assert is_bibliography_unit(_RESULTS_PROSE, "References")
-    assert is_bibliography_unit(_RESULTS_PROSE, "bibliography")
-    assert not is_bibliography_unit(_RESULTS_PROSE, "results")
-    assert not is_bibliography_unit(_RESULTS_PROSE, None)
-
-
 def test_bibliography_mode_default_is_skip() -> None:
     assert ChunkConfig().bibliography_mode == "skip"
 
@@ -94,13 +86,13 @@ def test_numeric_coverage_suppressed_for_citation_units() -> None:
     ]
 
 
-# --- routing through chunk_text (previously untested) ------------------------
+# --- chunk_text applies the routes prepare decided -----------------------------
 
 
 async def _run_chunk_text(
     mode: Literal["domain_facts", "citations_only", "skip"], chunks, monkeypatch
 ):
-    """Drive chunk_text with prepared chunks, bypassing docling conversion."""
+    """Drive chunk_text with routed chunks, bypassing docling conversion."""
     import importlib
     import logging
     from types import SimpleNamespace
@@ -113,7 +105,7 @@ async def _run_chunk_text(
     chunk_text_module = importlib.import_module("ontocast.agent.chunk_text")
 
     async def fake_prepare(*_args, **_kwargs):
-        return list(chunks)
+        return PreparedDocument(routed=list(chunks))
 
     monkeypatch.setattr(chunk_text_module, "prepare_content_units", fake_prepare)
     tools = SimpleNamespace(
@@ -127,46 +119,47 @@ async def _run_chunk_text(
     return await chunk_text_module.chunk_text(state, cast(ToolBox, tools))
 
 
-def _chunk(text: str, label: str | None = None):
-    from ontocast.tool.chunk.prepare import PreparedChunk
-
-    return PreparedChunk(text=text, headings=None, section_label=label)
+def _chunk(
+    text: str,
+    route: UnitRoute = UnitRoute.EXTRACT,
+    reason: RouteReason = RouteReason.CONTENT,
+) -> PreparedChunk:
+    return PreparedChunk(text=text, headings=None, route=route, route_reason=reason)
 
 
 @pytest.mark.anyio
-async def test_citations_only_marks_unit_and_keeps_it(monkeypatch, caplog) -> None:
-    chunks = [_chunk(_RESULTS_PROSE), _chunk(_REFERENCE_LIST, "references")]
-    with caplog.at_level("INFO"):
-        state = await _run_chunk_text("citations_only", chunks, monkeypatch)
+async def test_citations_route_marks_unit_and_keeps_it(monkeypatch) -> None:
+    chunks = [
+        _chunk(_RESULTS_PROSE),
+        _chunk(_REFERENCE_LIST, UnitRoute.CITATIONS, RouteReason.CITATION_LIST),
+    ]
+    state = await _run_chunk_text("citations_only", chunks, monkeypatch)
 
     assert [unit.is_citation_metadata for unit in state.content_units] == [False, True]
-    # Indices stay contiguous and the routing decision leaves a trace.
     assert [unit.index for unit in state.content_units] == [0, 1]
-    assert "routed as bibliography" in caplog.text
+    assert state.content_units[1].route_reason is RouteReason.CITATION_LIST
+    assert state.route_histogram == {
+        "extract/content": {"units": 1, "chars": len(_RESULTS_PROSE)},
+        "citations/citation_list": {"units": 1, "chars": len(_REFERENCE_LIST)},
+    }
 
 
 @pytest.mark.anyio
-async def test_skip_drops_unit_and_renumbers(monkeypatch) -> None:
+async def test_skip_drops_unit_renumbers_and_counts(monkeypatch, caplog) -> None:
     chunks = [
-        _chunk(_REFERENCE_LIST, "references"),
+        _chunk(_REFERENCE_LIST, UnitRoute.SKIP, RouteReason.CITATION_LABEL),
         _chunk(_RESULTS_PROSE),
         _chunk(_RESULTS_PROSE),
     ]
-    state = await _run_chunk_text("skip", chunks, monkeypatch)
+    with caplog.at_level("INFO"):
+        state = await _run_chunk_text("skip", chunks, monkeypatch)
 
     assert len(state.content_units) == 2
     # Dropping chunk 0 must not leave a hole in the index sequence.
     assert [unit.index for unit in state.content_units] == [0, 1]
     assert not any(unit.is_citation_metadata for unit in state.content_units)
-
-
-@pytest.mark.anyio
-async def test_domain_facts_disables_detection_entirely(monkeypatch) -> None:
-    chunks = [_chunk(_REFERENCE_LIST, "references")]
-    state = await _run_chunk_text("domain_facts", chunks, monkeypatch)
-
-    assert len(state.content_units) == 1
-    assert state.content_units[0].is_citation_metadata is False
+    assert state.bibliography_units_skipped == 1
+    assert "citation_label=1" in caplog.text
 
 
 def test_current_domain_constructor_argument_is_honored(

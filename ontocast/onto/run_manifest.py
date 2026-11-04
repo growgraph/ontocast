@@ -144,6 +144,24 @@ class RunManifestSelection(BaseModel):
             "cannot be attributed to a routing knob."
         ),
     )
+    route_histogram: dict[str, dict[str, int]] | None = Field(
+        default=None,
+        description=(
+            "'<route>/<reason>' -> {'units', 'chars'} for every prepared unit, "
+            "kept or dropped: what each routing rule removed or kept, and why."
+        ),
+    )
+    allowlist_excluded_chars: int | None = Field(
+        default=None,
+        description="Characters target_sections removed before sizing.",
+    )
+    allowlist_excluded_unlabeled_chars: int | None = Field(
+        default=None,
+        description=(
+            "The part of allowlist_excluded_chars that carried no label: a "
+            "strict selection loses such text whenever a label is missing."
+        ),
+    )
 
 
 class RunManifestValidationConfig(BaseModel):

@@ -2,6 +2,7 @@
 
 import importlib
 import logging
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Literal, cast
 
@@ -16,7 +17,8 @@ from ontocast.tool.chunk.non_content import (
     is_non_content_unit,
     metadata_token_share,
 )
-from ontocast.tool.chunk.prepare import PreparedChunk
+from ontocast.tool.chunk.prepare import PreparedChunk, PreparedDocument
+from ontocast.tool.chunk.routing import route_unit
 from ontocast.toolbox import ToolBox
 
 pytestmark = pytest.mark.unit
@@ -99,7 +101,7 @@ doi:10.1021/acs.chemrev.8b00539
     ids=["orcid", "notes", "authors", "data_availability", "licence", "glyph"],
 )
 def test_front_matter_units_detected(text: str) -> None:
-    assert is_non_content_unit(text, None, None)
+    assert is_non_content_unit(text, None)
 
 
 @pytest.mark.parametrize(
@@ -109,14 +111,14 @@ def test_front_matter_units_detected(text: str) -> None:
 )
 def test_content_units_kept(text: str) -> None:
     """A measurement anywhere keeps a unit; prose about licences is prose."""
-    assert not is_non_content_unit(text, None, None)
+    assert not is_non_content_unit(text, None)
 
 
 def test_heading_matches_via_breadcrumb_when_text_has_no_heading_line() -> None:
     body = "Jane Roe and John Doe contributed equally to this work."
     assert not has_non_content_heading(body, None)
     assert has_non_content_heading(body, ["Results", "Author Contributions"])
-    assert is_non_content_unit(body, ["Author Contributions"], None)
+    assert is_non_content_unit(body, ["Author Contributions"])
 
 
 def test_heading_normalisation_strips_glyphs_and_numbering() -> None:
@@ -126,10 +128,10 @@ def test_heading_normalisation_strips_glyphs_and_numbering() -> None:
     assert not has_non_content_heading("## Results and Discussion\nbody", None)
 
 
-def test_acknowledgements_label_counts_as_front_matter_heading() -> None:
+def test_detection_reads_content_not_labels() -> None:
+    """A boilerplate label is routed from its schema; this heuristic never sees it."""
     body = "We thank the beamline staff for their support during the campaign."
-    assert is_non_content_unit(body, None, "acknowledgements")
-    assert not is_non_content_unit(body, None, "results")
+    assert not is_non_content_unit(body, None)
 
 
 def test_metadata_token_share() -> None:
@@ -155,11 +157,11 @@ def test_metadata_heavy_unit_with_a_measurement_is_kept() -> None:
         "A. B. Jones measured 300 K samples."
     )
     assert metadata_token_share(text) >= NON_CONTENT_TOKEN_SHARE
-    assert not is_non_content_unit(text, None, None)
+    assert not is_non_content_unit(text, None)
 
 
 def test_empty_text_is_not_non_content() -> None:
-    assert not is_non_content_unit("   ", None, None)
+    assert not is_non_content_unit("   ", None)
 
 
 def test_non_content_mode_default_is_extract() -> None:
@@ -179,17 +181,25 @@ async def _run_chunk_text(
     """Drive chunk_text with prepared chunks, bypassing docling conversion."""
     chunk_text_module = importlib.import_module("ontocast.agent.chunk_text")
 
+    config = ChunkConfig(non_content_mode=mode, bibliography_mode=bibliography_mode)
+
     async def fake_prepare(*_args, **_kwargs):
-        return list(chunks)
+        routed = []
+        for chunk in chunks:
+            decision = route_unit(
+                chunk,
+                schema=None,
+                schema_fallback=True,
+                exclude_sections=None,
+                config=config,
+            )
+            routed.append(
+                replace(chunk, route=decision.route, route_reason=decision.reason)
+            )
+        return PreparedDocument(routed=routed)
 
     monkeypatch.setattr(chunk_text_module, "prepare_content_units", fake_prepare)
-    tools = SimpleNamespace(
-        chunker=SimpleNamespace(
-            config=ChunkConfig(
-                non_content_mode=mode, bibliography_mode=bibliography_mode
-            )
-        )
-    )
+    tools = SimpleNamespace(chunker=SimpleNamespace(config=config))
     state = AgentState(docling_doc=plain_text_to_docling_doc("x", "doc"))
     state.current_domain = "https://example.org"
     state.doc_hid = "1"
@@ -209,8 +219,7 @@ async def test_extract_keeps_unit_flagged_and_logs(monkeypatch, caplog) -> None:
 
     assert [unit.is_non_content for unit in state.content_units] == [False, True]
     assert [unit.index for unit in state.content_units] == [0, 1]
-    assert "routed as non-content" in caplog.text
-    assert "kept, flagged" in caplog.text
+    assert state.content_units[1].route_reason.value == "non_content"
     assert state.non_content_units_skipped == 0
 
 
@@ -230,7 +239,7 @@ async def test_skip_drops_unit_renumbers_and_counts(monkeypatch, caplog) -> None
     assert [unit.index for unit in state.content_units] == [0, 1]
     assert not any(unit.is_non_content for unit in state.content_units)
     assert state.non_content_units_skipped == 2
-    assert "Dropped 2 non-content chunk(s)" in caplog.text
+    assert "non_content=2" in caplog.text
 
 
 @pytest.mark.anyio

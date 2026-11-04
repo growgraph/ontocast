@@ -105,9 +105,22 @@ The terms these pages use, each with the page that explains it.
     (`<name>.run.json`): the model, the settings and what the run cost. See
     [Reading run telemetry](../guides/telemetry.md).
 
+**Route**
+:   What happens to a content unit before extraction: extracted, extracted as
+    bibliographic records, kept but flagged as front or back matter, or
+    dropped, with the reason recorded. See [Structured
+    documents](structured_documents.md#how-a-unit-is-routed).
+
+**Route class**
+:   What a section label's sections hold, set in its section schema:
+    `content`, `boilerplate` or `citations` (a reference list). Evidence for
+    the route, never a decision on its own.
+
 **Section label**
 :   The section a content unit came from, such as `methods` or `results`, used
-    to select what to extract. See [Structured
+    to select what to extract. A label is *strong* when it comes from an exact
+    heading or from the content, *weak* otherwise; only a strong label can
+    take part in dropping a unit. See [Structured
     documents](structured_documents.md#section-labels).
 
 **Section schema**

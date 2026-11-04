@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.2"
 id: fiction
 description: Novels, short fiction, and literary works
 document_profile: >-
@@ -57,6 +57,7 @@ labels:
     -   afterword
     -   postscript
 -   id: acknowledgements
+    route_class: boilerplate
     heading_patterns:
     -   '^acknowledg(?:e?ments?|ments?)\s*$'
     keywords:

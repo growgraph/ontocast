@@ -54,10 +54,11 @@ sections, and every unit carries the label of the section it came from, such as
 until the unit reaches the minimum size, and a heading with no text of its own
 opens the unit that follows it.
 
-Section labels decide what is extracted at all: reference lists are skipped by
-default, and you can ask for only some sections of a document. [Structured
-documents](structured_documents.md) explains labels, filters and the optional
-per-unit summary.
+You can ask for only some sections of a document. Before extraction, each
+unit is routed: reference lists and boilerplate are dropped by default, but
+only when the content agrees with the label, so a section that merely mentions
+references is kept. [Structured documents](structured_documents.md) explains
+labels, filters, routing and the optional per-unit summary.
 
 From here on, every unit is processed on its own and in parallel, up to
 [`PARALLEL_WORKERS`](../reference/configuration/pipeline.md#parallel_workers)

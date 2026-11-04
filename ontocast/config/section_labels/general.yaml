@@ -1,4 +1,4 @@
-schema_version: "1.0"
+schema_version: "1.1"
 id: general
 description: Memos, internal reports, and mixed Markdown documents
 # Residual cell of the partition, deliberately left without a document_profile:
@@ -30,6 +30,7 @@ labels:
     -   '^appendi(?:x|ces)\s*$'
     -   '^attachments?\s*$'
 -   id: references
+    route_class: citations
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'

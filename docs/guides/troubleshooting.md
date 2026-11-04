@@ -22,6 +22,7 @@ never ran".
 | Warning that the ontology context is still over budget | The ontology is too large to show whole | Split the catalog, or switch to `selected_vector_search_ontology`; see [Choosing ontology context](ontology_context.md) |
 | Parts split mid-argument, or too coarse | Chunk size bounds | [`CHUNK_MIN_SIZE`](../reference/configuration/chunking.md#chunk_min_size), [`CHUNK_MAX_SIZE`](../reference/configuration/chunking.md#chunk_max_size) |
 | Reference list extracted as domain facts | Bibliography routing | [`CHUNK_BIBLIOGRAPHY_MODE`](../reference/configuration/chunking.md#chunk_bibliography_mode) |
+| A section is missing from the facts | It was not selected or was dropped before extraction | `ontocast sections` shows each part's route and reason; `route_histogram` in the run manifest counts them. See [How a unit is routed](../concepts/structured_documents.md#how-a-unit-is-routed) |
 | Gaps inside words in PDF text (`di ff usion`) | Ligature repair | [`CONVERTER_REPAIR_LIGATURE_GAPS=true`](../reference/configuration/conversion.md#converter_repair_ligature_gaps) |
 | A born-digital PDF converted as if scanned, or the reverse | Converter profile | Fix [`CONVERTER_PROFILE`](../reference/configuration/conversion.md#converter_profile) to `fast` or `ocr` |
 | Equations missing from the text (`<!-- formula-not-decoded -->`) | Formula decoding is off | [`CONVERTER_PROFILE=lean`](../reference/configuration/conversion.md#converter_profile), or [`CONVERTER_DO_FORMULA_ENRICHMENT=true`](../reference/configuration/conversion.md#converter_do_formula_enrichment); conversion slows with each equation |
@@ -33,8 +34,9 @@ never ran".
 body says why. With `error_code` `no_units_extracted`, `error_details` gives the
 failing stage and reason, and `unit_failures` lists each part that failed; a
 document that could not be converted fails here too. An `error_code` starting
-with `empty_section_selection` means `target_sections` or `exclude_sections`
-left nothing to process. `/process_unit` reports a conversion failure as
+with `empty_section_selection` means `target_sections` or the exclusions
+(`exclude_sections`, or the schema's boilerplate sections) left nothing to
+process. `/process_unit` reports a conversion failure as
 `conversion_failed`.
 
 For a conversion failure, check the file type against `input_types` in `GET

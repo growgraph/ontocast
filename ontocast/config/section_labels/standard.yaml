@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.2"
 id: standard
 description: Technical standard and specification section headings (RFC, ISO/ASTM, W3C)
 document_profile: >-
@@ -7,8 +7,6 @@ document_profile: >-
     prescribes what a conforming implementation shall do, rather than
     instructing a user how to operate a particular product.
 ordered: true
-default_exclude:
--   acknowledgements
 labels:
 -   id: status
     order: 10
@@ -121,6 +119,7 @@ labels:
     -   iana considerations
     -   registration procedures
 -   id: acknowledgements
+    route_class: boilerplate
     order: 90
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?acknowledg(?:e?ments?|ments?)\s*$'
@@ -138,6 +137,7 @@ labels:
     -   annex
     -   appendix
 -   id: references
+    route_class: citations
     order: 100
     heading_patterns:
     -   '^references\s*$'

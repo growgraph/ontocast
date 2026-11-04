@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.2"
 id: clinical
 description: Clinical trial protocols, CSRs, and registry entries
 document_profile: >-
@@ -129,6 +129,7 @@ labels:
     -   tissue collection
     -   data handling
 -   id: references
+    route_class: citations
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'

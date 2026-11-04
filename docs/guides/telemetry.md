@@ -186,7 +186,7 @@ The blocks you read most:
 | `effective_config` | Every setting, keyed by environment variable, credentials redacted. Diff two manifests' blocks to see every setting that differed, including those that make no LLM call |
 | `chunking_mode` | The mode the chunker ran in. `naive` under a `semantic` setting means the semantic-chunking extra is missing. Absent on the single-unit path, which does not chunk |
 | `budget` | Cost and time, as above |
-| `selection` | Which sections the run was given, how many units carried a section label, and how many were skipped as bibliography, too short or not content. An exclusion list cannot act on units that carry no label |
+| `selection` | Which sections the run was given, how many units carried a section label, and how many were skipped as bibliography, too short or not content. `route_histogram` gives every route with its reason and size, which is where a section that went missing shows up. An exclusion list acts only on units with a strong label |
 | `critic`, `ontology_critic`, `completion` | What the review and completion passes did |
 | `validation_config` | The validation settings in effect, including the size of the loaded shapes |
 | `graph_metrics` | How connected the written facts graph is: components, largest component, isolated nodes |

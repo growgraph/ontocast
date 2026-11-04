@@ -4,7 +4,9 @@ Section labels drive which parts of a document are extracted, so a wrong label
 silently changes the output: a chunk filtered out by ``--target-sections`` never
 reaches the pipeline and never appears in a log. This command shows the
 classifier's decisions -- the detected outline and the resulting chunk labels,
-each with the tier that decided it -- before any extraction cost is incurred.
+each with the tier that decided it -- and each unit's route (extract,
+citations, non-content or skip) with the reason, before any extraction cost is
+incurred.
 
 Example:
     ontocast sections --input-path ./paper.pdf
@@ -94,6 +96,8 @@ def _chunk_rows(chunks) -> list[dict]:
                 else None
             ),
             "confidence": round(chunk.section_label_confidence, 2),
+            "route": chunk.route.value,
+            "reason": chunk.route_reason.value,
             "preview": " ".join(chunk.text.split())[:70],
         }
         for index, chunk in enumerate(chunks)
@@ -217,13 +221,17 @@ def main(
     schema = decision.schema
     resolved_id = decision.schema_id
 
-    chunks = asyncio.run(
+    prepared = asyncio.run(
         prepare_content_units(docling_doc, chunker, chunk_config, options, tools)
     )
 
     outline = _outline_rows(document_text, schema, chunk_config.section_text_headings)
-    chunk_rows = _chunk_rows(chunks)
+    chunk_rows = _chunk_rows(prepared.routed)
     labeled = sum(1 for row in chunk_rows if row["label"] is not None)
+    dropped_chars: dict[str, int] = {}
+    for unit in prepared.dropped:
+        reason = unit.route_reason.value
+        dropped_chars[reason] = dropped_chars.get(reason, 0) + len(unit.text)
     schema_rows = [
         {
             "candidate": ev.schema_id,
@@ -248,6 +256,12 @@ def main(
         "headings": len(outline),
         "chunks": len(chunk_rows),
         "labeled_chunks": labeled,
+        "kept_chunks": len(prepared.units),
+        "dropped_chars_by_reason": dropped_chars,
+        "allowlist_excluded_chars": prepared.allowlist_excluded_chars,
+        "allowlist_excluded_unlabeled_chars": (
+            prepared.allowlist_excluded_unlabeled_chars
+        ),
     }
 
     if as_json:
@@ -308,13 +322,28 @@ def main(
             ("label", 16),
             ("source", 18),
             ("confidence", 5),
-            ("preview", 60),
+            ("route", 11),
+            ("reason", 20),
+            ("preview", 50),
         ],
     )
     click.echo(
         f"\n  {labeled}/{len(chunk_rows)} chunks labeled "
-        f"({len(chunk_rows) - labeled} unresolved)"
+        f"({len(chunk_rows) - labeled} unresolved); "
+        f"{len(prepared.units)} kept for extraction"
     )
+    if dropped_chars:
+        click.echo(
+            "  dropped: "
+            + ", ".join(
+                f"{reason} {chars} chars" for reason, chars in dropped_chars.items()
+            )
+        )
+    if options.target_sections is not None:
+        click.echo(
+            f"  target_sections removed {prepared.allowlist_excluded_chars} chars "
+            f"({prepared.allowlist_excluded_unlabeled_chars} unlabeled)"
+        )
 
 
 if __name__ == "__main__":

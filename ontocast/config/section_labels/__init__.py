@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from enum import StrEnum
 from functools import lru_cache
 from importlib import resources
 from importlib.resources.abc import Traversable
@@ -48,6 +49,21 @@ def _compile_keyword(keyword: str) -> re.Pattern[str]:
     return re.compile(rf"(?<!\w){re.escape(keyword)}(?!\w)", re.I)
 
 
+class RouteClass(StrEnum):
+    """What a section of this label holds, for routing before extraction.
+
+    ``content`` sections are extracted. ``boilerplate`` sections (front or back
+    matter with no domain facts) are dropped by default when the label is
+    strong and the text states no measurement. ``citations`` sections are
+    reference lists, routed by ``CHUNK_BIBLIOGRAPHY_MODE`` when their content
+    agrees. The class never decides a drop on its own.
+    """
+
+    CONTENT = "content"
+    BOILERPLATE = "boilerplate"
+    CITATIONS = "citations"
+
+
 class SectionLabelDef(BaseModel):
     """One canonical section label, its heading patterns and recall keywords.
 
@@ -58,6 +74,7 @@ class SectionLabelDef(BaseModel):
     """
 
     id: str
+    route_class: RouteClass = RouteClass.CONTENT
     heading_patterns: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     order: int | None = Field(
@@ -110,14 +127,6 @@ class SectionLabelSchema(BaseModel):
         description=(
             "Whether this document type has a canonical section order, making "
             "the per-label 'order' values meaningful for fill guarding."
-        ),
-    )
-    default_exclude: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Label ids dropped by default before extraction (boilerplate "
-            "sections); overridden by an explicit exclude_sections request "
-            "option ([] disables exclusion entirely)."
         ),
     )
 
@@ -222,16 +231,34 @@ def match_heading_keywords(
     return best[3], 0.7
 
 
+def match_heading_name(line: str, schema: SectionLabelSchema) -> str | None:
+    """Match a heading that consists of one of a label's keywords and nothing else.
+
+    "Author Contributions" *is* a name of the acknowledgements section, as
+    exactly as an anchored pattern; "Funding Mechanisms" only contains one.
+    """
+    normalised = normalise_heading_line(line)
+    if not normalised or len(normalised) > _MAX_HEADING_LINE_LEN:
+        return None
+    for label_def in schema.labels:
+        for pattern in label_def.compiled_keywords:
+            if pattern.fullmatch(normalised):
+                return label_def.id
+    return None
+
+
 def resolve_heading_label(
     line: str, schema: SectionLabelSchema
 ) -> tuple[str, float, str] | None:
     """Resolve a heading to a label via patterns, then keywords.
 
+    A heading that is a keyword and nothing else resolves at pattern strength.
+
     Returns:
         ``(label, confidence, source)`` where source is ``"heading_pattern"``
         or ``"heading_keyword"``; ``None`` when the heading is unrecognised.
     """
-    exact = match_heading_line(line, schema)
+    exact = match_heading_line(line, schema) or match_heading_name(line, schema)
     if exact is not None:
         return exact, 0.95, "heading_pattern"
     keyword = match_heading_keywords(line, schema)
@@ -343,6 +370,26 @@ def get_default_section_schema() -> SectionLabelSchema:
 
 def canonical_labels(schema: SectionLabelSchema) -> tuple[str, ...]:
     return tuple(label_def.id for label_def in schema.labels)
+
+
+def label_route_class(label: str | None, schema: SectionLabelSchema) -> RouteClass:
+    """Route class of a label in this schema; ``content`` for unknown labels."""
+    if label is None:
+        return RouteClass.CONTENT
+    wanted = label.strip().lower()
+    for label_def in schema.labels:
+        if label_def.id == wanted:
+            return label_def.route_class
+    return RouteClass.CONTENT
+
+
+def labels_of_class(schema: SectionLabelSchema, route_class: RouteClass) -> list[str]:
+    """Label ids of one route class, in schema order."""
+    return [
+        label_def.id
+        for label_def in schema.labels
+        if label_def.route_class is route_class
+    ]
 
 
 @lru_cache(maxsize=1)

@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.2"
 id: patent
 description: Patent application and granted-patent section headings
 document_profile: >-
@@ -6,8 +6,6 @@ document_profile: >-
     its technical field, the prior art it improves on, described embodiments,
     and numbered legal claims defining the scope of protection sought.
 ordered: true
-default_exclude:
--   citations
 labels:
 -   id: abstract
     order: 10
@@ -99,6 +97,7 @@ labels:
     -   we claim
     -   the invention claimed is
 -   id: citations
+    route_class: boilerplate
     order: 90
     heading_patterns:
     -   '^citation\s+list\s*$'

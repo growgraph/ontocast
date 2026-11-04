@@ -2,10 +2,10 @@
 
 Author blocks, ORCID lists, competing-interest notes, data-availability and
 licence statements survive chunking as their own units whenever the section
-classifier has no label for them -- the sibling sub-blocks of a labelled
-``acknowledgements`` heading fall out unlabeled and are kept. Each then costs
-a full render and a critic call and yields nothing but mistyped people and
-identifiers. Detection is deterministic and errs toward keeping:
+classifier gives them no strong label. Each then costs a full render and a
+critic call and yields nothing but mistyped people and identifiers. Detection
+reads the content only -- a section labelled as boilerplate is routed from its
+schema's route class -- and errs toward keeping:
 
 - a unit whose leading heading (its first line, or the most specific docling
   breadcrumb heading) names a front/back-matter section, **and** whose text
@@ -17,10 +17,9 @@ identifiers. Detection is deterministic and errs toward keeping:
 - a short unit that is licence boilerplate with no measurement is
   non-content.
 
-Like bibliography detection this is subject-domain-agnostic but English and
-Latin-script bound: the heading vocabulary is English and the identifier
-shapes are Western. A miss is extracted as ordinary content, which is the
-pre-existing behaviour.
+Subject-domain-agnostic but English and Latin-script bound: the heading
+vocabulary is English and the identifier shapes are Western. A miss is
+extracted as ordinary content.
 
 Routing is decided by ``CHUNK_NON_CONTENT_MODE``:
 
@@ -35,10 +34,6 @@ import re
 
 from ontocast.config.section_labels import normalise_heading_line
 from ontocast.util.measurement_lexicon import unit_adjacent_numbers
-
-#: Section labels (from the section-label schemas) whose units are
-#: front/back matter by construction.
-NON_CONTENT_SECTION_LABELS = frozenset({"acknowledgements"})
 
 #: Share of identifier-shaped tokens above which a unit is an author block.
 NON_CONTENT_TOKEN_SHARE = 0.4
@@ -187,17 +182,12 @@ def states_measurement(text: str) -> bool:
     return False
 
 
-def is_non_content_unit(
-    text: str,
-    headings: list[str] | None,
-    section_label: str | None,
-) -> bool:
+def is_non_content_unit(text: str, headings: list[str] | None) -> bool:
     """Whether a prepared unit is front/back matter with no domain facts.
 
     Args:
         text: Unit text (markdown or plain).
         headings: Docling heading breadcrumb for the unit, when known.
-        section_label: Section label from the chunk-prepare pipeline, when any.
 
     Returns:
         True when the unit should not be mined for domain facts.
@@ -205,11 +195,7 @@ def is_non_content_unit(
     stripped = text.strip()
     if not stripped:
         return False
-    labelled = (
-        section_label is not None
-        and section_label.lower().strip() in NON_CONTENT_SECTION_LABELS
-    )
-    if labelled or has_non_content_heading(stripped, headings):
+    if has_non_content_heading(stripped, headings):
         if not states_measurement(stripped):
             return True
     if metadata_token_share(
