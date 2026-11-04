@@ -5,18 +5,19 @@ proposes an ``ontology_id`` (and a title and description), and the IRI is
 ``<CURRENT_DOMAIN>/<ontology_id>``. Everything that would let two spellings of
 one ontology coexist -- a fragment on the IRI, an id that is also a standard
 prefix, an id that collides with the document or facts namespaces -- is
-refused here, at construction.
+refused here, at construction; an empty fragment is dropped.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from ontocast.onto.constants import COMMON_PREFIXES, WELL_KNOWN_PREFIXES
+from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.util import CONVENTIONAL_MAPPINGS
 
 #: A valid Turtle prefix name that is also a safe path segment.
@@ -53,12 +54,16 @@ def validate_ontology_id(value: str) -> str:
 
 
 def validate_ontology_iri(value: str) -> str:
-    """Return ``value`` as an ontology IRI, or raise ``ValueError``.
+    """Return ``value`` as a canonical ontology IRI, or raise ``ValueError``.
 
     An absolute ``http(s)`` IRI with no fragment: the version graph of each
-    version is ``<iri>#<key>``, so the IRI itself cannot carry a ``#``.
+    version is ``<iri>#<key>``, so the IRI itself cannot carry a ``#``. An
+    empty fragment (``…/prov#``, common in published vocabularies) names the
+    same document and is dropped; any other fragment is refused.
     """
     text = value.strip()
+    if text.endswith("#"):
+        text = text[:-1]
     parts = urlsplit(text)
     if parts.scheme not in ("http", "https") or not parts.netloc:
         raise ValueError(f"ontology IRI {value!r} must be an absolute http(s) IRI")
@@ -117,7 +122,11 @@ def split_version_iri(version_iri: str) -> tuple[str, str]:
 
 
 class OntologyIdentity(BaseModel):
-    """What names an ontology: its id, its IRI, and how it describes itself."""
+    """What names an ontology: its id, its IRI, and how it describes itself.
+
+    ``namespace`` is where its terms live: an existing ontology's own, else
+    ``<iri>#``, where a new ontology's terms are minted.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -125,14 +134,18 @@ class OntologyIdentity(BaseModel):
     iri: OntologyIri
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=2000)
+    namespace: str = Field(default="")
 
-    @property
-    def namespace(self) -> str:
-        """The namespace its terms are minted under: ``<iri>#``, or the IRI
-        itself when it already ends with a delimiter."""
-        from ontocast.onto.iri_policy import normalize_namespace_iri
-
-        return normalize_namespace_iri(self.iri, context="ontology")
+    @model_validator(mode="before")
+    @classmethod
+    def _default_namespace(cls, data: Any) -> Any:
+        if isinstance(data, dict) and not data.get("namespace") and data.get("iri"):
+            iri = validate_ontology_iri(str(data["iri"]))
+            data = {
+                **data,
+                "namespace": normalize_namespace_iri(iri, context="ontology"),
+            }
+        return data
 
 
 class VersionRef(BaseModel):

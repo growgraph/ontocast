@@ -910,6 +910,7 @@ def test_agent_graph_topology_is_pinned() -> None:
         str(WorkflowNode.CONSISTENCY_CRITIC),
         str(WorkflowNode.RENDER_FACTS),
         str(WorkflowNode.MERGE_FACTS),
+        str(WorkflowNode.RESOLVE_COREFERENCE),
         str(WorkflowNode.VALIDATE_FACTS),
         str(WorkflowNode.SERIALIZE),
     }
@@ -953,7 +954,12 @@ def test_agent_graph_topology_is_pinned() -> None:
         (str(WorkflowNode.CONSISTENCY_CRITIC), str(WorkflowNode.RENDER_FACTS), True),
         (str(WorkflowNode.CONSISTENCY_CRITIC), str(WorkflowNode.SERIALIZE), True),
         (str(WorkflowNode.RENDER_FACTS), str(WorkflowNode.MERGE_FACTS), False),
-        (str(WorkflowNode.MERGE_FACTS), str(WorkflowNode.VALIDATE_FACTS), False),
+        (str(WorkflowNode.MERGE_FACTS), str(WorkflowNode.RESOLVE_COREFERENCE), False),
+        (
+            str(WorkflowNode.RESOLVE_COREFERENCE),
+            str(WorkflowNode.VALIDATE_FACTS),
+            False,
+        ),
         (str(WorkflowNode.VALIDATE_FACTS), str(WorkflowNode.SERIALIZE), False),
         (str(WorkflowNode.SERIALIZE), "__end__", False),
     }

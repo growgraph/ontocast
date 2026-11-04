@@ -48,12 +48,13 @@ It follows that a term reaches retrieval only from a module that describes it.
 For an external vocabulary to contribute its terms, include their declarations
 in the catalog; referencing their IRIs is not enough.
 
-Terms in the standard vocabularies (RDF, RDFS, OWL, XSD, SKOS, Dublin Core,
-PROV, FOAF, SHACL, schema.org) are skipped unless
-[`VECTOR_STORE_EMBED_STANDARD_VOCAB_IRIS`](../reference/configuration/ontology-retrieval.md#vector_store_embed_standard_vocab_iris)
-is set;
+A module contributes the terms of its own namespace: the one in which it
+describes the most terms. A term it describes in another namespace (a Dublin
+Core annotation property, a superclass from an imported vocabulary) is reuse
+and is indexed from the module that defines it. So a standard vocabulary
+uploaded as a module (PROV-O, SKOS, schema.org) is indexed like any other.
 [`VECTOR_STORE_EXTRA_EXCLUDED_NAMESPACE_PREFIXES`](../reference/configuration/ontology-retrieval.md#vector_store_extra_excluded_namespace_prefixes)
-adds more. Provenance triples are stripped before atomization. A term declared
+removes whole namespaces. Provenance triples are stripped before atomization. A term declared
 as a property, or used as a predicate, gets the predicate role; every other
 term the resource role.
 
@@ -109,12 +110,12 @@ produces a different one. The fingerprint always includes:
   [`EMBEDDING_DOCUMENT_PREFIX`](../reference/configuration/embeddings.md#embedding_document_prefix),
   which change the embedded text;
 - [`EMBEDDING_BM25_MODEL_NAME`](../reference/configuration/embeddings.md#embedding_bm25_model_name);
-- the surface-form contract id, `sf6`, which changes when a release changes
+- the surface-form contract id, `sf7`, which changes when a release changes
   which literals become surface forms or which terms become atoms.
 
 These join it only when set away from their defaults, so an index built at
 the defaults keeps its fingerprint: `VECTOR_STORE_MINIMAL_LABEL_LIMIT`,
-`VECTOR_STORE_INDEX_UNDESCRIBED_IRIS`, `VECTOR_STORE_EMBED_STANDARD_VOCAB_IRIS`,
+`VECTOR_STORE_INDEX_UNDESCRIBED_IRIS`,
 `VECTOR_STORE_EXTRA_EXCLUDED_NAMESPACE_PREFIXES`,
 `VECTOR_STORE_LABEL_PREDICATES`, `VECTOR_STORE_SYMBOL_PREDICATES`, and the
 lexical-trigger settings that shape the stored triggers

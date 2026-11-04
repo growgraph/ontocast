@@ -18,6 +18,8 @@ from ontocast.tool.agg.signatures import (
     canonical_literal,
     empirically_functional_predicates,
     harvest_max_one_predicates,
+    numbers_agree,
+    string_values_compatible,
 )
 
 pytestmark = pytest.mark.unit
@@ -295,6 +297,111 @@ def test_exact_label_match_still_merges_literal_bearing_nodes() -> None:
     representations = _pair_representations(aggregator, graph, left, right)
 
     assert aggregator._are_lexical_aliases(left, right, representations)
+
+
+def test_named_fact_entities_with_one_local_name_and_unrelated_labels_stay_apart() -> (
+    None
+):
+    """Two units can mint one local name for unrelated things; names decide."""
+    aggregator = EmbeddingBasedAggregator()
+    graph = _facts_ttl(
+        """
+        @prefix u1: <%(ns)s/u1/> .
+        @prefix u2: <%(ns)s/u2/> .
+        u1:stationSeparation rdfs:label "at least 2 degrees apart" .
+        u2:stationSeparation rdfs:label "150 times rarer" .
+        """
+        % {"ns": DEFAULT_IRI}
+    )
+    left = URIRef(f"{DEFAULT_IRI}/u1/stationSeparation")
+    right = URIRef(f"{DEFAULT_IRI}/u2/stationSeparation")
+    representations = _pair_representations(aggregator, graph, left, right)
+
+    assert not aggregator._are_lexical_aliases(left, right, representations)
+
+
+def test_one_local_name_still_aliases_an_unnamed_fact_entity() -> None:
+    aggregator = EmbeddingBasedAggregator()
+    graph = _facts_ttl(
+        """
+        @prefix u1: <%(ns)s/u1/> .
+        @prefix u2: <%(ns)s/u2/> .
+        u1:stationSeparation rdfs:label "station separation" .
+        u2:stationSeparation a qqval:Value .
+        """
+        % {"ns": DEFAULT_IRI}
+    )
+    left = URIRef(f"{DEFAULT_IRI}/u1/stationSeparation")
+    right = URIRef(f"{DEFAULT_IRI}/u2/stationSeparation")
+    representations = _pair_representations(aggregator, graph, left, right)
+
+    assert aggregator._are_lexical_aliases(left, right, representations)
+
+
+def test_two_entities_one_unit_minted_are_distinct() -> None:
+    """A render names each thing once: its two IRIs are two things."""
+    aggregator = EmbeddingBasedAggregator()
+    graph = _facts_ttl(
+        """
+        cd:oregon_deaths__u1 rdfs:label "estimated extra deaths" .
+        cd:washington_deaths__u1 rdfs:label "estimated extra deaths" .
+        cd:oregon_deaths__u2 rdfs:label "estimated extra deaths" .
+        """
+    )
+    same_unit = (
+        URIRef(f"{DEFAULT_IRI}/oregon_deaths__u1"),
+        URIRef(f"{DEFAULT_IRI}/washington_deaths__u1"),
+    )
+    other_unit = (same_unit[0], URIRef(f"{DEFAULT_IRI}/oregon_deaths__u2"))
+    reps = {
+        iri: aggregator.normalizer.create_representation(iri, graph)
+        for iri in {*same_unit, *other_unit}
+    }
+
+    assert not aggregator._can_merge_as_identity(*same_unit, reps)
+    assert "same_unit" in aggregator._merge_validation_failures(*same_unit, reps)
+    assert aggregator._can_merge_as_identity(*other_unit, reps)
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "agree"),
+    [
+        ("june 2021", "29 june 2021", False),
+        ("observations of tx5x", "observations of tx10x", False),
+        ("current climate results", "future climate results at 2 °c", False),
+        ("29 june 2021", "29 june 2021 heat peak", True),
+        ("mr beer", "mr karlheinz beer", True),
+    ],
+)
+def test_numbers_in_a_name_individuate(left: str, right: str, agree: bool) -> None:
+    assert numbers_agree(left, right) is agree
+
+
+def test_names_with_different_numbers_are_not_variants() -> None:
+    assert string_values_compatible("mr beer", "mr karlheinz beer")
+    assert not string_values_compatible("june 2021", "29 june 2021")
+    assert not string_values_compatible("grant 1165", "grant 11654005")
+
+
+def test_date_nodes_are_told_apart_by_their_iso_value() -> None:
+    """The facts prompt asks a date node for its ISO value on rdf:value."""
+    aggregator = EmbeddingBasedAggregator()
+    graph = _facts_ttl(
+        """
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        cd:peak_day__u1 rdfs:label "the peak day" ;
+            rdf:value "2021-06-29"^^xsd:date .
+        cd:peak_day__u2 rdfs:label "the peak day" ;
+            rdf:value "2021-06-28"^^xsd:date .
+        """
+    )
+    left = URIRef(f"{DEFAULT_IRI}/peak_day__u1")
+    right = URIRef(f"{DEFAULT_IRI}/peak_day__u2")
+    reps = _pair_representations(aggregator, graph, left, right)
+
+    assert "literal_conflict" in aggregator._merge_validation_failures(
+        left, right, reps, guard_context=MergeGuardContext()
+    )
 
 
 def test_aggregate_graphs_builds_guard_context_end_to_end(monkeypatch) -> None:

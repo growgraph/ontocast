@@ -1662,6 +1662,26 @@ class AggregationConfig(BaseSettings):
             "distinguish entities."
         ),
     )
+    llm_coreference: bool = Field(
+        default=True,
+        description=(
+            "After aggregation, put the identity pairs the symbolic tiers "
+            "cannot settle to the model in one call per document of two or "
+            "more units: merges made on a plausible lexical tier only, "
+            "candidates refused for wording alone, and same-type entities of "
+            "different units pointing to one node by one predicate. A 'same' "
+            "verdict merges like a shared key and 'different' vetoes; every "
+            "distinctness guard still applies."
+        ),
+    )
+    llm_coreference_max_pairs: int = Field(
+        default=40,
+        ge=1,
+        description=(
+            "Most pairs put to the model per document; the three kinds of "
+            "candidate take turns up to it."
+        ),
+    )
     natural_key_merge: bool = Field(
         default=True,
         description=(
@@ -2321,7 +2341,7 @@ class VectorStoreConfig(BaseSettings):
     index_undescribed_iris: bool = Field(
         default=False,
         description=(
-            "Index every IRI in an ontology, including those that appear only"
+            "Also index IRIs of an ontology's own namespace that appear only"
             " as an object or predicate. By default only terms the ontology "
             "describes (as a subject, or with a label) are indexed: a merely "
             "referenced IRI has no text but its local name, and such strings "
@@ -2330,22 +2350,13 @@ class VectorStoreConfig(BaseSettings):
             "expansion. Changing this requires a reindex."
         ),
     )
-    embed_standard_vocab_iris: bool = Field(
-        default=False,
-        description=(
-            "If True, atomize focal IRIs in standard RDF/OWL/SKOS/DC/SHACL/schema.org "
-            "namespaces instead of skipping them. These are scaffolding an ontology "
-            "reuses rather than terms it defines, so they carry no retrieval signal for "
-            "the document being processed. Changing this requires a reindex."
-        ),
-    )
     extra_excluded_namespace_prefixes: list[str] = Field(
         default_factory=list,
         description=(
-            "IRI prefixes never indexed from ontology sources, in addition to"
-            " the standard vocabularies. Use it for an upper ontology or "
-            "external vocabulary that a catalog includes but that should not "
-            "compete in retrieval (BFO, SOSA, OM-2); merely referenced "
+            "IRI prefixes never indexed from ontology sources. An ontology "
+            "contributes only the namespace it defines its terms in; this "
+            "removes a whole vocabulary that a catalog includes but that should "
+            "not compete in retrieval (BFO, SOSA, OM-2). Merely referenced "
             "vocabularies are already skipped while index_undescribed_iris is"
             " false. Changing this requires a reindex."
         ),

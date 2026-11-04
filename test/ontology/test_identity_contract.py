@@ -50,7 +50,13 @@ def test_ontology_id_accepts_valid_ids_folded(value: str, expected: str) -> None
 
 def test_validate_ontology_iri_refuses_a_fragment() -> None:
     with pytest.raises(ValueError, match="fragment"):
-        validate_ontology_iri("https://example.org/tmi#")
+        validate_ontology_iri("https://example.org/tmi#part")
+
+
+def test_validate_ontology_iri_drops_an_empty_fragment() -> None:
+    assert (
+        validate_ontology_iri("https://example.org/tmi#") == "https://example.org/tmi"
+    )
 
 
 def test_validate_ontology_iri_refuses_a_query() -> None:
@@ -112,4 +118,4 @@ def test_identity_refuses_a_reserved_id_and_a_fragment_iri() -> None:
     with pytest.raises(ValidationError):
         OntologyIdentity(ontology_id="owl", iri="https://example.org/owl", title="x")
     with pytest.raises(ValidationError):
-        OntologyIdentity(ontology_id="tmi", iri="https://example.org/tmi#", title="x")
+        OntologyIdentity(ontology_id="tmi", iri="https://example.org/tmi#v1", title="x")

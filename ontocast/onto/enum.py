@@ -110,6 +110,10 @@ class RetrievalMetric(StrEnum):
     FACTS_MERGE_REPAIR_PASSES = "facts_merge_repair_passes"
     FACTS_MERGE_VETOES = "facts_merge_vetoes"
     FACTS_MERGE_REPAIRS_REJECTED = "facts_merge_repairs_rejected"
+    #: Coreference resolution: pairs put to the model, and its verdicts.
+    FACTS_COREFERENCE_PAIRS = "facts_coreference_pairs"
+    FACTS_COREFERENCE_SAME = "facts_coreference_same"
+    FACTS_COREFERENCE_DIFFERENT = "facts_coreference_different"
 
     # Validation gate. Written identically by both entry paths.
     VALIDATED_WITHOUT_ONTOLOGY_CONTEXT = "validated_without_ontology_context"
@@ -273,6 +277,7 @@ class WorkflowNode(StrEnum):
     NORMALIZE_ONTOLOGY_UPDATES = "Normalize Ontology Updates"
     CONSOLIDATE_ONTOLOGY = "Consolidate Ontology"
     MERGE_FACTS = "Merge Facts"
+    RESOLVE_COREFERENCE = "Resolve Coreference"
     VALIDATE_FACTS = "Validate Facts"
     PLAN_EXTERNAL_EVIDENCE = "Plan External Evidence"
     FETCH_EXTERNAL_EVIDENCE = "Fetch External Evidence"
@@ -291,6 +296,7 @@ class LLMPhase(StrEnum):
     FACTS_RENDER = "facts_render"
     FACTS_CRITIC = "facts_critic"
     FACTS_COMPLETION = "facts_completion"
+    FACTS_COREFERENCE = "facts_coreference"
     ONTOLOGY_IDENTITY = "ontology_identity"
     ONTOLOGY_RENDER = "ontology_render"
     ONTOLOGY_CRITIC = "ontology_critic"

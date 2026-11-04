@@ -174,6 +174,7 @@ in exchange for quality:
 | [`FACTS_CRITIC_PASSES`](../reference/configuration/facts-validation.md#facts_critic_passes) | One call per part: a review of the extracted facts, with fixes applied as a patch |
 | [`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes) | The same for ontology changes; off by default. [`ONTOLOGY_UPDATE_MODE=insert_only`](../reference/configuration/ontology-validation.md#ontology_update_mode) keeps ontology changes additive: deletes from the model, consolidation and the critic are dropped and counted |
 | [`FACTS_COMPLETION_PASSES`](../reference/configuration/facts-validation.md#facts_completion_passes) | One call per part that still misses measurements stated in the text; off by default |
+| [`AGG_LLM_COREFERENCE`](../reference/configuration/aggregation.md#agg_llm_coreference) | One call per document of two parts or more: the model decides the entity pairs merging cannot settle; on by default, bounded by `AGG_LLM_COREFERENCE_MAX_PAIRS` |
 | [`MAX_VISITS_PER_NODE`](../reference/configuration/pipeline.md#max_visits_per_node) | Retries of an extraction that failed outright. A successful extraction is never repeated |
 
 Two settings decide how fast a document goes through:

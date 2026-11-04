@@ -43,15 +43,42 @@ def test_links_through_blank_nodes_join_instances() -> None:
     assert (result.instances, result.components, result.isolated) == (3, 2, 1)
 
 
-def test_typing_aliases_and_provenance_join_nothing() -> None:
+def test_typing_and_aliases_join_nothing() -> None:
     graph = _facts(
         """
-        cd:a a ex:Sample ; owl:sameAs cd:b ; prov:wasDerivedFrom cd:b .
+        cd:a a ex:Sample ; owl:sameAs cd:b .
         cd:b a ex:Sample .
         """
     )
     result = facts_connectivity(graph, [CD])
     assert (result.components, result.isolated) == (2, 2)
+
+
+def test_pipeline_provenance_joins_nothing() -> None:
+    graph = _facts(
+        """
+        @prefix schema: <https://schema.org/> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        cd:chunk a prov:Entity, schema:Text .
+        cd:a a ex:Sample .
+        cd:b a ex:Sample .
+        [ a rdf:Statement ; rdf:subject cd:a ; rdf:predicate rdfs:label ;
+          rdf:object cd:b ; prov:wasDerivedFrom cd:chunk ] .
+        """
+    )
+    result = facts_connectivity(graph, [CD])
+    assert (result.instances, result.components, result.isolated) == (2, 2, 2)
+
+
+def test_a_domain_provenance_property_is_a_link() -> None:
+    graph = _facts(
+        """
+        cd:report a ex:Report ; prov:wasDerivedFrom cd:dataset .
+        cd:dataset a prov:Entity .
+        """
+    )
+    result = facts_connectivity(graph, [CD])
+    assert (result.instances, result.components, result.isolated) == (2, 1, 0)
 
 
 def test_the_document_node_joins_what_it_links_and_is_not_counted() -> None:

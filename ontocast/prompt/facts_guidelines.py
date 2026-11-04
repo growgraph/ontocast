@@ -78,6 +78,10 @@ facts_instruction_shared = """\n\n
 8. Literals and Quantity Values:
    - Use appropriate XSD datatypes: xsd:integer, xsd:decimal, xsd:float,
      xsd:date, xsd:dateTime. Dates use ISO 8601.
+   - A node that stands for a date or a time (an instant, a day, a month, a
+     year) carries its ISO 8601 value as a typed literal (xsd:dateTime,
+     xsd:date, xsd:gYearMonth, xsd:gYear) through the ontology's property for
+     it, else rdf:value. A label alone does not say which date a node is.
 {literal_encoding_rules}
    - NEVER encode a numeric measurement as xsd:string, even if the source
      text is approximate or bounded.

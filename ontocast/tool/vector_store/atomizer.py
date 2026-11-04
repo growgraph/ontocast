@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-from typing import Protocol
 
 from pydantic import Field
 from rdflib import DCTERMS, OWL, RDF, RDFS, SKOS, BNode, Literal, Namespace, URIRef
@@ -18,6 +17,8 @@ from ontocast.onto.embedding_policy import (
     strip_provenance_triples_for_embedding,
 )
 from ontocast.onto.facts import Facts
+from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_namespace import described_namespaces
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.onto import Tool
 from ontocast.tool.representation_text import (
@@ -164,25 +165,6 @@ _STRUCTURAL_PREDICATES: frozenset[URIRef] = frozenset(
     }
 )
 
-# Standard RDF/OWL scaffolding namespaces: focal entities under these IRIs are not embedded
-# by default (ontology sources only) so casual uploads need no namespace configuration.
-STANDARD_VOCABULARY_NAMESPACE_PREFIXES: frozenset[str] = frozenset(
-    {
-        "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
-        "http://www.w3.org/2000/01/rdf-schema#",
-        "http://www.w3.org/2002/07/owl#",
-        "http://www.w3.org/2001/XMLSchema#",
-        "http://www.w3.org/2004/02/skos/core#",
-        "http://purl.org/dc/elements/1.1",
-        "http://purl.org/dc/terms",
-        "http://www.w3.org/ns/prov#",
-        "http://xmlns.com/foaf/0.1",
-        "http://www.w3.org/ns/shacl#",
-        "https://schema.org",
-        "http://schema.org",
-    }
-)
-
 
 def _normalize_vocab_exclude_prefix(prefix: str) -> str:
     return prefix.strip().rstrip("/")
@@ -191,22 +173,22 @@ def _normalize_vocab_exclude_prefix(prefix: str) -> str:
 class GraphAtomizer(Tool):
     """Extract natural-language atoms around graph focal entities.
 
-    Two defaults narrow what an ontology contributes, both restorable:
+    Two rules narrow what an ontology contributes:
 
-    * Focal IRIs in common W3C and DC vocabulary namespaces are skipped (see
-      module-level exclusions); ``embed_standard_vocab_iris=True`` embeds them.
+    * Only IRIs in the ontology's own namespace (``Ontology.namespace``, plus any
+      namespace in which it describes as many terms) and the ontology node itself
+      are focal; a term it reuses from another vocabulary is indexed from that
+      vocabulary, and a standard vocabulary uploaded as an ontology owns its
+      namespace like any other.
     * An IRI is atomized only when this graph *describes* it — a subject-position triple
       or a label. ``index_undescribed_iris=True`` restores atomizing every URIRef,
       object-position references included.
 
     Facts sources are restricted to ``facts_namespace`` only; neither narrowing applies
-    to them.
+    to them. ``extra_excluded_namespace_prefixes`` removes further namespaces from an
+    ontology's focal IRIs.
     """
 
-    embed_standard_vocab_iris: bool = Field(
-        default=False,
-        description="If True, do not exclude standard vocabulary namespace IRIs as focal entities.",
-    )
     extra_excluded_namespace_prefixes: list[str] = Field(
         default_factory=list,
         description="Additional IRI prefixes excluded from focal entities (ontology sources).",
@@ -214,8 +196,8 @@ class GraphAtomizer(Tool):
     index_undescribed_iris: bool = Field(
         default=False,
         description=(
-            "If True, atomize every IRI in the graph, including ones appearing only in "
-            "object or predicate position. Default False: an ontology mints an atom "
+            "If True, also atomize IRIs of the ontology's own namespaces that appear only "
+            "in object or predicate position. Default False: an ontology mints an atom "
             "only for terms it describes (a subject-position triple, or a label). A "
             "referenced IRI has no local text, so its atom is its mangled local name -- "
             "'a0e0l2i0m1h0t 3d0' for a QUDT dimension vector -- and such strings embed "
@@ -289,26 +271,14 @@ class GraphAtomizer(Tool):
         """Configured symbol/notation predicates as rdflib terms."""
         return [URIRef(iri) for iri in self.symbol_predicates]
 
-    class _VectorizationSource(Protocol):
-        graph: RDFGraph
-        iri: str
-        ontology_id: str | None
-        hash: str | None
-        version: str | None
-
-        @property
-        def version_key(self) -> str | None: ...
-
-    def _merged_excluded_vocab_prefixes(self) -> frozenset[str]:
+    def _excluded_prefixes(self) -> frozenset[str]:
         extra = (
             _normalize_vocab_exclude_prefix(p)
             for p in self.extra_excluded_namespace_prefixes
         )
-        return frozenset(STANDARD_VOCABULARY_NAMESPACE_PREFIXES).union(
-            frozenset(p for p in extra if p)
-        )
+        return frozenset(p for p in extra if p)
 
-    def atomize(self, source: _VectorizationSource, depth: int = 1) -> list[GraphAtom]:
+    def atomize(self, source: Ontology | Facts, depth: int = 1) -> list[GraphAtom]:
         """Generate deterministic atoms from local graph neighborhoods."""
         if depth < 0:
             raise ValueError("Atomizer depth must be >= 0")
@@ -316,14 +286,17 @@ class GraphAtomizer(Tool):
         raw_graph = source.graph
         embedding_graph = strip_provenance_triples_for_embedding(raw_graph)
         focal_namespace = source.facts_namespace if isinstance(source, Facts) else None
-        is_ontology_source = not isinstance(source, Facts)
-        excluded_vocab: frozenset[str] | None = None
-        if is_ontology_source and not self.embed_standard_vocab_iris:
-            excluded_vocab = self._merged_excluded_vocab_prefixes()
+        is_ontology_source = isinstance(source, Ontology)
         entities = self._collect_focal_entities(
             graph=embedding_graph,
             focal_namespace=focal_namespace,
-            excluded_vocab_prefixes=excluded_vocab,
+            owned=(
+                {source.namespace, *described_namespaces(embedding_graph)}
+                if isinstance(source, Ontology)
+                else None
+            ),
+            header=source.iri if is_ontology_source else None,
+            excluded_prefixes=self._excluded_prefixes() if is_ontology_source else None,
             # Facts are already confined to ``facts_namespace``, where every individual
             # is a subject; the describes-only rule targets ontology cross-references.
             require_description=is_ontology_source and not self.index_undescribed_iris,
@@ -460,7 +433,9 @@ class GraphAtomizer(Tool):
         self,
         graph: RDFGraph,
         focal_namespace: str | None = None,
-        excluded_vocab_prefixes: frozenset[str] | None = None,
+        owned: set[str] | None = None,
+        header: str | None = None,
+        excluded_prefixes: frozenset[str] | None = None,
         require_description: bool = False,
     ) -> list[URIRef]:
         ns_prefix = focal_namespace.rstrip("/") if focal_namespace is not None else None
@@ -474,11 +449,19 @@ class GraphAtomizer(Tool):
         if ns_prefix is not None:
             entities = {e for e in entities if str(e).startswith(ns_prefix)}
 
-        if excluded_vocab_prefixes:
+        if owned is not None:
+            # The ontology node itself is the source's own wherever its IRI sits.
             entities = {
                 e
                 for e in entities
-                if not any(str(e).startswith(p) for p in excluded_vocab_prefixes)
+                if str(e) == header or any(str(e).startswith(ns) for ns in owned)
+            }
+
+        if excluded_prefixes:
+            entities = {
+                e
+                for e in entities
+                if not any(str(e).startswith(p) for p in excluded_prefixes)
             }
 
         if require_description:

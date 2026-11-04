@@ -46,7 +46,8 @@ not what this run paid for.
 clock, recorded by the `_timed` wrapper in `ontocast/stategraph/create.py`:
 `Convert to Text`, `Chunk Text`, `Update Ontology`,
 `Normalize Ontology Updates`, `Consolidate Ontology`, `Render Facts`,
-`Merge Facts`, `Validate Facts`, `Structural Check`, `Consistency Critic`,
+`Merge Facts`, `Resolve Coreference`, `Validate Facts`, `Structural Check`,
+`Consistency Critic`,
 `Serialize`.
 
 The two fan-out nodes, `Update Ontology` and `Render Facts`, add keys written
@@ -172,6 +173,7 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 |---|---|
 | `facts_rejected_merges` | Entity merges the aggregator's guards refused, for the graph returned |
 | `facts_merge_repair_passes`, `facts_merge_vetoes`, `facts_merge_repairs_rejected` | The un-merge repair: passes kept, merge pairs vetoed, passes reverted |
+| `facts_coreference_pairs`, `facts_coreference_same`, `facts_coreference_different` | Coreference resolution: pairs put to the model, and those it judged one entity or two |
 | `validated_without_ontology_context` | `true` when the facts were validated with an empty ontology context |
 | `facts_validation_findings`, `facts_validation_errors` | Findings after validation, and those of error severity |
 | `facts_shacl_violations_before`, `facts_shacl_violations_after` | SHACL violations around the automatic repair. Present only when the repair ran |

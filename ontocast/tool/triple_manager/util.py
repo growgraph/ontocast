@@ -35,7 +35,7 @@ PREFIX owl:     <http://www.w3.org/2002/07/owl#>
 PREFIX dcterms: <http://purl.org/dc/terms/>
 PREFIX vann:    <http://purl.org/vocab/vann/>
 PREFIX oc:      <https://growgraph.dev/ontocast#>
-SELECT DISTINCT ?g ?onto ?versionIri ?version ?prior ?prefix ?title ?description
+SELECT DISTINCT ?g ?onto ?versionIri ?version ?prior ?prefix ?namespace ?title ?description
                 ?created ?modified ?removed
 WHERE {
   GRAPH ?g {
@@ -44,6 +44,7 @@ WHERE {
     OPTIONAL { ?onto owl:versionInfo ?version }
     OPTIONAL { ?onto owl:priorVersion ?prior }
     OPTIONAL { ?onto vann:preferredNamespacePrefix ?prefix }
+    OPTIONAL { ?onto vann:preferredNamespaceUri ?namespace }
     OPTIONAL { ?onto dcterms:title ?title }
     OPTIONAL { ?onto dcterms:description ?description }
     OPTIONAL { ?onto dcterms:created ?created }

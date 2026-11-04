@@ -26,6 +26,7 @@ from ontocast.onto.identity import (
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.model import (
     BasePydanticModel,
+    CoreferenceCandidate,
     FactsValidationFinding,
     GraphRepairRecord,
     LoopAttempt,
@@ -823,6 +824,28 @@ class AgentState(BasePydanticModel):
             "asserted by a single unit cannot be the product of an identity "
             "merge, so the gate needs this to tell a merge signature from "
             "legitimate multi-value modelling."
+        ),
+    )
+
+    coreference_candidates: list[CoreferenceCandidate] = Field(
+        default_factory=list,
+        description=(
+            "Identity pairs aggregation could not settle, put to the model by "
+            "RESOLVE_COREFERENCE (see ontocast.tool.agg.coreference)."
+        ),
+    )
+    coreference_vetoes: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Source entity pairs the model judged distinct; every later "
+            "re-aggregation (the facts gate's) keeps them apart."
+        ),
+    )
+    coreference_confirmations: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Source entity pairs the model judged one entity; every later "
+            "re-aggregation merges them, guards permitting."
         ),
     )
 

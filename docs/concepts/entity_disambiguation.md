@@ -48,17 +48,43 @@ the log names each pair and the reasons, which can be several:
 
 | Reason | The pair was refused because | Setting |
 |---|---|---|
+| `same_unit` | One unit minted both: a unit names each thing once, so its two IRIs are two things | |
 | `sibling` | Both are values of one subject, such as the lower and upper bound of a range, or two samples in a series | [`AGG_SIBLING_GUARD_SCOPE`](../reference/configuration/aggregation.md#agg_sibling_guard_scope) |
 | `literal_conflict` | They state different values for the same property, such as two different temperatures | [`AGG_LITERAL_CONFLICT_GUARD`](../reference/configuration/aggregation.md#agg_literal_conflict_guard) |
 | `functional_iri_conflict` | They point to different things through a property that allows one value, such as two different units | [`AGG_FUNCTIONAL_MIN_EMPIRICAL_SUPPORT`](../reference/configuration/aggregation.md#agg_functional_min_empirical_support) |
 | `initials_conflict` | Their labels differ only in an initial or a single letter: "Sample A" and "Sample B" | [`AGG_INITIALS_DISTINCT_GUARD`](../reference/configuration/aggregation.md#agg_initials_distinct_guard) |
 | `role` | One is used as a property, the other as a thing | |
 | `type` | Their types are incompatible | [`AGG_TYPE_GUARD_UNTYPED`](../reference/configuration/aggregation.md#agg_type_guard_untyped) decides whether a typed and an untyped entity may merge |
-| `lexical` | Their labels are not close enough. Entities that carry values must match exactly; others may match loosely | [`AGG_LEXICAL_LABEL_JACCARD`](../reference/configuration/aggregation.md#agg_lexical_label_jaccard), [`AGG_LEXICAL_SEQUENCE_RATIO`](../reference/configuration/aggregation.md#agg_lexical_sequence_ratio), [`AGG_LEXICAL_TOKEN_JACCARD`](../reference/configuration/aggregation.md#agg_lexical_token_jaccard) |
+| `lexical` | Their labels are not close enough. Entities that carry values must match exactly; others may match loosely. Two labelled entities are compared by their labels alone; the local name of their IRI counts only when one has no label, or against a term of your ontology. Labels that carry different numbers ("June 2021", "29 June 2021") never match | [`AGG_LEXICAL_LABEL_JACCARD`](../reference/configuration/aggregation.md#agg_lexical_label_jaccard), [`AGG_LEXICAL_SEQUENCE_RATIO`](../reference/configuration/aggregation.md#agg_lexical_sequence_ratio), [`AGG_LEXICAL_TOKEN_JACCARD`](../reference/configuration/aggregation.md#agg_lexical_token_jaccard) |
 | `cluster_veto` | The pair itself was fine, but merging it would have joined two entities another guard had refused | |
 
 A property counts as allowing one value when the ontology says so, or when
 every subject in the document uses it once.
+
+## Coreference the guards cannot settle
+
+The parts of a document are extracted in parallel, so no part sees the
+entities another part named. After merging, one LLM call per document (of two
+parts or more) puts the pairs the rules above cannot settle to the model:
+
+- merges made on a plausible match only, not on an equal label, initials or a
+  shared key: "temperature" and "daily maximum temperature";
+- candidates refused for their wording alone, with no guard saying they are
+  distinct: "the first applicant" and "Rusi Kosev Stanev";
+- two entities of one type from different parts that are the only two pointing
+  to one node by one property: both "applicant in" one case.
+
+The model sees each entity as its part stated it (labels, types, values,
+relations, and the sentence that names it) and answers same, different or
+unsure for each pair. "Same" merges the pair like a shared key, "different"
+keeps it apart, and every guard above still applies: the model cannot merge
+two things one part told apart. Its verdicts also hold when validation
+re-merges the parts.
+[`AGG_LLM_COREFERENCE`](../reference/configuration/aggregation.md#agg_llm_coreference)
+turns the step off;
+[`AGG_LLM_COREFERENCE_MAX_PAIRS`](../reference/configuration/aggregation.md#agg_llm_coreference_max_pairs)
+bounds the pairs per call. `facts_coreference_pairs`,
+`facts_coreference_same` and `facts_coreference_different` count them.
 
 ## Tuning
 

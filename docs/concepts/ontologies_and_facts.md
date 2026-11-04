@@ -13,8 +13,10 @@ startup (`--ontology-dir` or
 the ones you upload to `/ontologies`, and the ones runs create.
 
 An ontology is identified by its **IRI**, the subject of its `owl:Ontology`
-statement: an absolute `http(s)` IRI with no fragment, since its terms live
-under `<iri>#`. Two shorter names point to the same entry: its `ontology_id`
+statement: an absolute `http(s)` IRI with no fragment, since its versions are
+named `<iri>#<key>`. An empty fragment (`http://www.w3.org/ns/prov#`) is
+dropped. Its **namespace**, where its terms live, is separate: `<iri>#` for an
+ontology OntoCast creates, and read from the file for one you load. Two shorter names point to the same entry: its `ontology_id`
 and the prefix its author bound in Turtle. They can differ (an ontology with id
 `observation` may use the prefix `obs:`), and wherever OntoCast asks for an
 ontology, such as
@@ -39,8 +41,11 @@ model never writes an `owl:Ontology` header; one it writes anyway is dropped
 and counted (`ontology/model_header_triples_dropped`).
 
 An ontology you load from a file or upload to `/ontologies` keeps its own IRI.
-The file declares exactly one named `owl:Ontology`, whose IRI has no `#`. Its
-id is its `vann:preferredNamespacePrefix`, else derived from the IRI; its title
+The file declares exactly one named `owl:Ontology` that describes itself; a
+header that is only typed `owl:Ontology` beside it is dropped, as W3C PROV-O
+publishes one. Its namespace is the file's `vann:preferredNamespaceUri` when
+terms live under it, else the namespace in which the file describes the most
+terms: OM-2's is `…/om-2/`, PROV-O's is `…/prov#`. Its id is its `vann:preferredNamespacePrefix`, else derived from the IRI; its title
 `dcterms:title`, else `rdfs:label`, else the id; its version label
 `owl:versionInfo` when that is a semantic version, else `1.0.0`. It is stored
 as a root version. An upload whose IRI is already in the catalog is refused;
@@ -59,7 +64,7 @@ ontology IRI carries the version header:
 | `owl:versionIRI` | The named graph, `<iri>#<key>` |
 | `owl:priorVersion` | The version(s) this one was made from: none on a root, one for an update, several for a merge |
 | `owl:versionInfo` | A semantic version label: `1.0.0` on a root, then bumped per ontology from the updates applied to it. Major when more than five triples are deleted, including more than two classes or three properties; minor for any other deletion, or for five or more new classes or properties; patch otherwise |
-| `vann:preferredNamespacePrefix`, `vann:preferredNamespaceUri` | The `ontology_id` and `<iri>#` |
+| `vann:preferredNamespacePrefix`, `vann:preferredNamespaceUri` | The `ontology_id` and the namespace |
 | `dcterms:title`, `rdfs:label` | The title |
 | `dcterms:description` | The description, when there is one |
 | `dcterms:created` | When the root of the lineage was created, carried forward |
@@ -152,8 +157,10 @@ so pipeline metadata is never mistaken for extracted facts. Provenance of
 ontology changes is kept apart from the ontology, so the ontology you load
 elsewhere carries none of it.
 
-Provenance adds at least two triples for every fact. To leave it out of what
-you get back:
+Provenance adds at least two triples for every fact. It is the chunk nodes and
+statement reifiers the pipeline mints, not the PROV namespace: facts you
+extract with PROV-O as your ontology are facts like any others and are kept. To
+leave provenance out of what you get back:
 
 - over HTTP, pass `strip_provenance=true` to `/process` (provenance is kept by
   default);

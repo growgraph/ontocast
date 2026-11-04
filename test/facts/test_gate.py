@@ -316,6 +316,123 @@ def test_vetoes_from_findings_builds_full_cluster_pairs() -> None:
     }
 
 
+def test_a_multi_value_finding_leaves_the_objects_merges_alone() -> None:
+    """A merged subject collects its members' objects; the objects are innocent."""
+    finding = FactsValidationFinding(
+        kind=FactsValidationFindingKind.SUSPECT_MULTI_VALUE,
+        message="conflict",
+        subject=CD + "event",
+        predicate=Q + "place",
+        values=[CD + "city_a", CD + "city_b"],
+    )
+    clusters = {
+        CD + "event": [CD + "event__u1", CD + "event__u2"],
+        CD + "city_a": [CD + "city_a__u1", CD + "city_a__u3"],
+    }
+    assert vetoes_from_findings([finding], clusters) == {
+        frozenset((URIRef(CD + "event__u1"), URIRef(CD + "event__u2")))
+    }
+
+
+def test_a_degenerate_coreference_finding_vetoes_the_collapsed_endpoint() -> None:
+    finding = FactsValidationFinding(
+        kind=FactsValidationFindingKind.DEGENERATE_COREFERENCE,
+        message="collapsed",
+        subject=CD + "range",
+        values=[CD + "bound"],
+    )
+    clusters = {CD + "bound": [CD + "low__u1", CD + "high__u1"]}
+    assert vetoes_from_findings([finding], clusters) == {
+        frozenset((URIRef(CD + "low__u1"), URIRef(CD + "high__u1")))
+    }
+
+
+def _unit(index: int, ttl: str) -> ContentUnit:
+    graph = RDFGraph()
+    graph.parse(
+        data=f"@prefix cd: <{CD}> .\n@prefix q: <{Q}> .\n{ttl}", format="turtle"
+    )
+    return ContentUnit(
+        text=f"unit {index}",
+        index=index,
+        doc_iri=URIRef(CD + "doc"),
+        graph=graph,
+        type=OutputType.FACTS,
+    )
+
+
+def test_a_veto_splits_only_the_members_that_disagree() -> None:
+    """A member that carried no value on the predicate keeps its merges."""
+    finding = FactsValidationFinding(
+        kind=FactsValidationFindingKind.FUNCTIONAL_VIOLATION,
+        message="two values",
+        subject=CD + "Wave",
+        predicate=Q + "peak",
+        values=["40", "46"],
+    )
+    clusters = {CD + "Wave": [CD + "wave_a", CD + "wave_b", CD + "wave_c"]}
+    units = [
+        _unit(0, "cd:wave_a q:peak 40 ."),
+        _unit(1, "cd:wave_b q:peak 46.0 ."),
+        _unit(2, 'cd:wave_c q:name "blocking high" .'),
+    ]
+    assert vetoes_from_findings([finding], clusters, units) == {
+        frozenset((URIRef(CD + "wave_a"), URIRef(CD + "wave_b")))
+    }
+
+
+def test_alias_compatible_string_values_are_not_split() -> None:
+    finding = FactsValidationFinding(
+        kind=FactsValidationFindingKind.SUSPECT_MULTI_VALUE,
+        message="names",
+        subject=CD + "Person",
+        predicate=Q + "name",
+    )
+    clusters = {CD + "Person": [CD + "p1", CD + "p2", CD + "p3"]}
+    units = [
+        _unit(0, 'cd:p1 q:name "Mr Beer" .'),
+        _unit(1, 'cd:p2 q:name "Mr Karlheinz Beer" .'),
+        _unit(2, 'cd:p3 q:name "Mrs Palm" .'),
+    ]
+    assert vetoes_from_findings([finding], clusters, units) == {
+        frozenset((URIRef(CD + "p1"), URIRef(CD + "p3"))),
+        frozenset((URIRef(CD + "p2"), URIRef(CD + "p3"))),
+    }
+
+
+def test_a_degenerate_endpoint_is_split_by_the_predicate_reaching_it() -> None:
+    finding = FactsValidationFinding(
+        kind=FactsValidationFindingKind.DEGENERATE_COREFERENCE,
+        message="collapsed",
+        subject=CD + "Range",
+        predicate=f"{Q}lower, {Q}upper",
+        values=[CD + "Bound"],
+    )
+    clusters = {CD + "Bound": [CD + "low", CD + "high", CD + "low_again"]}
+    units = [
+        _unit(0, "cd:range q:lower cd:low ; q:upper cd:high ."),
+        _unit(1, "cd:range2 q:lower cd:low_again ."),
+    ]
+    assert vetoes_from_findings([finding], clusters, units) == {
+        frozenset((URIRef(CD + "low"), URIRef(CD + "high"))),
+        frozenset((URIRef(CD + "low_again"), URIRef(CD + "high"))),
+    }
+
+
+def test_an_unattributable_finding_vetoes_the_whole_cluster() -> None:
+    finding = FactsValidationFinding(
+        kind=FactsValidationFindingKind.FUNCTIONAL_VIOLATION,
+        message="two values",
+        subject=CD + "Wave",
+        predicate=Q + "peak",
+    )
+    clusters = {CD + "Wave": [CD + "wave_a", CD + "wave_b"]}
+    units = [_unit(0, "cd:wave_a q:peak 40, 46 .")]
+    assert vetoes_from_findings([finding], clusters, units) == {
+        frozenset((URIRef(CD + "wave_a"), URIRef(CD + "wave_b")))
+    }
+
+
 # --- VALIDATE_FACTS node -----------------------------------------------------
 
 

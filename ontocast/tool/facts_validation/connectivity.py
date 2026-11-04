@@ -11,21 +11,23 @@ from collections.abc import Iterable, Sequence
 
 from pydantic import BaseModel
 from rdflib import BNode, URIRef
-from rdflib.namespace import OWL, PROV, RDF
+from rdflib.namespace import OWL, RDF
 from rdflib.term import Node
 
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.scaffolding import is_scaffolding, scaffolding_nodes
 from ontocast.tool.facts_validation.terms import fact_instances
 
-# Predicates that link nothing: typing, and alias or lineage handles.
+# Predicates that link nothing: typing and alias handles.
 _NON_LINKS: frozenset[URIRef] = frozenset({RDF.type, OWL.sameAs})
 
 
-def _is_link(predicate: Node, obj: Node) -> bool:
+def _is_link(triple: tuple[Node, Node, Node], scaffolding: set[Node]) -> bool:
+    _, predicate, obj = triple
     return (
         isinstance(obj, (URIRef, BNode))
         and predicate not in _NON_LINKS
-        and not str(predicate).startswith(str(PROV))
+        and not is_scaffolding(triple, scaffolding)
     )
 
 
@@ -34,14 +36,16 @@ def instance_links(
 ) -> set[tuple[Node, Node, Node]]:
     """Triples that link an instance (or a blank node) to another node.
 
-    Typing, ``owl:sameAs`` and ``prov:`` arcs are not links, and neither is a
-    literal value.
+    Typing, ``owl:sameAs`` and the pipeline's provenance scaffolding are not
+    links, and neither is a literal value. A domain property is a link in any
+    vocabulary, PROV-O included.
     """
     instances = fact_instances(graph, fact_namespaces)
+    scaffolding = scaffolding_nodes(graph)
     return {
         (s, p, o)
         for s, p, o in graph
-        if _is_link(p, o)
+        if _is_link((s, p, o), scaffolding)
         and (s in instances or isinstance(s, BNode))
         and (o in instances or isinstance(o, BNode))
     }
@@ -63,10 +67,10 @@ def facts_connectivity(
     """Count the connected components and isolated instances of ``graph``.
 
     Instances (:func:`~ontocast.tool.facts_validation.terms.fact_instances`)
-    are joined by any link (:func:`_is_link`), directly or through blank nodes;
-    the ``document`` node, when given, is not an instance but joins what it
-    links (cited works, metadata), as a reader of the graph sees it.
-    Provenance reifiers and chunk nodes join nothing.
+    are joined by any link (:func:`instance_links`' notion), directly or
+    through blank nodes; the ``document`` node, when given, is not an instance
+    but joins what it links (cited works, metadata), as a reader of the graph
+    sees it. Provenance reifiers and chunk nodes join nothing.
     """
     instances = fact_instances(graph, fact_namespaces) - {document}
     if not instances:
@@ -74,6 +78,7 @@ def facts_connectivity(
     members: set[Node] = set(instances)
     if document is not None:
         members.add(document)
+    scaffolding = scaffolding_nodes(graph)
     parent: dict[Node, Node] = {}
 
     def find(node: Node) -> Node:
@@ -87,7 +92,7 @@ def facts_connectivity(
         return node in members or isinstance(node, BNode)
 
     for s, p, o in graph:
-        if _is_link(p, o) and joinable(s) and joinable(o) and s != o:
+        if _is_link((s, p, o), scaffolding) and joinable(s) and joinable(o) and s != o:
             parent[find(s)] = find(o)
 
     sizes: dict[Node, int] = {}

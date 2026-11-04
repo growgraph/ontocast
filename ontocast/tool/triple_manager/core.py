@@ -11,12 +11,13 @@ from collections.abc import Sequence
 from typing import Any
 
 from pydantic import Field
-from rdflib import RDF, Graph
+from rdflib import OWL, RDF, Graph
 
-from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
+from ontocast.onto.constants import PROV
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.scaffolding import is_scaffolding, scaffolding_nodes
 from ontocast.onto.tenancy import TENANCY_SEP, StoreKind
 from ontocast.tool import Tool
 
@@ -171,32 +172,27 @@ class TripleStoreManager(Tool):
         )
 
     @classmethod
-    def _provenance_source_nodes(cls, graph: Graph) -> set:
-        """Return chunk/source nodes whose triples are provenance scaffolding."""
-        derived_from = set(graph.objects(None, PROV.wasDerivedFrom))
-        entity_nodes = set(graph.subjects(RDF.type, PROV.Entity))
-        text_chunk_nodes = set(graph.subjects(RDF.type, SCHEMA.Text))
-        chunk_metadata_nodes = entity_nodes & text_chunk_nodes
-        return derived_from | chunk_metadata_nodes
-
-    @classmethod
     def strip_provenance(cls, graph: Graph) -> RDFGraph:
-        """Return a graph without reification/provenance scaffolding triples."""
+        """Return a graph without the provenance the pipeline writes.
+
+        Removed: every triple touching a chunk node or reifier
+        (:mod:`ontocast.onto.scaffolding`), and the ``prov:wasDerivedFrom``
+        lineage on an ontology header. Domain triples stay whatever their
+        vocabulary, PROV-O included.
+        """
         clean = RDFGraph()
         for prefix, namespace in graph.namespaces():
             clean.bind(prefix, namespace)
 
-        reifier_nodes = set(graph.subjects(RDF_REIFIES, None))
-        source_nodes = cls._provenance_source_nodes(graph)
-
-        for subject, predicate, object_ in graph:
-            if predicate in {RDF_REIFIES, PROV.wasDerivedFrom}:
+        scaffolding = scaffolding_nodes(graph)
+        headers = set(graph.subjects(RDF.type, OWL.Ontology))
+        for triple in graph:
+            subject, predicate, _ = triple
+            if is_scaffolding(triple, scaffolding):
                 continue
-            if subject in reifier_nodes:
+            if subject in headers and predicate == PROV.wasDerivedFrom:
                 continue
-            if subject in source_nodes:
-                continue
-            clean.add((subject, predicate, object_))
+            clean.add(triple)
 
         return clean
 

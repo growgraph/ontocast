@@ -58,10 +58,11 @@ from .signatures import (
     label_tokens,
     labels_alias_with_initials,
     labels_differ_only_by_initials,
+    numbers_agree,
     string_values_compatible,
     tokens_alias_compatible,
 )
-from .unit_scope import scope_fact_iris, unscoped_iri
+from .unit_scope import scope_fact_iris, unit_scope_index, unscoped_iri
 from .uri_builder import EntityRole, URIBuilder, to_lower_camel_case
 
 logger = logging.getLogger(__name__)
@@ -451,6 +452,11 @@ class EntityDecision(BaseModel):
     suppress_sameas: bool = False
 
 
+#: Lexical tiers that confirm identity by name; a merge on any other tier is
+#: plausible only, and a candidate for coreference resolution.
+CONFIRMING_ALIAS_TIERS: frozenset[str] = frozenset({"label", "initials"})
+
+
 def build_merged_clusters(
     final_mapping: dict[URIRef, URIRef],
     identity_mapping: dict[URIRef, URIRef],
@@ -553,6 +559,12 @@ class AggregationResult(BaseModel):
             objects were contributed by more than one unit -- the only ones a
             merge could have created. See
             :func:`build_cross_unit_object_pairs`.
+        unconfirmed_merges: Source pairs merged on a plausible lexical tier
+            only (not an equal label, initials, a key or a confirmation), with
+            their candidate similarity: what coreference resolution may split.
+        lexical_near_misses: Candidate source pairs refused for ``lexical``
+            alone -- no guard said they are distinct -- with their similarity:
+            what coreference resolution may merge.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -563,6 +575,8 @@ class AggregationResult(BaseModel):
     rejected_merge_count: int = 0
     key_supported_clusters: list[str] = Field(default_factory=list)
     cross_unit_object_pairs: list[tuple[str, str]] = Field(default_factory=list)
+    unconfirmed_merges: list[tuple[str, str, float]] = Field(default_factory=list)
+    lexical_near_misses: list[tuple[str, str, float]] = Field(default_factory=list)
 
 
 class _EntityCollectionState(BaseModel):
@@ -654,6 +668,8 @@ class EmbeddingBasedAggregator:
         self.literal_conflict_guard = cfg.literal_conflict_guard
         self.initials_distinct_guard = cfg.initials_distinct_guard
         self.natural_key_merge = cfg.natural_key_merge
+        self.llm_coreference = cfg.llm_coreference
+        self.llm_coreference_max_pairs = cfg.llm_coreference_max_pairs
         self.type_guard_untyped = str(cfg.type_guard_untyped)
         self.unit_scoped_fact_iris = cfg.unit_scoped_fact_iris
         self.enabled = cfg.enabled
@@ -834,32 +850,68 @@ class EmbeddingBasedAggregator:
         right: URIRef,
         representations: dict[URIRef, EntityRepresentation],
     ) -> bool:
+        return self._lexical_alias_tier(left, right, representations) is not None
+
+    def _lexical_alias_tier(
+        self,
+        left: URIRef,
+        right: URIRef,
+        representations: dict[URIRef, EntityRepresentation],
+    ) -> str | None:
+        """The lexical tier that makes *left* and *right* aliases, or None.
+
+        ``label`` and ``initials`` confirm identity by name; the other tiers
+        (``sub_label``, ``label_overlap``, ``sequence``, ``token_overlap`` and
+        the IRI-derived ``normal_form`` / ``local_name``) only make it
+        plausible, so a merge on them is a candidate for coreference
+        resolution.
+        """
         left_rep = representations.get(left)
         right_rep = representations.get(right)
         if left_rep is None or right_rep is None:
-            return False
-        if left_rep.normal_form == right_rep.normal_form:
-            return True
-
-        left_instance_name = self._instance_like_local_name(left)
-        right_instance_name = self._instance_like_local_name(right)
-        if (
-            left_instance_name is not None
-            and right_instance_name is not None
-            and left_instance_name == right_instance_name
-        ):
-            return True
-
+            return None
         left_label_tokens = self._entity_label_values(left_rep)
         right_label_tokens = self._entity_label_values(right_rep)
+        # Identity is in the names an entity carries, not its IRI. Two named
+        # fact entities are decided by their names alone: units mint local
+        # names independently and can mint one alike for unrelated things. A
+        # local name still counts for an unnamed side, and against a catalog
+        # term, whose name the renderer saw and reused.
+        names_decide = (
+            bool(left_label_tokens and right_label_tokens)
+            and not left_rep.is_ontology_entity
+            and not right_rep.is_ontology_entity
+        )
+        if not names_decide:
+            if left_rep.normal_form == right_rep.normal_form:
+                return "normal_form"
+            left_instance_name = self._instance_like_local_name(left)
+            right_instance_name = self._instance_like_local_name(right)
+            if (
+                left_instance_name is not None
+                and right_instance_name is not None
+                and left_instance_name == right_instance_name
+            ):
+                return "local_name"
+
         if left_label_tokens & right_label_tokens:
-            return True
+            return "label"
 
         # Abbreviation-aware tier: "baranov d" vs "dmitry baranov" alias when
         # every token of one label matches a token of the other exactly or as
         # a single-character initial, with at least one shared full token.
         if self._labels_alias_with_initials(left_label_tokens, right_label_tokens):
-            return True
+            # Every word of one name inside the other, no initial involved: a
+            # name variant ("Mr Beer" / "Mr Karlheinz Beer") or a narrower
+            # thing ("temperature" / "daily maximum temperature").
+            if any(
+                set(label_tokens(a)) <= set(label_tokens(b))
+                or set(label_tokens(b)) <= set(label_tokens(a))
+                for a in left_label_tokens
+                for b in right_label_tokens
+            ):
+                return "sub_label"
+            return "initials"
 
         # Guard-literal-bearing entities (measurements, dated events) are
         # individuated by their payload, not their phrasing: "PL red shift of
@@ -868,18 +920,22 @@ class EmbeddingBasedAggregator:
         # (names, descriptions) do not raise this bar — disjoint identifier
         # strings are handled by _have_conflicting_literals instead.
         if left_rep.has_guard_literal and right_rep.has_guard_literal:
-            return False
+            return None
 
         if left_label_tokens and right_label_tokens:
             max_label_overlap = 0.0
             for left_label in left_label_tokens:
                 left_tokens = self._tokenize(left_label)
                 for right_label in right_label_tokens:
+                    if not numbers_agree(left_label, right_label):
+                        continue
                     right_tokens = self._tokenize(right_label)
                     overlap = self._jaccard(left_tokens, right_tokens)
                     max_label_overlap = max(max_label_overlap, overlap)
             if max_label_overlap >= self.lexical_label_jaccard:
-                return True
+                return "label_overlap"
+        if names_decide:
+            return None
 
         left_normalized = left_rep.normal_form.strip()
         right_normalized = right_rep.normal_form.strip()
@@ -888,21 +944,21 @@ class EmbeddingBasedAggregator:
                 left_normalized.startswith(f"{right_normalized} ")
                 or right_normalized.startswith(f"{left_normalized} ")
             ):
-                return False
+                return None
 
         ratio = SequenceMatcher(
             None, left_rep.normal_form, right_rep.normal_form
         ).ratio()
         if ratio >= self.lexical_sequence_ratio:
-            return True
+            return "sequence"
 
         left_tokens = self._tokenize(left_rep.normal_form)
         right_tokens = self._tokenize(right_rep.normal_form)
         if len(left_tokens) >= 2 and len(right_tokens) >= 2:
             if self._jaccard(left_tokens, right_tokens) >= self.lexical_token_jaccard:
-                return True
+                return "token_overlap"
 
-        return False
+        return None
 
     # Thin delegates: the shared implementations live in ``signatures`` so the
     # validation gate can consult the same string-compatibility notion without
@@ -999,6 +1055,18 @@ class EmbeddingBasedAggregator:
             self._entity_label_values(right_rep),
         )
 
+    @staticmethod
+    def _minted_by_one_unit(left: URIRef, right: URIRef) -> bool:
+        """True when one unit minted both: a render names each thing once.
+
+        A unit's renderer sees its whole text, so two IRIs it mints are two
+        things it chose to tell apart ("current" and "future" results, the
+        deaths in Oregon and in Washington). Units mint independently of each
+        other, so the evidence holds only within one.
+        """
+        left_unit = unit_scope_index(str(left))
+        return left_unit is not None and left_unit == unit_scope_index(str(right))
+
     def _pair_distinctness_veto(
         self,
         left: URIRef,
@@ -1014,6 +1082,8 @@ class EmbeddingBasedAggregator:
         cluster, including transitively: two entities that a guard separates
         must not end up merged through a chain of intermediate aliases.
         """
+        if self._minted_by_one_unit(left, right):
+            return True
         pair = frozenset((left, right))
         # Direct relations and sibling pairs are recorded by name; the gate's
         # merge vetoes name scoped source IRIs. Both spellings are checked.
@@ -1207,6 +1277,8 @@ class EmbeddingBasedAggregator:
         guard_context: MergeGuardContext | None = None,
     ) -> list[str]:
         failures: list[str] = []
+        if self._minted_by_one_unit(left, right):
+            failures.append("same_unit")
         if guard_context is not None:
             name_pair = frozenset((unscoped_iri(left), unscoped_iri(right)))
             if name_pair in guard_context.sibling_pairs:
@@ -1241,10 +1313,13 @@ class EmbeddingBasedAggregator:
         guard_context: MergeGuardContext | None = None,
         key_pairs: set[frozenset[URIRef]] | None = None,
     ) -> tuple[
-        list[list[URIRef]], list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]]
+        list[list[URIRef]],
+        list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]],
+        list[tuple[URIRef, URIRef, float | None]],
     ]:
         validated_clusters: list[list[URIRef]] = []
         rejected_merges: list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]] = []
+        unconfirmed_merges: list[tuple[URIRef, URIRef, float | None]] = []
 
         for candidate_cluster in candidate_clusters:
             if len(candidate_cluster) <= 1:
@@ -1337,6 +1412,12 @@ class EmbeddingBasedAggregator:
                         rejected_merges.append((left, right, score, ("cluster_veto",)))
                         continue
                     union(left, right)
+                    if (
+                        key_pairs is None or pair not in key_pairs
+                    ) and self._lexical_alias_tier(
+                        left, right, representations
+                    ) not in CONFIRMING_ALIAS_TIERS:
+                        unconfirmed_merges.append((left, right, score))
                     continue
                 rejected_merges.append(
                     (
@@ -1362,7 +1443,7 @@ class EmbeddingBasedAggregator:
                 sorted_group = sorted(group, key=str)
                 validated_clusters.append(sorted_group)
 
-        return validated_clusters, rejected_merges
+        return validated_clusters, rejected_merges, unconfirmed_merges
 
     def _select_ontology_anchor_candidates(
         self,
@@ -1576,6 +1657,7 @@ class EmbeddingBasedAggregator:
         units: list[ContentUnit],
         ontology_graph: RDFGraph,
         merge_vetoes: set[frozenset[URIRef]] | None = None,
+        confirmed_pairs: set[frozenset[URIRef]] | None = None,
     ) -> AggregationResult:
         """Aggregate multiple content unit graphs with embedding-based disambiguation.
 
@@ -1586,6 +1668,9 @@ class EmbeddingBasedAggregator:
             merge_vetoes: Extra entity pairs that must never identity-merge —
                 the targeted un-merge lever used by the post-aggregation
                 validation gate. Unioned into the direct-relation veto set.
+            confirmed_pairs: Entity pairs confirmed as one entity (coreference
+                resolution): candidates whatever their embeddings, merged like a
+                natural-key pair, and still subject to every distinctness veto.
 
         Returns:
             :class:`AggregationResult` with the merged graph and merge
@@ -1691,6 +1776,7 @@ class EmbeddingBasedAggregator:
         key_pairs: set[frozenset[URIRef]] = set()
         clusters: list[list[URIRef]]
         rejected_merges: list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]]
+        unconfirmed_merges: list[tuple[URIRef, URIRef, float | None]] = []
         if self.enabled:
             candidate_clusters, embeddings = self._cluster_entities_by_role(
                 representations
@@ -1707,13 +1793,24 @@ class EmbeddingBasedAggregator:
                     candidate_clusters = self._merge_candidate_clusters_by_key_pairs(
                         candidate_clusters, key_pairs
                     )
-            clusters, rejected_merges = self._build_identity_clusters(
-                candidate_clusters=candidate_clusters,
-                representations=representations,
-                embeddings=embeddings,
-                direct_relation_pairs=direct_relation_pairs,
-                guard_context=guard_context,
-                key_pairs=key_pairs or None,
+            confirmed = {
+                pair
+                for pair in confirmed_pairs or set()
+                if pair.issubset(representations)
+            }
+            if confirmed:
+                candidate_clusters = self._merge_candidate_clusters_by_key_pairs(
+                    candidate_clusters, confirmed
+                )
+            clusters, rejected_merges, unconfirmed_merges = (
+                self._build_identity_clusters(
+                    candidate_clusters=candidate_clusters,
+                    representations=representations,
+                    embeddings=embeddings,
+                    direct_relation_pairs=direct_relation_pairs,
+                    guard_context=guard_context,
+                    key_pairs=(key_pairs | confirmed) or None,
+                )
             )
         else:
             # Consolidation off: every entity is its own cluster, so nothing is
@@ -1914,6 +2011,15 @@ class EmbeddingBasedAggregator:
             cross_unit_object_pairs=build_cross_unit_object_pairs(
                 active_units, final_mapping
             ),
+            unconfirmed_merges=[
+                (str(left), str(right), score or 0.0)
+                for left, right, score in unconfirmed_merges
+            ],
+            lexical_near_misses=[
+                (str(left), str(right), score or 0.0)
+                for left, right, score, failed in rejected_merges
+                if failed == ("lexical",)
+            ],
         )
 
     def postprocess_facts_units(
@@ -1925,6 +2031,7 @@ class EmbeddingBasedAggregator:
         document_metadata: dict[str, Any] | None = None,
         doc_namespace: str | None = None,
         merge_vetoes: set[frozenset[URIRef]] | None = None,
+        confirmed_pairs: set[frozenset[URIRef]] | None = None,
     ) -> AggregationResult:
         """Sanitize facts units, then run aggregation/normalization.
 
@@ -1952,6 +2059,8 @@ class EmbeddingBasedAggregator:
             doc_namespace: Namespace for metadata-minted entities.
             merge_vetoes: Entity pairs that must never identity-merge
                 (validation-gate un-merge lever).
+            confirmed_pairs: Entity pairs confirmed as one entity (coreference
+                resolution); see :meth:`aggregate_graphs`.
 
         Returns:
             :class:`AggregationResult`; its ``graph`` carries the merged facts
@@ -1964,7 +2073,10 @@ class EmbeddingBasedAggregator:
                     unit.graph, unit.index, (self.base_iri, str(unit.doc_iri))
                 )
         result = self.aggregate_graphs(
-            units=units, ontology_graph=ontology_graph, merge_vetoes=merge_vetoes
+            units=units,
+            ontology_graph=ontology_graph,
+            merge_vetoes=merge_vetoes,
+            confirmed_pairs=confirmed_pairs,
         )
         if doc_iri is not None and document_metadata:
             apply_document_metadata_provenance(

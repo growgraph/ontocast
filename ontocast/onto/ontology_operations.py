@@ -44,6 +44,7 @@ def merge_ontologies(onto1: Ontology, onto2: Ontology) -> Ontology:
     merged = Ontology(
         ontology_id=onto1.ontology_id or onto2.ontology_id,
         iri=onto1.iri,
+        namespace=onto1.namespace,
         title=onto1.title or onto2.title,
         description=onto1.description or onto2.description,
         graph=merged_graph,

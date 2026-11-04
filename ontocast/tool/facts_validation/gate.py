@@ -12,9 +12,10 @@ from itertools import combinations
 
 from pydantic import BaseModel, Field
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
-from rdflib.namespace import PROV, SH, XSD
+from rdflib.namespace import SH, XSD
+from rdflib.term import Node
 
-from ontocast.onto.constants import DOCUMENT_METADATA_TERMS, PROVENANCE_METADATA_TERMS
+from ontocast.onto.constants import DOCUMENT_METADATA_TERMS
 from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import (
     FactsValidationFinding,
@@ -24,6 +25,7 @@ from ontocast.onto.model import (
 from ontocast.onto.rdfgraph import (
     RDFGraph,
 )
+from ontocast.onto.scaffolding import document_nodes, is_scaffolding, scaffolding_nodes
 from ontocast.tool.agg.signatures import (
     canonical_literal,
     harvest_max_one_predicates,
@@ -302,7 +304,10 @@ def _non_catalog_vocabulary_findings(
     graph: RDFGraph,
     ontology_graph: RDFGraph | None,
     namespaces: list[str],
-    quantity_fallback_vocabulary: dict[str, str] | None = None,
+    quantity_fallback_vocabulary: dict[str, str] | None,
+    *,
+    scaffolding: set[Node],
+    document: set[Node],
 ) -> list[FactsValidationFinding]:
     """Report terms the facts graph uses that the ontology context never supplied.
 
@@ -342,31 +347,25 @@ def _non_catalog_vocabulary_findings(
     supplied = collect_catalog_terms(ontology_graph)
     used: dict[str, set[str]] = {}
     for subject, predicate, obj in graph:
-        if not isinstance(subject, URIRef) or str(predicate).startswith(str(PROV)):
+        if not isinstance(subject, URIRef) or is_scaffolding(
+            (subject, predicate, obj), scaffolding
+        ):
             continue
-        if predicate == RDF.type:
-            if isinstance(obj, URIRef):
-                used.setdefault(str(obj), set()).add(str(subject))
+        term = obj if predicate == RDF.type else predicate
+        if not isinstance(term, URIRef):
             continue
-        used.setdefault(str(predicate), set()).add(str(subject))
+        # The metadata the pipeline writes on the document node (its
+        # ``foaf:Document`` type, ``dcterms:title`` …): no catalog will ever
+        # supply it. The same term on an extracted instance is reported.
+        if subject in document and term in DOCUMENT_METADATA_TERMS:
+            continue
+        used.setdefault(str(term), set()).add(str(subject))
 
     findings: list[FactsValidationFinding] = []
     for term in sorted(used):
         if term in supplied:
             continue
         if term.startswith(_SCAFFOLDING_NAMESPACES):
-            continue
-        # Chunk- and document-metadata terms the pipeline mints itself. The
-        # ``prov:`` guard above only covers predicates, so schema:position,
-        # schema:identifier, the chunk node's own types, and the document
-        # node's ``foaf:Document`` / ``dcterms:title`` were reported as
-        # vocabulary the renderer improvised, on every run whose catalog does
-        # not happen to include them. No catalog will ever supply them: they
-        # are scaffolding, like rdfs:label. Both sets are read from the same
-        # modules that emit them so the exemption cannot go stale.
-        if URIRef(term) in PROVENANCE_METADATA_TERMS:
-            continue
-        if URIRef(term) in DOCUMENT_METADATA_TERMS:
             continue
         if any(term.startswith(ns) for ns in namespaces):
             continue
@@ -516,13 +515,10 @@ def validate_aggregated_facts(
     key_supported = set(key_supported_subjects or ())
     functional = harvest_max_one_predicates(ontology_graph)
 
-    # Provenance machinery (chunk nodes, derivation annotations) is
-    # legitimately multi-valued and never the gate's business.
-    provenance_subjects = {
-        subject
-        for subject in graph.subjects(RDF.type, PROV.Entity)
-        if isinstance(subject, URIRef)
-    }
+    # Provenance machinery (chunks, reifiers) and the document node's metadata
+    # are legitimately multi-valued and never the gate's business.
+    scaffolding = scaffolding_nodes(graph)
+    document = document_nodes(graph)
 
     object_groups: dict[tuple[URIRef, URIRef], set] = {}
     iri_groups: dict[tuple[URIRef, URIRef], set[URIRef]] = {}
@@ -539,8 +535,8 @@ def validate_aggregated_facts(
             # Left in, it reads as "dominantly single-valued" and every large
             # cluster becomes an error that drives the repair to un-merge it.
             or predicate == OWL.sameAs
-            or subject in provenance_subjects
-            or str(predicate).startswith(str(PROV))
+            or subject in document
+            or is_scaffolding((subject, predicate, obj), scaffolding)
         ):
             continue
         object_groups.setdefault((subject, predicate), set()).add(obj)
@@ -752,11 +748,18 @@ def validate_aggregated_facts(
 
     findings.extend(
         _non_catalog_vocabulary_findings(
-            graph, ontology_graph, namespaces, quantity_fallback_vocabulary
+            graph,
+            ontology_graph,
+            namespaces,
+            quantity_fallback_vocabulary,
+            scaffolding=scaffolding,
+            document=document,
         )
     )
 
-    findings.extend(_dangling_reference_findings(graph, namespaces))
+    findings.extend(
+        _dangling_reference_findings(graph, namespaces, scaffolding=scaffolding)
+    )
 
     # Object-kind self-consistency: a predicate carrying IRI objects on some
     # subjects and literal objects on others ("worksFor <org>" here, "worksFor
@@ -791,14 +794,16 @@ def validate_aggregated_facts(
 
 _DANGLING_REFERENCE_REPORT_CAP = 20
 
-# Identity/provenance bookkeeping: their objects are alias or lineage handles
-# that legitimately carry no description of their own.
-_DANGLING_EXEMPT_PREDICATES = frozenset({OWL.sameAs, PROV.wasDerivedFrom})
+# Identity bookkeeping: its objects are alias handles that legitimately carry no
+# description of their own. Provenance arcs are skipped as scaffolding.
+_DANGLING_EXEMPT_PREDICATES = frozenset({OWL.sameAs})
 
 
 def _dangling_reference_findings(
     graph: RDFGraph,
     fact_namespaces: list[str],
+    *,
+    scaffolding: set[Node],
 ) -> list[FactsValidationFinding]:
     """Warning telemetry: fact-namespace objects that are never described.
 
@@ -815,6 +820,8 @@ def _dangling_reference_findings(
         if predicate == RDF.type or not isinstance(obj, URIRef):
             continue
         if predicate in _DANGLING_EXEMPT_PREDICATES:
+            continue
+        if is_scaffolding((subject, predicate, obj), scaffolding):
             continue
         if obj in subjects:
             continue

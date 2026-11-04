@@ -21,15 +21,13 @@ from ontocast.config import (
     VectorStoreDedupMode,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_namespace import described_namespaces
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
 from ontocast.tool.triple_manager.mock import MockTripleStoreManager
-from ontocast.tool.vector_store.atomizer import (
-    STANDARD_VOCABULARY_NAMESPACE_PREFIXES,
-    GraphAtomizer,
-)
+from ontocast.tool.vector_store.atomizer import GraphAtomizer
 from ontocast.tool.vector_store.core import (
     BM25_VECTOR_NAME,
     GraphAtom,
@@ -417,14 +415,61 @@ def _build_subclass_parent_label_ontology() -> Ontology:
     return Ontology(graph=graph)
 
 
-def test_atomizer_excludes_standard_vocab_focal_iris_by_default() -> None:
+def test_atomizer_excludes_reused_vocabulary_terms() -> None:
     ontology = _build_smoke_ontology()
     atoms = GraphAtomizer().atomize(source=ontology, depth=1)
     assert atoms
-    for atom in atoms:
-        assert not any(
-            atom.iri.startswith(p) for p in STANDARD_VOCABULARY_NAMESPACE_PREFIXES
-        )
+    assert all(atom.iri.startswith("https://example.org/smoke#") for atom in atoms)
+
+
+def test_atomizer_indexes_only_the_namespace_an_ontology_defines() -> None:
+    graph = RDFGraph._from_turtle_str(
+        """
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix dcterms: <http://purl.org/dc/terms/> .
+        @prefix up: <https://upper.example/ns#> .
+        @prefix ex: <https://example.org/own#> .
+
+        ex: a owl:Ontology .
+        dcterms:creator a owl:AnnotationProperty ; rdfs:label "creator" .
+        up:Agent a owl:Class ; rdfs:label "Agent" .
+        ex:Person a owl:Class ; rdfs:label "Person" ; rdfs:subClassOf up:Agent .
+        ex:Team a owl:Class ; rdfs:label "Team" .
+        ex:memberOf a owl:ObjectProperty ; rdfs:label "member of" ;
+            rdfs:domain ex:Person ; rdfs:range ex:Team .
+        """
+    )
+    assert described_namespaces(graph) == {"https://example.org/own#"}
+    iris = {a.iri for a in GraphAtomizer().atomize(source=Ontology(graph=graph))}
+    assert "https://example.org/own#Person" in iris
+    assert "https://example.org/own#memberOf" in iris
+    assert "https://upper.example/ns#Agent" not in iris
+    assert "http://purl.org/dc/terms/creator" not in iris
+
+
+def test_atomizer_indexes_a_standard_vocabulary_uploaded_as_an_ontology() -> None:
+    graph = RDFGraph._from_turtle_str(
+        """
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix prov: <http://www.w3.org/ns/prov#> .
+
+        <http://www.w3.org/ns/prov-o> a owl:Ontology .
+        prov:Activity a owl:Class ; rdfs:label "Activity" .
+        prov:Agent a owl:Class ; rdfs:label "Agent" .
+        prov:wasAssociatedWith a owl:ObjectProperty ; rdfs:label "wasAssociatedWith" ;
+            rdfs:domain prov:Activity ; rdfs:range prov:Agent .
+        """
+    )
+    ontology = Ontology(graph=graph, iri="http://www.w3.org/ns/prov-o")
+    iris = {a.iri for a in GraphAtomizer().atomize(source=ontology)}
+    assert {
+        "http://www.w3.org/ns/prov-o",
+        "http://www.w3.org/ns/prov#Activity",
+        "http://www.w3.org/ns/prov#Agent",
+        "http://www.w3.org/ns/prov#wasAssociatedWith",
+    } <= iris
 
 
 def test_atomizer_multi_domain_namespaces_still_embedded_without_config() -> None:
@@ -448,19 +493,6 @@ def test_atomizer_multi_domain_namespaces_still_embedded_without_config() -> Non
     assert "https://b.example/ns#ClassB" in iris
 
 
-def test_atomizer_embed_standard_vocab_iris_restores_vocab_focal_entities() -> None:
-    # Standard vocabulary terms are used, not defined, by an ontology that imports them,
-    # so lifting the namespace exclusion alone leaves them filtered by the
-    # describes-only rule. The two narrowings are independent; this asserts the first.
-    ontology = _build_smoke_ontology()
-    atoms = GraphAtomizer(
-        embed_standard_vocab_iris=True, index_undescribed_iris=True
-    ).atomize(source=ontology, depth=1)
-    assert any(
-        a.iri.startswith("http://www.w3.org/1999/02/22-rdf-syntax-ns#") for a in atoms
-    )
-
-
 def test_atomizer_extra_excluded_namespace_prefixes() -> None:
     graph = RDFGraph._from_turtle_str(
         """
@@ -468,8 +500,6 @@ def test_atomizer_extra_excluded_namespace_prefixes() -> None:
         @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
         @prefix ex: <https://example.org/embed#> .
         @prefix block: <https://blocked.example/vocab#> .
-
-        ex: a owl:Ontology .
 
         block:Hidden a owl:Class ; rdfs:label "Should not focalize" .
         ex:Visible a owl:Class ; rdfs:label "Should focalize" .

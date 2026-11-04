@@ -63,6 +63,7 @@ def prefix_lookup_for_ingest() -> dict[str, str]:
 
 PROV = Namespace("http://www.w3.org/ns/prov#")
 SCHEMA = Namespace("https://schema.org/")
+VANN = Namespace("http://purl.org/vocab/vann/")
 FOAF = Namespace("http://xmlns.com/foaf/0.1/")
 DCTERMS = Namespace("http://purl.org/dc/terms/")
 
@@ -72,34 +73,16 @@ DCTERMS = Namespace("http://purl.org/dc/terms/")
 #: target.
 ONTOCAST = Namespace(f"{DEFAULT_DOMAIN}/ontocast#")
 
-#: Classes and predicates the pipeline itself mints on provenance/chunk nodes.
-#: Scaffolding, not domain vocabulary: the non-catalog-vocabulary check must not
-#: report them as terms the renderer improvised, because no catalog will ever
-#: supply them. Classes are here as well as predicates because a type is
-#: recorded against its object IRI, so a namespace guard on the predicate
-#: (``rdf:type``) never sees them.
-PROVENANCE_METADATA_TERMS: frozenset[URIRef] = frozenset(
-    {
-        PROV.Entity,
-        PROV.generatedAtTime,
-        PROV.wasDerivedFrom,
-        SCHEMA.Text,
-        SCHEMA.position,
-        SCHEMA.identifier,
-        SCHEMA.articleSection,
-        ONTOCAST.sectionLabelSource,
-        ONTOCAST.sectionLabelConfidence,
-    }
-)
-
 #: Classes and predicates the pipeline mints on the document node itself
-#: (``apply_document_metadata_provenance``). Same exemption class as
-#: :data:`PROVENANCE_METADATA_TERMS`: scaffolding the pipeline writes, not
-#: vocabulary the renderer was offered and then invented. Read from here
-#: rather than an allow-list of IRIs so the finding cannot go stale when the
-#: document node's shape changes.
+#: (``apply_document_metadata_provenance``): metadata the pipeline writes, not
+#: vocabulary the renderer was offered and then invented, so the
+#: non-catalog-vocabulary check does not report them *on the document node*.
+#: Classes are here as well as predicates because a type is recorded against
+#: its object IRI. Read from here rather than an allow-list of IRIs so the
+#: finding cannot go stale when the document node's shape changes.
 DOCUMENT_METADATA_TERMS: frozenset[URIRef] = frozenset(
     {
+        PROV.Entity,
         FOAF.Document,
         DCTERMS.title,
         DCTERMS.issued,
