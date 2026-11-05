@@ -84,10 +84,10 @@ dev = [
   "ruff>=0.11.2",
   "ty>=0.0.14"
 ]
-# `documents` is the docling-core layer needed to *represent* and chunk a
-# converted document; `doc-processing` adds the converters that produce one
-# from a PDF. Chunking additionally downloads a HuggingFace tokenizer at
-# runtime, so a base install cannot chunk -- use run_unit_pipeline instead.
+# `documents` is the docling-core layer needed to represent a converted
+# document; `doc-processing` adds the converters that produce one from a PDF.
+# Chunking needs no tokenizer: it splits by size, or by sentence embeddings with
+# the `semantic-chunking` extra.
 doc-processing = [
   "docling>=2.57.0",
   "easyocr>=1.7.2",
@@ -104,7 +104,7 @@ docs = [
   "properdocs>=1.6.7"
 ]
 documents = [
-  "docling-core[chunking]>=2.57.0,<3"
+  "docling-core>=2.57.0,<3"
 ]
 google = [
   "langchain-google-genai>=4.0,<5"

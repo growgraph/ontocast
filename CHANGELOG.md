@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - At the `heuristic` and `llm` levels, a section-like heading no pattern or keyword names takes its nearest content label by embedding (the chunker's model), as a weak vote, when that label is close and clearly ahead of the next; numbered subsections inherit it weakly. Source `heading_embedding`.
 - Coreference resolution (`Resolve Coreference` node, `AGG_LLM_COREFERENCE`, on by default): after merging, one LLM call per document of two or more units decides the entity pairs the symbolic tiers cannot settle; a verdict merges like a shared key or vetoes, and every guard still applies. Pairs per call: `AGG_LLM_COREFERENCE_MAX_PAIRS`; counters `facts_coreference_*`, phase `facts_coreference`.
+- Tables of contents and lists of figures or tables are recognised from their content (lines or two-column table rows ending in ascending page numbers) and routed as non-content, reason `contents_list`.
 - Every content unit records why it was routed (`route_reason`). The run manifest's `selection` block adds `route_histogram` (units and characters per route and reason) and, under `target_sections`, the characters it removed and how many were unlabeled. `ontocast sections` shows each unit's route and reason.
 
 ### Changed
@@ -28,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A unit's section label is decided from every step's vote: strong evidence beats weak, and between equals the heading's. Acknowledgements or a reference list recognised from the content relabel a part whose heading label was weak. A numbered heading inside a section with a strong label inherits it as strong, so `exclude_sections` reaches it; the aggressive content tier's guesses are weak.
 - Content units carry `section_label_strength` (`strong`/`weak`) and `section_label_evidence` in place of `section_label_confidence`; the provenance graph carries `ontocast:sectionLabelStrength` in place of `ontocast:sectionLabelConfidence`. The run manifest's `selection` adds `label_strength_chars`, and `ontocast sections` shows strength and every step's vote. `resolve_heading_label` returns `(label, source)` and `match_heading_keywords` the label.
 - With `CHUNK_SECTION_CLASSIFIER=llm` the model labels the whole outline in one call (each headed section once, unheaded text part by part), shown every label's `description`; its vote is weak and decides where no heading word or content spoke, overriding only the embedding vote. `CHUNK_SECTION_LLM_BATCH_SIZE` now counts outline regions per call, and a failed call no longer falls back to one call per segment.
+- The `standard` schema's `normative_references` is a citations-class label. A reference run cut out of a unit keeps the unit's label when that is a citations-class label.
 - Section schemas require a `description` on every label and reject unknown keys; the unused `order` and `ordered` fields are removed.
 
 - An ontology's namespace is where its terms live, read from the file at adoption (`vann:preferredNamespaceUri` when terms live there, else the namespace with the most described terms) and stored in its header, instead of `<iri>#`. Ontologies whose terms sit under `<iri>/` (OM-2) or elsewhere (PROV-O) get the right prefix in prompts.
@@ -41,11 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The `default_exclude` field of section schemas (replaced by `route_class`).
 - `CHUNK_SEGMENTER` and docling's HybridChunker segmentation: units are always cut at section boundaries of the markdown export. The `span_overlap` section-label source goes with it.
+- The `documents` extra no longer installs `docling-core[chunking]` (`transformers`, `semchunk`, `tree-sitter`), which only the HybridChunker used. Code that imports `docling_core.transforms.chunker` must install it itself.
 - Forward filling of section labels, and the `forward_fill` label source.
 
 ### Fixed
 
 - Sections were dropped whole when they mentioned references: headings such as "Comparison with literature references", descriptive sections after a References heading, literature-comparison tables with a DOI column, and units whose prose ended in a reference list.
+- More reference styles are recognised as cited works: author names spelled out before the year, bare-number and bracketed-label markers (`[RFC3986]`), volume with issue (`17(2), 87-96`), `year;volume` and proceedings venues (`In Proceedings`, `pages N-M`), and web sources. An entry split over several paragraphs counts as one, and percent signs or digits inside links and DOIs no longer read as a measurement.
 - Keyword-matched headings such as "Funding Mechanisms" or "Supporting Information" no longer drop their section through the default exclusions.
 - The home-ontology excerpt samples only units routed to extraction, never a reference list or an author block.
 - LLM section classification judged a segment by the first heading anywhere in it; it now sees each section by its own heading.

@@ -713,30 +713,35 @@ def _trim_citation_runs(
 ) -> list[PreparedChunk]:
     """Cut citation runs at a unit's start or end into units of their own.
 
-    The cut-out run is labelled with the schema's citations-class label, by the
-    content-block tier, as strong evidence of its own; the rest of the unit
-    keeps its label. A unit that is all citations is left whole: routing reads
-    its content directly.
+    The cut-out run is labelled, by the content-block tier and as strong
+    evidence of its own, with the unit's label when that is a citations-class
+    label, else with the schema's first citations-class label; the rest of the
+    unit keeps its label. A unit that is all citations is left whole: routing
+    reads its content directly.
     """
     citation_labels = labels_of_class(schema, RouteClass.CITATIONS) if schema else []
-    citation_label = citation_labels[0] if citation_labels else None
-    run_evidence = (
-        (
-            LabelEvidence(
-                label=citation_label,
-                source=SectionLabelSource.CONTENT_BLOCK,
-                strength=LabelStrength.STRONG,
-            ),
-        )
-        if citation_label is not None
-        else ()
-    )
     trimmed: list[PreparedChunk] = []
     for chunk in chunks:
         pieces = trim_citation_runs(chunk.text, block_kinds)
         if len(pieces) == 1:
             trimmed.append(chunk)
             continue
+        citation_label = (
+            chunk.section_label
+            if chunk.section_label in citation_labels
+            else (citation_labels[0] if citation_labels else None)
+        )
+        run_evidence = (
+            (
+                LabelEvidence(
+                    label=citation_label,
+                    source=SectionLabelSource.CONTENT_BLOCK,
+                    strength=LabelStrength.STRONG,
+                ),
+            )
+            if citation_label is not None
+            else ()
+        )
         for piece, is_run in pieces:
             if not is_run:
                 trimmed.append(replace(chunk, text=piece))

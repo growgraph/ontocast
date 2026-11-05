@@ -38,6 +38,7 @@ labels:
     -   field of application
 -   id: normative_references
     description: 'Documents indispensable for applying this one.'
+    route_class: citations
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?normative\s+references\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?informative\s+references\s*$'

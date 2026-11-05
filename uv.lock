@@ -2826,7 +2826,7 @@ dependencies = [
 all = [
     { name = "click" },
     { name = "docling" },
-    { name = "docling-core", extra = ["chunking"] },
+    { name = "docling-core" },
     { name = "duckduckgo-search" },
     { name = "easyocr" },
     { name = "fastapi" },
@@ -2862,7 +2862,7 @@ dev = [
 ]
 doc-processing = [
     { name = "docling" },
-    { name = "docling-core", extra = ["chunking"] },
+    { name = "docling-core" },
     { name = "easyocr" },
     { name = "sentence-transformers" },
 ]
@@ -2876,7 +2876,7 @@ docs = [
     { name = "properdocs" },
 ]
 documents = [
-    { name = "docling-core", extra = ["chunking"] },
+    { name = "docling-core" },
 ]
 google = [
     { name = "langchain-google-genai" },
@@ -2909,7 +2909,7 @@ semantic-chunking = [
 ]
 server = [
     { name = "click" },
-    { name = "docling-core", extra = ["chunking"] },
+    { name = "docling-core" },
     { name = "fastapi" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
@@ -2932,7 +2932,7 @@ requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4.4.0" },
     { name = "click", marker = "extra == 'server'", specifier = ">=8.1.8,<9" },
     { name = "docling", marker = "extra == 'doc-processing'", specifier = ">=2.57.0" },
-    { name = "docling-core", extras = ["chunking"], marker = "extra == 'documents'", specifier = ">=2.57.0,<3" },
+    { name = "docling-core", marker = "extra == 'documents'", specifier = ">=2.57.0,<3" },
     { name = "duckduckgo-search", marker = "extra == 'web-search'", specifier = ">=8.1.1" },
     { name = "easyocr", marker = "extra == 'doc-processing'", specifier = ">=1.7.2" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115.0,<1" },

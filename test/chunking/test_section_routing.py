@@ -546,3 +546,43 @@ def test_unit_route_values_are_stable_wire_names() -> None:
         "non_content",
         "skip",
     }
+
+
+def test_normative_references_are_a_citations_section() -> None:
+    standard = load_section_label_schema("standard")
+    chunk = _chunk(
+        _REFERENCE_LIST, "normative_references", SectionLabelSource.HEADING_PATTERN
+    )
+    assert _route(chunk, schema=standard) == (UnitRoute.SKIP, RouteReason.CITATION_LIST)
+    preamble = "The following documents are referred to in this text.\n\n"
+    labelled = _chunk(
+        preamble + "\n".join(_REFERENCE_LIST.splitlines()[:4]) + "\n\n" + _PROSE,
+        "normative_references",
+        SectionLabelSource.HEADING_PATTERN,
+    )
+    assert _route(labelled, schema=standard) == (
+        UnitRoute.SKIP,
+        RouteReason.CITATION_LABEL,
+    )
+
+
+def test_a_trimmed_run_keeps_its_units_citations_label() -> None:
+    from ontocast.tool.chunk.prepare import _trim_citation_runs
+
+    standard = load_section_label_schema("standard")
+    unit = _chunk(
+        _PROSE + "\n\n" + _REFERENCE_LIST,
+        "normative_references",
+        SectionLabelSource.HEADING_PATTERN,
+    )
+    other = _chunk(
+        _PROSE + "\n\n" + _REFERENCE_LIST, "scope", SectionLabelSource.HEADING_PATTERN
+    )
+    kept, run = _trim_citation_runs([unit], standard)
+    assert (kept.section_label, run.section_label) == (
+        "normative_references",
+        "normative_references",
+    )
+    _, other_run = _trim_citation_runs([other], standard)
+    assert other_run.section_label == "normative_references"
+    assert other_run.section_label_source is SectionLabelSource.CONTENT_BLOCK

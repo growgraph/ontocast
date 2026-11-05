@@ -1,8 +1,9 @@
 """Reference-list detection at block level, and trimming of citation runs.
 
 A unit is split into blocks (:func:`ontocast.tool.chunk.structure.split_blocks`)
-and each text or footnote block is tested as one cited work; captions,
-formulas, code, pictures and table rows never are. Units are judged by the share of their blocks that are citation entries,
+and each text or footnote block is tested as one cited work, or as part of one
+when an entry runs over several blocks; captions, formulas, code, pictures and
+table rows never are. Units are judged by the share of their blocks that are citation entries,
 not by counting citation tokens over the whole unit, so a table that cites its
 sources or a discussion that enumerates prior studies is not a reference list.
 
@@ -59,6 +60,11 @@ _COUNTED_KINDS = _ENTRY_KINDS | {BlockKind.CAPTION, BlockKind.FORMULA, BlockKind
 #: Blocks a citation run passes over: they title or decorate the list.
 _RUN_TRANSPARENT_KINDS = frozenset({BlockKind.HEADING, BlockKind.PICTURE})
 
+# An entry's own marker: "[12]", "(12)", "12.", "12)", a bracketed label
+# ("[RFC3986]"), or a bare number before a capital ("17 Y. Hamada").
+_MARKER = re.compile(
+    r"^(?:\[[^\]\s]{1,40}\]|\(\d{1,4}\)|\d{1,4}[.)]|\d{1,4}(?=\s+[A-Z]))\s+(?=\S)"
+)
 # "Smith, J." / "Smith J" / "Smith, J. A." at the start of an entry.
 _AUTHOR_SURNAME_FIRST = re.compile(
     r"^[A-Z][\w'’-]+,?\s+(?:[A-Z]\.?\s?-?){1,3}(?:[,;&]|and\b|\s)"
@@ -66,6 +72,15 @@ _AUTHOR_SURNAME_FIRST = re.compile(
 # "J. Smith" / "J.-P. Smith" at the start of an entry.
 _AUTHOR_INITIALS_FIRST = re.compile(r"^(?:[A-Z]\.\s?-?){1,3}\s*[A-Z][\w'’-]+")
 _ET_AL = re.compile(r"\bet\s+al\.?", re.IGNORECASE)
+# One word of an author list: a capitalised name or initials, a connective, or
+# a lower-case surname particle.
+_NAME_WORD = re.compile(
+    r"^(?:[A-Z][\w'’.-]*|(?:[A-Z]\.-?)+|and|&|et|al\.?|Eds?\.?"
+    r"|van|von|de|der|den|da|di|du|la|le)$"
+)
+_NAME_SEPARATOR = re.compile(r"[\s,;]+")
+# The longest author list read before the year ("Ana Lopez, Ben Okafor, ... 2018.").
+_MAX_AUTHOR_LIST_CHARS = 300
 
 _YEAR = re.compile(r"(?<!\d)(?:19|20)\d{2}[a-z]?(?!\d)")
 
@@ -74,20 +89,68 @@ _VENUE_TOKEN = re.compile(
     r"\bvol\.\s*\d|\bpp?\.\s*\d|\bno\.\s*\d|\bdoi\b|\barXiv\b|\bISBN\b|\bProc\.",
     re.IGNORECASE,
 )
-# Volume and pages: "14, 193-198", "119, 3036", "30: 1806702".
-_VOLUME_PAGES = re.compile(r"\b\d{1,4}\s*[,:]\s*\d{1,7}(?:\s*[–-]\s*\d{1,7})?\b")
+# Case matters here: "In EMNLP" names a venue, "in prior work" does not.
+_VENUE_PHRASE = re.compile(
+    r"(?:^|[.,]\s)In:?\s+(?:Proc\b|Proceedings\b|[A-Z]{2,}(?:\s+\d{4})?\.)"
+    r"|\b[Pp]ages\s+\d+\s*[–-]\s*\d"
+    r"|\bURL\s+https?://"
+    r"|\bAvailable\s+(?:online|from|at)\b"
+    r"|\bRFC\s?\d{3,5}\b"
+)
+# Volume and pages, with an optional issue: "14, 193-198", "119, 3036",
+# "30: 1806702", "17(2), 87-96", "6(Nov):1817-1853", "140, A1133".
+_VOLUME_PAGES = re.compile(
+    r"\b\d{1,4}\s*(?:\([^()]{1,12}\))?\s*[,:]\s*[A-Z]?\d{1,7}"
+    r"(?:\s*[–-]\s*[A-Z]?\d{1,7})?\b"
+)
+# Year, volume and pages: "2013;310(20):2191-4".
+_YEAR_VOLUME = re.compile(r"(?<!\d)(?:19|20)\d{2}\s*;\s*\d")
 # Two abbreviated title words in a row: "Phys. Rev.", "Nature Mater.".
 _ABBREVIATED_VENUE = re.compile(r"\b[A-Z][a-z]{1,8}\.\s+[A-Z][a-z]{1,8}\.")
+# Link targets and addresses: their digits and percent signs are no measurement.
+_ADDRESS = re.compile(
+    r"\]\([^)]*\)|<[^>\s]+>|&lt;\S+?&gt;|\bhttps?://\S+|\bwww\.\S+|\b10\.\d{4,9}/\S+"
+)
+
+
+def _body(text: str) -> str:
+    return " ".join(LIST_BULLET.sub("", text).split())
+
+
+def _author_list_before_year(body: str) -> bool:
+    """Whether everything before the first year is a list of names."""
+    year = _YEAR.search(body)
+    if year is None or year.start() > _MAX_AUTHOR_LIST_CHARS:
+        return False
+    words = [
+        word
+        for word in _NAME_SEPARATOR.split(body[: year.start()].strip(" .,;:("))
+        if word
+    ]
+    return len(words) >= 2 and all(_NAME_WORD.match(word) for word in words)
+
+
+def _opens_entry(body: str) -> bool:
+    """A citation marker or an author shape at the start of the block."""
+    marker = _MARKER.match(body) or ENTRY_MARKER.match(body)
+    if marker is not None:
+        return True
+    return bool(
+        _AUTHOR_SURNAME_FIRST.match(body)
+        or _AUTHOR_INITIALS_FIRST.match(body)
+        or _author_list_before_year(body)
+        or _ET_AL.search(body[:160])
+    )
 
 
 def is_citation_entry(text: str) -> bool:
     """Whether one block reads as a single cited work.
 
     It opens with a citation marker or an author shape, carries a publication
-    year and a venue cue (DOI, venue token, volume and pages, or an abbreviated
-    venue), has the length of one entry, and states no measurement. The last
-    test separates "Smith et al. (2019) stored films at 85 °C ..." from a
-    reference.
+    year and a venue cue (DOI, venue token or phrase, volume and pages, or an
+    abbreviated venue), has the length of one entry, and states no measurement
+    outside its links and DOIs. The last test separates "Smith et al. (2019)
+    stored films at 85 °C ..." from a reference.
 
     Args:
         text: One block.
@@ -95,30 +158,64 @@ def is_citation_entry(text: str) -> bool:
     Returns:
         True when the block is a citation entry.
     """
-    body = " ".join(LIST_BULLET.sub("", text).split())
+    body = _body(text)
     if not _MIN_ENTRY_CHARS <= len(body) <= _MAX_ENTRY_CHARS:
         return False
-    opens_as_entry = bool(
-        ENTRY_MARKER.match(body)
-        or _AUTHOR_SURNAME_FIRST.match(body)
-        or _AUTHOR_INITIALS_FIRST.match(body)
-        or _ET_AL.search(body[:160])
-    )
-    if not opens_as_entry or not _YEAR.search(body):
+    if not _opens_entry(body) or not _YEAR.search(body):
         return False
     has_venue = bool(
         _DOI.search(body)
         or _VENUE_TOKEN.search(body)
+        or _VENUE_PHRASE.search(body)
         or _VOLUME_PAGES.search(body)
+        or _YEAR_VOLUME.search(body)
         or _ABBREVIATED_VENUE.search(body)
     )
-    return has_venue and not states_measurement(body)
+    return has_venue and not states_measurement(_ADDRESS.sub(" ", body))
 
 
 def _entry_flags(blocks: list[Block]) -> list[bool]:
-    return [
+    """Per block, whether it is a citation entry or part of one.
+
+    An entry runs from one opener to the next: a page break or a wrapped line
+    can leave its year or venue in the following block. A block that opens an
+    entry but is none on its own is joined with the blocks after it that open
+    nothing, and all of them count when the joined text is an entry.
+    """
+    flags = [
         block.kind in _ENTRY_KINDS and is_citation_entry(block.text) for block in blocks
     ]
+
+    def continues(index: int) -> bool:
+        block = blocks[index]
+        return (
+            block.kind in _ENTRY_KINDS
+            and not flags[index]
+            and not _opens_entry(_body(block.text))
+        )
+
+    start = 0
+    while start < len(blocks):
+        block = blocks[start]
+        if (
+            flags[start]
+            or block.kind not in _ENTRY_KINDS
+            or not _opens_entry(_body(block.text))
+        ):
+            start += 1
+            continue
+        joined = block.text
+        end = start + 1
+        while end < len(blocks) and continues(end):
+            joined = f"{joined} {blocks[end].text}"
+            end += 1
+            if len(_body(joined)) > _MAX_ENTRY_CHARS:
+                break
+            if is_citation_entry(joined):
+                flags[start:end] = [True] * (end - start)
+                break
+        start = end
+    return flags
 
 
 def citation_counts(text: str, kinds: BlockKinds | None = None) -> tuple[int, int]:

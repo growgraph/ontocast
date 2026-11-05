@@ -20,11 +20,13 @@ Rules, first match wins:
 4. with the schema's default exclusions in force (no ``exclude_sections``, a
    schema that was chosen rather than fallen back to), a strong
    boilerplate-class label on text that states no measurement is skipped;
-5. front/back matter -- a strong non-content-class label, or a heading the
+5. a table of contents or a list of figures or tables, recognised from the
+   content alone, takes the non-content route;
+6. front/back matter -- a strong non-content-class label, or a heading the
    schema names as front/back matter, on text that states no measurement, or
    identifier and licence boilerplate recognised from the content alone --
    takes the non-content route. A fallback schema lends no vocabulary;
-6. everything else is extracted, with a reason saying why a label that might
+7. everything else is extracted, with a reason saying why a label that might
    have dropped it did not.
 """
 
@@ -44,6 +46,7 @@ from ontocast.tool.chunk.bibliography import (
     citation_share,
     looks_like_bibliography,
 )
+from ontocast.tool.chunk.contents import looks_like_contents_list
 from ontocast.tool.chunk.non_content import is_non_content_unit, states_measurement
 from ontocast.tool.chunk.structure import BlockKinds
 
@@ -142,6 +145,14 @@ def route_unit(
             and not states_measurement(text)
         ):
             return RoutingDecision(UnitRoute.SKIP, RouteReason.BOILERPLATE)
+
+    if looks_like_contents_list(text):
+        route = (
+            UnitRoute.SKIP
+            if config.non_content_mode == "skip"
+            else UnitRoute.NON_CONTENT
+        )
+        return RoutingDecision(route, RouteReason.CONTENTS_LIST)
 
     vocabulary = None if schema_fallback else schema
     strong_non_content = (

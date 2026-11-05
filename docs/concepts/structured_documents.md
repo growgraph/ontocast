@@ -34,7 +34,7 @@ shown. Every document is read against one schema:
 | `clinical` | Trial protocols and study reports | | `back_matter` | `references` |
 | `legal` | Contracts and other agreements between parties | | | |
 | `patent` | Patents and patent applications | `citations` | | |
-| `standard` | Specifications and standards for implementers | `acknowledgements` | | `references` |
+| `standard` | Specifications and standards for implementers | `acknowledgements` | | `normative_references`, `references` |
 | `manual` | User guides, installation guides, runbooks | | | |
 | `fiction` | Novels and short fiction | `acknowledgements` | | |
 | `news` | News articles and press releases | `boilerplate`, `contact` | | |
@@ -213,16 +213,22 @@ over text that reads like thanks.
 | A reference list, by its content (nearly every paragraph is one cited work), or under a strong reference-list label its content agrees with | [`CHUNK_BIBLIOGRAPHY_MODE`](../reference/configuration/chunking.md#chunk_bibliography_mode): `skip` (default) drops it; `citations_only` extracts bibliographic records (works, authors, venues), never domain facts; `domain_facts` treats it like any other unit |
 | A strong boilerplate label on text that states no measurement, when `exclude_sections` is unset and the schema was not a fallback | Dropped |
 | A strong label `exclude_sections` names | Dropped |
+| A table of contents or a list of figures or tables, by its content (lines or two-column table rows ending in ascending page numbers) | [`CHUNK_NON_CONTENT_MODE`](../reference/configuration/chunking.md#chunk_non_content_mode): `extract` (default) keeps it, marked as non-content; `skip` drops it |
 | Front or back matter that states no measurement: a strong `non_content`-class label, or a leading heading the schema names as front or back matter or boilerplate; or, under any schema, text made mostly of identifiers (emails, ORCIDs) or a licence notice | [`CHUNK_NON_CONTENT_MODE`](../reference/configuration/chunking.md#chunk_non_content_mode): `extract` (default) keeps it, marked as non-content; `skip` drops it |
 | Shorter than [`CHUNK_MIN_UNIT_CHARS`](../reference/configuration/chunking.md#chunk_min_unit_chars) | Dropped |
 | Anything else | Extracted |
 
 A reference list at the start or end of a unit, such as an unheaded
 bibliography after a conclusion, is first cut into a unit of its own, so the
-prose around it is kept. Table rows never count as cited works: a table that
-cites its sources holds data. Nor do captions, formulas and code, which a
-converted document marks as such, or an entry that states a measurement,
+prose around it is kept. A cited work opens with a marker (`[12]`, `12.`,
+`[RFC3986]`) or its authors, and carries a year and a venue; an entry that a
+page break or line wrap split over several paragraphs counts as one. Table
+rows never count as cited works: a table that cites its sources holds data.
+Nor do captions, formulas and code, which a converted document marks as
+such, or an entry that states a measurement outside its links and DOIs,
 which is how a discussion of prior studies differs from a reference list.
+A table whose header names its columns is data too, never a table of
+contents.
 
 Every unit records the reason for its route (`route_reason`), every route
 other than plain extraction is logged with the unit's size, label and the step

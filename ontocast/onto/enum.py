@@ -68,6 +68,8 @@ class RouteReason(StrEnum):
     BOILERPLATE = "boilerplate"
     #: Front/back matter recognised from the content.
     NON_CONTENT = "non_content"
+    #: The content alone is a table of contents or a list of figures or tables.
+    CONTENTS_LIST = "contents_list"
     EXCLUDED_BY_REQUEST = "excluded_by_request"
     UNDERSIZED = "undersized"
 
