@@ -570,17 +570,19 @@ class ChunkConfig(BaseSettings):
             "exclusions are off; reference lists and front/back matter are "
             "still recognised from content); 'heading' = document outline plus heading "
             "pattern/keyword matching; 'heuristic' (default) = heading plus "
-            "a content-density vote on every part, which also labels regions "
-            "with no usable heading; 'llm' = heuristic plus a batched LLM pass "
-            "over whatever "
-            "remains unlabeled. Only 'llm' makes LLM calls during chunking."
+            "an embedding vote on section-like headings no pattern or keyword "
+            "names (when the chunker's model is installed) and a "
+            "content-density vote on every part, which also labels regions "
+            "with no usable heading; 'llm' = heuristic plus one LLM call that "
+            "labels the whole outline, as a weak vote. Only 'llm' makes LLM "
+            "calls during chunking."
         ),
     )
     section_tag_min_chars: int = Field(
         default=80,
         description=(
-            "Min stripped length for LLM section tagging; smaller segments merge "
-            "into neighbors before tagging"
+            "Min stripped length of a segment; smaller segments merge into "
+            "neighbours before they are typed"
         ),
     )
     section_text_headings: bool = Field(
@@ -643,10 +645,11 @@ class ChunkConfig(BaseSettings):
     )
     section_llm_batch_size: int = Field(
         default=40,
+        ge=1,
         description=(
-            "Excerpts per LLM call when CHUNK_SECTION_CLASSIFIER=llm. One call "
-            "covers a whole document's residual instead of one call per chunk; "
-            "0 restores per-chunk calls."
+            "Outline regions per LLM call when CHUNK_SECTION_CLASSIFIER=llm: "
+            "a region is a headed section or a part of unheaded text. A longer "
+            "outline is sent in consecutive windows of this size."
         ),
     )
     section_filter_on_empty: Literal["warn", "error"] = Field(

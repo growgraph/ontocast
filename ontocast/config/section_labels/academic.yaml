@@ -1,14 +1,13 @@
-schema_version: "1.2"
+schema_version: "1.3"
 id: academic
 description: IMRaD and common paper or report section headings
 document_profile: >-
     A scholarly article, conference paper, thesis or literature review reporting
     original research carried out by its authors -- experiments, measurements or
     analysis -- and written for a research audience.
-ordered: true
 labels:
 -   id: abstract
-    order: 10
+    description: 'A one-paragraph summary of the whole work, before the body: question, approach, main results.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?abstract[.:;—\-]*\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?abstract\s*[:.—\-]\s*$'
@@ -19,7 +18,7 @@ labels:
     -   executive summary
     -   synopsis
 -   id: introduction
-    order: 20
+    description: 'Opening framing: the problem, why it matters and what the work contributes.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?introduction\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:overview|preamble|foreword|preface|motivation)\s*$'
@@ -30,7 +29,7 @@ labels:
     -   foreword
     -   preface
 -   id: related_work
-    order: 25
+    description: 'A survey of earlier work by others, compared with this one.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?related\s+work\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:related\s+(?:literature|approaches?|research|studies)|prior\s+(?:work|art)|literature\s+(?:review|survey)|state\s+of\s+the\s+art|survey)\s*$'
@@ -42,7 +41,7 @@ labels:
     -   literature review
     -   state of the art
 -   id: background
-    order: 30
+    description: 'Concepts, theory or context a reader needs before the method.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?background\s*$'
     keywords:
@@ -50,7 +49,7 @@ labels:
     -   preliminaries
     -   theory
 -   id: methods
-    order: 40
+    description: 'How the work was done: materials, procedures, setups, models, parameters.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?methods?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?methodology\s*$'
@@ -75,7 +74,7 @@ labels:
     -   simulation details
     -   computational details
 -   id: results
-    order: 50
+    description: 'What was observed or measured, reported with figures, tables and values.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?results?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:experimental\s+)?(?:results?|findings?|evaluation|experiments?|ablation(?:\s+stud(?:y|ies))?|outcomes?|performance|benchmarks?)\s*$'
@@ -89,7 +88,7 @@ labels:
     -   benchmarks
     -   measurements
 -   id: discussion
-    order: 60
+    description: 'Interpretation of the results: meaning, comparison, mechanisms, implications.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?discussion\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:analysis|interpretation|observations?)\s*$'
@@ -98,7 +97,7 @@ labels:
     -   interpretation
     -   implications
 -   id: conclusion
-    order: 70
+    description: 'The closing summary of findings and their significance.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?conclusions?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:conclusions?|concluding\s+remarks?|summary|final\s+remarks?|final\s+thoughts|takeaways?|wrap[\s-]?up)\s*$'
@@ -109,7 +108,7 @@ labels:
     -   summary
     -   takeaways
 -   id: future_work
-    order: 80
+    description: 'Directions the authors propose for later work.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?future\s+work\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:future\s+(?:work|directions?|research)|next\s+steps?|roadmap|outlook)\s*$'
@@ -121,15 +120,15 @@ labels:
     -   outlook
     -   perspectives
 -   id: limitations
-    order: 85
+    description: 'Acknowledged weaknesses, threats to validity or scope limits of the work.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?limitations?\s*$'
     keywords:
     -   limitations
     -   threats to validity
 -   id: acknowledgements
+    description: 'Thanks to people, funders and facilities; funding and grant statements.'
     route_class: boilerplate
-    order: 90
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?acknowledg(?:e?ments?|ments?)\s*$'
     keywords:
@@ -148,6 +147,7 @@ labels:
     -   declaration of competing interest
     -   declarations of interest
 -   id: back_matter
+    description: 'Administrative statements: author contributions, competing interests, data availability, ethics, affiliations.'
     route_class: non_content
     heading_patterns:
     -   '^authors?\s*$'
@@ -182,7 +182,7 @@ labels:
     -   ethics declarations
     -   ethics statement
 -   id: data
-    order: 95
+    description: 'A description of the datasets used or released: sources, composition, collection.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?data(?:set|sets)?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:corpus|data\s+(?:collection|description))\s*$'
@@ -193,7 +193,7 @@ labels:
     -   datasets
     -   corpus
 -   id: appendix
-    order: 100
+    description: 'Supplementary material after the main text: derivations, extra figures, tables, supporting information.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?appendi(?:x|ces)\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:supplementary\s+material|supplement)\s*$'
@@ -206,9 +206,9 @@ labels:
     -   supplementary note
     -   supplementary notes
 -   id: references
+    description: 'The list of cited works, one bibliographic entry per item.'
     route_class: citations
     terminal: true
-    order: 110
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?references\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:bibliography|works\s+cited)\s*$'

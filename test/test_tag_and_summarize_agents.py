@@ -1,5 +1,6 @@
 """Unit tests for chunk prepare (section tagging) and summarize_chunks agents."""
 
+import json
 import logging
 from types import SimpleNamespace
 from typing import Literal, cast
@@ -14,7 +15,6 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState
 from ontocast.tool.chunk.chunker import ChunkerTool
-from ontocast.tool.chunk.section_llm import ChunkSectionClassification
 from ontocast.toolbox import ToolBox
 from test.docling_test_helpers import doc_from_markdown_lines
 
@@ -64,11 +64,6 @@ def _build_tools(
     )
 
 
-def _chunk_label_json(label: str | None) -> str:
-    payload = ChunkSectionClassification(label=label)
-    return payload.model_dump_json()
-
-
 def _content_unit(
     *,
     text: str = "Long text with facts.",
@@ -115,14 +110,20 @@ async def test_chunk_prepare_fails_without_docling_doc() -> None:
     assert result.status == Status.FAILED
 
 
+def _outline_labels(*labels: str | None) -> SimpleNamespace:
+    payload = {"labels": [{"index": i, "label": x} for i, x in enumerate(labels)]}
+    return SimpleNamespace(content=json.dumps(payload))
+
+
 @pytest.mark.anyio
-async def test_chunk_prepare_regex_labels_without_llm() -> None:
+async def test_chunk_prepare_model_vote_never_overrides_a_pattern_label() -> None:
+    """The model labels the whole outline in one call; its vote is weak."""
     llm_calls = 0
 
     async def llm(_prompt):
         nonlocal llm_calls
         llm_calls += 1
-        raise AssertionError("LLM should not be called")
+        return _outline_labels("methods", "methods", "methods", "methods")
 
     state = AgentState(
         docling_doc=doc_from_markdown_lines(_SAMPLE_DOC),
@@ -132,7 +133,7 @@ async def test_chunk_prepare_regex_labels_without_llm() -> None:
     assert result.status == Status.SUCCESS
     assert result.content_units
     assert all(unit.section_label == "results" for unit in result.content_units)
-    assert llm_calls == 0
+    assert llm_calls == 1
 
 
 @pytest.mark.slow
@@ -152,7 +153,9 @@ async def test_chunk_prepare_keyword_tier_labels_non_regex_chunk() -> None:
         ),
         target_sections=["results"],
     )
-    result = await chunk_text(state, _build_tools(llm=llm))
+    result = await chunk_text(
+        state, _build_tools(llm=llm, section_classifier="heuristic")
+    )
     assert result.status == Status.SUCCESS
     assert result.content_units
     assert result.content_units[0].section_label == "results"
@@ -161,15 +164,13 @@ async def test_chunk_prepare_keyword_tier_labels_non_regex_chunk() -> None:
 
 @pytest.mark.anyio
 async def test_chunk_prepare_llm_classifies_unnamed_chunk() -> None:
-    """Only headings no deterministic tier can name reach the LLM."""
+    """The model's vote decides a heading no other tier names."""
     llm_calls = 0
 
     async def llm(_prompt):
         nonlocal llm_calls
         llm_calls += 1
-        return SimpleNamespace(
-            content='{"assignments": [{"index": 0, "label": "results"}]}'
-        )
+        return _outline_labels("results")
 
     state = AgentState(
         docling_doc=doc_from_markdown_lines(

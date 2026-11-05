@@ -23,8 +23,9 @@ together with how each was decided and how confident that decision was.
 ## Section schemas
 
 Labels only mean something for a kind of document. A **section schema** is the
-set of labels for one kind, with the headings that identify each label. Every
-document is read against one schema:
+set of labels for one kind, with the headings that identify each label and a
+one-line `description` of what each label's sections do, which the model is
+shown. Every document is read against one schema:
 
 | Schema | Documents | Boilerplate | Front and back matter | Reference lists |
 |---|---|---|---|---|
@@ -84,15 +85,29 @@ it explicitly.
 ## How sections are recognized
 
 [`CHUNK_SECTION_CLASSIFIER`](../reference/configuration/chunking.md#chunk_section_classifier)
-sets how far OntoCast goes to label a section. Each step adds its vote, and
-the model is asked only about parts no other step labeled:
+sets how far OntoCast goes to label a section. Each step adds its vote:
 
 | Value | Steps | LLM calls |
 |---|---|---|
 | `off` | None. Units are not labeled, so section filters and boilerplate exclusions are off; reference lists and front matter are still recognized from their content | None |
 | `heading` | The document's outline; heading patterns and keywords, so `Results and Discussion` and `Experimental Section` are recognized | None |
-| `heuristic` (default) | The above, plus a vote from each part's content, which also labels regions without headings | None |
-| `llm` | The above, plus one batched call over whatever is still unlabeled | About one per document |
+| `heuristic` (default) | The above, plus the nearest label of a heading no pattern or keyword names, and a vote from each part's content, which also labels regions without headings | None |
+| `llm` | The above, plus one call in which the model labels the whole outline | One per document; a long outline is sent in windows of [`CHUNK_SECTION_LLM_BATCH_SIZE`](../reference/configuration/chunking.md#chunk_section_llm_batch_size) |
+
+The nearest-label step compares a section-like heading with each label's name
+and keywords, using the chunker's embedding model (`semantic-chunking` extra;
+without it the step is skipped). It recovers paraphrases and other languages
+(`Closing Thoughts`, `Schlussfolgerung`) and abstains on topical headings
+(`Perovskite Stability`), which are near no label. It names content sections
+only: a heading nearest a boilerplate, back-matter or reference-list label
+(a publisher's `Access` banner) stays unlabeled.
+
+The model is shown each headed section once, by its heading and the start of
+its text, and each part of unheaded text on its own, with every label's
+`description` from the schema. It labels every region. Its vote is weak: it
+decides where no heading word or content spoke, overriding only the
+nearest-label step; where it disagrees with another step, its vote is kept in
+the unit's evidence.
 
 A heading OntoCast does not recognize still ends the section before it, so a
 label never runs on into the next section. Where a document numbers its
@@ -183,9 +198,9 @@ conclusive on its own. A label is strong when it comes from an exact heading
 (`References`, `Acknowledgements`, `Author Contributions`), from a numbered
 heading inside a section with a strong label (`2.1` under `2 Methods`), or
 from the content itself (a reference list, acknowledgements); a keyword inside
-a longer heading (`Funding Mechanisms`), a label a heading takes from the
-section before it by its wording, or one set by the model is weak, and never
-drops a unit.
+a longer heading (`Funding Mechanisms`), a heading's nearest label, a label a
+heading takes from the section before it by its wording, or one set by the
+model is weak, and never drops a unit.
 
 Every step that recognizes something adds its vote to the unit, and the
 strongest vote decides; between equally strong votes the heading wins. So

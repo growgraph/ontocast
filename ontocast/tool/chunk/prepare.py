@@ -35,10 +35,11 @@ from ontocast.tool.chunk.chunker import ChunkerTool
 from ontocast.tool.chunk.outline import markdown_headings
 from ontocast.tool.chunk.routing import RouteReason, UnitRoute, route_unit
 from ontocast.tool.chunk.schema_detect import SchemaDetection, detect_document_schema
-from ontocast.tool.chunk.section_llm import llm_backfill_section_labels
+from ontocast.tool.chunk.section_llm import llm_label_outline, text_excerpt
 from ontocast.tool.chunk.sections import detect_section_spans
 from ontocast.tool.chunk.segment import (
     PrepareSegment,
+    SectionRegion,
     coalesce_small_segments_right,
 )
 from ontocast.tool.chunk.sizing import (
@@ -56,6 +57,7 @@ from ontocast.util.measurement_lexicon import unit_adjacent_numbers
 if TYPE_CHECKING:
     from docling_core.types.doc import DoclingDocument
 
+    from ontocast.tool.chunk.embedding import TextEmbedder
     from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -288,19 +290,24 @@ def _semantic_section_segments(
     """Sections-first segmentation: split at section boundaries, then chunk within.
 
     Chunking inside each section block means no chunk straddles a section
-    boundary and every chunk from a detected section inherits its label
-    deterministically — the LLM classifier only handles unheaded material.
+    boundary and every chunk from a detected section shares its heading's
+    evidence, and its region: the model votes once per headed section.
     Blocks already within the chunk budget are kept whole (the semantic
     splitter needs enough sentences to embed and cluster).
     """
     if not document_text.strip():
         return []
     segments: list[PrepareSegment] = []
-    for span, block_text in _section_blocks(document_text, spans):
+    for index, (span, block_text) in enumerate(_section_blocks(document_text, spans)):
         block_text = block_text.strip()
         if not block_text:
             continue
         headings = _heading_breadcrumb(block_text)
+        region = (
+            SectionRegion(index=index, excerpt=text_excerpt(block_text))
+            if span.heading is not None
+            else None
+        )
         parts = [block_text] if len(block_text) <= max_size else splitter(block_text)
         for part in parts:
             part = part.strip()
@@ -319,6 +326,7 @@ def _semantic_section_segments(
                     if span.label is not None
                     else []
                 ),
+                region=region,
             )
             assign(segment)
             segments.append(segment)
@@ -469,6 +477,17 @@ def _detect_schema(
         min_margin=config.section_schema_detect_min_margin,
         content_min_margin=config.section_schema_detect_content_min_margin,
     )
+
+
+def heading_embedder(splitter: ChunkerTool, config: ChunkConfig) -> TextEmbedder | None:
+    """The embedder for the embedding heading tier, or ``None`` when it is off.
+
+    The tier runs at the ``heuristic`` and ``llm`` levels; it is the
+    chunker's own model, so it is absent wherever semantic chunking is.
+    """
+    if config.section_classifier not in ("heuristic", "llm"):
+        return None
+    return splitter.embed_texts
 
 
 def _add_content_evidence(
@@ -897,6 +916,7 @@ async def prepare_content_units(
         document_text,
         schema,
         include_text_headings=config.section_text_headings,
+        embed=heading_embedder(splitter, config),
     )
 
     segments = await asyncio.to_thread(
@@ -918,17 +938,15 @@ async def prepare_content_units(
             _add_content_evidence, segments, schema, config, block_kinds
         )
     if config.section_classifier == "llm" and tools is not None:
-        await llm_backfill_section_labels(
+        await llm_label_outline(
             segments,
             tools,
             # The resolved schema is threaded, not re-derived: re-resolving from
             # the raw request would ignore a text-based detection and validate
             # LLM labels against a different schema, silently dropping them.
-            schema=schema,
-            section_schema_id=options.section_schema_id,
+            schema,
             document_type_hint=options.document_type_hint,
-            section_tag_min_chars=config.section_tag_min_chars,
-            batch_size=config.section_llm_batch_size,
+            window=config.section_llm_batch_size,
         )
     segments = _attach_bare_headings(segments)
 

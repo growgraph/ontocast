@@ -1,4 +1,4 @@
-schema_version: "1.2"
+schema_version: "1.3"
 id: fiction
 description: Novels, short fiction, and literary works
 document_profile: >-
@@ -7,6 +7,7 @@ document_profile: >-
     factual information.
 labels:
 -   id: front_matter
+    description: 'Material before the story: title page, copyright, contents.'
     heading_patterns:
     -   '^front\s+matter\s*$'
     -   '^half[\s-]?title\s*$'
@@ -17,21 +18,25 @@ labels:
     -   half-title
     -   contents
 -   id: dedication
+    description: 'A short dedication of the work to someone.'
     heading_patterns:
     -   '^dedication\s*$'
     keywords:
     -   dedication
 -   id: epigraph
+    description: 'A quotation set before the text or a chapter.'
     heading_patterns:
     -   '^epigraph\s*$'
     keywords:
     -   epigraph
 -   id: prologue
+    description: 'An opening narrative section before the first chapter.'
     heading_patterns:
     -   '^prologue\s*$'
     keywords:
     -   prologue
 -   id: part
+    description: 'A heading that groups several chapters.'
     heading_patterns:
     -   '^part\s+(?:\d+|[IVXivx]+)\s*$'
     -   '^book\s+(?:\d+|[IVXivx]+)\s*$'
@@ -40,23 +45,27 @@ labels:
     -   book
     -   volume
 -   id: chapter
+    description: 'A chapter of the narrative.'
     heading_patterns:
     -   '^chapter\s+(?:\d+|[IVXivx]+)\s*$'
     -   '^ch(?:apter)?\.?\s*(?:\d+|[IVXivx]+)\s*$'
     keywords:
     -   chapter
 -   id: epilogue
+    description: 'A closing narrative section after the last chapter.'
     heading_patterns:
     -   '^epilogue\s*$'
     keywords:
     -   epilogue
 -   id: afterword
+    description: 'The author''s or an editor''s remarks after the story.'
     heading_patterns:
     -   '^afterword\s*$'
     keywords:
     -   afterword
     -   postscript
 -   id: acknowledgements
+    description: 'The author''s thanks to people and institutions.'
     route_class: boilerplate
     heading_patterns:
     -   '^acknowledg(?:e?ments?|ments?)\s*$'

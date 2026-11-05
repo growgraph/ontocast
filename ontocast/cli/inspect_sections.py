@@ -31,9 +31,11 @@ from ontocast.config import Config
 from ontocast.onto.docling_helpers import json_payload_text, plain_text_to_docling_doc
 from ontocast.tool.cache import Cacher
 from ontocast.tool.chunk.chunker import ChunkerTool
+from ontocast.tool.chunk.embedding import TextEmbedder
 from ontocast.tool.chunk.outline import build_document_outline
 from ontocast.tool.chunk.prepare import (
     PrepareOptions,
+    heading_embedder,
     prepare_content_units,
     resolve_prepare_schema,
 )
@@ -65,9 +67,11 @@ def _load_document(path: pathlib.Path, converter: ConverterTool):
     raise click.ClickException(f"Unsupported input type {suffix!r} for {path}")
 
 
-def _outline_rows(document_text: str, schema, text_headings: bool) -> list[dict]:
+def _outline_rows(
+    document_text: str, schema, text_headings: bool, embed: TextEmbedder | None
+) -> list[dict]:
     outline = build_document_outline(
-        document_text, schema, include_text_headings=text_headings
+        document_text, schema, include_text_headings=text_headings, embed=embed
     )
     return [
         {
@@ -236,7 +240,12 @@ def main(
         prepare_content_units(docling_doc, chunker, chunk_config, options, tools)
     )
 
-    outline = _outline_rows(document_text, schema, chunk_config.section_text_headings)
+    outline = _outline_rows(
+        document_text,
+        schema,
+        chunk_config.section_text_headings,
+        heading_embedder(chunker, chunk_config),
+    )
     chunk_rows = _chunk_rows(prepared.routed)
     labeled = sum(1 for row in chunk_rows if row["label"] is not None)
     dropped_chars: dict[str, int] = {}

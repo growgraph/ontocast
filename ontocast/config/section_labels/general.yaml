@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.2"
 id: general
 description: Memos, internal reports, and mixed Markdown documents
 # Residual cell of the partition, deliberately left without a document_profile:
@@ -7,35 +7,42 @@ description: Memos, internal reports, and mixed Markdown documents
 document_profile: ""
 labels:
 -   id: summary
+    description: 'A brief overview of the whole document''s content and conclusions.'
     heading_patterns:
     -   '^summary\s*$'
     -   '^executive\s+summary\s*$'
     -   '^overview\s*$'
 -   id: background
+    description: 'Context the reader needs: history, situation, motivation.'
     heading_patterns:
     -   '^background\s*$'
     -   '^context\s*$'
 -   id: analysis
+    description: 'The main examination of the subject: findings, evidence, reasoning.'
     heading_patterns:
     -   '^analysis\s*$'
     -   '^findings?\s*$'
     -   '^discussion\s*$'
 -   id: recommendations
+    description: 'Proposed actions or decisions.'
     heading_patterns:
     -   '^recommendations?\s*$'
     -   '^next\s+steps?\s*$'
     -   '^action\s+items?\s*$'
 -   id: appendix
+    description: 'Supplementary material after the main text.'
     heading_patterns:
     -   '^appendi(?:x|ces)\s*$'
     -   '^attachments?\s*$'
 -   id: references
+    description: 'The list of cited works or sources.'
     route_class: citations
     terminal: true
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'
 -   id: unclassified
+    description: 'Text that fits none of the other types.'
     heading_patterns:
     -   '^unclassified\s*$'
     -   '^miscellaneous\s*$'

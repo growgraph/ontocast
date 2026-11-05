@@ -2,18 +2,19 @@
 
 A segment collects one :class:`~ontocast.onto.section_models.LabelEvidence` per
 tier that speaks: its section's heading (shared by every segment of the
-section), its own content, and the model when nothing else spoke. The label is
-the strongest piece of evidence; between equals the heading wins, then the
-content, then the model. Strength is set where the evidence arises and never
+section), its own content, and the model. The label is the strongest piece of
+evidence; between equals the heading's words win, then the content, then the
+model, then a heading's nearest label by embedding. Strength is set where the evidence arises and never
 inferred later:
 
 - strong: an anchored heading pattern (or a heading that is exactly one of a
   label's keywords); a heading the tree places inside a strong section by its
   number or level; a reference list or acknowledgements recognised from the
   content; a citation run cut out by the block classifier;
-- weak: a keyword inside a longer heading; a heading that inherits by its
-  wording alone; front matter recognised by position; the content tier's
-  guesses at methods, results or introduction; the model.
+- weak: a keyword inside a longer heading; a heading named by its nearest
+  label in embedding space; a heading that inherits by its wording alone, or
+  through the tree from a weak parent; front matter recognised by position;
+  the content tier's guesses at methods, results or introduction; the model.
 
 Only a strong label takes part in a drop decision, so an override by strong
 content over a weak heading is what lets a block of thanks under an inherited
@@ -33,8 +34,9 @@ if TYPE_CHECKING:
     from ontocast.config.section_labels import SectionLabelSchema
     from ontocast.tool.chunk.structure import BlockKinds
 
-# Tie-break among evidence of equal strength: heading first, then content, then
-# the model. A heading names the section it opens; content judges one part.
+# Tie-break among evidence of equal strength, by what the tier saw: a heading's
+# words first, then content, then the model (heading, opening text and the
+# whole outline), then a heading's nearest label by embedding (a few words).
 _PRIORITY: tuple[SectionLabelSource, ...] = (
     SectionLabelSource.HEADING_PATTERN,
     SectionLabelSource.HEADING_INHERITED,
@@ -43,6 +45,7 @@ _PRIORITY: tuple[SectionLabelSource, ...] = (
     SectionLabelSource.CONTENT_BLOCK,
     SectionLabelSource.CONTENT_DENSITY,
     SectionLabelSource.LLM,
+    SectionLabelSource.HEADING_EMBEDDING,
 )
 
 

@@ -121,7 +121,9 @@ The terms these pages use, each with the page that explains it.
 :   The section a content unit came from, such as `methods` or `results`, used
     to select what to extract. A label is *strong* when it comes from an exact
     heading, a numbered heading inside a strong section, or the content, and
-    *weak* otherwise; only a strong label can take part in dropping a unit.
+    *weak* otherwise (a keyword in a longer heading, a heading's nearest label
+    by embedding, inheritance by wording, the model); only a strong label can
+    take part in dropping a unit.
     Each step's vote is kept as the label's evidence. See [Structured
     documents](structured_documents.md#section-labels).
 

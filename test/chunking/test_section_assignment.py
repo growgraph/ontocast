@@ -95,6 +95,16 @@ def test_between_equals_the_heading_wins() -> None:
     assert decide([llm, keyword]) == keyword
 
 
+def test_among_weak_votes_the_model_outranks_the_embedding_tier() -> None:
+    """The model saw the heading, the opening text and the outline; the
+    embedding tier saw a few words."""
+    embedding = _evidence("back_matter", S.HEADING_EMBEDDING, WEAK)
+    llm = _evidence("results", S.LLM, WEAK)
+    keyword = _evidence("methods", S.HEADING_KEYWORD, WEAK)
+    assert decide([embedding, llm]) == llm
+    assert decide([llm, keyword]) == keyword
+
+
 def test_no_evidence_no_label() -> None:
     assert decide([]) is None
 

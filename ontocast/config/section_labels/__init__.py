@@ -10,7 +10,7 @@ from importlib import resources
 from importlib.resources.abc import Traversable
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 _MAX_HEADING_LINE_LEN = 120
 _STRUCTURAL_PREFIX = re.compile(
@@ -76,6 +76,8 @@ class SectionLabelDef(BaseModel):
     Section") which the anchored patterns cannot match.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     route_class: RouteClass = RouteClass.CONTENT
     terminal: bool = Field(
@@ -88,16 +90,16 @@ class SectionLabelDef(BaseModel):
             "references')."
         ),
     )
-    heading_patterns: list[str] = Field(default_factory=list)
-    keywords: list[str] = Field(default_factory=list)
-    order: int | None = Field(
-        default=None,
+    description: str = Field(
+        min_length=1,
         description=(
-            "Canonical position of this section in a well-formed document of "
-            "this type. Used only to refuse label fills that would run "
-            "backwards; absent means the label is not order-constrained."
+            "What a section of this type does in the document, by its role "
+            "rather than its subject: shown to the model that labels the "
+            "outline."
         ),
     )
+    heading_patterns: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
 
     @property
     def compiled_keywords(self) -> tuple[re.Pattern[str], ...]:
@@ -114,6 +116,8 @@ class SectionLabelSchema(BaseModel):
     the content-based detector embeds, so it describes the *document type*,
     unlike ``description``, which describes this schema's headings.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: str
     id: str
@@ -135,13 +139,6 @@ class SectionLabelSchema(BaseModel):
         ),
     )
     labels: list[SectionLabelDef]
-    ordered: bool = Field(
-        default=False,
-        description=(
-            "Whether this document type has a canonical section order, making "
-            "the per-label 'order' values meaningful for fill guarding."
-        ),
-    )
 
     @property
     def compiled_patterns(self) -> tuple[tuple[str, re.Pattern[str]], ...]:
@@ -347,16 +344,6 @@ def resolve_heading_label(
     keyword = match_heading_keywords(line, schema)
     if keyword is not None:
         return keyword, "heading_keyword"
-    return None
-
-
-def label_order(label: str, schema: SectionLabelSchema) -> int | None:
-    """Canonical position of a label in this schema, when order-constrained."""
-    if not schema.ordered:
-        return None
-    for label_def in schema.labels:
-        if label_def.id == label:
-            return label_def.order
     return None
 
 

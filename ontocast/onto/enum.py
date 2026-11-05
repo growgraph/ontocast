@@ -20,6 +20,8 @@ class SectionLabelSource(StrEnum):
     HEADING_PATTERN = "heading_pattern"
     HEADING_KEYWORD = "heading_keyword"
     HEADING_INHERITED = "heading_inherited"
+    #: A heading no pattern or keyword named, nearest a label by embedding.
+    HEADING_EMBEDDING = "heading_embedding"
     FRONT_MATTER = "front_matter"
     CONTENT_DENSITY = "content_density"
     #: A citation run cut out of a unit by the block classifier.

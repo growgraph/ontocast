@@ -73,6 +73,10 @@ class SectionSpan(BasePydanticModel):
     end: int
     source: SectionLabelSource = SectionLabelSource.OUTLINE_UNRESOLVED
     strength: LabelStrength = LabelStrength.WEAK
+    heading: str | None = Field(
+        default=None,
+        description="The heading line that opens the span; none for unheaded text.",
+    )
 
 
 class LabelEvidence(BasePydanticModel):

@@ -42,7 +42,6 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Protocol
 
 from ontocast.config.section_labels import (
     load_manifest,
@@ -50,6 +49,7 @@ from ontocast.config.section_labels import (
     normalise_heading_line,
     resolve_heading_label,
 )
+from ontocast.tool.chunk.embedding import TextEmbedder, cosine, unit_vector
 from ontocast.tool.chunk.outline import heading_is_sectionlike
 
 logger = logging.getLogger(__name__)
@@ -68,12 +68,6 @@ MAX_HEADINGS_FOR_CONTENT_TIER = 3
 SEMANTIC_VOTE_TAU = 0.05
 
 _MAX_EXAMPLES = 5
-
-
-class TextEmbedder(Protocol):
-    """Embeds short texts, or returns ``None`` when no model is available."""
-
-    def __call__(self, texts: list[str]) -> list[list[float]] | None: ...
 
 
 @dataclass(frozen=True)
@@ -170,15 +164,6 @@ def score_headings_lexical(headings: list[str]) -> list[SchemaEvidence]:
     return _rank(scores, examples, len(voting))
 
 
-def _normalise(vector: list[float]) -> list[float]:
-    norm = math.sqrt(sum(value * value for value in vector)) or 1.0
-    return [value / norm for value in vector]
-
-
-def _cosine(left: list[float], right: list[float]) -> float:
-    return sum(a * b for a, b in zip(left, right))
-
-
 def _label_prototypes(schema_id: str) -> list[str]:
     """Human-readable label names for a schema, used as semantic prototypes.
 
@@ -217,16 +202,17 @@ def score_headings_semantic(
     for sid in candidates:
         size = len(prototypes[sid])
         by_schema[sid] = [
-            _normalise(vector) for vector in embedded_prototypes[cursor : cursor + size]
+            unit_vector(vector)
+            for vector in embedded_prototypes[cursor : cursor + size]
         ]
         cursor += size
 
     scores = {sid: 0.0 for sid in candidates}
     examples: dict[str, list[str]] = {sid: [] for sid in candidates}
     for heading, raw in zip(voting, embedded_headings):
-        vector = _normalise(raw)
+        vector = unit_vector(raw)
         best_per_schema = [
-            (max(_cosine(vector, proto) for proto in by_schema[sid]), sid)
+            (max(cosine(vector, proto) for proto in by_schema[sid]), sid)
             for sid in candidates
             if by_schema[sid]
         ]
@@ -264,14 +250,14 @@ def score_content(paragraphs: list[str], embed: TextEmbedder) -> list[SchemaEvid
     if profiles is None or embedded is None:
         return _rank({sid: 0.0 for sid in candidates}, {}, 0)
 
-    profile_vectors = [_normalise(vector) for vector in profiles]
+    profile_vectors = [unit_vector(vector) for vector in profiles]
     scores = {sid: 0.0 for sid in candidates}
     examples: dict[str, list[str]] = {sid: [] for sid in candidates}
     for paragraph, raw in zip(paragraphs, embedded):
-        vector = _normalise(raw)
+        vector = unit_vector(raw)
         ranked = sorted(
             (
-                (_cosine(vector, profile_vectors[i]), sid)
+                (cosine(vector, profile_vectors[i]), sid)
                 for i, sid in enumerate(candidates)
             ),
             reverse=True,

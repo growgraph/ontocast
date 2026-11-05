@@ -16,6 +16,10 @@ Two heading kinds must be told apart, because they need opposite treatment:
   breaks population-inversion limitation``) sit *inside* a section and must
   inherit its label, or their body text is lost from the parent section.
 
+A section-like heading that no pattern or keyword names may still be named by
+its nearest label in embedding space (:mod:`ontocast.tool.chunk.heading_embedding`),
+weakly, when the chunker's model is available.
+
 Where the document states its hierarchy, the tree decides: a heading's section
 number ("2.1" sits under "2"), or its markdown level in documents whose levels
 vary. Docling reports one level for every PDF heading, so many documents state
@@ -32,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 
 from ontocast.config.section_labels import (
     SectionLabelSchema,
@@ -42,6 +47,10 @@ from ontocast.config.section_labels import (
 )
 from ontocast.onto.enum import LabelStrength, SectionLabelSource
 from ontocast.onto.section_models import DocumentOutline, HeadingNode, SectionSpan
+from ontocast.tool.chunk.heading_embedding import embed_heading_labels
+
+if TYPE_CHECKING:
+    from ontocast.tool.chunk.embedding import TextEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -345,24 +354,34 @@ def inherit_subsection_labels(
     weakly: only its wording says it belongs there. A terminal section (a
     reference list) has no subsections.
     """
-    current_label: str | None = None
+    current: HeadingNode | None = None
     for node in outline.nodes:
         if node.tree_placed:
             if node.label is None and node.parent is not None:
                 parent = outline.nodes[node.parent]
                 if not label_is_terminal(parent.label, schema):
-                    _inherit(node, parent.label, parent.strength)
+                    _inherit(node, parent, parent.strength)
         elif not node.sectionlike:
-            _inherit(node, current_label, LabelStrength.WEAK)
+            if current is not None:
+                _inherit(node, current, LabelStrength.WEAK)
             continue
-        current_label = None if label_is_terminal(node.label, schema) else node.label
+        current = None if label_is_terminal(node.label, schema) else node
 
 
-def _inherit(node: HeadingNode, label: str | None, strength: LabelStrength) -> None:
-    if node.label is not None or label is None:
+def _inherit(node: HeadingNode, parent: HeadingNode, strength: LabelStrength) -> None:
+    """Give ``node`` its enclosing section's label.
+
+    A label the embedding tier gave stays that tier's vote, so it keeps its
+    rank below the model's.
+    """
+    if node.label is not None or parent.label is None:
         return
-    node.label = label
-    node.source = SectionLabelSource.HEADING_INHERITED
+    node.label = parent.label
+    node.source = (
+        SectionLabelSource.HEADING_EMBEDDING
+        if parent.source is SectionLabelSource.HEADING_EMBEDDING
+        else SectionLabelSource.HEADING_INHERITED
+    )
     node.strength = strength
 
 
@@ -395,6 +414,7 @@ def outline_to_spans(outline: DocumentOutline) -> list[SectionSpan]:
                 end=end,
                 source=node.source,
                 strength=node.strength,
+                heading=node.text,
             )
         )
     return spans
@@ -405,14 +425,26 @@ def build_document_outline(
     schema: SectionLabelSchema,
     *,
     include_text_headings: bool = False,
+    embed: TextEmbedder | None = None,
 ) -> DocumentOutline:
-    """Detect headings and resolve the labels obtainable from heading text alone."""
+    """Detect headings and resolve the labels obtainable from heading text alone.
+
+    Args:
+        text: Document text (the markdown export).
+        schema: Section label schema.
+        include_text_headings: Detect plain-text headings in a document with
+            no markdown headings.
+        embed: The chunker's embedder; when given, section-like headings the
+            lexical tiers leave unnamed take their nearest label, weakly.
+    """
     outline = DocumentOutline(
         text_len=len(text),
         nodes=detect_headings(text, include_text_headings=include_text_headings),
     )
     link_heading_tree(outline)
     label_outline(outline, schema)
+    if embed is not None:
+        embed_heading_labels(outline, schema, embed)
     inherit_subsection_labels(outline, schema)
     return outline
 

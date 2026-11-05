@@ -1,37 +1,36 @@
-"""LLM section-label backfill for chunk preparation."""
+"""LLM section tier: one call labels the document's outline, as weak votes.
+
+The model is shown the document as an ordered list of regions: each headed
+section once (its heading line and the opening of its text), and each segment
+of unheaded text on its own. It returns one label per region, chosen from the
+schema's labels and their descriptions. Every segment of a region receives
+that label as weak evidence, so the model decides only where no other tier
+spoke; where it disagrees with another tier, the disagreement is kept in the
+evidence. A long outline is sent in consecutive windows. A failed call costs
+the votes of its window and nothing else.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import Field
 
-from ontocast.config.section_labels import (
-    SectionLabelSchema,
-    canonical_labels,
-    load_section_label_schema,
-    normalise_llm_label,
-    resolve_section_schema_id,
-)
+from ontocast.config.section_labels import SectionLabelSchema, normalise_llm_label
 from ontocast.onto.enum import LabelStrength, LLMPhase, SectionLabelSource
 from ontocast.onto.model import BasePydanticModel
 from ontocast.onto.section_models import LabelEvidence
 from ontocast.prompt.section_classification import (
-    CHUNK_SECTION_BATCH_CLASSIFICATION_PROMPT,
-    CHUNK_SECTION_CLASSIFICATION_PROMPT,
+    OUTLINE_LABELING_PROMPT,
     document_type_context,
-    format_batch_items,
+    format_label_catalog,
+    format_regions,
 )
 from ontocast.tool.chunk.assignment import assign
-from ontocast.tool.llm import (
-    RUN_STOPPING_ERRORS,
-    record_active_span,
-    use_llm_phase,
-)
+from ontocast.tool.llm import RUN_STOPPING_ERRORS, use_llm_phase
 
 if TYPE_CHECKING:
     from ontocast.tool.chunk.segment import PrepareSegment
@@ -39,300 +38,161 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_FRAGMENT_MAX_CHARS = 500
-_BATCH_FRAGMENT_MAX_CHARS = 300
+#: Characters of a region shown to the model: the heading and its opening text.
+EXCERPT_MAX_CHARS = 300
 
 
-class ChunkSectionClassification(BasePydanticModel):
-    """LLM output mapping one excerpt to a canonical section label."""
+class RegionLabel(BasePydanticModel):
+    """The section label the model gives one numbered region."""
 
+    index: int = Field(description="Number of the region, as given in the prompt")
     label: str | None = Field(
         default=None,
-        description="Canonical section label or null if not classifiable",
+        description="One of the listed section labels, or null if none fits",
     )
 
 
-class SectionLabelAssignment(BasePydanticModel):
-    """One excerpt index and the section label assigned to it."""
+class OutlineLabels(BasePydanticModel):
+    """The model's labels for the numbered regions of one outline window."""
 
-    index: int = Field(description="Index of the excerpt, as given in the prompt")
-    label: str | None = Field(
-        default=None,
-        description="Canonical section label or null if not classifiable",
-    )
+    labels: list[RegionLabel] = Field(default_factory=list)
 
 
-class BatchSectionClassification(BasePydanticModel):
-    """LLM output assigning a section label to each numbered excerpt."""
+@dataclass(frozen=True)
+class OutlineRegion:
+    """One region shown to the model and the segments its label applies to."""
 
-    assignments: list[SectionLabelAssignment] = Field(default_factory=list)
+    excerpt: str
+    segments: tuple[int, ...]
 
 
-def fragment_for_text(text: str) -> str:
-    """Return a short excerpt suitable for LLM section classification.
+def text_excerpt(text: str, limit: int = EXCERPT_MAX_CHARS) -> str:
+    """The opening of ``text``: its first line kept, the rest on one line.
 
-    The leading heading when the segment opens with one, else the segment's
-    opening text. A heading further down names a later section, not this one.
+    A heading keeps its own line, so the model sees what names the region and
+    what follows it as distinct.
     """
-    snippet = text.strip()
-    first = snippet.splitlines()[0].strip() if snippet else ""
-    if first.startswith("#"):
-        return first[:_FRAGMENT_MAX_CHARS]
-    return snippet[:_FRAGMENT_MAX_CHARS]
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    first, _, rest = stripped.partition("\n")
+    body = " ".join(rest.split())
+    excerpt = f"{first.strip()}\n{body}" if body else first.strip()
+    return excerpt[:limit].rstrip()
 
 
-async def classify_section_with_llm(
-    text: str,
-    tools: "ToolBox",
+def outline_regions(segments: list[PrepareSegment]) -> list[OutlineRegion]:
+    """The document's regions in order: each headed section once, unheaded segments each."""
+    regions: list[OutlineRegion] = []
+    position: dict[int, int] = {}
+    for index, segment in enumerate(segments):
+        if segment.region is None:
+            excerpt = text_excerpt(segment.text)
+            if excerpt:
+                regions.append(OutlineRegion(excerpt=excerpt, segments=(index,)))
+            continue
+        at = position.get(segment.region.index)
+        if at is None:
+            position[segment.region.index] = len(regions)
+            regions.append(
+                OutlineRegion(excerpt=segment.region.excerpt, segments=(index,))
+            )
+            continue
+        region = regions[at]
+        regions[at] = OutlineRegion(
+            excerpt=region.excerpt, segments=(*region.segments, index)
+        )
+    return regions
+
+
+async def _label_window(
+    window: list[OutlineRegion],
+    tools: ToolBox,
     schema: SectionLabelSchema,
-    *,
-    document_type_hint: str | None = None,
-) -> str | None:
-    """Classify a text fragment with the section-label LLM prompt."""
-    fragment = fragment_for_text(text)
-    if not fragment:
-        return None
-    parser = PydanticOutputParser(pydantic_object=ChunkSectionClassification)
-    allowed = ", ".join(canonical_labels(schema))
-    prompt = CHUNK_SECTION_CLASSIFICATION_PROMPT.format_prompt(
-        allowed_labels=allowed,
+    document_type_hint: str | None,
+) -> dict[int, str] | None:
+    """The model's labels for one window, by position in the window."""
+    parser = PydanticOutputParser(pydantic_object=OutlineLabels)
+    prompt = OUTLINE_LABELING_PROMPT.format_prompt(
+        label_catalog=format_label_catalog(
+            [(label.id, label.description) for label in schema.labels]
+        ),
         format_instructions=parser.get_format_instructions(),
         document_context=document_type_context(document_type_hint),
-        fragment=fragment,
+        regions=format_regions([region.excerpt for region in window]),
     )
-    with use_llm_phase(LLMPhase.SECTION_CLASSIFICATION):
-        response = await tools.llm(prompt)
-    parsed = parser.parse(response.content or "")
-    return normalise_llm_label(parsed.label, schema)
+    try:
+        with use_llm_phase(LLMPhase.SECTION_CLASSIFICATION):
+            response = await tools.llm(prompt)
+        parsed = parser.parse(response.content or "")
+    except RUN_STOPPING_ERRORS:
+        raise
+    except Exception as exc:
+        # The tier is weak: its votes are missed, the document is not.
+        logger.warning("Outline labeling failed for %s region(s): %s", len(window), exc)
+        return None
+    labels: dict[int, str] = {}
+    for item in parsed.labels:
+        if not 0 <= item.index < len(window):
+            continue
+        label = normalise_llm_label(item.label, schema)
+        if label is not None:
+            labels[item.index] = label
+    return labels
 
 
-async def classify_sections_batched(
-    items: list[tuple[int, str]],
-    tools: "ToolBox",
+async def llm_label_outline(
+    segments: list[PrepareSegment],
+    tools: ToolBox,
     schema: SectionLabelSchema,
     *,
     document_type_hint: str | None = None,
-    batch_size: int = 40,
-) -> dict[int, str | None] | None:
-    """Classify many excerpts in as few LLM calls as possible.
-
-    One call covers up to ``batch_size`` excerpts, versus one call per excerpt
-    for :func:`classify_section_with_llm`. Passing the excerpts together also
-    gives the model the document's shape, which a single fragment cannot show.
+    window: int = 40,
+) -> None:
+    """Add the model's vote to every segment and decide again (mutates in place).
 
     Args:
-        items: ``(index, fragment)`` pairs in document order.
+        segments: Prepare segments, in document order.
         tools: ToolBox providing the LLM.
-        schema: Active section label schema.
-        document_type_hint: Optional free-text document type.
-        batch_size: Maximum excerpts per LLM call.
-
-    Returns:
-        Mapping of index to label (``None`` where unclassifiable), or ``None``
-        when the model's response could not be used, so the caller can fall
-        back to per-excerpt classification.
+        schema: The schema the document is typed against; labels outside it
+            are discarded.
+        document_type_hint: Free-text document type, passed to the prompt.
+        window: Regions per call.
     """
-    if not items:
-        return {}
-    parser = PydanticOutputParser(pydantic_object=BatchSectionClassification)
-    allowed = ", ".join(canonical_labels(schema))
-    resolved: dict[int, str | None] = {}
-    size = max(1, batch_size)
-
-    for start in range(0, len(items), size):
-        batch = items[start : start + size]
-        prompt = CHUNK_SECTION_BATCH_CLASSIFICATION_PROMPT.format_prompt(
-            allowed_labels=allowed,
-            format_instructions=parser.get_format_instructions(),
-            document_context=document_type_context(document_type_hint),
-            items=format_batch_items(batch),
-        )
-        try:
-            with use_llm_phase(LLMPhase.SECTION_CLASSIFICATION):
-                response = await tools.llm(prompt)
-            parsed = parser.parse(response.content or "")
-        except RUN_STOPPING_ERRORS:
-            # Falling back to the per-segment path is pointless when the
-            # provider rejects the request itself -- it rejects that one too.
-            raise
-        except Exception as exc:
-            logger.warning(
-                "Batched section classification failed for %s excerpt(s): %s",
-                len(batch),
-                exc,
-            )
-            return None
-        known = {index for index, _ in batch}
-        for assignment in parsed.assignments:
-            if assignment.index in known:
-                resolved[assignment.index] = normalise_llm_label(
-                    assignment.label, schema
-                )
-    return resolved
-
-
-async def llm_backfill_section_labels(
-    segments: list,
-    tools: "ToolBox",
-    *,
-    section_schema_id: str | None = None,
-    document_type_hint: str | None = None,
-    section_tag_min_chars: int = 80,
-    batch_size: int = 40,
-    schema: SectionLabelSchema | None = None,
-) -> None:
-    """Set ``section_label`` on segments that are still unlabeled (mutates in place).
-
-    Classifies in batches when ``batch_size`` is positive, falling back to one
-    call per segment if the batched response cannot be used.
-
-    Args:
-        segments: Prepare segments, mutated in place.
-        tools: ToolBox providing the LLM.
-        section_schema_id: Raw request value; used only when ``schema`` is not
-            given.
-        document_type_hint: Free-text document type, also passed to the prompt.
-        section_tag_min_chars: Minimum segment length to be worth classifying.
-        batch_size: Excerpts per LLM call; 0 restores one call per segment.
-        schema: Already-resolved schema. Callers that resolved it themselves
-            **must** pass it: re-deriving from the raw request would ignore a
-            text-based schema detection, and labels outside the re-derived
-            schema are silently discarded.
-    """
-    if schema is None:
-        schema = load_section_label_schema(
-            resolve_section_schema_id(
-                section_schema_id=section_schema_id,
-                document_type_hint=document_type_hint,
-            )
-        )
-    min_chars = max(0, section_tag_min_chars)
-
-    def _needs_llm_backfill(index: int) -> bool:
-        segment = segments[index]
-        if segment.section_label is not None:
-            return False
-        text = segment.text.strip()
-        fragment = fragment_for_text(segment.text)
-        if not fragment:
-            return False
-        if len(text) >= min_chars:
-            return True
-        if fragment.lstrip().startswith("#"):
-            return True
-        return bool(segment.headings)
-
-    unlabeled_indices = [
-        index for index in range(len(segments)) if _needs_llm_backfill(index)
-    ]
-    if not unlabeled_indices:
-        return
-
-    if batch_size > 0:
-        batched = await classify_sections_batched(
-            [
-                (
-                    index,
-                    fragment_for_text(segments[index].text)[:_BATCH_FRAGMENT_MAX_CHARS],
-                )
-                for index in unlabeled_indices
-            ],
-            tools,
-            schema,
-            document_type_hint=document_type_hint,
-            batch_size=batch_size,
-        )
-        if batched is not None:
-            _apply_llm_labels(segments, batched)
-            return
-        logger.info(
-            "Falling back to per-segment section classification for %s segment(s)",
-            len(unlabeled_indices),
-        )
-
-    worker_limit = max(1, tools.config.server.parallel_workers)
-    semaphore = asyncio.Semaphore(worker_limit)
-
-    async def classify_index(index: int) -> tuple[int, str | None]:
-        wait_start = time.perf_counter()
-        async with semaphore:
-            record_active_span(
-                "chunk section classify/worker_wait", time.perf_counter() - wait_start
-            )
-            segment = segments[index]
-            try:
-                label = await classify_section_with_llm(
-                    segment.text,
-                    tools,
-                    schema,
-                    document_type_hint=document_type_hint,
-                )
-                return index, label
-            except RUN_STOPPING_ERRORS:
-                # An unlabeled segment is survivable; a deployment that rejects
-                # every request is not, and every sibling task is about to hit
-                # it identically.
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "LLM section classification failed for segment %s: %s",
-                    index,
-                    exc,
-                )
-                return index, None
-
-    # classify_index catches its own errors, but the gather must not abort the
-    # whole backfill if one slips through -- an unlabeled segment is survivable,
-    # an unchunked document is not.
-    results = await asyncio.gather(
-        *[classify_index(index) for index in unlabeled_indices],
-        return_exceptions=True,
-    )
-    labels = {
-        index: label
-        for index, label in (
-            item for item in results if not isinstance(item, BaseException)
-        )
-    }
-    for item in results:
-        if isinstance(item, RUN_STOPPING_ERRORS):
-            # return_exceptions captures the guard above as a value, so the
-            # re-raise has to happen here. Once the gather has drained, so
-            # nothing is orphaned.
-            raise item
-        if isinstance(item, BaseException):
-            logger.warning("Section classification task failed: %s", item)
-    _apply_llm_labels(segments, labels)
-
-
-def _apply_llm_labels(
-    segments: list[PrepareSegment], labels: dict[int, str | None]
-) -> None:
-    """Add the model's labels to the segments' evidence, as weak votes."""
-    applied = 0
-    for index, label in labels.items():
-        if label is None:
+    regions = outline_regions(segments)
+    size = max(1, window)
+    voted = 0
+    for start in range(0, len(regions), size):
+        chunk = regions[start : start + size]
+        labels = await _label_window(chunk, tools, schema, document_type_hint)
+        if labels is None:
             continue
-        segment = segments[index]
-        segment.evidence.append(
-            LabelEvidence(
-                label=label,
-                source=SectionLabelSource.LLM,
-                strength=LabelStrength.WEAK,
-            )
+        for position, label in labels.items():
+            for index in chunk[position].segments:
+                segment = segments[index]
+                segment.evidence.append(
+                    LabelEvidence(
+                        label=label,
+                        source=SectionLabelSource.LLM,
+                        strength=LabelStrength.WEAK,
+                    )
+                )
+                assign(segment)
+                voted += 1
+    if voted:
+        logger.debug(
+            "Outline labeling voted on %s segment(s) in %s region(s)",
+            voted,
+            len(regions),
         )
-        assign(segment)
-        applied += 1
-    if applied:
-        logger.debug("LLM classified %s segment(s)", applied)
 
 
 __all__ = [
-    "BatchSectionClassification",
-    "ChunkSectionClassification",
-    "SectionLabelAssignment",
-    "classify_section_with_llm",
-    "classify_sections_batched",
-    "fragment_for_text",
-    "llm_backfill_section_labels",
+    "EXCERPT_MAX_CHARS",
+    "OutlineLabels",
+    "OutlineRegion",
+    "RegionLabel",
+    "llm_label_outline",
+    "outline_regions",
+    "text_excerpt",
 ]

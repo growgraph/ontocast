@@ -27,7 +27,6 @@ from ontocast.tool.chunk.non_content import is_non_content_unit
 from ontocast.tool.chunk.outline import build_document_outline
 from ontocast.tool.chunk.prepare import PreparedChunk
 from ontocast.tool.chunk.routing import route_unit
-from ontocast.tool.chunk.section_llm import fragment_for_text
 
 pytestmark = pytest.mark.unit
 
@@ -217,17 +216,6 @@ def test_fallback_schema_has_no_heading_vocabulary() -> None:
     assert _route(
         text, "back_matter", SectionLabelSource.HEADING_PATTERN, schema_fallback=True
     ) == (UnitRoute.EXTRACT, RouteReason.FALLBACK_SCHEMA)
-
-
-# --- the LLM excerpt ------------------------------------------------------------------
-
-
-def test_llm_excerpt_is_the_leading_heading_only() -> None:
-    """F10: a heading later in the segment does not name the segment."""
-    prose = "Encapsulated devices kept 92 % efficiency after 1000 h."
-    segment = f"{prose}\n\n## References\n\n1. Smith 2020"
-    assert fragment_for_text(segment).startswith("Encapsulated devices")
-    assert fragment_for_text("## Methods\n\nFilms were annealed.") == "## Methods"
 
 
 # --- coreference ------------------------------------------------------------------------

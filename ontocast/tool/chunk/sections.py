@@ -16,6 +16,8 @@ from ontocast.tool.chunk.outline import build_document_outline, outline_to_spans
 if TYPE_CHECKING:
     from docling_core.types.doc import DoclingDocument
 
+    from ontocast.tool.chunk.embedding import TextEmbedder
+
 ABSTRACT_FRONT_MATTER_MAX_CHARS = 6000
 
 
@@ -29,6 +31,7 @@ def detect_section_spans(
     schema: SectionLabelSchema | None = None,
     *,
     include_text_headings: bool = False,
+    embed: TextEmbedder | None = None,
 ) -> list[SectionSpan]:
     """Detect document sections and return a partition of the text into spans.
 
@@ -41,6 +44,7 @@ def detect_section_spans(
         schema: Section label schema; the manifest default when omitted.
         include_text_headings: Enable the plain-text heading heuristic for
             documents with no markdown heading structure.
+        embed: The chunker's embedder, for the embedding heading tier.
 
     Returns:
         Section spans tiling ``text``, ordered by start offset.
@@ -49,7 +53,7 @@ def detect_section_spans(
         return []
     active = schema or get_default_section_schema()
     outline = build_document_outline(
-        text, active, include_text_headings=include_text_headings
+        text, active, include_text_headings=include_text_headings, embed=embed
     )
     spans = outline_to_spans(outline)
     return inject_front_matter_spans(spans, text, active)

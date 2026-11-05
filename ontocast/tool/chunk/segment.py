@@ -13,6 +13,22 @@ from ontocast.tool.chunk.sizing import DEFAULT_PART_SEPARATOR
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class SectionRegion:
+    """The headed section a segment belongs to, as the model is shown it.
+
+    Every segment of one headed section shares one region and so one model
+    vote. Unheaded text has no region: each such segment is shown on its own.
+
+    Attributes:
+        index: Position of the section in the document's section blocks.
+        excerpt: The heading line and the opening of the section's text.
+    """
+
+    index: int
+    excerpt: str
+
+
 @dataclass
 class PrepareSegment:
     """One logical segment prior to min/max sizing.
@@ -29,6 +45,7 @@ class PrepareSegment:
     section_label_source: SectionLabelSource | None = None
     section_label_strength: LabelStrength | None = None
     evidence: list[LabelEvidence] = field(default_factory=list)
+    region: SectionRegion | None = None
 
 
 def _first_non_empty_line(text: str) -> str:
@@ -81,6 +98,7 @@ def merge_into_right(left: PrepareSegment, right: PrepareSegment) -> PrepareSegm
         section_label_source=winner.section_label_source,
         section_label_strength=winner.section_label_strength,
         evidence=list(winner.evidence),
+        region=winner.region,
     )
 
 
@@ -113,6 +131,7 @@ def merge_into_left(left: PrepareSegment, right: PrepareSegment) -> PrepareSegme
         section_label_source=winner.section_label_source,
         section_label_strength=winner.section_label_strength,
         evidence=list(winner.evidence),
+        region=winner.region,
     )
 
 

@@ -154,6 +154,20 @@ def pytest_collection_modifyitems(config, items) -> None:
             items[:] = selected
 
 
+@pytest.fixture(autouse=True)
+def _no_heading_embedding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Switch off the embedding heading tier in chunk preparation.
+
+    With the semantic extras installed it would load the sentence model and
+    add its votes to every prepared document, so a test's labels would depend
+    on that model. Tests of the tier inject an embedder of their own.
+    """
+    monkeypatch.setattr(
+        "ontocast.tool.chunk.prepare.heading_embedder",
+        lambda _splitter, _config: None,
+    )
+
+
 @pytest.fixture
 def provider():
     return os.getenv("LLM_PROVIDER", LLMProvider.OPENAI)

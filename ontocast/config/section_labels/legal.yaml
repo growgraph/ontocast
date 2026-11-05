@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.2"
 id: legal
 description: Contracts, policies, statutes, and terms of use
 document_profile: >-
@@ -7,6 +7,7 @@ document_profile: >-
     termination and governing law.
 labels:
 -   id: definitions
+    description: 'Defined terms and their meanings for the document.'
     heading_patterns:
     -   '^definitions?\s*$'
     -   '^defined\s+terms\s*$'
@@ -14,6 +15,7 @@ labels:
     -   definitions
     -   defined terms
 -   id: recitals
+    description: 'Preamble stating the parties, background and purpose of the agreement.'
     heading_patterns:
     -   '^recitals?\s*$'
     -   '^whereas\s*$'
@@ -22,6 +24,7 @@ labels:
     -   recitals
     -   whereas
 -   id: scope
+    description: 'What the document covers and to whom it applies.'
     heading_patterns:
     -   '^scope\s*$'
     -   '^purpose\s*$'
@@ -30,6 +33,7 @@ labels:
     -   license grant
     -   grant of rights
 -   id: obligations
+    description: 'Duties the parties undertake: what each must do or provide.'
     heading_patterns:
     -   '^obligations?\s*$'
     -   '^duties\s*$'
@@ -39,6 +43,7 @@ labels:
     -   license conditions
     -   conditions
 -   id: representations_warranties
+    description: 'Statements of fact the parties assert and guarantee.'
     heading_patterns:
     -   '^representations?\s+and\s+warranties\s*$'
     -   '^warranties\s*$'
@@ -47,11 +52,13 @@ labels:
     -   warranties
     -   disclaimer of warranties
 -   id: covenants
+    description: 'Promises to do or not do something over the term.'
     heading_patterns:
     -   '^covenants?\s*$'
     keywords:
     -   covenants
 -   id: liability
+    description: 'Limits and allocation of liability between the parties.'
     heading_patterns:
     -   '^liability\s*$'
     -   '^limitation\s+of\s+liability\s*$'
@@ -59,12 +66,14 @@ labels:
     -   limitation of liability
     -   liability
 -   id: indemnity
+    description: 'Who compensates whom for losses and claims.'
     heading_patterns:
     -   '^indemnit(?:y|ies|ification)\s*$'
     keywords:
     -   indemnity
     -   indemnification
 -   id: termination
+    description: 'How and when the agreement ends and what follows.'
     heading_patterns:
     -   '^termination\s*$'
     -   '^term\s+and\s+termination\s*$'
@@ -72,6 +81,7 @@ labels:
     -   term and termination
     -   termination
 -   id: dispute_resolution
+    description: 'How disputes are settled: negotiation, arbitration, courts.'
     heading_patterns:
     -   '^dispute\s+resolution\s*$'
     -   '^arbitration\s*$'
@@ -80,6 +90,7 @@ labels:
     -   dispute resolution
     -   arbitration
 -   id: governing_law
+    description: 'Which jurisdiction''s law governs the document.'
     heading_patterns:
     -   '^governing\s+law\s*$'
     -   '^applicable\s+law\s*$'
@@ -88,11 +99,13 @@ labels:
     -   applicable law
     -   interpretation
 -   id: notices
+    description: 'How formal communications between the parties are given.'
     heading_patterns:
     -   '^notices?\s*$'
     keywords:
     -   notices
 -   id: schedules
+    description: 'Attached schedules, annexes or exhibits forming part of the document.'
     heading_patterns:
     -   '^schedules?\s*$'
     -   '^attachments?\s*$'
@@ -101,6 +114,7 @@ labels:
     -   attachments
     -   other terms and conditions
 -   id: signatures
+    description: 'Execution block: signatures, names, dates.'
     heading_patterns:
     -   '^signatures?\s*$'
     -   '^execution\s*$'
@@ -110,6 +124,7 @@ labels:
     -   in witness whereof
     -   execution
 -   id: amendments
+    description: 'Changes to the document and how it may be amended.'
     heading_patterns:
     -   '^amendments?\s*$'
     -   '^modifications?\s*$'
