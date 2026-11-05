@@ -586,3 +586,19 @@ def test_a_trimmed_run_keeps_its_units_citations_label() -> None:
     _, other_run = _trim_citation_runs([other], standard)
     assert other_run.section_label == "normative_references"
     assert other_run.section_label_source is SectionLabelSource.CONTENT_BLOCK
+
+
+def test_size_merging_never_joins_a_weak_vote_to_a_strong_section() -> None:
+    from ontocast.tool.chunk.prepare import _merge_prepared_chunks
+
+    strong = _chunk(_REFERENCE_LIST, "references", SectionLabelSource.HEADING_PATTERN)
+    weak = _chunk(_PROSE, "references", SectionLabelSource.LLM)
+    merged = _merge_prepared_chunks([strong, weak], min_size=10_000, max_size=20_000)
+    assert [chunk.section_label_strength for chunk in merged] == [
+        LabelStrength.STRONG,
+        LabelStrength.WEAK,
+    ]
+    assert _route(merged[0]) == (UnitRoute.SKIP, RouteReason.CITATION_LIST)
+    assert _route(merged[1])[0] is UnitRoute.EXTRACT
+    pair = _merge_prepared_chunks([strong, strong], min_size=10_000, max_size=20_000)
+    assert len(pair) == 1

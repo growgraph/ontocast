@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keyword-matched headings such as "Funding Mechanisms" or "Supporting Information" no longer drop their section through the default exclusions.
 - The home-ontology excerpt samples only units routed to extraction, never a reference list or an author block.
 - LLM section classification judged a segment by the first heading anywhere in it; it now sees each section by its own heading.
+- A weak label (the model's, say) on text next to a strong section of the same label no longer weakens that section when undersized chunks are merged, so `CHUNK_SECTION_CLASSIFIER=llm` no longer lets a reference list through; chunks of different label strength are never merged.
 - Coreference resolution no longer spends its pairs on entities of citation-metadata units (`CHUNK_BIBLIOGRAPHY_MODE=citations_only`).
 - The facts gate's un-merge repair dissolves only the cluster a finding implicates: a multi-valued or functional-property finding no longer splits the correctly merged entities its subject points at.
 - Within that cluster, the repair splits only the members whose values on the finding's predicate disagree; members that carried no value keep their merges.

@@ -575,9 +575,15 @@ def _merge_prepared_chunks(
     merged: list[PreparedChunk] = []
     index = 0
     while index < len(chunks):
-        label = chunks[index].section_label
+        first = chunks[index]
+        # A run shares label and strength: a weak vote never weakens a strong
+        # section, and a strong one never lends its strength to a weak part.
         run: list[PreparedChunk] = []
-        while index < len(chunks) and chunks[index].section_label == label:
+        while (
+            index < len(chunks)
+            and chunks[index].section_label == first.section_label
+            and chunks[index].section_label_strength is first.section_label_strength
+        ):
             run.append(chunks[index])
             index += 1
 
@@ -587,11 +593,6 @@ def _merge_prepared_chunks(
             max_size,
         )
         headings = next((chunk.headings for chunk in run if chunk.headings), None)
-        # A merged chunk is only as trustworthy as its weakest constituent.
-        weakest = min(
-            run,
-            key=lambda chunk: chunk.section_label_strength is LabelStrength.STRONG,
-        )
         evidence = merged_evidence(*(chunk.section_label_evidence for chunk in run))
 
         for text in texts:
@@ -599,9 +600,9 @@ def _merge_prepared_chunks(
                 PreparedChunk(
                     text=text,
                     headings=headings,
-                    section_label=label,
-                    section_label_source=weakest.section_label_source,
-                    section_label_strength=weakest.section_label_strength,
+                    section_label=first.section_label,
+                    section_label_source=first.section_label_source,
+                    section_label_strength=first.section_label_strength,
                     section_label_evidence=evidence,
                 )
             )
