@@ -80,7 +80,7 @@ def _outline_rows(document_text: str, schema, text_headings: bool) -> list[dict]
             "normalised": node.normalised,
             "label": node.label,
             "source": node.source.value,
-            "confidence": round(node.confidence, 2),
+            "strength": node.strength.value if node.label else None,
         }
         for node in outline.nodes
     ]
@@ -97,7 +97,15 @@ def _chunk_rows(chunks) -> list[dict]:
                 if chunk.section_label_source is not None
                 else None
             ),
-            "confidence": round(chunk.section_label_confidence, 2),
+            "strength": (
+                chunk.section_label_strength.value
+                if chunk.section_label_strength is not None
+                else None
+            ),
+            "evidence": ", ".join(
+                f"{item.label}:{item.source.value}:{item.strength.value}"
+                for item in chunk.section_label_evidence
+            ),
             "route": chunk.route.value,
             "reason": chunk.route_reason.value,
             "items": len(chunk.doc_item_refs),
@@ -314,7 +322,7 @@ def main(
             ("kind", 8),
             ("label", 16),
             ("source", 18),
-            ("confidence", 5),
+            ("strength", 6),
             ("heading", 60),
         ],
     )
@@ -326,12 +334,17 @@ def main(
             ("chars", 6),
             ("label", 16),
             ("source", 18),
-            ("confidence", 5),
+            ("strength", 6),
             ("route", 11),
             ("reason", 20),
             ("items", 5),
             ("preview", 50),
         ],
+    )
+    _print_table(
+        "Evidence (label:source:strength per tier that voted)",
+        [row for row in chunk_rows if row["evidence"]],
+        [("index", 5), ("label", 16), ("evidence", 100)],
     )
     click.echo(
         f"\n  {labeled}/{len(chunk_rows)} chunks labeled "

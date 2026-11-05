@@ -564,13 +564,15 @@ class ChunkConfig(BaseSettings):
     section_classifier: Literal["llm", "heuristic", "heading", "off"] = Field(
         default="heuristic",
         description=(
-            "Chunk section classification cascade, in increasing cost: "
+            "Section classification tiers, in increasing cost; each adds its "
+            "vote and the strongest decides: "
             "'off' = no section tagging (section filters and boilerplate "
             "exclusions are off; reference lists and front/back matter are "
             "still recognised from content); 'heading' = document outline plus heading "
             "pattern/keyword matching; 'heuristic' (default) = heading plus "
-            "content-density classification for regions with no usable "
-            "heading; 'llm' = heuristic plus a batched LLM pass over whatever "
+            "a content-density vote on every part, which also labels regions "
+            "with no usable heading; 'llm' = heuristic plus a batched LLM pass "
+            "over whatever "
             "remains unlabeled. Only 'llm' makes LLM calls during chunking."
         ),
     )

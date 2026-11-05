@@ -337,9 +337,16 @@ def dump_validation_report(
 def _selection_manifest(state: AgentState, config: Config) -> RunManifestSelection:
     """Selection settings plus the label census that says whether they acted."""
     histogram: dict[str, int] = {}
+    strength_chars: dict[str, int] = {}
     for unit in state.content_units or []:
         label = unit.section_label or "(unlabeled)"
         histogram[label] = histogram.get(label, 0) + 1
+        strength = (
+            str(unit.section_label_strength)
+            if unit.section_label is not None and unit.section_label_strength
+            else "unlabeled"
+        )
+        strength_chars[strength] = strength_chars.get(strength, 0) + len(unit.text)
     unlabeled = histogram.get("(unlabeled)", 0)
     return RunManifestSelection(
         target_sections=state.target_sections,
@@ -355,6 +362,7 @@ def _selection_manifest(state: AgentState, config: Config) -> RunManifestSelecti
         labeled_units=(sum(histogram.values()) - unlabeled) if histogram else None,
         unlabeled_units=unlabeled if histogram else None,
         section_label_histogram=histogram or None,
+        label_strength_chars=strength_chars or None,
         bibliography_units_skipped=state.bibliography_units_skipped,
         undersized_units_skipped=state.undersized_units_skipped,
         non_content_units_skipped=state.non_content_units_skipped,

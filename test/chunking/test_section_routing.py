@@ -15,7 +15,7 @@ import pytest
 
 from ontocast.config import ChunkConfig
 from ontocast.config.section_labels import load_section_label_schema
-from ontocast.onto.enum import SectionLabelSource
+from ontocast.onto.enum import LabelStrength, SectionLabelSource
 from ontocast.tool.chunk.bibliography import (
     citation_share,
     is_citation_entry,
@@ -31,10 +31,8 @@ from ontocast.tool.chunk.prepare import (
     prepare_content_units,
 )
 from ontocast.tool.chunk.routing import (
-    LabelStrength,
     RouteReason,
     UnitRoute,
-    label_strength,
     route_unit,
 )
 from ontocast.toolbox import ToolBox
@@ -159,31 +157,18 @@ def test_a_unit_that_is_all_citations_is_not_split() -> None:
     assert trim_citation_runs(_REFERENCE_LIST) == [(_REFERENCE_LIST, True)]
 
 
-# --- label strength -----------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("source", "strength"),
-    [
-        (SectionLabelSource.HEADING_PATTERN, LabelStrength.STRONG),
-        (SectionLabelSource.CONTENT_DENSITY, LabelStrength.STRONG),
-        (SectionLabelSource.CONTENT_BLOCK, LabelStrength.STRONG),
-        (SectionLabelSource.HEADING_KEYWORD, LabelStrength.WEAK),
-        (SectionLabelSource.HEADING_INHERITED, LabelStrength.WEAK),
-        (SectionLabelSource.FRONT_MATTER, LabelStrength.WEAK),
-        (SectionLabelSource.LLM, LabelStrength.WEAK),
-        (SectionLabelSource.FORWARD_FILL, LabelStrength.WEAK),
-        (SectionLabelSource.OUTLINE_UNRESOLVED, LabelStrength.WEAK),
-        (None, LabelStrength.WEAK),
-    ],
-)
-def test_label_strength(source, strength) -> None:
-    assert label_strength(source) is strength
-
-
 # --- the routing rule ---------------------------------------------------------
 
 _ACADEMIC = load_section_label_schema("academic")
+
+
+# The strength each source gives when nothing else sets it (an inherited label
+# is strong only through a numbered edge from a strong parent).
+_STRONG_SOURCES = {
+    SectionLabelSource.HEADING_PATTERN,
+    SectionLabelSource.CONTENT_DENSITY,
+    SectionLabelSource.CONTENT_BLOCK,
+}
 
 
 def _chunk(
@@ -191,11 +176,17 @@ def _chunk(
     label: str | None = None,
     source: SectionLabelSource | None = None,
 ) -> PreparedChunk:
+    strength = None
+    if label is not None:
+        strength = (
+            LabelStrength.STRONG if source in _STRONG_SOURCES else LabelStrength.WEAK
+        )
     return PreparedChunk(
         text=text,
         headings=None,
         section_label=label,
         section_label_source=source,
+        section_label_strength=strength,
     )
 
 
@@ -230,7 +221,7 @@ def _route(
         SectionLabelSource.HEADING_KEYWORD,
         SectionLabelSource.HEADING_INHERITED,
         SectionLabelSource.LLM,
-        SectionLabelSource.FORWARD_FILL,
+        SectionLabelSource.FRONT_MATTER,
     ],
 )
 def test_weak_references_label_never_drops_prose(source) -> None:
@@ -320,7 +311,7 @@ def test_appendix_is_content() -> None:
 
 def test_explicit_exclusion_needs_a_strong_label() -> None:
     strong = _chunk(_PROSE, "results", SectionLabelSource.HEADING_PATTERN)
-    weak = _chunk(_PROSE, "results", SectionLabelSource.FORWARD_FILL)
+    weak = _chunk(_PROSE, "results", SectionLabelSource.LLM)
     assert _route(strong, exclude_sections=["results"]) == (
         UnitRoute.SKIP,
         RouteReason.EXCLUDED_BY_REQUEST,

@@ -240,9 +240,7 @@ def _head_phrase(normalised: str) -> str:
     return _PREPOSITION.split(first, maxsplit=1)[0].strip()
 
 
-def match_heading_keywords(
-    line: str, schema: SectionLabelSchema
-) -> tuple[str, float] | None:
+def match_heading_keywords(line: str, schema: SectionLabelSchema) -> str | None:
     """Match a heading by keyword, for compound and non-canonical headings.
 
     Resolution follows the heading's head noun, in order:
@@ -264,7 +262,7 @@ def match_heading_keywords(
         schema: Active section label schema.
 
     Returns:
-        ``(label, confidence)`` or ``None`` when no keyword matches.
+        The label, or ``None`` when no keyword matches.
     """
     normalised = normalise_heading_line(line)
     if not normalised or len(normalised) > _MAX_HEADING_LINE_LEN:
@@ -277,7 +275,7 @@ def match_heading_keywords(
             for pattern in label_def.compiled_keywords
             for conjunct in conjuncts
         ):
-            return label_def.id, 0.7
+            return label_def.id
 
     head = _head_phrase(normalised)
     ending: tuple[int, int, str] | None = None
@@ -308,11 +306,11 @@ def match_heading_keywords(
                 if anywhere is None or any_candidate < anywhere:
                     anywhere = any_candidate
     if ending is not None:
-        return ending[2], 0.7
+        return ending[2]
     if inside is not None:
-        return inside[3], 0.7
+        return inside[3]
     if anywhere is not None:
-        return anywhere[3], 0.7
+        return anywhere[3]
     return None
 
 
@@ -334,21 +332,21 @@ def match_heading_name(line: str, schema: SectionLabelSchema) -> str | None:
 
 def resolve_heading_label(
     line: str, schema: SectionLabelSchema
-) -> tuple[str, float, str] | None:
+) -> tuple[str, str] | None:
     """Resolve a heading to a label via patterns, then keywords.
 
-    A heading that is a keyword and nothing else resolves at pattern strength.
+    A heading that is a keyword and nothing else resolves as a pattern.
 
     Returns:
-        ``(label, confidence, source)`` where source is ``"heading_pattern"``
-        or ``"heading_keyword"``; ``None`` when the heading is unrecognised.
+        ``(label, source)`` where source is ``"heading_pattern"`` or
+        ``"heading_keyword"``; ``None`` when the heading is unrecognised.
     """
     exact = match_heading_line(line, schema) or match_heading_name(line, schema)
     if exact is not None:
-        return exact, 0.95, "heading_pattern"
+        return exact, "heading_pattern"
     keyword = match_heading_keywords(line, schema)
     if keyword is not None:
-        return keyword[0], keyword[1], "heading_keyword"
+        return keyword, "heading_keyword"
     return None
 
 

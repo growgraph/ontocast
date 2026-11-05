@@ -1,8 +1,9 @@
-"""Prepare content units: segment, tag, select, size, trim and route.
+"""Prepare content units: segment, label, select, size, trim and route.
 
-Labelling and routing are separate. The section cascade labels segments; the
-caller's ``target_sections`` selects among them; sizing builds units; citation
-runs at a unit's edge are trimmed into units of their own; and
+Labelling and routing are separate. Every labelling tier adds evidence to a
+segment and one rule decides its label (:mod:`ontocast.tool.chunk.assignment`);
+the caller's ``target_sections`` selects among the labels; sizing builds units;
+citation runs at a unit's edge are trimmed into units of their own; and
 :func:`ontocast.tool.chunk.routing.route_unit` decides each unit's route from
 its label, the label's strength and its content. Every unit leaves with a
 route and a reason, kept or dropped.
@@ -21,18 +22,16 @@ from ontocast.config import ChunkConfig
 from ontocast.config.section_labels import (
     RouteClass,
     SectionLabelSchema,
-    label_order,
-    label_route_class,
     labels_of_class,
     load_section_label_schema,
     resolve_section_schema_id,
     schema_id_from_hint,
 )
-from ontocast.onto.enum import SectionLabelSource
-from ontocast.onto.section_models import SectionSpan
+from ontocast.onto.enum import LabelStrength, SectionLabelSource
+from ontocast.onto.section_models import LabelEvidence, SectionSpan
+from ontocast.tool.chunk.assignment import assign, content_evidence, merged_evidence
 from ontocast.tool.chunk.bibliography import trim_citation_runs
 from ontocast.tool.chunk.chunker import ChunkerTool
-from ontocast.tool.chunk.density import classify_by_density
 from ontocast.tool.chunk.outline import markdown_headings
 from ontocast.tool.chunk.routing import RouteReason, UnitRoute, route_unit
 from ontocast.tool.chunk.schema_detect import SchemaDetection, detect_document_schema
@@ -41,7 +40,6 @@ from ontocast.tool.chunk.sections import detect_section_spans
 from ontocast.tool.chunk.segment import (
     PrepareSegment,
     coalesce_small_segments_right,
-    starts_with_section_heading,
 )
 from ontocast.tool.chunk.sizing import (
     DEFAULT_PART_SEPARATOR,
@@ -62,28 +60,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Relative trust in each classification tier, used when merging chunks: the
-# merged chunk inherits the weakest evidence in the run.
-_SOURCE_STRENGTH: dict[SectionLabelSource, int] = {
-    SectionLabelSource.OUTLINE_UNRESOLVED: 0,
-    SectionLabelSource.FORWARD_FILL: 1,
-    SectionLabelSource.FRONT_MATTER: 2,
-    SectionLabelSource.CONTENT_DENSITY: 3,
-    SectionLabelSource.CONTENT_BLOCK: 3,
-    SectionLabelSource.LLM: 4,
-    SectionLabelSource.HEADING_INHERITED: 5,
-    SectionLabelSource.HEADING_KEYWORD: 7,
-    SectionLabelSource.HEADING_PATTERN: 8,
-}
-
 
 @dataclass(frozen=True)
 class PreparedChunk:
     """A prepared text chunk with optional structural metadata, label and route.
 
-    ``section_label_source`` and ``section_label_confidence`` record which tier
-    of the classification cascade decided the label, so a run can be audited
-    and weak labels can be told from strong ones. ``route`` and
+    ``section_label_source`` and ``section_label_strength`` record which tier
+    decided the label and whether it may take part in a drop;
+    ``section_label_evidence`` holds every tier's vote. ``route`` and
     ``route_reason`` record what routing decided and why.
     """
 
@@ -93,7 +77,8 @@ class PreparedChunk:
     doc_item_refs: tuple[str, ...] = ()
     section_label: str | None = None
     section_label_source: SectionLabelSource | None = None
-    section_label_confidence: float = 0.0
+    section_label_strength: LabelStrength | None = None
+    section_label_evidence: tuple[LabelEvidence, ...] = ()
     route: UnitRoute = UnitRoute.EXTRACT
     route_reason: RouteReason = RouteReason.CONTENT
 
@@ -321,63 +306,23 @@ def _semantic_section_segments(
             part = part.strip()
             if not part:
                 continue
-            segments.append(
-                PrepareSegment(
-                    text=part,
-                    headings=headings,
-                    section_label=span.label,
-                    section_label_source=span.source,
-                    section_label_confidence=span.confidence,
-                )
+            segment = PrepareSegment(
+                text=part,
+                headings=headings,
+                section_label_source=span.source,
+                evidence=(
+                    [
+                        LabelEvidence(
+                            label=span.label, source=span.source, strength=span.strength
+                        )
+                    ]
+                    if span.label is not None
+                    else []
+                ),
             )
+            assign(segment)
+            segments.append(segment)
     return segments
-
-
-def _forward_fill_section_labels(
-    segments: list[PrepareSegment],
-    schema: "SectionLabelSchema",
-) -> None:
-    """Propagate the nearest preceding label to unlabeled segments.
-
-    Propagation is blocked in four cases:
-
-    - the segment's section is *explicitly unresolved* — the outline saw a
-      heading it could not name, so the preceding label is known to be wrong.
-      This is the guard that keeps the span fix from being undone here;
-    - the segment opens with a recognised section heading of its own;
-    - the fill would run backwards against the schema's canonical section order
-      (filling ``results`` into a region that precedes the ``introduction``);
-    - the preceding label came from content density and names a reference
-      list or boilerplate: density already judged the neighbour and declined,
-      so the label would only be wrong there. Forward-filled labels are weak
-      and never drop a unit, but they still steer ``target_sections``.
-    """
-    last_label: str | None = None
-    fill_count = 0
-    for index, segment in enumerate(segments):
-        if segment.section_label is not None:
-            spreads = not (
-                segment.section_label_source is SectionLabelSource.CONTENT_DENSITY
-                and label_route_class(segment.section_label, schema)
-                is not RouteClass.CONTENT
-            )
-            last_label = segment.section_label if spreads else None
-            continue
-        if segment.section_label_source is SectionLabelSource.OUTLINE_UNRESOLVED:
-            last_label = None
-            continue
-        if last_label is None or starts_with_section_heading(segment, schema):
-            continue
-        if _fill_runs_backwards(last_label, segments, index, schema):
-            continue
-        segment.section_label = last_label
-        segment.section_label_source = SectionLabelSource.FORWARD_FILL
-        segment.section_label_confidence = 0.3
-        fill_count += 1
-    if fill_count:
-        logger.debug(
-            "Forward-filled %s segment(s) with nearest preceding label", fill_count
-        )
 
 
 _PLACEHOLDER_LINE = re.compile(r"<!--.*-->")
@@ -394,7 +339,7 @@ def _attach_bare_headings(segments: list[PrepareSegment]) -> list[PrepareSegment
     """Prepend each body-less heading segment to the segment that follows it.
 
     A heading titles the text after it, so the joined segment keeps that text's
-    label, headings and confidence: the heading lends it no label, and is
+    label, headings and evidence: the heading lends it no label, and is
     filtered with its body instead of becoming a unit with nothing to extract.
     Trailing headings have no follower and are kept as they are.
     """
@@ -526,65 +471,38 @@ def _detect_schema(
     )
 
 
-def _density_label_segments(
+def _add_content_evidence(
     segments: list[PrepareSegment],
-    schema: "SectionLabelSchema",
+    schema: SectionLabelSchema,
     config: ChunkConfig,
+    block_kinds: BlockKinds | None,
 ) -> None:
-    """Label still-unlabeled segments from their content (mutates in place).
+    """Add the content tier's vote to every segment and decide again.
 
-    This is the only tier that can classify a document with no headings at all.
-    It runs after heading analysis so it never overrides a heading-derived
-    label, and it declines to guess when the evidence is ambiguous.
+    Runs on labelled segments too: strong content evidence (a reference list,
+    acknowledgements) overrides a weak heading label, and a disagreement with
+    a strong heading is kept in the evidence. This is the only tier that can
+    label a document with no headings at all.
     """
     if config.section_density == "off":
         return
     aggressive = config.section_density == "aggressive"
-    labeled = 0
+    voted = 0
     for segment in segments:
-        if segment.section_label is not None:
-            continue
-        result = classify_by_density(segment.text, schema, aggressive=aggressive)
-        if result is None:
-            continue
-        segment.section_label, segment.section_label_confidence = result
-        segment.section_label_source = SectionLabelSource.CONTENT_DENSITY
-        labeled += 1
-    if labeled:
-        logger.info(
-            "Content-density classification (%s) labeled %s segment(s)",
-            config.section_density,
-            labeled,
+        evidence = content_evidence(
+            segment.text, schema, aggressive=aggressive, block_kinds=block_kinds
         )
-
-
-def _fill_runs_backwards(
-    label: str,
-    segments: list[PrepareSegment],
-    index: int,
-    schema: "SectionLabelSchema",
-) -> bool:
-    """Whether filling ``label`` at ``index`` would violate canonical order."""
-    order = label_order(label, schema)
-    if order is None:
-        return False
-    for following in segments[index + 1 :]:
-        if following.section_label is None:
+        if evidence is None:
             continue
-        next_order = label_order(following.section_label, schema)
-        if next_order is None:
-            return False
-        if next_order < order:
-            logger.debug(
-                "Refusing forward-fill of %r before %r (order %s > %s)",
-                label,
-                following.section_label,
-                order,
-                next_order,
-            )
-            return True
-        return False
-    return False
+        segment.evidence.append(evidence)
+        assign(segment)
+        voted += 1
+    if voted:
+        logger.info(
+            "Content-density classification (%s) voted on %s segment(s)",
+            config.section_density,
+            voted,
+        )
 
 
 def _expand_segment(
@@ -600,7 +518,8 @@ def _expand_segment(
                 headings=segment.headings,
                 section_label=segment.section_label,
                 section_label_source=segment.section_label_source,
-                section_label_confidence=segment.section_label_confidence,
+                section_label_strength=segment.section_label_strength,
+                section_label_evidence=tuple(segment.evidence),
             )
         ]
 
@@ -619,7 +538,8 @@ def _expand_segment(
                     headings=segment.headings,
                     section_label=segment.section_label,
                     section_label_source=segment.section_label_source,
-                    section_label_confidence=segment.section_label_confidence,
+                    section_label_strength=segment.section_label_strength,
+                    section_label_evidence=tuple(segment.evidence),
                 )
             )
     return pieces
@@ -649,12 +569,11 @@ def _merge_prepared_chunks(
         )
         headings = next((chunk.headings for chunk in run if chunk.headings), None)
         # A merged chunk is only as trustworthy as its weakest constituent.
-        source = min(
-            (chunk.section_label_source for chunk in run if chunk.section_label_source),
-            key=_SOURCE_STRENGTH.__getitem__,
-            default=None,
+        weakest = min(
+            run,
+            key=lambda chunk: chunk.section_label_strength is LabelStrength.STRONG,
         )
-        confidence = min(chunk.section_label_confidence for chunk in run)
+        evidence = merged_evidence(*(chunk.section_label_evidence for chunk in run))
 
         for text in texts:
             merged.append(
@@ -662,8 +581,9 @@ def _merge_prepared_chunks(
                     text=text,
                     headings=headings,
                     section_label=label,
-                    section_label_source=source,
-                    section_label_confidence=confidence,
+                    section_label_source=weakest.section_label_source,
+                    section_label_strength=weakest.section_label_strength,
+                    section_label_evidence=evidence,
                 )
             )
     return merged
@@ -775,11 +695,23 @@ def _trim_citation_runs(
     """Cut citation runs at a unit's start or end into units of their own.
 
     The cut-out run is labelled with the schema's citations-class label, by the
-    content-block tier; the rest of the unit keeps its label. A unit that is all
-    citations is left whole: routing reads its content directly.
+    content-block tier, as strong evidence of its own; the rest of the unit
+    keeps its label. A unit that is all citations is left whole: routing reads
+    its content directly.
     """
     citation_labels = labels_of_class(schema, RouteClass.CITATIONS) if schema else []
     citation_label = citation_labels[0] if citation_labels else None
+    run_evidence = (
+        (
+            LabelEvidence(
+                label=citation_label,
+                source=SectionLabelSource.CONTENT_BLOCK,
+                strength=LabelStrength.STRONG,
+            ),
+        )
+        if citation_label is not None
+        else ()
+    )
     trimmed: list[PreparedChunk] = []
     for chunk in chunks:
         pieces = trim_citation_runs(chunk.text, block_kinds)
@@ -796,7 +728,10 @@ def _trim_citation_runs(
                     text=piece,
                     section_label=citation_label,
                     section_label_source=SectionLabelSource.CONTENT_BLOCK,
-                    section_label_confidence=0.9,
+                    section_label_strength=run_evidence[0].strength
+                    if run_evidence
+                    else None,
+                    section_label_evidence=run_evidence,
                 )
             )
         logger.info(
@@ -979,7 +914,9 @@ async def prepare_content_units(
         schema,
     )
     if config.section_classifier in ("heuristic", "llm"):
-        await asyncio.to_thread(_density_label_segments, segments, schema, config)
+        await asyncio.to_thread(
+            _add_content_evidence, segments, schema, config, block_kinds
+        )
     if config.section_classifier == "llm" and tools is not None:
         await llm_backfill_section_labels(
             segments,
@@ -993,7 +930,6 @@ async def prepare_content_units(
             section_tag_min_chars=config.section_tag_min_chars,
             batch_size=config.section_llm_batch_size,
         )
-    _forward_fill_section_labels(segments, schema)
     segments = _attach_bare_headings(segments)
 
     unlabeled = sum(1 for s in segments if s.section_label is None)

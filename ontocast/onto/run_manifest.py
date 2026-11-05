@@ -144,6 +144,14 @@ class RunManifestSelection(BaseModel):
             "cannot be attributed to a routing knob."
         ),
     )
+    label_strength_chars: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Characters of the units kept for extraction by label strength: "
+            "'strong', 'weak' and 'unlabeled'. Only strong labels take part in "
+            "drops; target_sections acts on any label."
+        ),
+    )
     route_histogram: dict[str, dict[str, int]] | None = Field(
         default=None,
         description=(

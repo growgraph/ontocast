@@ -11,12 +11,10 @@ class Status(StrEnum):
 
 
 class SectionLabelSource(StrEnum):
-    """How a chunk's ``section_label`` was decided.
+    """Which tier gave a piece of section-label evidence. Values are wire names.
 
-    Ordered from strongest to weakest evidence. The source is not bookkeeping:
-    the chunk-prepare cascade uses it to decide whether a label may still be
-    overwritten by a later tier, and forward-fill refuses to cross a span whose
-    source is :attr:`OUTLINE_UNRESOLVED`.
+    :attr:`OUTLINE_UNRESOLVED` marks a section the outline saw a heading for
+    but could not name: no tier spreads a neighbour's label into it.
     """
 
     HEADING_PATTERN = "heading_pattern"
@@ -27,8 +25,14 @@ class SectionLabelSource(StrEnum):
     #: A citation run cut out of a unit by the block classifier.
     CONTENT_BLOCK = "content_block"
     LLM = "llm"
-    FORWARD_FILL = "forward_fill"
     OUTLINE_UNRESOLVED = "outline_unresolved"
+
+
+class LabelStrength(StrEnum):
+    """Whether a section label may take part in a drop decision. Wire names."""
+
+    STRONG = "strong"
+    WEAK = "weak"
 
 
 class UnitRoute(StrEnum):

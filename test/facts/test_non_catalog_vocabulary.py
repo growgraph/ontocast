@@ -119,7 +119,7 @@ def test_chunk_metadata_predicates_are_not_flagged() -> None:
         schema:identifier "abc123" ;
         schema:articleSection "results" ;
         oc:sectionLabelSource "heading_keyword" ;
-        oc:sectionLabelConfidence "0.9"^^xsd:decimal .
+        oc:sectionLabelStrength "weak" .
     """
     flagged = _non_catalog(_report(facts))
 

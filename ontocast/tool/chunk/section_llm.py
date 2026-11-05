@@ -17,14 +17,16 @@ from ontocast.config.section_labels import (
     normalise_llm_label,
     resolve_section_schema_id,
 )
-from ontocast.onto.enum import LLMPhase, SectionLabelSource
+from ontocast.onto.enum import LabelStrength, LLMPhase, SectionLabelSource
 from ontocast.onto.model import BasePydanticModel
+from ontocast.onto.section_models import LabelEvidence
 from ontocast.prompt.section_classification import (
     CHUNK_SECTION_BATCH_CLASSIFICATION_PROMPT,
     CHUNK_SECTION_CLASSIFICATION_PROMPT,
     document_type_context,
     format_batch_items,
 )
+from ontocast.tool.chunk.assignment import assign
 from ontocast.tool.llm import (
     RUN_STOPPING_ERRORS,
     record_active_span,
@@ -32,6 +34,7 @@ from ontocast.tool.llm import (
 )
 
 if TYPE_CHECKING:
+    from ontocast.tool.chunk.segment import PrepareSegment
     from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -302,15 +305,23 @@ async def llm_backfill_section_labels(
     _apply_llm_labels(segments, labels)
 
 
-def _apply_llm_labels(segments: list, labels: dict[int, str | None]) -> None:
-    """Write LLM-decided labels onto segments, recording the source."""
+def _apply_llm_labels(
+    segments: list[PrepareSegment], labels: dict[int, str | None]
+) -> None:
+    """Add the model's labels to the segments' evidence, as weak votes."""
     applied = 0
     for index, label in labels.items():
         if label is None:
             continue
-        segments[index].section_label = label
-        segments[index].section_label_source = SectionLabelSource.LLM
-        segments[index].section_label_confidence = 0.7
+        segment = segments[index]
+        segment.evidence.append(
+            LabelEvidence(
+                label=label,
+                source=SectionLabelSource.LLM,
+                strength=LabelStrength.WEAK,
+            )
+        )
+        assign(segment)
         applied += 1
     if applied:
         logger.debug("LLM classified %s segment(s)", applied)

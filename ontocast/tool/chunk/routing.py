@@ -5,10 +5,10 @@ A section label is evidence, not a decision. A unit is dropped only when a
 conclusive; anything less is extracted. Selecting sections (``target_sections``)
 is the caller's intent and happens earlier, on labels of any strength.
 
-A label is strong when it comes from an anchored heading pattern, or from the
-content itself (conservative density classification, or a citation run cut out
-by the block classifier). Keyword, inherited, span-overlap, front-matter, LLM
-and forward-filled labels are weak: they may help selection, never a drop.
+Each unit carries its label's strength, set where the label was assigned
+(:mod:`ontocast.tool.chunk.assignment`): strong for an anchored heading, a
+heading inside a strong section by its number or level, or the content itself;
+weak otherwise. A weak label may help selection, never a drop.
 
 Rules, first match wins:
 
@@ -31,7 +31,6 @@ Rules, first match wins:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
 from ontocast.config.section_labels import (
@@ -39,7 +38,7 @@ from ontocast.config.section_labels import (
     SectionLabelSchema,
     label_route_class,
 )
-from ontocast.onto.enum import RouteReason, SectionLabelSource, UnitRoute
+from ontocast.onto.enum import LabelStrength, RouteReason, UnitRoute
 from ontocast.tool.chunk.bibliography import (
     LABEL_AGREEMENT_SHARE,
     citation_share,
@@ -50,27 +49,6 @@ from ontocast.tool.chunk.structure import BlockKinds
 
 if TYPE_CHECKING:
     from ontocast.config import ChunkConfig
-
-
-class LabelStrength(StrEnum):
-    """Whether a label may take part in a drop decision."""
-
-    STRONG = "strong"
-    WEAK = "weak"
-
-
-_STRONG_SOURCES = frozenset(
-    {
-        SectionLabelSource.HEADING_PATTERN,
-        SectionLabelSource.CONTENT_DENSITY,
-        SectionLabelSource.CONTENT_BLOCK,
-    }
-)
-
-
-def label_strength(source: SectionLabelSource | None) -> LabelStrength:
-    """Strength of a label from the tier that set it."""
-    return LabelStrength.STRONG if source in _STRONG_SOURCES else LabelStrength.WEAK
 
 
 @dataclass(frozen=True)
@@ -94,7 +72,7 @@ class RoutableUnit(Protocol):
     def section_label(self) -> str | None: ...
 
     @property
-    def section_label_source(self) -> SectionLabelSource | None: ...
+    def section_label_strength(self) -> LabelStrength | None: ...
 
 
 def route_unit(
@@ -129,7 +107,7 @@ def route_unit(
         return RoutingDecision(UnitRoute.SKIP, RouteReason.UNDERSIZED)
 
     label = unit.section_label.strip().lower() if unit.section_label else None
-    strong = label_strength(unit.section_label_source) is LabelStrength.STRONG
+    strong = unit.section_label_strength is LabelStrength.STRONG
     route_class = (
         label_route_class(label, schema) if schema is not None else RouteClass.CONTENT
     )
@@ -217,10 +195,8 @@ def _extract_reason(
 
 
 __all__ = [
-    "LabelStrength",
     "RouteReason",
     "RoutingDecision",
     "UnitRoute",
-    "label_strength",
     "route_unit",
 ]

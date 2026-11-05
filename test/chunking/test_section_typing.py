@@ -17,7 +17,12 @@ from ontocast.config.section_labels import (
     load_section_label_schema,
     resolve_heading_label,
 )
-from ontocast.onto.enum import RouteReason, SectionLabelSource, UnitRoute
+from ontocast.onto.enum import (
+    LabelStrength,
+    RouteReason,
+    SectionLabelSource,
+    UnitRoute,
+)
 from ontocast.tool.chunk.non_content import is_non_content_unit
 from ontocast.tool.chunk.outline import build_document_outline
 from ontocast.tool.chunk.prepare import PreparedChunk
@@ -169,7 +174,15 @@ def test_heading_rule_needs_a_schema() -> None:
 def _route(text: str, label: str | None, source, *, schema=ACADEMIC, **config: Any):
     decision = route_unit(
         PreparedChunk(
-            text=text, headings=None, section_label=label, section_label_source=source
+            text=text,
+            headings=None,
+            section_label=label,
+            section_label_source=source,
+            section_label_strength=(
+                LabelStrength.STRONG
+                if source is SectionLabelSource.HEADING_PATTERN
+                else LabelStrength.WEAK
+            ),
         ),
         schema=schema,
         schema_fallback=config.pop("schema_fallback", False),

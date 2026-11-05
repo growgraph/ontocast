@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `max_chunks` counts units kept for extraction.
 - Numbered headings are placed by their number: "2.1" takes the label of "2" unless it names its own, and a numbered top-level heading the schema does not name opens an unlabeled section instead of inheriting the previous one. Markdown levels place headings the same way in documents that use more than one level.
 - Converted documents mark captions, footnotes, formulas, code and pictures; captions, formulas and code never count as cited works. Every unit's `doc_item_refs` lists the docling items whose text it holds whole. `ontocast sections` shows heading numbers and parents.
+- A unit's section label is decided from every step's vote: strong evidence beats weak, and between equals the heading's. Acknowledgements or a reference list recognised from the content relabel a part whose heading label was weak. A numbered heading inside a section with a strong label inherits it as strong, so `exclude_sections` reaches it; the aggressive content tier's guesses are weak.
+- Content units carry `section_label_strength` (`strong`/`weak`) and `section_label_evidence` in place of `section_label_confidence`; the provenance graph carries `ontocast:sectionLabelStrength` in place of `ontocast:sectionLabelConfidence`. The run manifest's `selection` adds `label_strength_chars`, and `ontocast sections` shows strength and every step's vote. `resolve_heading_label` returns `(label, source)` and `match_heading_keywords` the label.
 
 - An ontology's namespace is where its terms live, read from the file at adoption (`vann:preferredNamespaceUri` when terms live there, else the namespace with the most described terms) and stored in its header, instead of `<iri>#`. Ontologies whose terms sit under `<iri>/` (OM-2) or elsewhere (PROV-O) get the right prefix in prompts.
 - An ontology contributes to the vector index the terms of its own namespace, so a standard vocabulary uploaded as an ontology (PROV-O, SKOS, schema.org) is indexed, and terms an ontology only reuses are not. `VECTOR_STORE_EMBED_STANDARD_VOCAB_IRIS` is removed; `VECTOR_STORE_INDEX_UNDESCRIBED_IRIS` widens only the ontology's own namespace. The surface-form contract is now `sf7`: existing vector stores need a reindex.
@@ -36,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The `default_exclude` field of section schemas (replaced by `route_class`).
 - `CHUNK_SEGMENTER` and docling's HybridChunker segmentation: units are always cut at section boundaries of the markdown export. The `span_overlap` section-label source goes with it.
+- Forward filling of section labels, and the `forward_fill` label source.
 
 ### Fixed
 

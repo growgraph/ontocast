@@ -84,14 +84,14 @@ it explicitly.
 ## How sections are recognized
 
 [`CHUNK_SECTION_CLASSIFIER`](../reference/configuration/chunking.md#chunk_section_classifier)
-sets how far OntoCast goes to label a section. Each step only sees what the
-steps before it left unlabeled:
+sets how far OntoCast goes to label a section. Each step adds its vote, and
+the model is asked only about parts no other step labeled:
 
 | Value | Steps | LLM calls |
 |---|---|---|
 | `off` | None. Units are not labeled, so section filters and boilerplate exclusions are off; reference lists and front matter are still recognized from their content | None |
-| `heading` | The document's outline; heading patterns and keywords, so `Results and Discussion` and `Experimental Section` are recognized; filling a gap from the schema's usual section order, never backwards | None |
-| `heuristic` (default) | The above, plus labeling regions without headings from their content | None |
+| `heading` | The document's outline; heading patterns and keywords, so `Results and Discussion` and `Experimental Section` are recognized | None |
+| `heuristic` (default) | The above, plus a vote from each part's content, which also labels regions without headings | None |
 | `llm` | The above, plus one batched call over whatever is still unlabeled | About one per document |
 
 A heading OntoCast does not recognize still ends the section before it, so a
@@ -114,10 +114,11 @@ Two settings refine this:
 - [`CHUNK_SECTION_DENSITY`](../reference/configuration/chunking.md#chunk_section_density)
   decides what content alone may label. `conservative` (default) recognizes only
   reference lists and acknowledgements (at least two thanks or funding
-  statements), whose form is unmistakable. Such a label applies to that part
-  only; it is not carried to the parts after it.
+  statements), whose form is unmistakable, so these votes are strong. Such a
+  label applies to that part only; it is not carried to the parts after it.
   `aggressive` also guesses methods, results and introduction, which content
-  does not separate cleanly, so a filter may then act on a wrong label.
+  does not separate cleanly: these votes are weak, and only `target_sections`
+  acts on them.
 - [`CHUNK_SECTION_TEXT_HEADINGS`](../reference/configuration/chunking.md#chunk_section_text_headings)
   finds headings in plain text, for documents whose conversion produced no
   heading structure.
@@ -179,10 +180,18 @@ Before extraction every unit takes one route: extracted, extracted as
 bibliographic records, kept but flagged as front or back matter, or dropped.
 A drop needs a **strong** label and content that agrees, or content that is
 conclusive on its own. A label is strong when it comes from an exact heading
-(`References`, `Acknowledgements`, `Author Contributions`) or from the content
-itself; a keyword inside a longer heading (`Funding Mechanisms`), a label
-carried from a neighbouring part or one set by the model is weak, and never
+(`References`, `Acknowledgements`, `Author Contributions`), from a numbered
+heading inside a section with a strong label (`2.1` under `2 Methods`), or
+from the content itself (a reference list, acknowledgements); a keyword inside
+a longer heading (`Funding Mechanisms`), a label a heading takes from the
+section before it by its wording, or one set by the model is weak, and never
 drops a unit.
+
+Every step that recognizes something adds its vote to the unit, and the
+strongest vote decides; between equally strong votes the heading wins. So
+acknowledgements under a heading that only seemed to continue the results
+are labeled acknowledgements, while a `Methods` heading keeps its label even
+over text that reads like thanks.
 
 | Unit | Route |
 |---|---|
@@ -221,9 +230,9 @@ ontocast sections --input-path ./paper.pdf --target-sections results --as-json
 
 It prints the schema (with the step that chose it and the evidence for the
 runners-up), the document's outline with each heading's number and parent,
-and every unit's label with the step that decided it and its confidence, its
-route with the reason, and how many converted items it holds, so you see what
-would be dropped and why. It makes no LLM calls and needs no credentials,
+and every unit's label with the step that decided it and its strength, its
+route with the reason, and how many converted items it holds, then every
+step's vote on each unit, so you see what would be dropped and why. It makes no LLM calls and needs no credentials,
 unless you pass `--section-classifier llm`.
 
 ## What to read next

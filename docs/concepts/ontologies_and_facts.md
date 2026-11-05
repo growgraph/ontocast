@@ -150,7 +150,7 @@ Each unit is described once:
 | `prov:generatedAtTime` | When it was extracted |
 | `schema:articleSection` | Its section label, when it has one |
 | `ontocast:sectionLabelSource` | Which classifier step decided the label |
-| `ontocast:sectionLabelConfidence` | How sure that step was, from 0 to 1 |
+| `ontocast:sectionLabelStrength` | `strong` or `weak`: whether the label could take part in dropping the unit |
 
 `ontocast:` is `https://growgraph.dev/ontocast#`, outside the facts namespace,
 so pipeline metadata is never mistaken for extracted facts. Provenance of

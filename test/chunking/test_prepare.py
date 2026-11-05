@@ -512,7 +512,7 @@ def test_routing_names_label_size_tier_and_reason(caplog) -> None:
     """A dropped unit is reported with its label, size, labelling tier and
     reason, so a misfire is visible without a dry run."""
     from ontocast.config.section_labels import load_section_label_schema
-    from ontocast.onto.enum import SectionLabelSource
+    from ontocast.onto.enum import LabelStrength, SectionLabelSource
     from ontocast.tool.chunk.prepare import PreparedChunk, _route_chunks
 
     chunks = [
@@ -522,6 +522,7 @@ def test_routing_names_label_size_tier_and_reason(caplog) -> None:
             headings=None,
             section_label="acknowledgements",
             section_label_source=SectionLabelSource.CONTENT_DENSITY,
+            section_label_strength=LabelStrength.STRONG,
         ),
     ]
     with caplog.at_level("INFO", logger="ontocast.tool.chunk.prepare"):

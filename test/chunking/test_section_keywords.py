@@ -105,7 +105,7 @@ class TestPrecisionBoundary:
     def test_compound_heading_is_keyword_matched(self):
         resolved = resolve_heading_label("Results and Discussion", SCHEMA)
         assert resolved is not None
-        assert resolved[2] == "heading_keyword"
+        assert resolved[1] == "heading_keyword"
 
     def test_heading_that_is_a_keyword_resolves_at_pattern_strength(self):
         """A section's name is exact evidence; a keyword inside a heading is not."""
@@ -115,22 +115,15 @@ class TestPrecisionBoundary:
             ("## Competing Interests", "acknowledgements"),
             ("## *sı Supporting Information", "appendix"),
         ]:
-            assert resolve_heading_label(heading, SCHEMA) == (
-                label,
-                0.95,
-                "heading_pattern",
-            )
+            assert resolve_heading_label(heading, SCHEMA) == (label, "heading_pattern")
         assert resolve_heading_label("Funding Mechanisms", SCHEMA) == (
             "acknowledgements",
-            0.7,
             "heading_keyword",
         )
 
     def test_exact_heading_prefers_the_pattern_tier(self):
         resolved = resolve_heading_label("Results", SCHEMA)
-        assert resolved is not None
-        assert resolved[2] == "heading_pattern"
-        assert resolved[1] > 0.9
+        assert resolved == ("results", "heading_pattern")
 
 
 class TestCompoundHeadingOrdering:

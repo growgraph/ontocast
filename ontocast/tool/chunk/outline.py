@@ -40,7 +40,7 @@ from ontocast.config.section_labels import (
     normalise_heading_line,
     resolve_heading_label,
 )
-from ontocast.onto.enum import SectionLabelSource
+from ontocast.onto.enum import LabelStrength, SectionLabelSource
 from ontocast.onto.section_models import DocumentOutline, HeadingNode, SectionSpan
 
 logger = logging.getLogger(__name__)
@@ -319,14 +319,16 @@ def label_outline(outline: DocumentOutline, schema: SectionLabelSchema) -> None:
                     node.sectionlike = True
         if resolved is None:
             continue
-        label, confidence, source = resolved
+        label, source = resolved
         node.label = label
-        node.confidence = confidence
+        pattern = source == "heading_pattern"
         node.source = (
             SectionLabelSource.HEADING_PATTERN
-            if source == "heading_pattern"
+            if pattern
             else SectionLabelSource.HEADING_KEYWORD
         )
+        # A keyword inside a longer heading may name the wrong section.
+        node.strength = LabelStrength.STRONG if pattern else LabelStrength.WEAK
 
 
 def inherit_subsection_labels(
@@ -334,33 +336,34 @@ def inherit_subsection_labels(
 ) -> None:
     """Propagate the enclosing section's label onto headings inside it.
 
-    A heading the tree places under a parent takes the parent's label unless
-    it names its own; a heading the tree places at top level opens a section
+    A heading the tree places under a parent takes the parent's label, and its
+    strength, unless it names its own: the number or level states that it is
+    part of the parent. A heading the tree places at top level opens a section
     of its own and inherits nothing. An unplaced heading that is not
     section-like (a descriptive subsection title) sits inside the section
-    opened by the last section-like or placed heading, and takes its label.
-    A terminal section (a reference list) has no subsections.
+    opened by the last section-like or placed heading, and takes its label
+    weakly: only its wording says it belongs there. A terminal section (a
+    reference list) has no subsections.
     """
     current_label: str | None = None
     for node in outline.nodes:
         if node.tree_placed:
             if node.label is None and node.parent is not None:
-                parent_label = outline.nodes[node.parent].label
-                if not label_is_terminal(parent_label, schema):
-                    _inherit(node, parent_label)
+                parent = outline.nodes[node.parent]
+                if not label_is_terminal(parent.label, schema):
+                    _inherit(node, parent.label, parent.strength)
         elif not node.sectionlike:
-            _inherit(node, current_label)
+            _inherit(node, current_label, LabelStrength.WEAK)
             continue
         current_label = None if label_is_terminal(node.label, schema) else node.label
 
 
-def _inherit(node: HeadingNode, label: str | None) -> None:
+def _inherit(node: HeadingNode, label: str | None, strength: LabelStrength) -> None:
     if node.label is not None or label is None:
         return
     node.label = label
     node.source = SectionLabelSource.HEADING_INHERITED
-    # Inherited labels are weaker than the heading they came from.
-    node.confidence = 0.6
+    node.strength = strength
 
 
 def outline_to_spans(outline: DocumentOutline) -> list[SectionSpan]:
@@ -391,7 +394,7 @@ def outline_to_spans(outline: DocumentOutline) -> list[SectionSpan]:
                 start=node.start,
                 end=end,
                 source=node.source,
-                confidence=node.confidence,
+                strength=node.strength,
             )
         )
     return spans
@@ -421,7 +424,7 @@ def format_outline(outline: DocumentOutline) -> list[str]:
         f"{'' if node.parent is None else node.parent:>4} "
         f"{('section' if node.sectionlike else 'sub/desc'):<8} "
         f"{str(node.label):<16} {node.source.value:<18} "
-        f"{node.confidence:.2f}  {node.text[:70]}"
+        f"{node.strength.value:<6}  {node.text[:70]}"
         for node in outline.nodes
     ]
 

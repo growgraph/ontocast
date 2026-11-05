@@ -9,7 +9,7 @@ from ontocast.config.section_labels import (
     canonical_labels,
     get_default_section_schema,
 )
-from ontocast.onto.enum import SectionLabelSource
+from ontocast.onto.enum import LabelStrength, SectionLabelSource
 from ontocast.onto.section_models import DocumentOutline, HeadingNode, SectionSpan
 from ontocast.tool.chunk.outline import build_document_outline, outline_to_spans
 
@@ -98,7 +98,7 @@ def inject_front_matter_spans(
         start=0,
         end=first_labeled.start,
         source=SectionLabelSource.FRONT_MATTER,
-        confidence=0.5,
+        strength=LabelStrength.WEAK,
     )
     return [abstract_span, *tail]
 

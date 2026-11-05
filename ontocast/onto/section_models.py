@@ -6,7 +6,7 @@ from ontocast.config.section_labels import (
     canonical_labels,
     get_default_section_schema,
 )
-from ontocast.onto.enum import SectionLabelSource
+from ontocast.onto.enum import LabelStrength, SectionLabelSource
 from ontocast.onto.model import BasePydanticModel
 
 # Backward-compatible alias for prompts and imports.
@@ -35,7 +35,7 @@ class HeadingNode(BasePydanticModel):
             than a descriptive subsection title or a document title.
         label: Canonical section label, when resolved.
         source: How ``label`` was decided.
-        confidence: Confidence in ``label`` in ``[0, 1]``.
+        strength: Whether ``label`` may take part in a drop decision.
     """
 
     text: str
@@ -49,7 +49,7 @@ class HeadingNode(BasePydanticModel):
     sectionlike: bool = True
     label: str | None = None
     source: SectionLabelSource = SectionLabelSource.OUTLINE_UNRESOLVED
-    confidence: float = 0.0
+    strength: LabelStrength = LabelStrength.WEAK
 
 
 class DocumentOutline(BasePydanticModel):
@@ -72,12 +72,25 @@ class SectionSpan(BasePydanticModel):
     start: int
     end: int
     source: SectionLabelSource = SectionLabelSource.OUTLINE_UNRESOLVED
-    confidence: float = 0.0
+    strength: LabelStrength = LabelStrength.WEAK
+
+
+class LabelEvidence(BasePydanticModel):
+    """One tier's vote on a unit's section label.
+
+    Every tier that speaks adds one; the unit's label is the strongest vote,
+    and between equals the heading's (see ``ontocast.tool.chunk.assignment``).
+    """
+
+    label: str
+    source: SectionLabelSource
+    strength: LabelStrength
 
 
 __all__ = [
     "CANONICAL_SECTION_LABELS",
     "DocumentOutline",
     "HeadingNode",
+    "LabelEvidence",
     "SectionSpan",
 ]
