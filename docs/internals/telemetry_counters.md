@@ -100,6 +100,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `llm/calls_rejected` | `ontocast/tool/llm.py` | Requests the provider refused as configured; part of `llm/calls_failed`. Any non-zero value means the run stopped |
 | `llm/parse_retry` | `ontocast/agent/common.py` | Calls re-sent because the previous answer did not parse or validate |
 | `llm/json_bracket_repair` | `ontocast/agent/common.py` | Answers recovered by correcting mismatched closing brackets |
+| `llm/json_surplus_closer` | `ontocast/agent/common.py` | Answers recovered by dropping closing brackets after a complete object |
 | `llm/parse_abandoned` | `ontocast/agent/common.py` | Calls given up after the retries ran out or the same JSON error recurred |
 | `rdf/turtle_repair` | `ontocast/onto/rdfgraph.py` | Turtle payloads that parsed only after repair (truncated statement, unknown prefix, update-query wrapper) |
 | `rdf/jsonld_rdflib_fallback` | `ontocast/onto/rdfgraph.py` | JSON-LD payloads that failed URDNA2015 normalization and were parsed by rdflib instead |
@@ -118,6 +119,8 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `ontology/deletes_dropped_insert_only` | `ontocast/agent/render_ontology.py`, `ontocast/stategraph/node_factories.py` | Ontology delete triples dropped under `ONTOLOGY_UPDATE_MODE=insert_only` |
 | `ontology/model_header_triples_dropped` | `ontocast/agent/render_ontology.py` | `owl:Ontology` header triples a fresh render wrote and that were dropped: identity and the version header are written by code |
 | `llm/ontology_identity` | `ontocast/agent/resolve_home_ontology.py` | Home-ontology calls, one per document that can create vocabulary |
+| `chunk/outline_windows_failed` | `ontocast/tool/chunk/section_llm.py` | Outline windows of the model section tier whose call raised; those regions got no model vote |
+| `serialize/ontology_identity_conflict` | `ontocast/toolbox.py` | Ontology versions not written because their identity collides with the catalog or another version of the document; the facts are still written |
 
 `calls_count` equals `llm/calls_timed + llm/timeouts`: a call that raised for
 any other reason is not counted in `calls_count`. The
@@ -223,7 +226,7 @@ left out.
 | `budget` | The full budget, as above |
 | `critic`, `ontology_critic` | Per loop: `calls`, `accepted`, score minimum, median, maximum and histogram, fix severity histograms, `accept_reason_histogram`, `incumbent_accepted`, patch passes, fix outcomes (`fixes_applied`, `fixes_noop`, `fixes_rolled_back`, `fixes_junk_refused`, `fixes_unresolved_prefix`, `patches_rolled_back`), `units_unreviewed`, `units_skipped`, triples deleted and inserted |
 | `completion` | `calls`, `units`, `subjects_inserted`, `subjects_rolled_back`, `triples_inserted`, `measurements_recovered` |
-| `selection` | `target_sections`, `exclude_sections`, `summarize_sections`, `summary_max_sentences`, `bibliography_mode`, `non_content_mode`, `labeled_units`, `unlabeled_units`, `section_label_histogram`, `label_strength_chars` (characters of the kept units with a strong, weak or no label), the units skipped as bibliography, undersized or non-content, `route_histogram` (`<route>/<reason>` → units and characters, for every prepared unit), and with `target_sections` the characters it removed (`allowlist_excluded_chars`) and how many of them were unlabeled (`allowlist_excluded_unlabeled_chars`) |
+| `selection` | `target_sections`, `exclude_sections`, `summarize_sections`, `summary_max_sentences`, `bibliography_mode`, `non_content_mode`, `labeled_units`, `unlabeled_units`, `section_label_histogram`, `label_strength_chars` (characters of the kept units with a strong, weak or no label), the units skipped as bibliography, undersized or non-content, `route_histogram` (`<route>/<reason>` → units and characters, for every prepared unit), with `target_sections` the characters it removed (`allowlist_excluded_chars`) and how many of them were unlabeled (`allowlist_excluded_unlabeled_chars`), and with `CHUNK_SECTION_CLASSIFIER=llm` the model tier's `outline_labels` (`windows`, `windows_failed`, `errors` by error class) |
 | `validation_config` | `context_from_units`, `json_mode`, `shapes_prompt_contract`, `shapes_prompt_selection`, `shapes_triples`, `shacl_inference`, `numeric_coverage_mandatory`, and the length (not the text) of the facts user instruction |
 | `ontology_reduce_metrics` | Counts from reducing the units' ontology updates: duplicate minted terms and their pairs, deletes dropped, unattributed inserts and deletes, fresh graphs unioned, artifacts produced, and the apply step's own counts (`apply_deletes_no_match`, `apply_header_triples_dropped`) |
 | `graph_metrics` | The written facts graph: `nodes`, `edges`, `components`, `largest_component`, `isolated_nodes` |

@@ -972,6 +972,9 @@ def test_route_after_tag_or_chunk_facts_only_skips_ontology() -> None:
 
 def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
     class RecordingOntologyManager:
+        def identity_conflicts(self, ontologies: list[Ontology]) -> dict[str, str]:
+            return {}
+
         def __init__(self) -> None:
             self.added = 0
 
@@ -1005,6 +1008,9 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
 
 def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
     class RecordingOntologyManager:
+        def identity_conflicts(self, ontologies: list[Ontology]) -> dict[str, str]:
+            return {}
+
         async def aadd_ontology(self, ontology: Ontology) -> None:
             return None
 
@@ -1036,6 +1042,9 @@ def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
 
 def test_toolbox_serialize_persists_all_ontology_artifacts() -> None:
     class RecordingOntologyManager:
+        def identity_conflicts(self, ontologies: list[Ontology]) -> dict[str, str]:
+            return {}
+
         def __init__(self) -> None:
             self.added = 0
 

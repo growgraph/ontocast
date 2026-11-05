@@ -91,6 +91,7 @@ async def chunk_text(state: AgentState, tools: ToolBox) -> AgentState:
     state.undersized_units_skipped = dropped_by[RouteReason.UNDERSIZED]
     state.non_content_units_skipped = dropped_by[RouteReason.NON_CONTENT]
     state.route_histogram = route_histogram(document.routed)
+    state.outline_labels = document.outline_labels
     state.allowlist_excluded_chars = document.allowlist_excluded_chars
     state.allowlist_excluded_unlabeled_chars = (
         document.allowlist_excluded_unlabeled_chars

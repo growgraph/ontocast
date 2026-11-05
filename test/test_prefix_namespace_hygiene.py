@@ -392,3 +392,17 @@ def test_postprocess_facts_units_merged_graph_has_single_schema_binding(
         URIRef("https://growgraph.dev/doc/testdoc/a"),
         URIRef("https://growgraph.dev/doc/testdoc/b"),
     }
+
+
+def test_a_prefix_shaped_namespace_never_becomes_the_working_ontology_iri() -> None:
+    """``fro:`` is an undeclared JSON-LD prefix parsed as a scheme, not an IRI."""
+    from ontocast.agent.normalize_ontology import _working_anchor_from_graph
+
+    graph = RDFGraph()
+    graph.bind("fro", "fro:")
+    graph.bind("ex", "https://example.org/onto#")
+    assert _working_anchor_from_graph(graph) == "https://example.org/onto"
+
+    only_junk = RDFGraph()
+    only_junk.bind("fro", "fro:")
+    assert _working_anchor_from_graph(only_junk) is None

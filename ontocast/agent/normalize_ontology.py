@@ -5,6 +5,7 @@ import logging
 from rdflib import OWL, Node
 
 from ontocast.onto.content_unit import ContentUnit
+from ontocast.onto.identity import validate_ontology_iri
 from ontocast.onto.namespace_merge import merge_namespace_bindings
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
@@ -22,7 +23,10 @@ def _working_anchor_from_graph(graph: RDFGraph) -> str | None:
     """Pick a stable working-context IRI from the first non-standard namespace.
 
     Used when aggregating unit deltas without a catalog base ontology. Does not
-    set ``ontology_id`` from the prefix name.
+    set ``ontology_id`` from the prefix name. A namespace that is not a valid
+    ontology IRI is passed over: a prefix-shaped one (``fro:``, an undeclared
+    JSON-LD prefix parsed as a scheme) would otherwise become an ontology
+    identity that collides at serialization.
     """
     for prefix, namespace in graph.namespaces():
         if not prefix:
@@ -30,7 +34,10 @@ def _working_anchor_from_graph(graph: RDFGraph) -> str | None:
         ns = str(namespace)
         if is_rdflib_default_namespace(ns):
             continue
-        return ns.rstrip("/#")
+        try:
+            return validate_ontology_iri(ns.rstrip("/#"))
+        except ValueError:
+            continue
     return None
 
 

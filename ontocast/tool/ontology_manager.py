@@ -135,6 +135,36 @@ class OntologyManager(Tool):
         the colliding prefix alias is simply skipped at registration and the
         ontology stays addressable by IRI and ``ontology_id``.
         """
+        self._check_identity(ontology, self._iri_to_ontology_id, self._alias_to_iri)
+
+    def identity_conflicts(self, ontologies: list[Ontology]) -> dict[str, str]:
+        """Why each of ``ontologies`` that cannot be registered cannot, by IRI.
+
+        Each is checked against the catalog and against the ones before it in
+        the list, as :meth:`validate_identity_uniqueness` would check it once
+        those were registered. Registers nothing.
+        """
+        iri_to_id = dict(self._iri_to_ontology_id)
+        alias_to_iri = dict(self._alias_to_iri)
+        conflicts: dict[str, str] = {}
+        for ontology in ontologies:
+            try:
+                self._check_identity(ontology, iri_to_id, alias_to_iri)
+            except ValueError as exc:
+                conflicts[ontology.iri] = str(exc)
+                continue
+            iri = ontology.iri.strip()
+            iri_to_id[iri] = self._primary_ontology_id(ontology)
+            for alias, _kind in self._collect_aliases(ontology):
+                alias_to_iri.setdefault(alias, iri)
+        return conflicts
+
+    def _check_identity(
+        self,
+        ontology: Ontology,
+        iri_to_id: dict[str, str],
+        alias_to_iri: dict[str, str],
+    ) -> None:
         iri = (ontology.iri or "").strip()
         if not iri:
             raise ValueError("Ontology IRI is missing")
@@ -143,7 +173,7 @@ class OntologyManager(Tool):
 
         primary = self._primary_ontology_id(ontology)
 
-        existing_primary = self._iri_to_ontology_id.get(iri)
+        existing_primary = iri_to_id.get(iri)
         if existing_primary is not None and existing_primary != primary:
             raise ValueError(
                 "Ontology identity conflict: IRI "
@@ -152,7 +182,7 @@ class OntologyManager(Tool):
             )
 
         for alias, kind in self._collect_aliases(ontology):
-            existing_iri = self._alias_to_iri.get(alias)
+            existing_iri = alias_to_iri.get(alias)
             if existing_iri is None or existing_iri == iri:
                 continue
             if kind == "prefix":

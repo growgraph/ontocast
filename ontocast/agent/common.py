@@ -251,6 +251,30 @@ def repair_bracket_kinds(text: str) -> tuple[str, int]:
     return "".join(out), fixes
 
 
+_SURPLUS_CLOSER_CHARS = frozenset("}] \t\r\n")
+
+
+def leading_object_before_surplus_closers(text: str) -> Any | None:
+    """The complete JSON value ``text`` opens with, when only closers follow it.
+
+    A model sometimes closes a finished object once too often (``{...}}``).
+    Only closing brackets and whitespace may follow the value: anything else
+    is content the model meant to send, and dropping it would lose it.
+
+    Returns:
+        The decoded value, or ``None`` when the text does not have that shape.
+    """
+    stripped = text.lstrip()
+    try:
+        value, end = json.JSONDecoder(strict=False).raw_decode(stripped)
+    except json.JSONDecodeError:
+        return None
+    rest = stripped[end:]
+    if not rest.strip() or not set(rest) <= _SURPLUS_CLOSER_CHARS:
+        return None
+    return value
+
+
 def parse_json_object(text: str) -> dict[str, Any]:
     """Parse LLM JSON output strictly, failing loudly with position context.
 
@@ -290,6 +314,17 @@ def parse_json_object(text: str) -> dict[str, Any]:
                 return _loads_object(fenced)
             except json.JSONDecodeError as fence_error:
                 text, reported = fenced, fence_error
+
+        if reported.msg == "Extra data":
+            leading = leading_object_before_surplus_closers(text)
+            if isinstance(leading, dict):
+                logger.warning(
+                    "Dropped surplus closing bracket(s) after a complete JSON "
+                    "object in LLM response (char %d)",
+                    reported.pos,
+                )
+                record_active_count("llm/json_surplus_closer")
+                return leading
 
         repaired, fixes = repair_bracket_kinds(text)
         if fixes:

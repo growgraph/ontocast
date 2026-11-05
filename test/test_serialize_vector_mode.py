@@ -82,3 +82,56 @@ async def test_aserialize_registers_the_ontology_with_vector_store_live() -> Non
     assert [(r.iri, r.role) for r in state.ontology_versions_written] == [
         (_IRI, "created")
     ]
+
+
+def _artifact_named(ontology_id: str, iri: str) -> Ontology:
+    graph = RDFGraph()
+    graph.add((URIRef(f"{iri}#Thing"), RDFS.label, Literal("Thing")))
+    return mint_ontology(
+        OntologyIdentity(ontology_id=ontology_id, iri=iri, title=ontology_id), graph
+    )
+
+
+@pytest.mark.anyio
+async def test_an_identity_conflict_skips_the_version_and_still_writes_the_facts() -> (
+    None
+):
+    """A colliding version is refused before any write; the job keeps its facts.
+
+    The collision used to raise at registration, after the version was already
+    in the store, and the facts write after it never ran.
+    """
+    from ontocast.onto.enum import RenderMode
+
+    manager = OntologyManager()
+    held = stamp_version(_artifact_named("fro", "https://example.com/fro"))
+    assert held is not None
+    manager.add_ontology(held)
+
+    writes: list[object] = []
+
+    async def record(graph: object, **_: object) -> None:
+        writes.append(graph)
+
+    state = AgentState(render_mode=RenderMode.ONTOLOGY_AND_FACTS)
+    clash = _artifact_named("fro", "https://example.com/frobase")
+    fine = _artifact_named("other", "https://example.com/other")
+    twin = _artifact_named("other", "https://example.com/other-twin")
+    state.reduced_ontology_artifacts = [clash, fine, twin]
+    state.aggregated_facts.add(
+        (URIRef("https://example.com/cd/x"), RDFS.label, Literal("x"))
+    )
+
+    stub = SimpleNamespace(
+        ontology_manager=manager,
+        triple_store_manager=SimpleNamespace(aserialize=record),
+    )
+    await ToolBox.aserialize(cast(ToolBox, stub), state)
+
+    assert [r.iri for r in state.ontology_versions_written] == [
+        "https://example.com/other"
+    ]
+    written_iris = [getattr(graph, "iri", None) for graph in writes]
+    assert written_iris == ["https://example.com/other", None]
+    assert writes[-1] is state.aggregated_facts
+    assert state.budget_tracker.counters["serialize/ontology_identity_conflict"] == 2

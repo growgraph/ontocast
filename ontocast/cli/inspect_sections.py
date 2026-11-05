@@ -282,6 +282,11 @@ def main(
         "allowlist_excluded_unlabeled_chars": (
             prepared.allowlist_excluded_unlabeled_chars
         ),
+        "outline_labels": (
+            prepared.outline_labels.model_dump()
+            if prepared.outline_labels is not None
+            else None
+        ),
     }
 
     if as_json:
@@ -372,6 +377,16 @@ def main(
             f"  target_sections removed {prepared.allowlist_excluded_chars} chars "
             f"({prepared.allowlist_excluded_unlabeled_chars} unlabeled)"
         )
+    report = prepared.outline_labels
+    if report is not None:
+        line = (
+            f"  model tier: {report.windows} window(s), {report.windows_failed} failed"
+        )
+        if report.errors:
+            line += (
+                " (" + ", ".join(f"{k} x{v}" for k, v in report.errors.items()) + ")"
+            )
+        click.echo(line)
 
 
 if __name__ == "__main__":

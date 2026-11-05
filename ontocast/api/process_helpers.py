@@ -33,6 +33,7 @@ from ontocast.onto.run_meter import (
     active_run_meter,
     run_meter_scope,
 )
+from ontocast.onto.section_models import OutlineLabelReport
 from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
@@ -367,6 +368,7 @@ def _selection_manifest(state: AgentState, config: Config) -> RunManifestSelecti
         undersized_units_skipped=state.undersized_units_skipped,
         non_content_units_skipped=state.non_content_units_skipped,
         route_histogram=state.route_histogram or None,
+        outline_labels=state.outline_labels,
         allowlist_excluded_chars=(
             state.allowlist_excluded_chars if state.target_sections else None
         ),
@@ -833,6 +835,9 @@ def _merge_workflow_state_into_agent_state(
     route_histogram = workflow_state.get("route_histogram")
     if route_histogram:
         state.route_histogram = dict(route_histogram)
+    outline_labels = workflow_state.get("outline_labels")
+    if outline_labels is not None:
+        state.outline_labels = OutlineLabelReport.model_validate(outline_labels)
     # The manifest's critic blocks read these; without this copy the manifest
     # would report no critic calls while retrieval_metrics recorded them.
     facts_telemetry = workflow_state.get("facts_loop_telemetry")

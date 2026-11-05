@@ -228,3 +228,34 @@ def test_unknown_labels_and_numbers_are_discarded() -> None:
         llm_label_outline(segments, _tools(_RecordingLLM([response])), ACADEMIC)
     )
     assert [s.section_label for s in segments] == [None, "results"]
+
+
+def test_a_failed_window_is_reported_by_error_class() -> None:
+    segments = _headless(4)
+    llm = _RecordingLLM([_labels("methods", "methods"), TimeoutError("slow")])
+    report = asyncio.run(llm_label_outline(segments, _tools(llm), ACADEMIC, window=2))
+    assert (report.windows, report.windows_failed) == (2, 1)
+    assert report.errors == {"TimeoutError": 1}
+    assert [s.section_label for s in segments] == ["methods", "methods", None, None]
+
+
+def test_the_prepared_document_carries_the_model_tier_report() -> None:
+    document = _prepare(f"## Results\n{_FINDING}\n", _RecordingLLM([ValueError()]))
+    assert document.routed, "a failed tier still prepares the document"
+    assert document.outline_labels is not None
+    assert document.outline_labels.windows_failed == 1
+
+
+def test_no_report_when_the_model_tier_is_off() -> None:
+    config = ChunkConfig(min_size=10, max_size=4000, section_classifier="heuristic")
+    tools = _tools(_RecordingLLM([]), config)
+    document = asyncio.run(
+        prepare_content_units(
+            doc_from_markdown_lines(f"## Results\n{_FINDING}\n"),
+            tools.chunker,
+            config,
+            PrepareOptions(section_schema_id="academic"),
+            tools,
+        )
+    )
+    assert document.outline_labels is None

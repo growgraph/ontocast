@@ -15,8 +15,10 @@ telemetry](../guides/telemetry.md).
    comments and trailing commas are then removed.
 2. **Parse strictly.** The text is parsed with a real JSON parser. The only
    leniency is raw control characters inside strings, which models do emit.
-3. **Fall back twice.** If that fails, a fenced ```` ```json ```` block is
-   extracted and parsed. If that fails too, closing brackets are rewritten to
+3. **Fall back.** If that fails, a fenced ```` ```json ```` block is
+   extracted and parsed. A complete object followed only by closing brackets
+   and whitespace is taken without them (`llm/json_surplus_closer`); any other
+   trailing content still fails. Otherwise closing brackets are rewritten to
    the kind their opening bracket needs. This repair only substitutes
    characters; it never inserts, deletes or reorders them, and it gives up on an
    unmatched closing bracket or an unclosed one at the end, because that is a

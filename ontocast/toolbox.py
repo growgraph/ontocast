@@ -229,6 +229,10 @@ class ToolBox:
         self.shapes_catalog.register_triple_store(self.triple_store_manager)
         # Tenancy the in-memory catalog currently reflects; None until first set.
         self._active_tenancy: tuple[str, str] | None = None
+        # Whether initialize() has populated the catalog. A first tenancy
+        # assignment after it must repopulate, or the catalog it resets stays
+        # empty.
+        self._initialized = False
         # Guards the tenancy retarget, which mutates ToolBox-wide state (dataset
         # names, the ontology catalog, vector-store table names) across awaits.
         # It is driven by a per-request query parameter with no concurrency cap,
@@ -637,15 +641,15 @@ class ToolBox:
             # partition-scoped. Carrying them across a switch leaks one tenant's
             # ontologies into another's requests -- and its alias ledger can reject
             # a legitimately distinct ontology that reuses an ontology_id.
-            # ``None`` means this is the first assignment, which happens at startup
-            # before ``initialize()``; leave the population to it rather than
-            # fetching twice. Any later switch must repopulate -- including when the
-            # partition we are leaving was empty.
-            is_first_assignment = self._active_tenancy is None
+            # A first assignment before ``initialize()`` leaves the population to
+            # it rather than fetching twice. Every other switch must repopulate --
+            # a first one after ``initialize()`` included, and when the partition
+            # we are leaving was empty.
+            leave_to_initialize = self._active_tenancy is None and not self._initialized
             self.ontology_manager.reset_catalog()
             self.shapes_catalog.reset()
             self._active_tenancy = (t, p)
-            if not is_first_assignment and triple is not None:
+            if not leave_to_initialize and triple is not None:
                 # Seed TTLs are replayed into the new partition, but only where
                 # it serves no graph of its own: a scope whose catalog is empty
                 # for want of a bootstrap is the same fault as a startup one,
@@ -818,9 +822,14 @@ class ToolBox:
         """Persist the document's ontology versions and facts (async form).
 
         Each artifact is stamped as a version; one whose content equals its
-        base's is not written. Versions are written to the store first, then
-        registered and indexed, then the facts: a refused write raises before
-        anything downstream can point at a version that does not exist.
+        base's is not written. A version whose identity collides with the
+        catalog or with another version of this document is not written either
+        (``serialize/ontology_identity_conflict``): that is checked before the
+        first write, so the store never holds a version the catalog refused,
+        and the document's facts are still written. Versions are written to the
+        store first, then registered and indexed, then the facts: a refused
+        write raises before anything downstream can point at a version that
+        does not exist.
 
         Raises:
             TripleStoreWriteError: the store refused a write.
@@ -842,6 +851,12 @@ class ToolBox:
                 logger.info("Ontology %s is unchanged; no new version", artifact.iri)
                 continue
             stamped.append(version)
+
+        conflicts = self.ontology_manager.identity_conflicts(stamped)
+        for iri, reason in conflicts.items():
+            logger.warning("Ontology %s is not written: %s", iri, reason)
+            state.budget_tracker.incr("serialize/ontology_identity_conflict")
+        stamped = [version for version in stamped if version.iri not in conflicts]
 
         if self.triple_store_manager is not None:
             for version in stamped:
@@ -1310,6 +1325,7 @@ class ToolBox:
         # After materialization, not before: the wipe above is unconditional and
         # the refill is not, so an empty index is only evidence of a fault once
         # the reindex has had its turn.
+        self._initialized = True
         await self._check_catalog_ready(
             synchronized_ontologies, required=require_populated_catalog
         )

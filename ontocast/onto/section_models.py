@@ -91,10 +91,29 @@ class LabelEvidence(BasePydanticModel):
     strength: LabelStrength
 
 
+class OutlineLabelReport(BasePydanticModel):
+    """What the model tier (``CHUNK_SECTION_CLASSIFIER=llm``) did for one document.
+
+    The tier is best effort: a window whose call fails gives no votes and the
+    document is still prepared. ``windows_failed`` above zero means part of
+    the outline was labelled without the model.
+    """
+
+    windows: int = Field(default=0, description="Outline windows sent to the model.")
+    windows_failed: int = Field(
+        default=0, description="Windows whose call raised and gave no votes."
+    )
+    errors: dict[str, int] = Field(
+        default_factory=dict,
+        description="Failed windows by exception class name.",
+    )
+
+
 __all__ = [
     "CANONICAL_SECTION_LABELS",
     "DocumentOutline",
     "HeadingNode",
     "LabelEvidence",
+    "OutlineLabelReport",
     "SectionSpan",
 ]

@@ -275,3 +275,27 @@ def test_completion_summary_reads_its_own_attempt_kind() -> None:
     assert summary.subjects_rolled_back == 1
     assert summary.triples_inserted == 7
     assert summary.measurements_recovered == 2
+
+
+def test_the_model_tier_report_reaches_the_manifest_from_workflow_state() -> None:
+    from ontocast.api.process_helpers import (
+        _merge_workflow_state_into_agent_state,
+        _selection_manifest,
+    )
+    from ontocast.config import Config
+    from ontocast.onto.state import AgentState
+
+    chunk = {
+        "outline_labels": {
+            "windows": 3,
+            "windows_failed": 1,
+            "errors": {"LLMRequestTimeoutError": 1},
+        }
+    }
+    state = _merge_workflow_state_into_agent_state(AgentState(), chunk)
+
+    report = _selection_manifest(state, Config()).outline_labels
+    assert report is not None
+    assert (report.windows, report.windows_failed) == (3, 1)
+    assert report.errors == {"LLMRequestTimeoutError": 1}
+    assert _selection_manifest(AgentState(), Config()).outline_labels is None

@@ -107,7 +107,10 @@ its text, and each part of unheaded text on its own, with every label's
 `description` from the schema. It labels every region. Its vote is weak: it
 decides where no heading word or content spoke, overriding only the
 nearest-label step; where it disagrees with another step, its vote is kept in
-the unit's evidence.
+the unit's evidence. A long outline is sent in windows of
+`CHUNK_SECTION_LLM_BATCH_SIZE` regions. A window whose call fails costs only
+its votes: the run manifest's `selection.outline_labels` counts the windows
+sent and failed, by error class, and `ontocast sections` prints the same line.
 
 A heading OntoCast does not recognize still ends the section before it, so a
 label never runs on into the next section. Where a document numbers its

@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ontocast.onto.model import LoopAttempt
+from ontocast.onto.section_models import OutlineLabelReport
 from ontocast.onto.state import BudgetTracker
 from ontocast.util.graph_metrics import GraphShapeMetrics
 
@@ -157,6 +158,15 @@ class RunManifestSelection(BaseModel):
         description=(
             "'<route>/<reason>' -> {'units', 'chars'} for every prepared unit, "
             "kept or dropped: what each routing rule removed or kept, and why."
+        ),
+    )
+    outline_labels: OutlineLabelReport | None = Field(
+        default=None,
+        description=(
+            "The model section tier (CHUNK_SECTION_CLASSIFIER=llm): windows "
+            "sent, windows whose call failed, and the failures by error class. "
+            "windows_failed above zero means part of the outline got no model "
+            "vote. Absent when the tier did not run."
         ),
     )
     allowlist_excluded_chars: int | None = Field(

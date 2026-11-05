@@ -28,7 +28,11 @@ from ontocast.config.section_labels import (
     schema_id_from_hint,
 )
 from ontocast.onto.enum import LabelStrength, SectionLabelSource
-from ontocast.onto.section_models import LabelEvidence, SectionSpan
+from ontocast.onto.section_models import (
+    LabelEvidence,
+    OutlineLabelReport,
+    SectionSpan,
+)
 from ontocast.tool.chunk.assignment import assign, content_evidence, merged_evidence
 from ontocast.tool.chunk.bibliography import trim_citation_runs
 from ontocast.tool.chunk.chunker import ChunkerTool
@@ -99,6 +103,7 @@ class PreparedDocument:
         allowlist_excluded_chars: Characters ``target_sections`` removed.
         allowlist_excluded_unlabeled_chars: The part of those that carried no
             label at all -- text a missing label, not the caller, kept out.
+        outline_labels: What the model tier did; ``None`` when it did not run.
     """
 
     routed: list[PreparedChunk]
@@ -106,6 +111,7 @@ class PreparedDocument:
     schema_source: str | None = None
     allowlist_excluded_chars: int = 0
     allowlist_excluded_unlabeled_chars: int = 0
+    outline_labels: OutlineLabelReport | None = None
 
     @property
     def units(self) -> list[PreparedChunk]:
@@ -943,8 +949,9 @@ async def prepare_content_units(
         await asyncio.to_thread(
             _add_content_evidence, segments, schema, config, block_kinds
         )
+    outline_labels: OutlineLabelReport | None = None
     if config.section_classifier == "llm" and tools is not None:
-        await llm_label_outline(
+        outline_labels = await llm_label_outline(
             segments,
             tools,
             # The resolved schema is threaded, not re-derived: re-resolving from
@@ -1001,6 +1008,7 @@ async def prepare_content_units(
         schema_source=decision.source,
         allowlist_excluded_chars=excluded_chars,
         allowlist_excluded_unlabeled_chars=excluded_unlabeled_chars,
+        outline_labels=outline_labels,
     )
     _guard_excluded_everything(document, options, schema, on_empty)
     return document

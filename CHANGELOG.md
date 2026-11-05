@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Coreference resolution (`Resolve Coreference` node, `AGG_LLM_COREFERENCE`, on by default): after merging, one LLM call per document of two or more units decides the entity pairs the symbolic tiers cannot settle; a verdict merges like a shared key or vetoes, and every guard still applies. Pairs per call: `AGG_LLM_COREFERENCE_MAX_PAIRS`; counters `facts_coreference_*`, phase `facts_coreference`.
 - Tables of contents and lists of figures or tables are recognised from their content (lines or two-column table rows ending in ascending page numbers) and routed as non-content, reason `contents_list`.
 - Every content unit records why it was routed (`route_reason`). The run manifest's `selection` block adds `route_histogram` (units and characters per route and reason) and, under `target_sections`, the characters it removed and how many were unlabeled. `ontocast sections` shows each unit's route and reason.
+- With `CHUNK_SECTION_CLASSIFIER=llm`, the run manifest's `selection.outline_labels` records the outline windows sent and failed, by error class (counter `chunk/outline_windows_failed`); `ontocast sections` prints it.
 
 ### Changed
 
@@ -58,6 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The facts gate's un-merge repair dissolves only the cluster a finding implicates: a multi-valued or functional-property finding no longer splits the correctly merged entities its subject points at.
 - Within that cluster, the repair splits only the members whose values on the finding's predicate disagree; members that carried no value keep their merges.
 - An ontology whose IRI ends in an empty fragment (`http://www.w3.org/ns/prov#`) is adopted under the IRI without it; a header that is only typed `owl:Ontology` beside a described one (W3C PROV-O) is dropped.
+- An ontology version whose identity collides with the catalog or with another version of the document no longer fails serialization after it was written: it is left unwritten (`serialize/ontology_identity_conflict`) and the document's facts are written. A prefix-shaped namespace (`fro:`) never becomes an ontology's IRI.
+- A first tenancy switch after `ToolBox.initialize()` no longer leaves the catalog empty.
+- An LLM answer that closes a complete JSON object with surplus brackets is taken without them (`llm/json_surplus_closer`) instead of being re-requested.
 
 ## [0.8.2]
 

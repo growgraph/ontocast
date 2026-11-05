@@ -35,6 +35,7 @@ from ontocast.onto.model import (
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.run_meter import TokenTotals
+from ontocast.onto.section_models import OutlineLabelReport
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.token_usage import TokenUsage
 from ontocast.util.hash import render_text_hash
@@ -637,6 +638,13 @@ class AgentState(BasePydanticModel):
             "Routing decisions of the chunk step, keyed '<route>/<reason>' "
             "(e.g. 'skip/citation_list'), each with its unit and character "
             "counts; kept and dropped units alike."
+        ),
+    )
+    outline_labels: OutlineLabelReport | None = Field(
+        default=None,
+        description=(
+            "What the model section tier did: windows sent and failed. None "
+            "when it did not run."
         ),
     )
     allowlist_excluded_chars: int = Field(

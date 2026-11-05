@@ -22,7 +22,7 @@ from pydantic import Field
 from ontocast.config.section_labels import SectionLabelSchema, normalise_llm_label
 from ontocast.onto.enum import LabelStrength, LLMPhase, SectionLabelSource
 from ontocast.onto.model import BasePydanticModel
-from ontocast.onto.section_models import LabelEvidence
+from ontocast.onto.section_models import LabelEvidence, OutlineLabelReport
 from ontocast.prompt.section_classification import (
     OUTLINE_LABELING_PROMPT,
     document_type_context,
@@ -30,7 +30,7 @@ from ontocast.prompt.section_classification import (
     format_regions,
 )
 from ontocast.tool.chunk.assignment import assign
-from ontocast.tool.llm import RUN_STOPPING_ERRORS, use_llm_phase
+from ontocast.tool.llm import RUN_STOPPING_ERRORS, record_active_count, use_llm_phase
 
 if TYPE_CHECKING:
     from ontocast.tool.chunk.segment import PrepareSegment
@@ -110,8 +110,8 @@ async def _label_window(
     tools: ToolBox,
     schema: SectionLabelSchema,
     document_type_hint: str | None,
-) -> dict[int, str] | None:
-    """The model's labels for one window, by position in the window."""
+) -> dict[int, str] | Exception:
+    """The model's labels for one window, by position, or the error it raised."""
     parser = PydanticOutputParser(pydantic_object=OutlineLabels)
     prompt = OUTLINE_LABELING_PROMPT.format_prompt(
         label_catalog=format_label_catalog(
@@ -129,8 +129,14 @@ async def _label_window(
         raise
     except Exception as exc:
         # The tier is weak: its votes are missed, the document is not.
-        logger.warning("Outline labeling failed for %s region(s): %s", len(window), exc)
-        return None
+        logger.warning(
+            "Outline labeling failed for %s region(s): %s: %s",
+            len(window),
+            type(exc).__name__,
+            exc,
+        )
+        record_active_count("chunk/outline_windows_failed")
+        return exc
     labels: dict[int, str] = {}
     for item in parsed.labels:
         if not 0 <= item.index < len(window):
@@ -148,7 +154,7 @@ async def llm_label_outline(
     *,
     document_type_hint: str | None = None,
     window: int = 40,
-) -> None:
+) -> OutlineLabelReport:
     """Add the model's vote to every segment and decide again (mutates in place).
 
     Args:
@@ -158,14 +164,22 @@ async def llm_label_outline(
             are discarded.
         document_type_hint: Free-text document type, passed to the prompt.
         window: Regions per call.
+
+    Returns:
+        How many windows were sent and which failed.
     """
     regions = outline_regions(segments)
     size = max(1, window)
     voted = 0
+    report = OutlineLabelReport()
     for start in range(0, len(regions), size):
         chunk = regions[start : start + size]
+        report.windows += 1
         labels = await _label_window(chunk, tools, schema, document_type_hint)
-        if labels is None:
+        if isinstance(labels, Exception):
+            report.windows_failed += 1
+            name = type(labels).__name__
+            report.errors[name] = report.errors.get(name, 0) + 1
             continue
         for position, label in labels.items():
             for index in chunk[position].segments:
@@ -185,6 +199,7 @@ async def llm_label_outline(
             voted,
             len(regions),
         )
+    return report
 
 
 __all__ = [
