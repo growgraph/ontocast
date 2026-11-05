@@ -23,9 +23,13 @@ ontology, such as
 [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](../reference/configuration/pipeline.md#ontology_context_fixed_ontology_id),
 any of the three works.
 
-An `ontology_id` is a lowercase handle matching `^[a-z][a-z0-9_-]{1,31}$`. A
-standard-vocabulary prefix (`owl`, `skos`, `schema`, ...) and the names OntoCast
-uses itself (`cd`, `doc`, `facts`, `vann`, `sh`, `oc`, `ontocast`) are refused.
+An `ontology_id` is a lowercase handle matching `^[a-z][a-z0-9_-]{1,31}$`. It
+is also the prefix the ontology's terms are shown under. The names OntoCast uses
+itself (`cd`, `doc`, `facts`, `oc`, `ontocast`) are refused. A standard prefix
+(`sosa`, `prov`, `skos`, `schema`, ...) names only the ontology whose namespace
+is that prefix's standard one: the W3C SOSA file loads as `sosa` and PROV-O as
+`prov`, while any other ontology, and every ontology OntoCast creates, needs
+another id.
 
 ### The home ontology
 

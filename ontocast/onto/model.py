@@ -5,7 +5,7 @@ from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from ontocast.onto.identity import OntologyId
+from ontocast.onto.identity import MintedOntologyId
 from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
@@ -668,7 +668,7 @@ class OntologyIdentityProposal(BaseModel):
     ontology; any other id names a new one.
     """
 
-    ontology_id: OntologyId = Field(
+    ontology_id: MintedOntologyId = Field(
         description=(
             "Short lowercase handle (2-32 chars, letters, digits, '_' or '-', "
             "starting with a letter), e.g. 'abc' for a hypothetical A... B... C... "

@@ -30,6 +30,7 @@ from rdflib import DCTERMS, OWL, RDF, RDFS, SH, XSD, Literal, URIRef
 from ontocast.onto.constants import DEFAULT_DOMAIN, PROV
 from ontocast.onto.identity import (
     OntologyIdentity,
+    check_prefix_binding,
     mint_ontology_iri,
     split_version_iri,
     validate_ontology_id,
@@ -164,6 +165,7 @@ def header_from_fields(
         validate_ontology_iri(iri)
         base_iri, _ = split_version_iri(version_iri)
         ontology_id = validate_ontology_id(first("prefix") or "")
+        check_prefix_binding(ontology_id, first("namespace") or "")
         created_at = _parse_datetime(first("created") or "")
         modified_at = _parse_datetime(first("modified") or "")
     except ValueError as exc:
@@ -327,6 +329,7 @@ def stamp_version(
         iri=artifact.iri,
         title=artifact.title or "",
         description=artifact.description or "",
+        namespace=artifact.namespace or "",
     )
     digest = artifact.content_hash()
     stamped_at = _now(now)
@@ -437,14 +440,17 @@ def adopt_ontology(
         or derive_ontology_id(iri)
         or ""
     )
+    # The namespace is decided before the identity: a standard prefix is a
+    # valid id only for the ontology that lives in its standard namespace.
+    namespace = ontology_namespace(graph, iri)
     identity = OntologyIdentity(
         ontology_id=candidate_id,
         iri=iri,
         title=first(DCTERMS.title) or first(RDFS.label) or candidate_id,
         description=first(DCTERMS.description) or first(RDFS.comment) or "",
+        namespace=namespace,
     )
     label = normalize_semantic_version(first(OWL.versionInfo) or "") or "1.0.0"
-    namespace = ontology_namespace(graph, identity.iri)
     terms = graph
     for p in _REWRITTEN_PREDICATES:
         for o in list(terms.objects(subject, p)):
