@@ -18,6 +18,13 @@ Ontology output has its own document-level checks after the unit loop: the
 reduce-time policies, `STRUCTURAL_CHECK` and `CONSISTENCY_CRITIC`, all without
 LLM calls ([below](#ontology-checks-after-the-unit-loop)).
 
+Between aggregation and the gate, `RESOLVE_COREFERENCE` puts the entity pairs
+the symbolic merge rules cannot settle to the model, in one call per document
+of two or more units (`AGG_LLM_COREFERENCE`); its verdicts merge or veto pairs
+and stay in force when the gate re-aggregates. [Entity
+disambiguation](../concepts/entity_disambiguation.md#coreference-the-guards-cannot-settle)
+describes it.
+
 No layer withholds output. A unit that leaves the loop without being accepted
 keeps its graph: the reduce merges it and logs it as salvaged from a
 non-converged loop. The gate serves the facts it repaired, with the remaining
@@ -304,7 +311,8 @@ The passes stop as soon as nothing is missing.
    their own units, are all incompatible (for `degenerate_coreference`, which
    of its predicates they use or are reached by). Members that carried no
    value keep their merges; when no pair disagrees, the whole cluster is
-   vetoed. The units are re-aggregated, up to
+   vetoed. The units are re-aggregated with these vetoes and the coreference
+   verdicts, up to
    `FACTS_MERGE_REPAIR_PASSES` times; a pass is kept only if the
    merge-signature error count strictly drops. SHACL findings never drive this
    loop: a missing property says a node is under-specified, not that two

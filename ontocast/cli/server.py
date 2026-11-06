@@ -46,6 +46,7 @@ from ontocast.cli.inspect_sections import main as inspect_sections_cli
 from ontocast.config import Config
 from ontocast.config.env_names import env_names
 from ontocast.onto.enum import OntologyContextMode, RenderMode
+from ontocast.onto.ontology_header import SeedOntologyLoadError
 from ontocast.onto.retrieval_capabilities import validate_ontology_context_mode
 from ontocast.onto.tenancy import DEFAULT_PROJECT, DEFAULT_TENANT, TenancyScope
 from ontocast.stategraph import create_agent_graph
@@ -290,8 +291,9 @@ def _bootstrap_tools(
         shapes_dir: ``--shapes-dir``, same three states over ``FACTS_SHAPES_DIR``.
         batch: This is ``process``, not ``serve``. A batch run has no later
             chance to be given ontologies, so a named-but-absent seed directory
-            is fatal, and an empty catalog is fatal for the one render mode that
-            cannot create vocabulary of its own. A server is filled through
+            and a seed file that fails to load are fatal, and an empty catalog
+            is fatal for the one render mode that cannot create vocabulary of
+            its own. A server is filled through
             ``POST /ontologies``, so neither is.
     """
     config = Config()
@@ -346,16 +348,20 @@ def _bootstrap_tools(
     if flush_on_clean and config.clean:
         asyncio.run(flush_triple_configured_scope(tools))
 
-    asyncio.run(
-        tools.initialize(
-            ontology_context_mode=ontology_context_mode_value,
-            fail_on_vector_store_error=vector_mode_enabled,
-            wipe_vector_store=wipe_vector_store,
-            require_populated_catalog=(
-                batch and config.server.render_mode == RenderMode.FACTS
-            ),
+    try:
+        asyncio.run(
+            tools.initialize(
+                ontology_context_mode=ontology_context_mode_value,
+                fail_on_vector_store_error=vector_mode_enabled,
+                wipe_vector_store=wipe_vector_store,
+                require_populated_catalog=(
+                    batch and config.server.render_mode == RenderMode.FACTS
+                ),
+                require_all_seeds=batch,
+            )
         )
-    )
+    except SeedOntologyLoadError as exc:
+        raise click.ClickException(str(exc)) from exc
     validate_ontology_context_mode(ontology_context_mode_value, tools)
     return BootstrappedRuntime(
         config=config,
@@ -375,8 +381,8 @@ def _shared_runtime_options(fn: F) -> F:
             type=int,
             default=None,
             help=(
-                "Render/critic retry budget per loop (default from MAX_VISITS / "
-                "server config)."
+                "Render attempts per content unit when a render fails outright, "
+                "counting the first (default: MAX_VISITS_PER_NODE)."
             ),
         ),
         click.option(

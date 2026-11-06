@@ -146,7 +146,7 @@ context](ontology_context.md) explains the trade-offs.
 |---|---|
 | [`ONTOCAST_ONTOLOGY_DIRECTORY`](../reference/configuration/storage.md#ontocast_ontology_directory) | Turtle files loaded into the catalog at startup. Same as `--ontology-dir` |
 | [`FACTS_SHAPES_DIR`](../reference/configuration/facts-validation.md#facts_shapes_dir) | SHACL shapes that extracted facts are validated against (`shacl` extra). Same as `--shapes-dir` |
-| [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain) | The base of the document IRIs OntoCast creates (`<domain>/doc/<hash>`). Set it once per project: it ends up in every graph you write. Extracted entities always use the fixed facts namespace `cd:`; see [Ontologies and facts](../concepts/ontologies_and_facts.md) |
+| [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain) | The base of the document IRIs (`<domain>/doc/<hash>`) and of the ontologies OntoCast creates (`<domain>/<ontology_id>`). Set it once per project: it ends up in every graph you write. Extracted entities always use the fixed facts namespace `cd:`; see [Ontologies and facts](../concepts/ontologies_and_facts.md) |
 
 Ontologies and shapes can also be uploaded to a running server; see the [HTTP
 API](../reference/http_api.md).
@@ -209,7 +209,7 @@ a proxy that authenticates sits in front of it.
 
 To process only some sections of a document, such as the methods and results
 of a paper, pass `target_sections` or `exclude_sections` with the request; see
-the [HTTP API](../reference/http_api.md).
+[Structured documents](../concepts/structured_documents.md).
 
 ## What to read next
 

@@ -38,7 +38,7 @@ you.
 |-------|---------|-------|
 | `openai` / `anthropic` / `google` / `ollama` | The matching LLM provider | One is required |
 | `server` | The `ontocast` command, every console script, and the HTTP API | FastAPI, uvicorn, click, rich. Without it the console scripts print an install hint and exit |
-| `documents` | Representing and chunking converted documents (`docling-core`) | Included by `server` and `doc-processing`; pulls pandas, pyarrow, transformers |
+| `documents` | Representing and chunking converted documents (`docling-core`) | Included by `server` and `doc-processing`; pulls pandas |
 | `doc-processing` | PDF, Word, PowerPoint, Excel, HTML, Markdown, CSV, AsciiDoc and image conversion (Docling; [`CONVERTER_SUPPORTED_EXTENSIONS`](../reference/configuration/conversion.md#converter_supported_extensions)), OCR for scanned pages, an optional equation-to-LaTeX model (downloaded when first enabled), and the `sentence-transformers` backend used by the default `EMBEDDING_PROVIDER=huggingface` | Includes `documents` |
 | `qdrant` | Qdrant vector store | Pulls `qdrant-client` and gRPC |
 | `lancedb` | Embedded LanceDB vector store, no external service | |
@@ -48,12 +48,14 @@ you.
 | `shacl` | SHACL validation of extracted facts, plus the shape-driven autofix | Without it, shape validation logs a warning and does nothing; see [Validation](../guides/validation.md) |
 | `web-search` | Web grounding (`WEB_SEARCH_ENABLED=true`) | |
 | `plot` | `plot-graph` workflow diagrams | `pygraphviz`, whose wheel bundles Graphviz |
-| `all` | Every extra above except `plot` | `plot` is not included in `all` because it is a large optional dependency |
+| `all` | Every extra above except `plot` | Install `plot` separately; it serves only `plot-graph` |
 
-Vector retrieval is off in a base install: each content unit is shown one
-working ontology, which is the default. To turn retrieval on, install one of
-the two backends, `lancedb` (embedded) or `qdrant` (a server), and set
-`ONTOLOGY_CONTEXT_MODE=selected_vector_search_ontology`; see [Choosing ontology
+Vector retrieval is off by default
+([`ONTOLOGY_CONTEXT_MODE`](../reference/configuration/pipeline.md#ontology_context_mode)
+is `selected_single_ontology`). To turn retrieval on, install one of the two
+backends, `lancedb` (embedded) or `qdrant` (a server), enable it
+(`LANCEDB_ENABLED=true`, or `QDRANT_URI`), and set `ONTOLOGY_CONTEXT_MODE` to
+`selected_vector_search_ontology`; see [Choosing ontology
 context](../guides/ontology_context.md).
 
 ```bash
@@ -76,9 +78,10 @@ an install hint instead of failing with an import error.
 |---------|---------|
 | `ontocast serve` | Start the HTTP server; see the [HTTP API](../reference/http_api.md) |
 | `ontocast process` | Extract from a local file or directory, without a server |
-| `ontocast sections` | Print the section outline detected in a document, without running extraction |
+| `ontocast sections` | Print the section outline detected in a document and the route of each unit, without running extraction |
 | `ontocast cache` | Inspect (`stats`), trim (`prune`) or empty (`clear`) the on-disk cache |
-| `pdfs-to-markdown` | Convert a directory of PDFs to Markdown JSON once, so later runs reuse the conversion |
+| `ontocast config check` | Classify each variable in settings files as unknown, invalid, redundant or pinned |
+| `pdfs-to-markdown` | Convert a directory of PDFs to Markdown files (`<name>.md`) that `ontocast process` reads back with their headings |
 | `match-graphs` | Match the entities of two Turtle graphs; see [Entity disambiguation](../concepts/entity_disambiguation.md) |
 | `plot-graph` | Regenerate the workflow diagrams (needs the `plot` extra) |
 

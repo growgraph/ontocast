@@ -16,8 +16,9 @@ An ontology is identified by its **IRI**, the subject of its `owl:Ontology`
 statement: an absolute `http(s)` IRI with no fragment, since its versions are
 named `<iri>#<key>`. An empty fragment (`http://www.w3.org/ns/prov#`) is
 dropped. Its **namespace**, where its terms live, is separate: `<iri>#` for an
-ontology OntoCast creates, and read from the file for one you load. Two shorter names point to the same entry: its `ontology_id`
-and the prefix its author bound in Turtle. They can differ (an ontology with id
+ontology OntoCast creates, and read from the file for one you load. Two
+shorter names point to the same entry: its `ontology_id` and the prefix its
+author bound in Turtle. They can differ (an ontology with id
 `observation` may use the prefix `obs:`), and wherever OntoCast asks for an
 ontology, such as
 [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](../reference/configuration/pipeline.md#ontology_context_fixed_ontology_id),
@@ -49,7 +50,8 @@ The file declares exactly one named `owl:Ontology` that describes itself; a
 header that is only typed `owl:Ontology` beside it is dropped, as W3C PROV-O
 publishes one. Its namespace is the file's `vann:preferredNamespaceUri` when
 terms live under it, else the namespace in which the file describes the most
-terms: OM-2's is `…/om-2/`, PROV-O's is `…/prov#`. Its id is its `vann:preferredNamespacePrefix`, else derived from the IRI; its title
+terms: OM-2's is `…/om-2/`, PROV-O's is `…/prov#`. Its id is its
+`vann:preferredNamespacePrefix`, else derived from the IRI; its title
 `dcterms:title`, else `rdfs:label`, else the id; its version label
 `owl:versionInfo` when that is a semantic version, else `1.0.0`. It is stored
 as a root version. An upload whose IRI is already in the catalog is refused;
@@ -67,7 +69,7 @@ ontology IRI carries the version header:
 |---|---|
 | `owl:versionIRI` | The named graph, `<iri>#<key>` |
 | `owl:priorVersion` | The version(s) this one was made from: none on a root, one for an update, several for a merge |
-| `owl:versionInfo` | A semantic version label: `1.0.0` on a root, then bumped per ontology from the updates applied to it. Major when more than five triples are deleted, including more than two classes or three properties; minor for any other deletion, or for five or more new classes or properties; patch otherwise |
+| `owl:versionInfo` | A semantic version label: `1.0.0` on a root, then bumped per ontology from the updates applied to it. Major when more than five triples are deleted and the updates declare or remove more than two classes or more than three properties; minor for any other deletion, or for five or more new classes or properties; patch otherwise |
 | `vann:preferredNamespacePrefix`, `vann:preferredNamespaceUri` | The `ontology_id` and the namespace |
 | `dcterms:title`, `rdfs:label` | The title |
 | `dcterms:description` | The description, when there is one |
@@ -80,7 +82,9 @@ licence) are kept. A removed version keeps its header and is marked
 `<graph> a oc:RemovedVersion` (`oc:` is `https://growgraph.dev/ontocast#`),
 so lineage through it never dangles.
 
-The **head** of an ontology is the version no other version names as prior. A
+The **head** of an ontology is a version that is not removed and from which no
+other version that is not removed descends; descent passes through removed
+versions, so removing the newest version makes its priors heads again. A
 run reads one head per ontology, and older versions stay in the store, so you
 can compare what a run changed with what was there before. An ontology with
 several heads is **diverged**: `GET /ontologies` lists it and its versions can

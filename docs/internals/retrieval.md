@@ -42,21 +42,26 @@ the centre of the index and surface against every query, crowding out real
 terms. Referenced terms stay reachable, because subgraph expansion walks into
 them from seeds; they are just never seeds themselves.
 [`VECTOR_STORE_INDEX_UNDESCRIBED_IRIS`](../reference/configuration/ontology-retrieval.md#vector_store_index_undescribed_iris)
-atomizes them too.
+also atomizes the referenced terms of the module's own namespace.
 
 It follows that a term reaches retrieval only from a module that describes it.
 For an external vocabulary to contribute its terms, include their declarations
 in the catalog; referencing their IRIs is not enough.
 
-A module contributes the terms of its own namespace: the one in which it
-describes the most terms. A term it describes in another namespace (a Dublin
-Core annotation property, a superclass from an imported vocabulary) is reuse
-and is indexed from the module that defines it. So a standard vocabulary
-uploaded as a module (PROV-O, SKOS, schema.org) is indexed like any other.
+A module contributes the terms of its own namespace: the namespace recorded
+for the ontology when it is adopted (its `vann:preferredNamespaceUri` when the
+module describes terms there, otherwise the namespace in which it describes the
+most terms), and any other namespace in which it describes as many terms. A
+term it describes in another namespace (a Dublin Core annotation property, a
+superclass from an imported vocabulary) is reuse and is indexed from the module
+that defines it. So a standard vocabulary uploaded as a module (PROV-O, SKOS,
+schema.org) is indexed like any other.
 [`VECTOR_STORE_EXTRA_EXCLUDED_NAMESPACE_PREFIXES`](../reference/configuration/ontology-retrieval.md#vector_store_extra_excluded_namespace_prefixes)
-removes whole namespaces. Provenance triples are stripped before atomization. A term declared
-as a property, or used as a predicate, gets the predicate role; every other
-term the resource role.
+removes whole namespaces. Triples that touch provenance scaffolding (the chunk
+nodes and statement reifiers the pipeline mints) or a document node are
+stripped before atomization; a module's own PROV-O or Dublin Core annotations
+are kept. A term declared as a property, or used as a predicate, gets the
+predicate role; every other term the resource role.
 
 Each atom carries three texts, one per retrieval lane:
 
@@ -384,8 +389,8 @@ searches the index for each, keeping the top three hits. A hit from a catalog
 ontology the document did not draw on, with a fused score of at least
 [`VECTOR_STORE_CONSISTENCY_CRITIC_MIN_FUSED_SCORE`](../reference/configuration/ontology-retrieval.md#vector_store_consistency_critic_min_fused_score),
 is reported as a possible conflict in `improvement_suggestions`, up to five;
-`retrieval_metrics.consistency_conflicts` counts them. The threshold is on the
-fused scale, not a cosine similarity: at the default weights a rank-1 hit in a
+`retrieval_metrics.consistency_conflicts` counts the conflicts found. The
+threshold is on the fused scale, not a cosine similarity: at the default weights a rank-1 hit in a
 single lane stays below 0.5, so the default reports only terms that at least
 two lanes rank near the top. The critic changes nothing in the graph.
 
@@ -412,9 +417,8 @@ SHACL](../guides/validation.md).
 ## Measuring retrieval on your catalog
 
 `test/test_retrieval_recall.py` reports the retrieval funnel for a corpus you
-point it at; [Contributing](../contributing.md) describes its setup. Measured
-results for reference corpora live in `ontocast-validation`. In production,
-read `outcome.metadata.retrieval_metrics.patch_retrieval` and, with
+point it at; [Contributing](../contributing.md) describes its setup. In
+production, read `outcome.metadata.retrieval_metrics.patch_retrieval` and, with
 [`ONTOLOGY_PATCH_DUMP_ONTOLOGY_RANKS`](../reference/configuration/ontology-retrieval.md#ontology_patch_dump_ontology_ranks),
 the per-ontology rank table; [Choosing ontology
 context](../guides/ontology_context.md#diagnostics) lists the keys.

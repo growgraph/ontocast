@@ -412,28 +412,39 @@ body {
   margin: 0.4rem 0.5rem 0 0;
 }
 
-/* Documents in, one graph out in two layers: the ontology's classes (blue,
-   squared) above the facts (amber, round), each fact tied to its class by a
-   dashed "typed by" line. */
+/* Documents in, one graph out in two sheets: the ontology's classes (amber)
+   above the facts (blue), each fact tied to its class by a dashed "typed by"
+   line. The sheets are drawn in perspective; their colours are set per scheme
+   below. */
 
 .md-typeset .oc-layers {
+  --oc-layers-onto-sheet: #fdf1dc;
+  --oc-layers-onto-edge: #f3c57a;
+  --oc-layers-onto-slab: #f0c98a;
+  --oc-layers-schema: #d4840a;
+  --oc-layers-facts-sheet: #e9eef6;
+  --oc-layers-facts-edge: #9db0cc;
+  --oc-layers-fact: var(--oc-blue);
   margin: 0 auto;
   max-width: 32rem;
   width: 100%;
+}
+
+/* Opaque mixes into the page, so a sheet's edge does not show through it. */
+[data-md-color-scheme="slate"] .md-typeset .oc-layers {
+  --oc-layers-onto-sheet: color-mix(in srgb, var(--oc-amber) 14%, var(--md-default-bg-color));
+  --oc-layers-onto-edge: color-mix(in srgb, var(--oc-amber) 50%, var(--md-default-bg-color));
+  --oc-layers-onto-slab: color-mix(in srgb, var(--oc-amber) 32%, var(--md-default-bg-color));
+  --oc-layers-schema: var(--oc-amber-text);
+  --oc-layers-facts-sheet: color-mix(in srgb, var(--oc-blue-on-ink) 12%, var(--md-default-bg-color));
+  --oc-layers-facts-edge: color-mix(in srgb, var(--oc-blue-on-ink) 40%, var(--md-default-bg-color));
+  --oc-layers-fact: var(--oc-blue-on-ink);
 }
 
 .oc-layers svg {
   display: block;
   height: auto;
   width: 100%;
-}
-
-.oc-layers .oc-layers__band--onto {
-  fill: var(--oc-blue-tint);
-}
-
-.oc-layers .oc-layers__band--facts {
-  fill: var(--oc-amber-tint);
 }
 
 .oc-layers .oc-layers__doc rect {
@@ -461,12 +472,37 @@ body {
   stroke-width: 3;
 }
 
+.oc-layers .oc-layers__loop--back {
+  opacity: 0.55;
+}
+
 .oc-layers .oc-layers__arrowhead {
   fill: var(--md-default-fg-color--light);
 }
 
 .oc-layers .oc-layers__arrowhead--loop {
   fill: var(--oc-mark);
+}
+
+.oc-layers .oc-layers__sheet--onto {
+  fill: var(--oc-layers-onto-sheet);
+  fill-opacity: 0.9;
+  stroke: var(--oc-layers-onto-edge);
+  stroke-width: 1;
+}
+
+.oc-layers .oc-layers__slab--onto {
+  fill: var(--oc-layers-onto-slab);
+}
+
+.oc-layers .oc-layers__sheet--facts {
+  fill: var(--oc-layers-facts-sheet);
+  stroke: var(--oc-layers-facts-edge);
+  stroke-width: 1;
+}
+
+.oc-layers .oc-layers__slab--facts {
+  fill: var(--oc-layers-facts-edge);
 }
 
 .oc-layers .oc-layers__typed {
@@ -478,25 +514,27 @@ body {
 
 .oc-layers .oc-layers__schema-edge {
   fill: none;
-  stroke: var(--oc-mark);
+  stroke: var(--oc-layers-schema);
   stroke-width: 2;
 }
 
-.oc-layers .oc-layers__class rect {
-  fill: var(--md-default-bg-color);
-  stroke: var(--oc-mark);
-  stroke-width: 2.5;
-}
-
-.oc-layers .oc-layers__fact-edge {
-  fill: none;
-  stroke: var(--oc-amber);
+.oc-layers .oc-layers__class {
+  fill: var(--oc-amber);
+  stroke: var(--md-default-bg-color);
   stroke-linejoin: round;
   stroke-width: 1.5;
 }
 
+.oc-layers .oc-layers__fact-edge {
+  fill: none;
+  stroke: var(--oc-layers-fact);
+  stroke-width: 1.5;
+}
+
 .oc-layers .oc-layers__fact {
-  fill: var(--oc-amber);
+  fill: var(--oc-layers-fact);
+  stroke: var(--md-default-bg-color);
+  stroke-width: 1.5;
 }
 
 .oc-layers text {

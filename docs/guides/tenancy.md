@@ -66,7 +66,8 @@ them they replace.
 The first time a request names a partition, OntoCast fills its catalog from
 `ONTOCAST_ONTOLOGY_DIRECTORY`, but only with ontologies the partition does not
 already hold, so it never overwrites an ontology a previous run extended. It
-loads the shapes in `FACTS_SHAPES_DIR` the same way. A partition with no
+also writes every shapes file in `FACTS_SHAPES_DIR` to the partition, as at
+startup. A partition with no
 shapes, and no shapes directory configured, is not validated against SHACL:
 its responses report `shacl_evaluated: null` rather than a pass.
 

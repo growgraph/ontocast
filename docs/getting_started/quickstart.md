@@ -115,7 +115,8 @@ jq -r '.results[0].outcome.data.ontology_artifacts[0].ttl' result.json > ontolog
 `metadata` says what the run cost and where it struggled: `budget` counts LLM
 calls, `failed_units` lists any part of the document that produced nothing, and
 `facts_conformance` summarizes validation. If no part of the document produced
-output, the server answers `422` instead. [Reading run
+output, its result has `"status_code": 422` and an `outcome` with `"status":
+"error"` instead. [Reading run
 telemetry](../guides/telemetry.md) explains the rest.
 
 ## Process files without a server
@@ -128,8 +129,9 @@ ontocast process --input-path ./papers --output-dir ./out
 ```
 
 `--input-path` takes a file or a directory, searched recursively. For each
-document the command writes `<name>.facts.ttl`, plus one
-`<name>.<ontology>.ontology.ttl` for every ontology the document changed. To
+document the command writes `<name>.facts.ttl`, the ontology as
+`<name>.ontology.ttl` (one `<name>.<ontology>.ontology.ttl` per ontology when
+the document touched several), and a run manifest, `<name>.run.json`. To
 try settings on part of a document first, add `--head-chunks 3`.
 
 ## Start from your own ontologies

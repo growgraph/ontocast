@@ -13,12 +13,13 @@ came from, such as `methods`, `results` or `risk_factors`. Units never span two
 labeled sections, so each has at most one label. A unit OntoCast cannot place
 confidently gets no label at all: an unlabeled unit is merely never selected by
 `target_sections`, while a wrongly labeled one would be selected by mistake.
-For the same reason, size never joins unlabeled text to a labeled unit;
+For the same reason, size never joins unlabeled text to a labeled unit, nor
+text with a weak label to text with a strong one;
 neighbouring unlabeled sections are joined with each other instead. A label
 alone never drops a unit: see [how a unit is routed](#how-a-unit-is-routed).
 
 Labels are recorded in the facts' [provenance](ontologies_and_facts.md#provenance),
-together with how each was decided and how confident that decision was.
+together with the step that decided each and its strength.
 
 ## Section schemas
 
@@ -92,7 +93,7 @@ sets how far OntoCast goes to label a section. Each step adds its vote:
 | `off` | None. Units are not labeled, so section filters and boilerplate exclusions are off; reference lists and front matter are still recognized from their content | None |
 | `heading` | The document's outline; heading patterns and keywords, so `Results and Discussion` and `Experimental Section` are recognized | None |
 | `heuristic` (default) | The above, plus the nearest label of a heading no pattern or keyword names, and a vote from each part's content, which also labels regions without headings | None |
-| `llm` | The above, plus one call in which the model labels the whole outline | One per document; a long outline is sent in windows of [`CHUNK_SECTION_LLM_BATCH_SIZE`](../reference/configuration/chunking.md#chunk_section_llm_batch_size) |
+| `llm` | The above, plus one call in which the model labels the whole outline | One per document, or one per window of [`CHUNK_SECTION_LLM_BATCH_SIZE`](../reference/configuration/chunking.md#chunk_section_llm_batch_size) regions for a long outline |
 
 The nearest-label step compares a section-like heading with each label's name
 and keywords, using the chunker's embedding model (`semantic-chunking` extra;
@@ -135,8 +136,8 @@ Two settings refine this:
   statements), whose form is unmistakable, so these votes are strong. Such a
   label applies to that part only; it is not carried to the parts after it.
   `aggressive` also guesses methods, results and introduction, which content
-  does not separate cleanly: these votes are weak, and only `target_sections`
-  acts on them.
+  does not separate cleanly: these votes are weak, so they can select a unit
+  (`target_sections`, `summarize_sections`) but never drop one.
 - [`CHUNK_SECTION_TEXT_HEADINGS`](../reference/configuration/chunking.md#chunk_section_text_headings)
   finds headings in plain text, for documents whose conversion produced no
   heading structure.
@@ -150,10 +151,10 @@ environment settings.
 | Parameter | What it does |
 |---|---|
 | `target_sections` | Keep only these sections |
-| `exclude_sections` | Drop these sections, where the label is strong (see below). Unset, the schema's boilerplate sections are dropped; an empty value keeps everything |
+| `exclude_sections` | Drop these sections, where the label is strong (see below). Unset, the schema's boilerplate sections are dropped; an empty value excludes no section |
 | `section_schema_id` | The schema to read the document against |
 | `document_type_hint` | Free text describing the document, from which the schema is chosen |
-| `summarize_sections` | Summarize these units before extraction; `*` or empty for all. It never changes what is extracted |
+| `summarize_sections` | Summarize the units of these sections before extraction; `*` or empty for all units. It never changes what is extracted |
 | `summary_max_sentences` | The length of each summary |
 
 Lists are comma-separated (`results,methods`) or a JSON array. For example:
@@ -170,14 +171,15 @@ ontocast process --input-path ./reports --output-dir ./out \
 
 `target_sections` applies first, to labels of any strength, then routing. A label no schema
 knows is dropped with a warning; a list in which no label is known is rejected
-(HTTP `422`, or a usage error from the CLI), so a typo cannot silently switch
+(HTTP `400`, or a usage error from the CLI), so a typo cannot silently switch
 filtering off.
 
 When a selection removes every unit, the run by default finishes with an empty
 graph, which looks the same as a document with nothing to extract. Set
 [`CHUNK_SECTION_FILTER_ON_EMPTY=error`](../reference/configuration/chunking.md#chunk_section_filter_on_empty)
-to fail the run instead (HTTP `422`, or a failed file in a batch run). This
-also covers a schema's boilerplate exclusions emptying a document on their own.
+to fail the document instead: its result on `/process` has status `422`, and
+`ontocast process` counts the file as failed and exits non-zero. This also
+covers a schema's boilerplate exclusions emptying a document on their own.
 
 `target_sections` keeps only labeled units, so text whose label is missing is
 lost to it. The run manifest records the characters it removed and how many of
@@ -196,29 +198,33 @@ summarized once, even when both the ontology and the facts block run.
 
 Before extraction every unit takes one route: extracted, extracted as
 bibliographic records, kept but flagged as front or back matter, or dropped.
-A drop needs a **strong** label and content that agrees, or content that is
-conclusive on its own. A label is strong when it comes from an exact heading
-(`References`, `Acknowledgements`, `Author Contributions`), from a numbered
-heading inside a section with a strong label (`2.1` under `2 Methods`), or
-from the content itself (a reference list, acknowledgements); a keyword inside
-a longer heading (`Funding Mechanisms`), a heading's nearest label, a label a
-heading takes from the section before it by its wording, or one set by the
-model is weak, and never drops a unit.
+Apart from the size floor and `exclude_sections`, a drop needs a **strong**
+label and content that agrees, or content that is conclusive on its own. A
+label is strong when it comes from an exact heading (`References`,
+`Acknowledgements`, `Author Contributions`), from a heading that its number or
+level places inside a section with a strong label (`2.1` under `2 Methods`),
+or from the content itself (a reference list, acknowledgements); a keyword
+inside a longer heading (`Funding Mechanisms`), a heading's nearest label, a
+label a heading takes from the section before it by its wording, or one set
+by the model is weak, and never drops a unit.
 
 Every step that recognizes something adds its vote to the unit, and the
-strongest vote decides; between equally strong votes the heading wins. So
+strongest vote decides; between equally strong votes the heading's words win,
+then the content, then the model, then a heading's nearest label. So
 acknowledgements under a heading that only seemed to continue the results
 are labeled acknowledgements, while a `Methods` heading keeps its label even
 over text that reads like thanks.
 
+The first row that matches a unit decides its route:
+
 | Unit | Route |
 |---|---|
+| Shorter than [`CHUNK_MIN_UNIT_CHARS`](../reference/configuration/chunking.md#chunk_min_unit_chars) | Dropped |
+| A strong label `exclude_sections` names | Dropped |
 | A reference list, by its content (nearly every paragraph is one cited work), or under a strong reference-list label its content agrees with | [`CHUNK_BIBLIOGRAPHY_MODE`](../reference/configuration/chunking.md#chunk_bibliography_mode): `skip` (default) drops it; `citations_only` extracts bibliographic records (works, authors, venues), never domain facts; `domain_facts` treats it like any other unit |
 | A strong boilerplate label on text that states no measurement, when `exclude_sections` is unset and the schema was not a fallback | Dropped |
-| A strong label `exclude_sections` names | Dropped |
-| A table of contents or a list of figures or tables, by its content (lines or two-column table rows ending in ascending page numbers) | [`CHUNK_NON_CONTENT_MODE`](../reference/configuration/chunking.md#chunk_non_content_mode): `extract` (default) keeps it, marked as non-content; `skip` drops it |
-| Front or back matter that states no measurement: a strong `non_content`-class label, or a leading heading the schema names as front or back matter or boilerplate; or, under any schema, text made mostly of identifiers (emails, ORCIDs) or a licence notice | [`CHUNK_NON_CONTENT_MODE`](../reference/configuration/chunking.md#chunk_non_content_mode): `extract` (default) keeps it, marked as non-content; `skip` drops it |
-| Shorter than [`CHUNK_MIN_UNIT_CHARS`](../reference/configuration/chunking.md#chunk_min_unit_chars) | Dropped |
+| A table of contents or a list of figures or tables, by its content (lines or table rows ending in ascending page numbers) | [`CHUNK_NON_CONTENT_MODE`](../reference/configuration/chunking.md#chunk_non_content_mode): `extract` (default) keeps it, marked as non-content; `skip` drops it |
+| Front or back matter that states no measurement: a strong `non_content`-class label, or a leading heading the schema names as front or back matter or boilerplate; or, under any schema or none, text made mostly of identifiers (emails, ORCIDs) or a short licence notice | [`CHUNK_NON_CONTENT_MODE`](../reference/configuration/chunking.md#chunk_non_content_mode): `extract` (default) keeps it, marked as non-content; `skip` drops it |
 | Anything else | Extracted |
 
 A reference list at the start or end of a unit, such as an unheaded
@@ -235,8 +241,8 @@ contents.
 
 Every unit records the reason for its route (`route_reason`), every route
 other than plain extraction is logged with the unit's size, label and the step
-that labeled it, and the run manifest's `route_histogram` counts units and
-characters per route and reason. In `citations_only` mode the record
+that labeled it, and the run manifest's `selection.route_histogram` counts
+units and characters per route and reason. In `citations_only` mode the record
 vocabulary defaults to schema.org; set
 [`CHUNK_CITATION_VOCABULARY`](../reference/configuration/chunking.md#chunk_citation_vocabulary)
 to use another, such as BIBO. The detectors work on English, Latin-script
@@ -256,8 +262,9 @@ It prints the schema (with the step that chose it and the evidence for the
 runners-up), the document's outline with each heading's number and parent,
 and every unit's label with the step that decided it and its strength, its
 route with the reason, and how many converted items it holds, then every
-step's vote on each unit, so you see what would be dropped and why. It makes no LLM calls and needs no credentials,
-unless you pass `--section-classifier llm`.
+step's vote on each unit, so you see what would be dropped and why. It makes
+no LLM calls and needs no credentials, unless the section classifier is `llm`
+(`--section-classifier llm`, or `CHUNK_SECTION_CLASSIFIER=llm`).
 
 ## What to read next
 

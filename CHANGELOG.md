@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `ontocast process` fails before the catalog is loaded or a model is called when a seed ontology file cannot be loaded, naming each file and the reason (`SeedOntologyLoadError`); it used to log the file and run on a smaller catalog. `ontocast serve` still loads the files that parse.
 - A section label alone no longer drops a unit. Dropping needs a strong label (an exact heading, or content evidence) that the content agrees with, or content that is conclusive on its own; a keyword inside a longer heading, inherited, forward-filled and model labels never drop. A heading that is exactly one of a label's keywords ("Author Contributions") counts as an exact heading.
 - A reference list at a unit's start or end is cut into a unit of its own, so the prose around it is extracted. Reference lists are recognised per paragraph: table rows and entries that state a measurement are not cited works.
 - Section schemas mark each label's route class (`content`, `boilerplate`, `citations`) in place of `default_exclude`. Academic appendices and Supporting Information are now extracted; a schema used only as the fallback drops no boilerplate.
@@ -50,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `pdfs-to-markdown` writes `<name>.md` instead of a JSON string that `ontocast process` rejected; the files read back with their headings.
+- The `ontocast_ingest_ontology_ttl` tool no longer tells agents it writes to the ontology directory: the ontology goes to the triple store (and the vector index, when one is configured), and nothing is written to disk.
 - Sections were dropped whole when they mentioned references: headings such as "Comparison with literature references", descriptive sections after a References heading, literature-comparison tables with a DOI column, and units whose prose ended in a reference list.
 - More reference styles are recognised as cited works: author names spelled out before the year, bare-number and bracketed-label markers (`[RFC3986]`), volume with issue (`17(2), 87-96`), `year;volume` and proceedings venues (`In Proceedings`, `pages N-M`), and web sources. An entry split over several paragraphs counts as one, and percent signs or digits inside links and DOIs no longer read as a measurement.
 - Keyword-matched headings such as "Funding Mechanisms" or "Supporting Information" no longer drop their section through the default exclusions.

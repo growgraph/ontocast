@@ -17,20 +17,19 @@ decide:
    recognised by exactly one candidate schema counts, a heading recognised by
    several counts nothing. A shared heading such as ``References`` genuinely
    says nothing about which cell the document is in, so weighting it -- even
-   fractionally -- only adds noise. Measured over the corpus in
-   ``test/data/schema_corpus.json`` this classifies all nine cells correctly,
-   with the tightest margin (a published trial protocol, which shares IMRaD
-   headings with academic papers) at 2.0x.
+   fractionally -- only adds noise. The closest calls are between schemas that
+   share a heading convention (a trial protocol and an academic paper share
+   IMRaD headings), which is what the margin guards.
 2. **Semantic** (needs the chunker's embedding model). Each heading votes for
    its nearest schema by label-name similarity, damped by how close the
    runner-up is. Per-heading competition rather than per-schema mean similarity,
    because mean similarity is biased by how many label names a schema happens to
    have.
 3. **Content** (last resort, heading-poor documents only). Body paragraphs
-   against ``document_profile`` sentences. Measured accuracy is far below the
-   heading tiers -- chemistry prose reads like a technical specification, and
-   ``news`` behaves as a semantic attractor -- so it demands a much larger
-   margin and is off unless explicitly enabled.
+   against ``document_profile`` sentences. Body prose separates document types
+   less sharply than headings do, and a broad profile can draw documents of
+   other types toward it, so this tier demands a much larger margin and is off
+   unless explicitly enabled.
 
 Every tier abstains rather than guessing. A wrong schema relabels an entire
 document silently, whereas an abstention falls back to the manifest default and
@@ -237,7 +236,7 @@ def score_content(paragraphs: list[str], embed: TextEmbedder) -> list[SchemaEvid
     candidates = [
         sid
         for sid in candidate_schema_ids()
-        # News is a measured semantic attractor: any front matter drifts to it.
+        # A broad profile such as news draws front matter of any document toward it.
         if sid != "news"
     ]
     if not paragraphs or not candidates:

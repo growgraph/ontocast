@@ -44,11 +44,10 @@ not what this run paid for.
 
 `node_durations` holds seconds. A plain pipeline node name is that node's wall
 clock, recorded by the `_timed` wrapper in `ontocast/stategraph/create.py`:
-`Convert to Text`, `Chunk Text`, `Update Ontology`,
-`Normalize Ontology Updates`, `Consolidate Ontology`, `Render Facts`,
-`Merge Facts`, `Resolve Coreference`, `Validate Facts`, `Structural Check`,
-`Consistency Critic`,
-`Serialize`.
+`Convert to Text`, `Chunk Text`, `Resolve Home Ontology`, `Update Ontology`,
+`Normalize Ontology Updates`, `Consolidate Ontology`, `Structural Check`,
+`Consistency Critic`, `Render Facts`, `Merge Facts`, `Resolve Coreference`,
+`Validate Facts`, `Serialize`.
 
 The two fan-out nodes, `Update Ontology` and `Render Facts`, add keys written
 in `ontocast/stategraph/node_factories.py`:
@@ -72,7 +71,6 @@ Stage keys, summed over every call or unit:
 | `llm/provider` | `ontocast/tool/llm.py` | Inside the provider call, including rate-limiter waits |
 | `llm/inflight_wait` | `ontocast/tool/llm.py` | Waiting for an `LLM_MAX_INFLIGHT` slot |
 | `llm/cache_lookup` | `ontocast/tool/llm.py` | Reading the LLM response cache |
-| `chunk section classify/worker_wait` | `ontocast/tool/chunk/section_llm.py` | Section classification calls waiting for a worker slot |
 | `ctx/merge_document_ontology` | `ontocast/stategraph/context_resolver.py` | Merging the document's ontology for the facts fan-out |
 | `ctx/union_document_ontology` | `ontocast/stategraph/context_resolver.py` | Building the union chapter (`ONTOLOGY_CONTEXT_SCOPE=document`) |
 | `ctx/working_graph_copy` | `ontocast/stategraph/atomic.py` | Copying the ontology context into a unit's working graph |
@@ -125,8 +123,9 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 `calls_count` equals `llm/calls_timed + llm/timeouts`: a call that raised for
 any other reason is not counted in `calls_count`. The
 `chapter/*` counters are recorded once per chapter built, not per call that
-reads it, and only when at least one text cap is set; [How prompts are
-built](prompt_construction.md#text-caps) describes the caps.
+reads it. `chapter/triples_over_budget` is recorded whenever a chapter stays
+over its triple budget; the other four only when at least one text cap is set.
+[How prompts are built](prompt_construction.md#text-caps) describes the caps.
 
 ## Retrieval metrics
 
@@ -232,6 +231,7 @@ left out.
 | `graph_metrics` | The written facts graph: `nodes`, `edges`, `components`, `largest_component`, `isolated_nodes` |
 | `ontology_triples`, `facts_triples`, `facts_triples_serialized` | Ontology triples written; facts triples in memory, provenance included; facts triples in the `.facts.ttl` file |
 | `retrieval_metrics` | The same mapping `/process` returns |
+| `ontology_versions` | Ontology versions the run wrote (`role` `created` or `updated`) and read unchanged (`role` `read`), each with `iri` and `version_iri` |
 | `unit_context_sources` | Ontology IRIs behind each unit's context, by lane (`ontology`, `facts`) and unit index |
 | `effective_config`, `chunking_mode` | Every setting keyed by environment variable, credentials redacted; the chunker's mode after any fallback |
 

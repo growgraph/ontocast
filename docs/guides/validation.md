@@ -62,9 +62,11 @@ your seed files alone, so a seeded document returns on the next restart. See the
 An ontology that carries `sh:NodeShape` declarations inline is also used as a
 source of shapes, with no setup.
 
-If shapes are configured but cannot be used (the extra is missing, the
-directory does not exist or holds no `.ttl` files), OntoCast logs a warning and
-the run reports SHACL as not evaluated, never as passed.
+A shapes directory that does not exist stops `ontocast process` before
+anything runs. Otherwise, if shapes are configured but cannot be used (the
+extra is missing, the directory holds no `.ttl` files, or under `ontocast
+serve` it does not exist), OntoCast logs a warning and the run reports SHACL as
+not evaluated, never as passed.
 
 ### Why shapes are not stored with the ontologies
 

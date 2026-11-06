@@ -10,7 +10,7 @@ every key.
 
 | Where | What you get |
 |---|---|
-| `/process` and `/process_unit` responses | `metadata`: `status`, `budget`, `retrieval_metrics`, `unit_context_sources`, `failed_units`, `facts_conformance`, `facts_validation_findings`, `facts_repairs`, `facts_gate_repairs`, `improvement_suggestions` |
+| `/process` and `/process_unit` responses | `metadata`: `status`, `budget`, `retrieval_metrics`, `unit_context_sources`, `failed_units`, `facts_conformance`, `facts_validation_findings`, `facts_repairs`, `facts_gate_repairs`, `improvement_suggestions`, `ontology_versions` |
 | `ontocast process` | Per document, beside `<name>.facts.ttl`: `<name>.run.json`, the run manifest, and `<name>.facts.validation.json` when validation has something to report. With `--keep-provenance`, also `<name>.units.jsonl`; with `--dump-catalog`, `<name>.catalog.nq` beside the ontology files |
 | The log | A summary of calls, tokens, durations and effective workers at `INFO` when a document finishes |
 
@@ -93,8 +93,9 @@ act on these.
 `outcome.metadata.failed_units` lists each content unit that produced nothing, with
 its `unit_index`, `phase` (`ontology`, `facts` or `summarize`), `stage` and
 `reason`. It is empty on a fully successful run. When no unit produced output,
-`/process` answers `422` and `ontocast process` records the file as failed and
-exits non-zero.
+the document's result in a `/process` response has `status_code` `422` and
+`error_code` `no_units_extracted`, and `ontocast process` records the file as
+failed and exits non-zero.
 
 A request the provider refuses as configured, such as a wrong key, a model
 your account cannot use, or an unsupported parameter, fails every call the

@@ -2,8 +2,8 @@
 
 Every structured LLM call in OntoCast expects a JSON object. This page describes
 what happens to a response before it becomes a model, and what a malformed
-response costs. None of it is configurable. Each step is counted under `llm/*`
-in the run's `budget.counters`; see [Reading run
+response costs. None of it is configurable. The repairs and retries are
+counted under `llm/*` in the run's `budget.counters`; see [Reading run
 telemetry](../guides/telemetry.md).
 
 ## Steps
@@ -26,8 +26,8 @@ telemetry](../guides/telemetry.md).
    counts as `llm/json_bracket_repair`.
 4. **Fail with a location.** A response that still does not parse raises
    `LLMJsonParseError` with the line, the column and about 150 characters on
-   either side. The retry prompt shows the model that window, not the whole
-   response.
+   either side. The retry prompt shows the model this error and an excerpt of
+   its response around the error position, not the whole response.
 
 ## Retries
 

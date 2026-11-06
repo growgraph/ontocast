@@ -9,15 +9,16 @@ write ones that help.
 
 | Instruction | Shown to | Use it to |
 |---|---|---|
-| `ontology_user_instruction` | The ontology render and its critic | Say which concepts and relations the ontology should model |
+| `ontology_user_instruction` | The call that names the document's home ontology, the ontology render and its critic | Say which concepts and relations the ontology should model |
 | `ontology_selection_user_instruction` | The call that picks an ontology for each part, in `selected_single_ontology` mode | Say which ontology to prefer when several could fit |
-| `facts_user_instruction` | The facts render, its critic and the completion pass | Say which facts to extract and how to report them |
+| `facts_user_instruction` | The facts render, its critic, the completion pass and coreference resolution | Say which facts to extract and how to report them |
 
 When web search is enabled, the ontology or facts instruction also seeds its
 search queries.
 
-Each instruction is added to the prompt under a `USER INSTRUCTION` heading. It
-adds to OntoCast's own rules and never replaces them. In particular, the facts
+Each instruction is added to the prompt after OntoCast's own instructions; the
+facts instruction under a `USER INSTRUCTION` heading. It adds to OntoCast's
+rules and never replaces them. In particular, the facts
 rules always apply: every new entity goes in the `cd:` namespace, the domain
 ontology is read-only, and a class is never used as an instance; see
 [Ontologies and facts](../concepts/ontologies_and_facts.md). The `cd:`

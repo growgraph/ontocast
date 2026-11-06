@@ -59,7 +59,8 @@ the log names each pair and the reasons, which can be several:
 | `cluster_veto` | The pair itself was fine, but merging it would have joined two entities another guard had refused | |
 
 A property counts as allowing one value when the ontology says so, or when
-every subject in the document uses it once.
+every subject in the document uses it once and at least
+`AGG_FUNCTIONAL_MIN_EMPIRICAL_SUPPORT` subjects use it.
 
 ## Coreference the guards cannot settle
 
@@ -70,7 +71,7 @@ parts or more) puts the pairs the rules above cannot settle to the model:
 - merges made on a plausible match only, not on an equal label, initials or a
   shared key: "temperature" and "daily maximum temperature";
 - candidates refused for their wording alone, with no guard saying they are
-  distinct: "the first applicant" and "Rusi Kosev Stanev";
+  distinct: "the first applicant" and "Jane Doe";
 - two entities of one type from different parts that are the only two pointing
   to one node by one property: both "applicant in" one case.
 
@@ -80,11 +81,13 @@ unsure for each pair. "Same" merges the pair like a shared key, "different"
 keeps it apart, and every guard above still applies: the model cannot merge
 two things one part told apart. Its verdicts also hold when validation
 re-merges the parts.
-[`AGG_LLM_COREFERENCE`](../reference/configuration/aggregation.md#agg_llm_coreference)
-turns the step off;
+The step is on by default;
+[`AGG_LLM_COREFERENCE=false`](../reference/configuration/aggregation.md#agg_llm_coreference)
+turns it off, and
 [`AGG_LLM_COREFERENCE_MAX_PAIRS`](../reference/configuration/aggregation.md#agg_llm_coreference_max_pairs)
 bounds the pairs per call. `facts_coreference_pairs`,
-`facts_coreference_same` and `facts_coreference_different` count them.
+`facts_coreference_same` and `facts_coreference_different` in
+`retrieval_metrics` count them.
 
 ## Tuning
 

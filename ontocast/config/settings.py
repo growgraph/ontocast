@@ -545,8 +545,10 @@ class ChunkConfig(BaseSettings):
     embedding_model: str = Field(
         default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
         description=(
-            "Sentence-transformers checkpoint for semantic chunking and "
-            "embedding-based schema detection. Shared process-wide with "
+            "Sentence-transformers checkpoint for semantic chunking, "
+            "embedding-based schema detection, and the embedding vote that "
+            "labels headings no pattern or keyword names (classifier "
+            "'heuristic' or 'llm'). Shared process-wide with "
             "EMBEDDING_MODEL_NAME and AGG_EMBEDDING_MODEL when the names match, "
             "so aligning all three halves resident local-model memory. Changing "
             "it invalidates the on-disk chunk cache and shifts chunk boundaries."
@@ -637,10 +639,10 @@ class ChunkConfig(BaseSettings):
     section_schema_detect_content_min_margin: float = Field(
         default=4.0,
         description=(
-            "Stricter margin for the content-based tier, which is measurably "
-            "less reliable than the heading tiers: body prose from one domain "
-            "readily resembles another (scientific prose reads like a technical "
-            "specification). Only used when CHUNK_SECTION_SCHEMA_DETECT=auto."
+            "Stricter margin for the content-based tier: body prose from one "
+            "document type can resemble another's, so content separates "
+            "schemas less sharply than headings do. Only used when "
+            "CHUNK_SECTION_SCHEMA_DETECT=auto."
         ),
     )
     section_llm_batch_size: int = Field(
@@ -658,8 +660,9 @@ class ChunkConfig(BaseSettings):
             "What to do when a section selection removes every unit. 'warn' "
             "(default) logs and continues, which yields an empty facts graph "
             "indistinguishable from a document that genuinely had nothing to "
-            "extract; 'error' fails the request instead (HTTP 422, non-zero "
-            "exit for a batch run). Covers the target_sections allowlist and "
+            "extract; 'error' fails the document instead (status 422 in its "
+            "/process result; the batch run counts it as failed and exits "
+            "non-zero). Covers the target_sections allowlist and "
             "the exclusions: exclude_sections, or the schema's boilerplate "
             "sections when it is unset."
         ),
@@ -668,7 +671,8 @@ class ChunkConfig(BaseSettings):
         default="skip",
         description=(
             "Routing for units detected as reference lists: by their content "
-            "alone, or by a References heading their content agrees with; "
+            "alone, or by a strong citations-class label (such as an exact "
+            "References heading) their content agrees with; "
             "a reference list at a unit's start or end is first cut into a "
             "unit of its own. 'skip' (default) drops those units before "
             "extraction, 'citations_only' extracts bibliographic metadata "
@@ -690,14 +694,14 @@ class ChunkConfig(BaseSettings):
     non_content_mode: Literal["extract", "skip"] = Field(
         default="extract",
         description=(
-            "What to do with front or back matter that states no domain "
-            "facts: a unit headed by author information, notes, ORCID, data "
-            "availability, competing interests, licence or similar that "
-            "contains no number with a unit, or a unit made mostly of emails,"
-            " URLs, ORCIDs and initials. 'extract' keeps it and marks it "
-            "is_non_content; 'skip' drops it before extraction and counts it "
-            "in the run manifest. A measurement anywhere in the unit keeps "
-            "it."
+            "What to do with units that state no domain facts: front or back "
+            "matter (a strong non-content label, or a heading the document's "
+            "schema names as front or back matter, on text with no number "
+            "with a unit; under any schema, text made mostly of emails, URLs, "
+            "ORCIDs and initials, or a short licence notice), and tables of "
+            "contents or lists of figures or tables. 'extract' keeps such a "
+            "unit and marks it is_non_content; 'skip' drops it before "
+            "extraction and counts it in the run manifest."
         ),
     )
     max_measurements_per_unit: int = Field(
@@ -706,10 +710,10 @@ class ChunkConfig(BaseSettings):
         description=(
             "Split a sized unit at the sentence boundary nearest its midpoint, "
             "recursively, while it states more unit-adjacent numbers than "
-            "this; 0 (default) disables. Extraction loss tracks how densely a "
-            "unit packs measurements rather than how long it is, so this "
-            "targets the dense units without shrinking every unit's share of "
-            "the prompt. Pieces never go below min_size: a dense unit shorter "
+            "this; 0 (default) disables. A unit dense with measurements asks "
+            "the model for many facts in one call; this splits only those "
+            "units and leaves every other unit's size unchanged. Pieces never "
+            "go below min_size: a dense unit shorter "
             "than twice min_size is left whole."
         ),
     )
@@ -986,8 +990,9 @@ class ServerConfig(BaseSettings):
         default=1,
         ge=1,
         description=(
-            "Retries of a render that failed outright (unparseable response, "
-            "provider error). A render that succeeds is not repeated; "
+            "Render attempts per content unit, counting the first, when a "
+            "render fails outright (unparseable response, provider error); "
+            "1 makes no retry. A render that succeeds is not repeated; "
             "improving it is the critic's job (FACTS_CRITIC_PASSES, "
             "ONTOLOGY_CRITIC_PASSES)."
         ),

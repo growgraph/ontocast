@@ -14,6 +14,7 @@ from ontocast.onto.enum import OntologyContextMode, RenderMode, VectorStoreBacke
 from ontocast.onto.identity import OntologyVersionRecord, VersionRef
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
+from ontocast.onto.ontology_header import SeedOntologyLoadError
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState, BudgetTracker
 from ontocast.onto.tenancy import TenancyScope
@@ -260,6 +261,8 @@ class ToolBox:
         # materialize exactly those and nothing else -- rewriting a whole
         # catalog on every switch is what scoped ToolBoxes exist to avoid.
         self._last_seed_repairs: list[Ontology] = []
+        # Seed files the last directory load could not read, path -> reason.
+        self._seed_load_failures: dict[str, str] = {}
         self._vector_store_init_lock = asyncio.Lock()
 
         # Both supported backends need the BM25 tool, so the only case that
@@ -1147,6 +1150,7 @@ class ToolBox:
         wipe_vector_store: bool | None = None,
         prune_orphan_iris: bool | None = None,
         require_populated_catalog: bool = False,
+        require_all_seeds: bool = False,
     ) -> None:
         """Initialize the toolbox with ontologies and their properties.
 
@@ -1169,8 +1173,14 @@ class ToolBox:
                 only yield an ungrounded graph. A server leaves it False:
                 starting empty and being filled through ``POST /ontologies`` is
                 a supported way to run.
+            require_all_seeds: Fail when any ``*.ttl`` in ``ontology_directory``
+                cannot be loaded, before anything is written or a model is
+                called. A batch run sets this; a server logs the file and loads
+                the rest.
 
         Raises:
+            SeedOntologyLoadError: ``require_all_seeds`` and a seed file failed
+                to load.
             EmptyOntologyContextError: ``require_populated_catalog`` and
                 ``ONTOLOGY_CONTEXT_REQUIRED`` are both set and the catalog or
                 its index is empty once synchronization has finished.
@@ -1188,6 +1198,12 @@ class ToolBox:
             if prune_orphan_iris is None
             else prune_orphan_iris
         )
+
+        seed_ontologies = await asyncio.to_thread(
+            self._load_seed_ontologies_from_directory
+        )
+        if require_all_seeds and self._seed_load_failures:
+            raise SeedOntologyLoadError(self._seed_load_failures)
 
         if self.triple_store_manager is not None:
             await self.triple_store_manager.async_init()
@@ -1254,7 +1270,7 @@ class ToolBox:
         )
 
         sync_started = time.perf_counter()
-        synchronized_ontologies = await self._synchronize_ontologies()
+        synchronized_ontologies = await self._synchronize_ontologies(seed_ontologies)
         logger.info(
             "Ontology sync finished: %d ontolog(ies) in %.2fs",
             len(synchronized_ontologies),
@@ -1338,6 +1354,7 @@ class ToolBox:
         against a catalog that happens to live in the triple store, and it is
         the difference between a five-minute diagnosis and a long one.
         """
+        self._seed_load_failures = {}
         ontology_dir = self.config.tool_config.path_config.ontology_directory
         if ontology_dir is None:
             logger.info(
@@ -1365,6 +1382,7 @@ class ToolBox:
                 ontologies.append(Ontology.from_file(path))
                 logger.debug("Loaded seed ontology from %s", path)
             except Exception as exc:
+                self._seed_load_failures[str(path)] = f"{type(exc).__name__}: {exc}"
                 logger.error("Failed to load seed ontology %s: %s", path, exc)
         return ontologies
 
@@ -1410,8 +1428,13 @@ class ToolBox:
             missing.append(seed)
         return missing
 
-    async def _synchronize_ontologies(self) -> list[Ontology]:
+    async def _synchronize_ontologies(
+        self, seed_ontologies: list[Ontology] | None = None
+    ) -> list[Ontology]:
         """Resolve the catalog from the triple store, repaired from disk.
+
+        ``seed_ontologies`` are the directory's seeds when the caller has
+        already loaded them; ``None`` loads them here.
 
         Records the seeds it had to supply on ``_last_seed_repairs`` so a caller
         that is not :meth:`initialize` -- which materializes everything anyway --
@@ -1419,9 +1442,10 @@ class ToolBox:
         """
         import asyncio
 
-        seed_ontologies = await asyncio.to_thread(
-            self._load_seed_ontologies_from_directory
-        )
+        if seed_ontologies is None:
+            seed_ontologies = await asyncio.to_thread(
+                self._load_seed_ontologies_from_directory
+            )
         logger.info(
             "Found %d seed ontolog(ies) in ontology_directory",
             len(seed_ontologies),

@@ -63,6 +63,7 @@ __all__ = [
     "CatalogContractError",
     "DivergedOntologyError",
     "OntologyHeader",
+    "SeedOntologyLoadError",
     "VersionDiff",
     "adopt_ontology",
     "catalog_heads",
@@ -88,6 +89,24 @@ class CatalogContractError(ValueError):
         super().__init__(
             f"graph {graph_uri} is not a version of an ontology: "
             f"missing {', '.join(self.missing)}"
+        )
+
+
+class SeedOntologyLoadError(ValueError):
+    """Seed ontology files that could not be loaded, by path.
+
+    A batch run raises it before any write or model call: extracting against a
+    catalog that silently lacks a vocabulary the user supplied yields a graph
+    that cannot be told apart from a good one.
+    """
+
+    error_code: str = "SEED_ONTOLOGY_LOAD_FAILED"
+
+    def __init__(self, failures: Mapping[str, str]) -> None:
+        self.failures = dict(failures)
+        lines = "; ".join(f"{path}: {reason}" for path, reason in self.failures.items())
+        super().__init__(
+            f"{len(self.failures)} seed ontolog(ies) failed to load: {lines}"
         )
 
 
