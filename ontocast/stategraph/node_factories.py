@@ -9,6 +9,7 @@ from rdflib import RDFS, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.agent.render_ontology import render_ontology_update
+from ontocast.agent.resolve_coreference import judge_coreference
 from ontocast.agent.summarize_chunks import ensure_unit_summary
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
@@ -42,7 +43,7 @@ from ontocast.stategraph.context_resolver import (
     build_merged_document_ontology_context,
     build_unioned_document_ontology_context,
 )
-from ontocast.stategraph.facts_gate import run_facts_gate
+from ontocast.stategraph.facts_gate import run_facts_gate, stored_pairs
 from ontocast.stategraph.helpers import (
     all_unit_patch_source_iris,
     build_document_excerpt,
@@ -52,6 +53,8 @@ from ontocast.stategraph.helpers import (
     reconcile_fresh_ontologies,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
+from ontocast.tool.agg.aggregate import AggregationResult
+from ontocast.tool.agg.coreference import coreference_candidates, verdict_pairs
 from ontocast.tool.llm import RUN_STOPPING_ERRORS, use_llm_phase
 from ontocast.tool.ontology_validation import (
     apply_minted_duplicate_rewrites,
@@ -1062,13 +1065,20 @@ def make_merge_facts_node(tools: ToolBox):
             document_metadata=document_metadata,
             doc_namespace=state.doc_namespace,
         )
-        state.aggregated_facts = result.graph
-        state.aggregation_clusters = result.merged_clusters
-        state.aggregation_key_clusters = result.key_supported_clusters
-        state.aggregation_cross_unit_pairs = result.cross_unit_object_pairs
-        state.retrieval_metrics[RetrievalMetric.FACTS_REJECTED_MERGES] = (
-            result.rejected_merge_count
-        )
+        _store_aggregation(state, result)
+        aggregator = tools.aggregator
+        if aggregator.llm_coreference and len(state.facts_units) > 1:
+            state.coreference_candidates = coreference_candidates(
+                unconfirmed_merges=result.unconfirmed_merges,
+                lexical_near_misses=result.lexical_near_misses,
+                units=state.facts_units,
+                final_uri={
+                    str(entity): str(decision.final_uri)
+                    for entity, decision in result.decisions.items()
+                    if decision.final_uri is not None
+                },
+                max_pairs=aggregator.llm_coreference_max_pairs,
+            )
         if len(state.aggregated_facts) == 0:
             logger.warning(
                 "Facts aggregation produced an empty graph from "
@@ -1078,6 +1088,58 @@ def make_merge_facts_node(tools: ToolBox):
         return state
 
     return merge_facts
+
+
+def _store_aggregation(state: AgentState, result: AggregationResult) -> None:
+    """Make ``result`` the aggregation the later nodes read."""
+    state.aggregated_facts = result.graph
+    state.aggregation_clusters = result.merged_clusters
+    state.aggregation_key_clusters = result.key_supported_clusters
+    state.aggregation_cross_unit_pairs = result.cross_unit_object_pairs
+    state.retrieval_metrics[RetrievalMetric.FACTS_REJECTED_MERGES] = (
+        result.rejected_merge_count
+    )
+
+
+def make_resolve_coreference_node(tools: ToolBox):
+    async def resolve_coreference(state: AgentState) -> AgentState:
+        """Put the pairs aggregation could not settle to the model, then re-aggregate.
+
+        ``same`` verdicts merge like a shared key and ``different`` ones veto;
+        the aggregator's guards still apply. The verdicts are kept on the state
+        so the facts gate's own re-aggregation honours them.
+        """
+        candidates = state.coreference_candidates
+        if not candidates:
+            return state
+        verdicts = await judge_coreference(state, tools, candidates)
+        metrics = state.retrieval_metrics
+        metrics[RetrievalMetric.FACTS_COREFERENCE_PAIRS] = len(candidates)
+        metrics[RetrievalMetric.FACTS_COREFERENCE_SAME] = sum(
+            1 for v in verdicts.values() if v == "same"
+        )
+        metrics[RetrievalMetric.FACTS_COREFERENCE_DIFFERENT] = sum(
+            1 for v in verdicts.values() if v == "different"
+        )
+        vetoes, confirmations = verdict_pairs(candidates, verdicts)
+        if not vetoes and not confirmations:
+            return state
+        state.coreference_vetoes = stored_pairs(vetoes)
+        state.coreference_confirmations = stored_pairs(confirmations)
+        ontology_graph, document_metadata = _facts_aggregation_inputs(state)
+        result = tools.aggregator.postprocess_facts_units(
+            units=state.facts_units,
+            ontology_graph=ontology_graph,
+            doc_iri=state.doc_iri,
+            document_metadata=document_metadata,
+            doc_namespace=state.doc_namespace,
+            merge_vetoes=vetoes,
+            confirmed_pairs=confirmations,
+        )
+        _store_aggregation(state, result)
+        return state
+
+    return resolve_coreference
 
 
 # Finding kinds whose signature IS a bad identity merge: two things that were

@@ -28,6 +28,10 @@ import re
 
 from ontocast.config.section_labels import SectionLabelSchema, canonical_labels
 from ontocast.tool.chunk.bibliography import looks_like_bibliography
+from ontocast.tool.chunk.structure import BlockKinds
+
+#: Labels the conservative tier can produce: their form is near-unique.
+CONSERVATIVE_LABELS = frozenset({"references", "acknowledgements"})
 
 # Gratitude and funding attributions, which are close to unique to
 # acknowledgement sections.
@@ -73,6 +77,7 @@ def score_section_labels(
     schema: SectionLabelSchema,
     *,
     aggressive: bool = False,
+    block_kinds: BlockKinds | None = None,
 ) -> dict[str, float]:
     """Score candidate section labels from content features.
 
@@ -81,6 +86,8 @@ def score_section_labels(
         schema: Active label schema; labels absent from it are never scored.
         aggressive: Include the low-precision methods/results/introduction
             features.
+        block_kinds: Docling block kinds of the document, when it was
+            converted (a caption is never a cited work).
 
     Returns:
         Mapping of label to score; higher is stronger. Empty when the text is
@@ -94,7 +101,7 @@ def score_section_labels(
     length = len(stripped)
     scores: dict[str, float] = {}
 
-    if "references" in allowed and looks_like_bibliography(stripped):
+    if "references" in allowed and looks_like_bibliography(stripped, block_kinds):
         scores["references"] = 0.9
 
     if "acknowledgements" in allowed:
@@ -134,6 +141,7 @@ def classify_by_density(
     aggressive: bool = False,
     min_score: float = 0.6,
     margin: float = 1.5,
+    block_kinds: BlockKinds | None = None,
 ) -> tuple[str, float] | None:
     """Label a text region from content features, or ``None`` if unclear.
 
@@ -148,11 +156,14 @@ def classify_by_density(
         aggressive: Include the low-precision feature set.
         min_score: Absolute floor the winning score must clear.
         margin: Factor by which the winner must beat the runner-up.
+        block_kinds: Docling block kinds of the document, when it was converted.
 
     Returns:
         ``(label, score)`` or ``None``.
     """
-    scores = score_section_labels(text, schema, aggressive=aggressive)
+    scores = score_section_labels(
+        text, schema, aggressive=aggressive, block_kinds=block_kinds
+    )
     if not scores:
         return None
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
@@ -165,6 +176,7 @@ def classify_by_density(
 
 
 __all__ = [
+    "CONSERVATIVE_LABELS",
     "MIN_TEXT_CHARS",
     "classify_by_density",
     "score_section_labels",

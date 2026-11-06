@@ -26,6 +26,7 @@ from ontocast.onto.identity import (
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.model import (
     BasePydanticModel,
+    CoreferenceCandidate,
     FactsValidationFinding,
     GraphRepairRecord,
     LoopAttempt,
@@ -34,6 +35,7 @@ from ontocast.onto.model import (
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.run_meter import TokenTotals
+from ontocast.onto.section_models import OutlineLabelReport
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.token_usage import TokenUsage
 from ontocast.util.hash import render_text_hash
@@ -630,6 +632,32 @@ class AgentState(BasePydanticModel):
             "(CHUNK_NON_CONTENT_MODE=skip)."
         ),
     )
+    route_histogram: dict[str, dict[str, int]] = Field(
+        default_factory=dict,
+        description=(
+            "Routing decisions of the chunk step, keyed '<route>/<reason>' "
+            "(e.g. 'skip/citation_list'), each with its unit and character "
+            "counts; kept and dropped units alike."
+        ),
+    )
+    outline_labels: OutlineLabelReport | None = Field(
+        default=None,
+        description=(
+            "What the model section tier did: windows sent and failed. None "
+            "when it did not run."
+        ),
+    )
+    allowlist_excluded_chars: int = Field(
+        default=0,
+        description="Characters target_sections removed before sizing.",
+    )
+    allowlist_excluded_unlabeled_chars: int = Field(
+        default=0,
+        description=(
+            "The part of allowlist_excluded_chars that carried no section "
+            "label: text a missing label, not the selection, kept out."
+        ),
+    )
     ontology_artifacts: list[Ontology] = Field(
         default_factory=list,
         description="Final per-anchor ontology artifacts produced for this document.",
@@ -826,6 +854,28 @@ class AgentState(BasePydanticModel):
         ),
     )
 
+    coreference_candidates: list[CoreferenceCandidate] = Field(
+        default_factory=list,
+        description=(
+            "Identity pairs aggregation could not settle, put to the model by "
+            "RESOLVE_COREFERENCE (see ontocast.tool.agg.coreference)."
+        ),
+    )
+    coreference_vetoes: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Source entity pairs the model judged distinct; every later "
+            "re-aggregation (the facts gate's) keeps them apart."
+        ),
+    )
+    coreference_confirmations: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Source entity pairs the model judged one entity; every later "
+            "re-aggregation merges them, guards permitting."
+        ),
+    )
+
     facts_validation_findings: list[FactsValidationFinding] = Field(
         default_factory=list,
         description=(
@@ -900,14 +950,20 @@ class AgentState(BasePydanticModel):
     exclude_sections: list[str] | None = Field(
         default=None,
         description=(
-            "Sections to drop when chunking. None = use the resolved section "
-            "schema's default_exclude; [] = no exclusion; list = explicit "
-            "denylist."
+            "Sections to drop when chunking, acting on strong labels only "
+            "(an anchored heading pattern or content evidence). None = the "
+            "resolved schema's boilerplate sections, when the schema was "
+            "chosen rather than fallen back to; [] = no exclusion; list = "
+            "explicit denylist."
         ),
     )
     summarize_sections: list[str] | None = Field(
         default=None,
-        description="Sections to summarize. None = skip summarization node.",
+        description=(
+            "Sections whose units get a summary; ['*'] summarizes every unit. "
+            "Never filters what is extracted: that is target_sections. None = "
+            "no summaries."
+        ),
     )
     summary_max_sentences: int = Field(
         default=5,
@@ -959,8 +1015,8 @@ class AgentState(BasePydanticModel):
         """Whether the request carries explicit section-dependent options.
 
         Section tagging itself is default-on in chunk prepare (driven by
-        ``CHUNK_SECTION_CLASSIFIER``); schema-default exclusions apply even
-        when this is False.
+        ``CHUNK_SECTION_CLASSIFIER``); routing, including the schema's
+        boilerplate exclusions, applies even when this is False.
         """
         return (
             self.target_sections is not None

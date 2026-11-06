@@ -109,9 +109,9 @@ that module with the reason.
 `test/test_retrieval_recall.py` checks whether a relevant catalog term reaches
 the ontology context a unit is shown, reporting how many expected terms survive
 vector search and how many survive graph expansion. It makes no LLM call and
-can run on an embedded LanceDB. Point `ONTOCAST_RECALL_CORPUS` at a corpus
-directory (`cases.jsonl` plus `ontologies/*.ttl`); without it the tests skip.
-The corpora live in `ontocast-validation`.
+can run on an embedded LanceDB. The anchor test runs on fixtures under
+`test/`; for the corpus test, point `ONTOCAST_RECALL_CORPUS` at a corpus
+directory (`cases.jsonl` plus `ontologies/*.ttl`), without which it skips.
 
 ```bash
 ONTOCAST_RECALL_CORPUS=<corpus dir> LANCEDB_ENABLED=true \
@@ -136,8 +136,8 @@ measured results:
 - Justify a default by its mechanism ("saturates quickly", "gates everything
   below it"), not by the run that chose it.
 
-Benchmark and evaluation results are tracked in `ontocast-validation`; link
-there when a number is needed. The rule covers claims, not vocabulary: fixture
+Benchmark and evaluation results are kept outside this repository. The rule
+covers claims, not vocabulary: fixture
 data such as an example namespace or a sample document is exempt.
 
 ## Documentation
@@ -169,6 +169,9 @@ uv run properdocs build --strict
   "previously", "no longer" or "deprecated".
 - The workflow diagrams in `docs/assets/` are generated: regenerate them with
   `uv run plot-graph`, which needs the `plot` extra.
+- The home page figure is generated into `docs/index.md`: edit
+  `docs/_build/hero_figure.py`, not the SVG, and run
+  `uv run python docs/_build/hero_figure.py`.
 - Keep `README.md` short and put detail in `docs/`.
 
 ## Code style

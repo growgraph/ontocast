@@ -56,7 +56,7 @@ subject (`ONTOLOGY_HEADER_QUERY`) and is strict: a graph in the ontologies
 dataset that is not a version (a header field missing, `owl:versionIRI` not
 equal to the graph name, or several `owl:Ontology` subjects) raises
 `CatalogContractError`, never a silent gap in the catalog. A SHACL shapes
-document usually declares an `owl:Ontology` and carries no header. Shapes
+document usually declares an `owl:Ontology` and carries no version header. Shapes
 therefore live in their own partition, `{tenant}--{project}--shapes`, and the
 store selects a partition by `StoreKind` (`"facts"`, `"ontologies"` or
 `"shapes"`). [Validation](../guides/validation.md) gives the user-facing
@@ -139,7 +139,7 @@ reads:
 |---|---|
 | `aselect(query, *, store="ontologies")` | One `dict[str, str]` per SPARQL SELECT solution |
 | `aconstruct(query, *, store="ontologies")` | An `RDFGraph` of real RDF terms, without prefix bindings |
-| `afetch_ontology_catalog()` | One `OntologyHeader` (`iri`, `ontology_id`, `title`, `description`, `version`, `version_iri`, `prior_version_iris`, `created_at`, `modified_at`, `removed`, `graph_uri`) per stored version, with no graphs |
+| `afetch_ontology_catalog()` | One `OntologyHeader` (`iri`, `ontology_id`, `title`, `description`, `namespace`, `version`, `version_iri`, `prior_version_iris`, `created_at`, `modified_at`, `removed`, `graph_uri`) per stored version, with no graphs |
 | `afetch_ontologies_by_iri(iris)` | Ontologies with graphs, restricted to `iris` (empty means all) |
 
 `aselect` rows carry each term's lexical value only, so constrain term kinds in

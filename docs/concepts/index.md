@@ -21,7 +21,7 @@ setting changes which step.
 | Convert | The file becomes text | None |
 | Chunk | The text is cut into content units and labeled by section | None, unless `CHUNK_SECTION_CLASSIFIER=llm` |
 | Ontology block | The document's home ontology is resolved; each unit proposes changes to the ontology; the changes are merged and saved | One per document, then at least one per unit |
-| Facts block | Each unit's facts are extracted, then merged into one graph and validated | At least one per unit |
+| Facts block | Each unit's facts are extracted, then merged into one graph and validated | At least one per unit, then at most one per document for coreference |
 | Serialize | The graphs are stored and returned | None |
 
 ## Convert
@@ -48,16 +48,18 @@ A document is too long for one prompt, so OntoCast cuts it into parts (content
 units) of between
 [`CHUNK_MIN_SIZE`](../reference/configuration/chunking.md#chunk_min_size) and
 [`CHUNK_MAX_SIZE`](../reference/configuration/chunking.md#chunk_max_size)
-characters. Cuts follow the document's sections, so no unit spans two labeled
-sections, and every unit carries the label of the section it came from, such as
-`methods` or `results`. Neighbouring sections that got no label are joined
-until the unit reaches the minimum size, and a heading with no text of its own
-opens the unit that follows it.
+characters. Cuts follow the document's sections, so no unit mixes two section
+labels, and every unit carries the label of the section it came from, such as
+`methods` or `results`. Neighbouring parts with the same label, or with none,
+are joined until the unit reaches the minimum size, and a heading with no text
+of its own opens the unit that follows it.
 
-Section labels decide what is extracted at all: reference lists are skipped by
-default, and you can ask for only some sections of a document. [Structured
-documents](structured_documents.md) explains labels, filters and the optional
-per-unit summary.
+You can ask for only some sections of a document. Before extraction, each
+unit is routed: reference lists and boilerplate are dropped by default, but a
+label alone never drops a unit. The content must agree with a strong label, or
+be conclusive on its own, so a section that merely mentions references is
+kept. [Structured documents](structured_documents.md) explains
+labels, filters, routing and the optional per-unit summary.
 
 From here on, every unit is processed on its own and in parallel, up to
 [`PARALLEL_WORKERS`](../reference/configuration/pipeline.md#parallel_workers)
@@ -123,7 +125,13 @@ ontology. It runs when `RENDER_MODE` is `facts` or `ontology_and_facts`.
 4. **Merge.** The units' graphs become one. Two units often describe the same
    thing under different names, so OntoCast decides which entities are the
    same and merges them; see [Entity disambiguation](entity_disambiguation.md).
-5. **Validate.** The merged graph is checked as a whole: a property that may
+5. **Resolve coreference.** In a document of two or more units, the entity
+   pairs the merge could not settle go to the model in one LLM call: a `same`
+   verdict merges a pair, a `different` one keeps it apart, and every merge
+   guard still applies. With no such pair, no call is made
+   ([`AGG_LLM_COREFERENCE`](../reference/configuration/aggregation.md#agg_llm_coreference),
+   on by default).
+6. **Validate.** The merged graph is checked as a whole: a property that may
    have one value but has two, one entity filling two single-valued roles of
    the same subject (a range whose bounds were merged), and, with shapes
    loaded, SHACL violations. A finding that points to a wrong
@@ -160,9 +168,9 @@ Inside each block, every unit runs the same short loop:
 </figure>
 
 - **Render** is one LLM call. If it fails outright (no usable output), it is
-  retried up to
+  attempted again, up to
   [`MAX_VISITS_PER_NODE`](../reference/configuration/pipeline.md#max_visits_per_node)
-  times. A render that succeeded is never repeated.
+  attempts in all (one by default). A render that succeeded is never repeated.
 - **Review** is a critic pass: deterministic checks first, at no cost, then one
   LLM call to the critic, which points at the statements to fix. OntoCast
   applies the fixes itself, as a patch, without another LLM call, and undoes
@@ -179,7 +187,8 @@ Inside each block, every unit runs the same short loop:
 
 So at the defaults, an ontology unit costs one call and a facts unit usually
 two, plus, in `selected_single_ontology` mode, one call per unit for choosing
-the ontology.
+the ontology. The document-level calls (the home ontology, coreference, and the
+optional consolidation) come on top.
 [Validation layers](../internals/validation_layers.md) describes the checks, the
 fixes and their limits in detail.
 

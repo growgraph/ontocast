@@ -12,9 +12,10 @@ from pydantic import (
 from rdflib import URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.enum import SectionLabelSource
+from ontocast.onto.enum import LabelStrength, RouteReason, SectionLabelSource
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.section_models import LabelEvidence
 from ontocast.util.hash import render_text_hash
 
 
@@ -49,26 +50,47 @@ class SourceUnit(BaseModel):
     section_label_source: SectionLabelSource | None = Field(
         default=None,
         description=(
-            "Which tier of the section-classification cascade decided "
-            "section_label (heading pattern/keyword, span overlap, content "
-            "density, LLM, forward fill)."
+            "Which tier's evidence decided section_label (heading pattern, "
+            "keyword or inheritance, front matter, content, LLM)."
         ),
     )
-    section_label_confidence: float = Field(
-        default=0.0,
-        description="Confidence in section_label in [0, 1]; 0 when unlabeled.",
+    section_label_strength: LabelStrength | None = Field(
+        default=None,
+        description=(
+            "Whether section_label may take part in a drop: strong for an exact "
+            "heading, a heading inside a strong section by its number or level, "
+            "or the content itself; weak otherwise. None when unlabeled."
+        ),
+    )
+    section_label_evidence: list[LabelEvidence] = Field(
+        default_factory=list,
+        description=(
+            "Every tier's vote on section_label. The label is the strongest "
+            "vote; between equals the heading's, then the content's."
+        ),
     )
     headings: list[str] | None = Field(
         default=None,
-        description="Docling heading breadcrumb for this chunk (tagging hint).",
+        description="The heading that opens this unit's section, if any.",
     )
     doc_item_refs: list[str] = Field(
         default_factory=list,
-        description="Docling doc_item self_refs covered by this chunk (tagging hint).",
+        description=(
+            "References (self_ref) of the docling items whose text this unit "
+            "holds whole, in document order."
+        ),
     )
     summary: str | None = Field(
         default=None,
         description="LLM-compressed summary of this chunk used for extraction prompts",
+    )
+    route_reason: RouteReason = Field(
+        default=RouteReason.CONTENT,
+        description=(
+            "Why routing kept this unit: plain content, a weak or contradicted "
+            "label, a fallback schema, or the citation and non-content routes "
+            "that is_citation_metadata and is_non_content record."
+        ),
     )
     is_citation_metadata: bool = Field(
         default=False,

@@ -36,10 +36,12 @@ RECOGNISED = [
     ("## Characterization", "methods"),
     ("## 4 Discussion and Conclusions", "discussion"),
     ("## Conclusions and Outlook", "conclusion"),
-    ("## Data Availability", "data"),
+    ("## Data Availability", "back_matter"),
     ("## Supporting Information", "appendix"),
     ("## *sı Supporting Information", "appendix"),
-    ("## ■ ASSOCIATED CONTENT", "appendix"),
+    ("## ■ ASSOCIATED CONTENT", "back_matter"),
+    ("## ORCID", "back_matter"),
+    ("## Notes", "back_matter"),
     ("## Author Contributions", "acknowledgements"),
     ("## Competing Interests", "acknowledgements"),
     ("## ■ ACKNOWLEDGMENTS", "acknowledgements"),
@@ -49,8 +51,6 @@ RECOGNISED = [
 
 UNRECOGNISED = [
     "## ARTICLE",
-    "## ORCID",
-    "## Notes",
     "## ACCESS",
     "## Cooperative ensemble breaks the population-inversion limitation",
 ]
@@ -105,13 +105,25 @@ class TestPrecisionBoundary:
     def test_compound_heading_is_keyword_matched(self):
         resolved = resolve_heading_label("Results and Discussion", SCHEMA)
         assert resolved is not None
-        assert resolved[2] == "heading_keyword"
+        assert resolved[1] == "heading_keyword"
+
+    def test_heading_that_is_a_keyword_resolves_at_pattern_strength(self):
+        """A section's name is exact evidence; a keyword inside a heading is not."""
+        for heading, label in [
+            ("## Author Contributions", "acknowledgements"),
+            ("## ■ AUTHOR INFORMATION", "acknowledgements"),
+            ("## Competing Interests", "acknowledgements"),
+            ("## *sı Supporting Information", "appendix"),
+        ]:
+            assert resolve_heading_label(heading, SCHEMA) == (label, "heading_pattern")
+        assert resolve_heading_label("Funding Mechanisms", SCHEMA) == (
+            "acknowledgements",
+            "heading_keyword",
+        )
 
     def test_exact_heading_prefers_the_pattern_tier(self):
         resolved = resolve_heading_label("Results", SCHEMA)
-        assert resolved is not None
-        assert resolved[2] == "heading_pattern"
-        assert resolved[1] > 0.9
+        assert resolved == ("results", "heading_pattern")
 
 
 class TestCompoundHeadingOrdering:

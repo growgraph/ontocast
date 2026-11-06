@@ -127,6 +127,7 @@ def test_batch_state_merge_carries_the_selection_census_and_unit_ledgers() -> No
     )
     from ontocast.config import Config
     from ontocast.onto.content_unit import ContentUnit
+    from ontocast.onto.enum import LabelStrength
     from ontocast.onto.model import (
         FactsUnitFindingKind,
         GraphRepairRecord,
@@ -137,9 +138,21 @@ def test_batch_state_merge_carries_the_selection_census_and_unit_ledgers() -> No
     doc = URIRef("https://example.com/doc")
     chunk = {
         "content_units": [
-            ContentUnit(text="a", index=0, doc_iri=doc, section_label="methods"),
-            ContentUnit(text="b", index=1, doc_iri=doc, section_label="methods"),
-            ContentUnit(text="c", index=2, doc_iri=doc),
+            ContentUnit(
+                text="a",
+                index=0,
+                doc_iri=doc,
+                section_label="methods",
+                section_label_strength=LabelStrength.STRONG,
+            ),
+            ContentUnit(
+                text="bb",
+                index=1,
+                doc_iri=doc,
+                section_label="methods",
+                section_label_strength=LabelStrength.WEAK,
+            ),
+            ContentUnit(text="ccc", index=2, doc_iri=doc),
         ],
         "unit_failures": [UnitFailure(unit_index=2, phase="facts", stage="render")],
         "facts_repairs_applied": {
@@ -160,6 +173,7 @@ def test_batch_state_merge_carries_the_selection_census_and_unit_ledgers() -> No
     assert selection.labeled_units == 2
     assert selection.unlabeled_units == 1
     assert selection.section_label_histogram == {"methods": 2, "(unlabeled)": 1}
+    assert selection.label_strength_chars == {"strong": 1, "weak": 2, "unlabeled": 3}
     assert [failure.unit_index for failure in state.unit_failures] == [2]
     assert state.facts_repairs_applied[0][0].target == "ex:hasBSite"
     assert state.aggregation_clusters == {"ex:final": ["ex:a", "ex:b"]}
@@ -261,3 +275,27 @@ def test_completion_summary_reads_its_own_attempt_kind() -> None:
     assert summary.subjects_rolled_back == 1
     assert summary.triples_inserted == 7
     assert summary.measurements_recovered == 2
+
+
+def test_the_model_tier_report_reaches_the_manifest_from_workflow_state() -> None:
+    from ontocast.api.process_helpers import (
+        _merge_workflow_state_into_agent_state,
+        _selection_manifest,
+    )
+    from ontocast.config import Config
+    from ontocast.onto.state import AgentState
+
+    chunk = {
+        "outline_labels": {
+            "windows": 3,
+            "windows_failed": 1,
+            "errors": {"LLMRequestTimeoutError": 1},
+        }
+    }
+    state = _merge_workflow_state_into_agent_state(AgentState(), chunk)
+
+    report = _selection_manifest(state, Config()).outline_labels
+    assert report is not None
+    assert (report.windows, report.windows_failed) == (3, 1)
+    assert report.errors == {"LLMRequestTimeoutError": 1}
+    assert _selection_manifest(AgentState(), Config()).outline_labels is None

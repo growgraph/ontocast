@@ -1,4 +1,9 @@
-import json
+"""Convert PDFs to Markdown files that ``ontocast process`` reads back.
+
+Markdown, not JSON: a JSON input is read as one paragraph, while a ``.md`` file
+goes through the converter and keeps its headings, which section routing needs.
+"""
+
 import logging
 import pathlib
 import sys
@@ -10,11 +15,12 @@ from ontocast.util.files import crawl_directories, pdf2markdown
 logger = logging.getLogger(__name__)
 
 
-def process(output_path, f: pathlib.Path):
-    fn_json = (output_path / f.name).with_suffix(".json")
-    jdata = pdf2markdown(f)
-    with open(fn_json, "w", encoding="utf-8") as fpnt:
-        json.dump(jdata, fpnt, ensure_ascii=False, indent=4)
+def process(output_path: pathlib.Path, f: pathlib.Path) -> pathlib.Path:
+    """Write ``f`` converted to Markdown as ``<output_path>/<stem>.md``."""
+    output_path.mkdir(parents=True, exist_ok=True)
+    target = (output_path / f.name).with_suffix(".md")
+    target.write_text(pdf2markdown(f), encoding="utf-8")
+    return target
 
 
 @click.command()

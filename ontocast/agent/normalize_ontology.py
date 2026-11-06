@@ -2,14 +2,15 @@
 
 import logging
 
-from rdflib import OWL, RDF, BNode, Node
+from rdflib import OWL, Node
 
-from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit
+from ontocast.onto.identity import validate_ontology_iri
 from ontocast.onto.namespace_merge import merge_namespace_bindings
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.scaffolding import is_scaffolding, scaffolding_nodes
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
 from ontocast.onto.util import is_rdflib_default_namespace
@@ -17,19 +18,15 @@ from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
-#: Types that mark a node as pipeline-minted chunk scaffolding rather than
-#: extracted content. Both are written by ``GraphRewriter._add_unit_metadata``,
-#: so only the canonical spelling can occur -- unlike the chunk-metadata
-#: *predicates* below, which tolerate an ``http://schema.org/`` variant because
-#: they can also arrive on an ingested graph.
-_CHUNK_NODE_TYPES = frozenset({str(PROV.Entity), str(SCHEMA.Text)})
-
 
 def _working_anchor_from_graph(graph: RDFGraph) -> str | None:
     """Pick a stable working-context IRI from the first non-standard namespace.
 
     Used when aggregating unit deltas without a catalog base ontology. Does not
-    set ``ontology_id`` from the prefix name.
+    set ``ontology_id`` from the prefix name. A namespace that is not a valid
+    ontology IRI is passed over: a prefix-shaped one (``fro:``, an undeclared
+    JSON-LD prefix parsed as a scheme) would otherwise become an ontology
+    identity that collides at serialization.
     """
     for prefix, namespace in graph.namespaces():
         if not prefix:
@@ -37,7 +34,10 @@ def _working_anchor_from_graph(graph: RDFGraph) -> str | None:
         ns = str(namespace)
         if is_rdflib_default_namespace(ns):
             continue
-        return ns.rstrip("/#")
+        try:
+            return validate_ontology_iri(ns.rstrip("/#"))
+        except ValueError:
+            continue
     return None
 
 
@@ -57,52 +57,16 @@ def split_ontology_and_provenance_graph(
             clean_graph.bind(prefix, namespace)
             provenance_graph.bind(prefix, namespace)
 
-    reifier_nodes: set[BNode] = {
-        subject
-        for subject, _, _ in graph.triples((None, RDF_REIFIES, None))
-        if isinstance(subject, BNode)
-    }
-    ontology_subjects: set[Node] = {
-        subject for subject, _, _ in graph.triples((None, RDF.type, OWL.Ontology))
-    }
-    chunk_nodes: set[Node] = set()
-
-    def is_schema_chunk_metadata(predicate: Node) -> bool:
-        predicate_str = str(predicate)
-        return predicate_str in {
-            str(SCHEMA.identifier),
-            str(SCHEMA.position),
-            "http://schema.org/identifier",
-            "http://schema.org/position",
-        }
-
-    for subject, predicate, obj in graph:
-        if is_schema_chunk_metadata(predicate) or predicate == PROV.generatedAtTime:
-            chunk_nodes.add(subject)
-        if predicate == RDF.type and str(obj) in _CHUNK_NODE_TYPES:
-            chunk_nodes.add(subject)
+    scaffolding = scaffolding_nodes(graph)
 
     def is_provenance_or_alignment_triple(
         subject: Node, predicate: Node, obj: Node
     ) -> bool:
-        if predicate == RDF_REIFIES:
-            return True
-        if predicate == PROV.wasDerivedFrom:
-            # The header's source-document link stays with the ontology.
-            if subject in ontology_subjects:
-                return False
-            return True
-        if predicate == PROV.generatedAtTime or is_schema_chunk_metadata(predicate):
-            return True
-        if predicate == OWL.sameAs:
-            return True
-        if subject in reifier_nodes or obj in reifier_nodes:
-            return True
-        if subject in chunk_nodes or obj in chunk_nodes:
-            return True
-        if predicate == RDF.type and str(obj) in _CHUNK_NODE_TYPES:
-            return True
-        return False
+        # The header's source-document link is not scaffolding: it stays with
+        # the ontology. owl:sameAs is the aggregator's alignment bookkeeping.
+        return predicate == OWL.sameAs or is_scaffolding(
+            (subject, predicate, obj), scaffolding
+        )
 
     for triple in graph:
         if is_provenance_or_alignment_triple(*triple):
@@ -224,6 +188,7 @@ def normalize_ontology_units(
             title=base_ontology.title,
             description=base_ontology.description,
             iri=base_ontology.iri,
+            namespace=base_ontology.namespace,
         )
     else:
         # No catalog base: provisional Ontology from first domain namespace stem.

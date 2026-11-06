@@ -18,6 +18,13 @@ Ontology output has its own document-level checks after the unit loop: the
 reduce-time policies, `STRUCTURAL_CHECK` and `CONSISTENCY_CRITIC`, all without
 LLM calls ([below](#ontology-checks-after-the-unit-loop)).
 
+Between aggregation and the gate, `RESOLVE_COREFERENCE` puts the entity pairs
+the symbolic merge rules cannot settle to the model, in one call per document
+of two or more units (`AGG_LLM_COREFERENCE`); its verdicts merge or veto pairs
+and stay in force when the gate re-aggregates. [Entity
+disambiguation](../concepts/entity_disambiguation.md#coreference-the-guards-cannot-settle)
+describes it.
+
 No layer withholds output. A unit that leaves the loop without being accepted
 keeps its graph: the reduce merges it and logs it as salvaged from a
 non-converged loop. The gate serves the facts it repaired, with the remaining
@@ -295,8 +302,17 @@ The passes stop as soon as nothing is missing.
     objects asserted by a single unit are a warning: only objects from
     different units can come from a bad merge.
 3. **Un-merge repair** (document path only). The first three kinds are merge
-   signatures: two things that are not the same got one IRI. Their clusters
-   become pair vetoes and the units are re-aggregated, up to
+   signatures: two things that are not the same got one IRI. A finding
+   implicates a cluster: the subject's for `functional_violation` and
+   `suspect_multi_value` (a merged subject collects its members' objects, so
+   the objects are left merged), the subject's and the objects' for
+   `degenerate_coreference`. Within it, only the members that disagree are
+   vetoed as pairs: two members whose values on the finding's predicate, in
+   their own units, are all incompatible (for `degenerate_coreference`, which
+   of its predicates they use or are reached by). Members that carried no
+   value keep their merges; when no pair disagrees, the whole cluster is
+   vetoed. The units are re-aggregated with these vetoes and the coreference
+   verdicts, up to
    `FACTS_MERGE_REPAIR_PASSES` times; a pass is kept only if the
    merge-signature error count strictly drops. SHACL findings never drive this
    loop: a missing property says a node is under-specified, not that two
@@ -324,8 +340,9 @@ The passes stop as soon as nothing is missing.
    that steps 4 and 5 removed; `facts_components` and `facts_isolated` count the
    connected groups of instances in the served graph and the instances linked
    to no other instance (links run through blank nodes; the document node joins
-   what it links but is not an instance; typing, `owl:sameAs` and `prov:` arcs
-   link nothing).
+   what it links but is not an instance; typing, `owl:sameAs` and the
+   pipeline's provenance link nothing, while a domain property links in any
+   vocabulary, PROV-O included).
 7. **Summary**: `facts_conformance`, `facts_validation_findings` and
    `facts_gate_repairs`, plus the gate counters in `retrieval_metrics`.
 

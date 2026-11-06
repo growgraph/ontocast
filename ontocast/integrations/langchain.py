@@ -649,10 +649,13 @@ def _ingest_ontology(tools: "ToolBox", max_chars: int) -> BaseTool:
     return _tool(
         name="ontocast_ingest_ontology_ttl",
         description=(
-            "Register a new ontology from Turtle: writes it to the ontology "
-            "directory, stores it in the triple store, and indexes it for "
-            "search. Use this to add a vocabulary, not to patch an existing "
-            "one -- for that use ontocast_apply_graph_update."
+            "Register a new ontology from Turtle: stores it in the triple "
+            "store and, when a vector store is configured, indexes it for "
+            "search. Nothing is written to disk, so "
+            "with the in-memory store it lasts only until the process exits. "
+            "Fails if an ontology with the same IRI exists. Use this to add a "
+            "vocabulary, not to patch an existing one -- for that use "
+            "ontocast_apply_graph_update."
         ),
         args_schema=IngestOntologyArgs,
         coroutine=run,

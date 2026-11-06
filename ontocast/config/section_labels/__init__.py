@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from enum import StrEnum
 from functools import lru_cache
 from importlib import resources
 from importlib.resources.abc import Traversable
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 _MAX_HEADING_LINE_LEN = 120
 _STRUCTURAL_PREFIX = re.compile(
@@ -48,6 +49,24 @@ def _compile_keyword(keyword: str) -> re.Pattern[str]:
     return re.compile(rf"(?<!\w){re.escape(keyword)}(?!\w)", re.I)
 
 
+class RouteClass(StrEnum):
+    """What a section of this label holds, for routing before extraction.
+
+    ``content`` sections are extracted. ``boilerplate`` sections are dropped
+    by default when the label is strong and the text states no measurement.
+    ``non_content`` sections (front or back matter: author blocks, notes,
+    availability and licence statements) are flagged, or dropped, per
+    ``CHUNK_NON_CONTENT_MODE`` under the same conditions. ``citations``
+    sections are reference lists, routed by ``CHUNK_BIBLIOGRAPHY_MODE`` when
+    their content agrees. The class never decides a drop on its own.
+    """
+
+    CONTENT = "content"
+    BOILERPLATE = "boilerplate"
+    NON_CONTENT = "non_content"
+    CITATIONS = "citations"
+
+
 class SectionLabelDef(BaseModel):
     """One canonical section label, its heading patterns and recall keywords.
 
@@ -57,17 +76,30 @@ class SectionLabelDef(BaseModel):
     Section") which the anchored patterns cannot match.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     id: str
-    heading_patterns: list[str] = Field(default_factory=list)
-    keywords: list[str] = Field(default_factory=list)
-    order: int | None = Field(
-        default=None,
+    route_class: RouteClass = RouteClass.CONTENT
+    terminal: bool = Field(
+        default=False,
         description=(
-            "Canonical position of this section in a well-formed document of "
-            "this type. Used only to refuse label fills that would run "
-            "backwards; absent means the label is not order-constrained."
+            "A flat list with no subsections (a reference list): descriptive "
+            "headings after it never inherit the label, and a keyword names it "
+            "only as a whole conjunct of a heading ('Notes and References'), "
+            "never inside a longer phrase ('Comparison with literature "
+            "references')."
         ),
     )
+    description: str = Field(
+        min_length=1,
+        description=(
+            "What a section of this type does in the document, by its role "
+            "rather than its subject: shown to the model that labels the "
+            "outline."
+        ),
+    )
+    heading_patterns: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
 
     @property
     def compiled_keywords(self) -> tuple[re.Pattern[str], ...]:
@@ -84,6 +116,8 @@ class SectionLabelSchema(BaseModel):
     the content-based detector embeds, so it describes the *document type*,
     unlike ``description``, which describes this schema's headings.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: str
     id: str
@@ -105,21 +139,6 @@ class SectionLabelSchema(BaseModel):
         ),
     )
     labels: list[SectionLabelDef]
-    ordered: bool = Field(
-        default=False,
-        description=(
-            "Whether this document type has a canonical section order, making "
-            "the per-label 'order' values meaningful for fill guarding."
-        ),
-    )
-    default_exclude: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Label ids dropped by default before extraction (boilerplate "
-            "sections); overridden by an explicit exclude_sections request "
-            "option ([] disables exclusion entirely)."
-        ),
-    )
 
     @property
     def compiled_patterns(self) -> tuple[tuple[str, re.Pattern[str]], ...]:
@@ -182,71 +201,149 @@ def match_heading_line(line: str, schema: SectionLabelSchema) -> str | None:
     return None
 
 
-def match_heading_keywords(
-    line: str, schema: SectionLabelSchema
-) -> tuple[str, float] | None:
+# Coordination splits a compound heading into conjuncts ("Results and
+# Discussion"); the first names the section.
+_CONJUNCTION = re.compile(r"\s+(?:and|&)\s+|\s*/\s*|\s*,\s*", re.I)
+# A prepositional phrase follows the head noun ("Summary of Results").
+_PREPOSITION = re.compile(
+    r"\s+(?:of|for|in|on|with|from|to|by|via|under|at|using|over|versus|vs\.?)\s+",
+    re.I,
+)
+# "Head: subtitle" and "Head - subtitle" headings.
+_SUBTITLE = re.compile(r"\s*(?::|\s[-–—]\s)\s*")
+
+
+def heading_head(normalised: str) -> str | None:
+    """The head of a subtitled heading ("Appendix A: Derivation ..." -> "Appendix A").
+
+    Returns:
+        The part before the first colon or spaced dash, or ``None`` when the
+        heading has no subtitle.
+    """
+    parts = _SUBTITLE.split(normalised, maxsplit=1)
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        return None
+    return parts[0].strip()
+
+
+def _conjuncts(normalised: str) -> list[str]:
+    return [part.strip() for part in _CONJUNCTION.split(normalised) if part.strip()]
+
+
+def _head_phrase(normalised: str) -> str:
+    """The first conjunct, cut before its first prepositional phrase."""
+    conjuncts = _conjuncts(normalised)
+    first = conjuncts[0] if conjuncts else normalised
+    return _PREPOSITION.split(first, maxsplit=1)[0].strip()
+
+
+def match_heading_keywords(line: str, schema: SectionLabelSchema) -> str | None:
     """Match a heading by keyword, for compound and non-canonical headings.
 
-    The winner is the label whose keyword appears earliest in the heading, so a
-    compound heading resolves to its leading component ("Results and
-    Discussion" is results, "Conclusions and Outlook" is conclusion). Ties on
-    position are broken by the longer keyword, then by schema order.
+    Resolution follows the heading's head noun, in order:
+
+    1. a terminal label whose keyword is a whole conjunct ("Notes and
+       References" is references); a terminal label matches no other way;
+    2. a keyword ending the head phrase -- the first conjunct cut before its
+       first preposition ("Characterization Results" is results, "Summary of
+       Results" a summary, "Results and Discussion" results);
+    3. any keyword in the head phrase, rightmost first ("Experimental
+       Section" is methods);
+    4. the earliest keyword anywhere in the heading.
+
+    Ties go to the longer keyword, then to schema order. English noun-phrase
+    structure is assumed, as the keywords themselves are English.
 
     Args:
         line: Raw heading line.
         schema: Active section label schema.
 
     Returns:
-        ``(label, confidence)`` or ``None`` when no keyword matches.
+        The label, or ``None`` when no keyword matches.
     """
     normalised = normalise_heading_line(line)
     if not normalised or len(normalised) > _MAX_HEADING_LINE_LEN:
         return None
 
-    best: tuple[int, int, int, str] | None = None
+    conjuncts = _conjuncts(normalised)
+    for label_def in schema.labels:
+        if label_def.terminal and any(
+            pattern.fullmatch(conjunct)
+            for pattern in label_def.compiled_keywords
+            for conjunct in conjuncts
+        ):
+            return label_def.id
+
+    head = _head_phrase(normalised)
+    ending: tuple[int, int, str] | None = None
+    inside: tuple[int, int, int, str] | None = None
+    anywhere: tuple[int, int, int, str] | None = None
     for index, label_def in enumerate(schema.labels):
+        if label_def.terminal:
+            continue
         for pattern in label_def.compiled_keywords:
+            in_head = pattern.search(head)
+            if in_head is not None:
+                length = in_head.end() - in_head.start()
+                if in_head.end() == len(head):
+                    candidate = (-length, index, label_def.id)
+                    if ending is None or candidate < ending:
+                        ending = candidate
+                inside_candidate = (-in_head.end(), -length, index, label_def.id)
+                if inside is None or inside_candidate < inside:
+                    inside = inside_candidate
             found = pattern.search(normalised)
-            if found is None:
-                continue
-            candidate = (
-                found.start(),
-                -(found.end() - found.start()),
-                index,
-                label_def.id,
-            )
-            if best is None or candidate < best:
-                best = candidate
-    if best is None:
+            if found is not None:
+                any_candidate = (
+                    found.start(),
+                    -(found.end() - found.start()),
+                    index,
+                    label_def.id,
+                )
+                if anywhere is None or any_candidate < anywhere:
+                    anywhere = any_candidate
+    if ending is not None:
+        return ending[2]
+    if inside is not None:
+        return inside[3]
+    if anywhere is not None:
+        return anywhere[3]
+    return None
+
+
+def match_heading_name(line: str, schema: SectionLabelSchema) -> str | None:
+    """Match a heading that consists of one of a label's keywords and nothing else.
+
+    "Author Contributions" *is* a name of the acknowledgements section, as
+    exactly as an anchored pattern; "Funding Mechanisms" only contains one.
+    """
+    normalised = normalise_heading_line(line)
+    if not normalised or len(normalised) > _MAX_HEADING_LINE_LEN:
         return None
-    return best[3], 0.7
+    for label_def in schema.labels:
+        for pattern in label_def.compiled_keywords:
+            if pattern.fullmatch(normalised):
+                return label_def.id
+    return None
 
 
 def resolve_heading_label(
     line: str, schema: SectionLabelSchema
-) -> tuple[str, float, str] | None:
+) -> tuple[str, str] | None:
     """Resolve a heading to a label via patterns, then keywords.
 
+    A heading that is a keyword and nothing else resolves as a pattern.
+
     Returns:
-        ``(label, confidence, source)`` where source is ``"heading_pattern"``
-        or ``"heading_keyword"``; ``None`` when the heading is unrecognised.
+        ``(label, source)`` where source is ``"heading_pattern"`` or
+        ``"heading_keyword"``; ``None`` when the heading is unrecognised.
     """
-    exact = match_heading_line(line, schema)
+    exact = match_heading_line(line, schema) or match_heading_name(line, schema)
     if exact is not None:
-        return exact, 0.95, "heading_pattern"
+        return exact, "heading_pattern"
     keyword = match_heading_keywords(line, schema)
     if keyword is not None:
-        return keyword[0], keyword[1], "heading_keyword"
-    return None
-
-
-def label_order(label: str, schema: SectionLabelSchema) -> int | None:
-    """Canonical position of a label in this schema, when order-constrained."""
-    if not schema.ordered:
-        return None
-    for label_def in schema.labels:
-        if label_def.id == label:
-            return label_def.order
+        return keyword, "heading_keyword"
     return None
 
 
@@ -343,6 +440,35 @@ def get_default_section_schema() -> SectionLabelSchema:
 
 def canonical_labels(schema: SectionLabelSchema) -> tuple[str, ...]:
     return tuple(label_def.id for label_def in schema.labels)
+
+
+def label_route_class(label: str | None, schema: SectionLabelSchema) -> RouteClass:
+    """Route class of a label in this schema; ``content`` for unknown labels."""
+    if label is None:
+        return RouteClass.CONTENT
+    wanted = label.strip().lower()
+    for label_def in schema.labels:
+        if label_def.id == wanted:
+            return label_def.route_class
+    return RouteClass.CONTENT
+
+
+def label_is_terminal(label: str | None, schema: SectionLabelSchema) -> bool:
+    """Whether a label names a flat list that no subsection can belong to."""
+    if label is None:
+        return False
+    return any(
+        label_def.terminal for label_def in schema.labels if label_def.id == label
+    )
+
+
+def labels_of_class(schema: SectionLabelSchema, route_class: RouteClass) -> list[str]:
+    """Label ids of one route class, in schema order."""
+    return [
+        label_def.id
+        for label_def in schema.labels
+        if label_def.route_class is route_class
+    ]
 
 
 @lru_cache(maxsize=1)

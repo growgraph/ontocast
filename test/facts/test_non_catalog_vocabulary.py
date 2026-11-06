@@ -119,7 +119,7 @@ def test_chunk_metadata_predicates_are_not_flagged() -> None:
         schema:identifier "abc123" ;
         schema:articleSection "results" ;
         oc:sectionLabelSource "heading_keyword" ;
-        oc:sectionLabelConfidence "0.9"^^xsd:decimal .
+        oc:sectionLabelStrength "weak" .
     """
     flagged = _non_catalog(_report(facts))
 
@@ -186,3 +186,31 @@ def test_no_ontology_context_reports_nothing() -> None:
     report = validate_aggregated_facts(graph, None, fact_namespaces=[FACTS])
 
     assert _non_catalog(report) == {}
+
+
+def test_prov_terms_are_reported_on_instances_and_not_on_the_document_node() -> None:
+    """The pipeline's own document metadata is exempt only where it writes it."""
+    facts = f"""
+    @prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+    @prefix prov:   <http://www.w3.org/ns/prov#> .
+    @prefix foaf:   <http://xmlns.com/foaf/0.1/> .
+    @prefix dcterms: <http://purl.org/dc/terms/> .
+    @prefix matsci: <{MATSCI}> .
+    @prefix cd:     <{FACTS}> .
+
+    cd:document a prov:Entity , foaf:Document ; dcterms:title "A paper" .
+    cd:sl_sample_1 a matsci:SuperlatticeSample ;
+        rdfs:label "CsPbBr3 nanocrystal superlattice" .
+    cd:synthesis a prov:Activity ; rdfs:label "synthesis" ;
+        prov:generated cd:sl_sample_1 .
+    cd:sample_record a prov:Entity ; rdfs:label "sample record" .
+    """
+    flagged = _non_catalog(_report(facts))
+
+    assert "http://www.w3.org/ns/prov#Activity" in flagged
+    assert "http://www.w3.org/ns/prov#generated" in flagged
+    # prov:Entity is reported for the instance, not for the document node.
+    assert flagged["http://www.w3.org/ns/prov#Entity"].values == [
+        f"{FACTS}sample_record"
+    ]
+    assert "http://purl.org/dc/terms/title" not in flagged

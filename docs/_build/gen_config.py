@@ -217,8 +217,9 @@ def main() -> None:
     with mkdocs_gen_files.open(OUT / "index.md", "w") as f:
         f.write(
             "# Configuration reference\n\n"
-            "OntoCast reads its settings from environment variables, or from a "
-            "`.env` file in the working directory. This reference lists all "
+            "OntoCast reads its settings from environment variables; the "
+            "`ontocast` command also loads files passed with `--env-file`. "
+            "This reference lists all "
             f"{total} of them, generated from the settings models. To choose "
             "settings for a task, start with "
             "[Configuring OntoCast](../../guides/configuration.md).\n\n"

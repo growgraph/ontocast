@@ -82,7 +82,7 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
     materialized: list = []
     added: list = []
 
-    async def fake_sync(self):
+    async def fake_sync(self, seed_ontologies=None):
         return [test_ontology]
 
     async def fake_mat(self, o):
@@ -130,6 +130,11 @@ def test_initialize_materializes_then_adds_with_skip_vector(monkeypatch, test_on
 
         def is_vector_store_ready(self):
             return ToolBox.is_vector_store_ready(cast(ToolBox, self))
+
+        _seed_load_failures: dict[str, str] = {}
+
+        def _load_seed_ontologies_from_directory(self) -> list[Ontology]:
+            return []
 
         _synchronize_ontologies = fake_sync
         _materialize_ontology = fake_mat
@@ -218,7 +223,12 @@ def test_initialize_skips_vector_store_in_full_ttl_mode(monkeypatch) -> None:
             self.shapes_catalog = MagicMock()
             self.shapes_catalog.sync = AsyncMock()
 
-        async def _synchronize_ontologies(self):
+        _seed_load_failures: dict[str, str] = {}
+
+        def _load_seed_ontologies_from_directory(self) -> list[Ontology]:
+            return []
+
+        async def _synchronize_ontologies(self, seed_ontologies=None):
             return synchronized
 
         async def _materialize_ontology(self, _):
@@ -286,7 +296,12 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
             self.shapes_catalog = MagicMock()
             self.shapes_catalog.sync = AsyncMock()
 
-        async def _synchronize_ontologies(self):
+        _seed_load_failures: dict[str, str] = {}
+
+        def _load_seed_ontologies_from_directory(self) -> list[Ontology]:
+            return []
+
+        async def _synchronize_ontologies(self, seed_ontologies=None):
             return []
 
         async def _materialize_ontology(self, _):
@@ -384,7 +399,7 @@ def test_initialize_materializes_with_bounded_concurrency(
         for i in range(4)
     ]
 
-    async def fake_sync(self):
+    async def fake_sync(self, seed_ontologies=None):
         return ontologies
 
     async def fake_mat(self, o):
@@ -436,6 +451,11 @@ def test_initialize_materializes_with_bounded_concurrency(
 
         def is_vector_store_ready(self):
             return ToolBox.is_vector_store_ready(cast(ToolBox, self))
+
+        _seed_load_failures: dict[str, str] = {}
+
+        def _load_seed_ontologies_from_directory(self) -> list[Ontology]:
+            return []
 
         _synchronize_ontologies = fake_sync
         _materialize_ontology = fake_mat
@@ -505,7 +525,12 @@ def test_initialize_wipe_and_prune_follow_their_flags(
             self.shapes_catalog = MagicMock()
             self.shapes_catalog.sync = AsyncMock()
 
-        async def _synchronize_ontologies(self):
+        _seed_load_failures: dict[str, str] = {}
+
+        def _load_seed_ontologies_from_directory(self) -> list[Ontology]:
+            return []
+
+        async def _synchronize_ontologies(self, seed_ontologies=None):
             return [test_ontology]
 
         async def _materialize_ontology(self, _):
@@ -894,7 +919,12 @@ def test_wipe_is_honoured_outside_vector_search_mode(
             self.shapes_catalog = MagicMock()
             self.shapes_catalog.sync = AsyncMock()
 
-        async def _synchronize_ontologies(self):
+        _seed_load_failures: dict[str, str] = {}
+
+        def _load_seed_ontologies_from_directory(self) -> list[Ontology]:
+            return []
+
+        async def _synchronize_ontologies(self, seed_ontologies=None):
             return [test_ontology]
 
         async def _materialize_ontology(self, _):

@@ -14,11 +14,16 @@ from difflib import SequenceMatcher
 
 from pydantic import BaseModel
 from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
-from rdflib.namespace import DCTERMS, PROV, XSD
+from rdflib.namespace import DCTERMS, XSD
 from rdflib.term import Node
 
 from ontocast.onto.rdfgraph import (
     RDFGraph,
+)
+from ontocast.onto.scaffolding import (
+    document_nodes,
+    is_scaffolding,
+    scaffolding_nodes,
 )
 
 logger = logging.getLogger(__name__)
@@ -446,38 +451,8 @@ _SCHEMA_METACLASSES: frozenset[URIRef] = frozenset(
     }
 )
 
-# Pipeline scaffolding: a node typed as one of these, or carrying one of these
-# predicates, is a chunk or document node the pipeline mints, never an
-# extracted instance.
-_SCAFFOLDING_TYPES: frozenset[URIRef] = frozenset(
-    {
-        PROV.Entity,
-        URIRef("http://schema.org/Text"),
-        URIRef("https://schema.org/Text"),
-    }
-)
-_SCAFFOLDING_PREDICATES: frozenset[URIRef] = frozenset(
-    {
-        PROV.generatedAtTime,
-        URIRef("http://schema.org/identifier"),
-        URIRef("https://schema.org/identifier"),
-        URIRef("http://schema.org/position"),
-        URIRef("https://schema.org/position"),
-    }
-)
-
-# Objects of these predicates are alias or lineage handles, not instances.
-_HANDLE_PREDICATES: frozenset[URIRef] = frozenset({OWL.sameAs, PROV.wasDerivedFrom})
-
-
-def _scaffolding_nodes(graph: RDFGraph) -> set[Node]:
-    """Document and chunk nodes the pipeline mints around the facts."""
-    nodes: set[Node] = set()
-    for scaffolding_type in _SCAFFOLDING_TYPES:
-        nodes.update(graph.subjects(RDF.type, scaffolding_type))
-    for predicate in _SCAFFOLDING_PREDICATES:
-        nodes.update(graph.subjects(predicate, None))
-    return nodes
+# Objects of these predicates are alias handles, not instances.
+_HANDLE_PREDICATES: frozenset[URIRef] = frozenset({OWL.sameAs})
 
 
 def fact_instances(graph: RDFGraph, fact_namespaces: Sequence[str]) -> set[URIRef]:
@@ -485,10 +460,10 @@ def fact_instances(graph: RDFGraph, fact_namespaces: Sequence[str]) -> set[URIRe
 
     An instance is a ``URIRef`` in one of ``fact_namespaces`` that occurs as a
     subject, or as the IRI object of a triple other than ``rdf:type``,
-    ``owl:sameAs`` and ``prov:wasDerivedFrom``. Blank nodes are never
-    instances, and neither are the document and chunk scaffolding nodes the
-    pipeline mints (typed ``prov:Entity`` / ``schema:Text``, or carrying
-    ``schema:identifier``, ``schema:position`` or ``prov:generatedAtTime``).
+    ``owl:sameAs``. Blank nodes are never instances, and neither are the
+    nodes the pipeline mints: chunks, reifiers and the document node
+    (:mod:`ontocast.onto.scaffolding`). Triples touching a chunk or reifier
+    are skipped, whatever their vocabulary.
 
     Args:
         graph: Facts graph for one unit or the aggregated document.
@@ -500,9 +475,12 @@ def fact_instances(graph: RDFGraph, fact_namespaces: Sequence[str]) -> set[URIRe
     namespaces = [ns for ns in fact_namespaces if ns]
     if not namespaces:
         return set()
-    scaffolding = _scaffolding_nodes(graph)
+    scaffolding = scaffolding_nodes(graph)
+    minted = scaffolding | document_nodes(graph)
     instances: set[URIRef] = set()
     for subject, predicate, obj in graph:
+        if is_scaffolding((subject, predicate, obj), scaffolding):
+            continue
         if isinstance(subject, URIRef) and _in_fact_scope(subject, namespaces):
             instances.add(subject)
         if (
@@ -512,7 +490,7 @@ def fact_instances(graph: RDFGraph, fact_namespaces: Sequence[str]) -> set[URIRe
             and _in_fact_scope(obj, namespaces)
         ):
             instances.add(obj)
-    return instances - scaffolding
+    return instances - minted
 
 
 def concrete_types(

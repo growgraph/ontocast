@@ -381,20 +381,20 @@ def test_no_evidence_falls_back_to_the_manifest_default() -> None:
     assert decision.source == "default"
 
 
-def test_detected_schema_is_the_one_handed_to_the_llm_backfill(monkeypatch) -> None:
+def test_detected_schema_is_the_one_handed_to_the_llm_tier(monkeypatch) -> None:
     """The schema that tagged the document is the schema the LLM validates against.
 
-    Re-deriving it inside the backfill would ignore the detection and validate
+    Re-deriving it inside the LLM tier would ignore the detection and validate
     against ``academic``; ``normalise_llm_label`` drops labels absent from its
     schema, so the failure is missing labels rather than an error.
     """
     captured: dict[str, Any] = {}
 
-    async def fake_backfill(segments, tools, **kwargs):
-        captured.update(kwargs)
+    async def fake_label_outline(segments, tools, schema, **kwargs):
+        captured["schema"] = schema
 
     monkeypatch.setattr(
-        "ontocast.tool.chunk.prepare.llm_backfill_section_labels", fake_backfill
+        "ontocast.tool.chunk.prepare.llm_label_outline", fake_label_outline
     )
 
     config = ChunkConfig(min_size=40, max_size=500, section_classifier="llm")

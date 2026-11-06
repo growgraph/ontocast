@@ -43,7 +43,8 @@ tenant and project partition. Pass `tenant` and `project` as **query
 parameters** to choose it; they are not read from a JSON body or form. With
 neither, a route uses the partition the server started with (`ontocast serve
 --tenant ... --project ...`, `ontocast`/`test` by default). With only one, the
-other takes its default. [Tenancy](../guides/tenancy.md) explains how
+other takes its built-in default (`ontocast` or `test`), not the server's.
+[Tenancy](../guides/tenancy.md) explains how
 partitions map to datasets and collections.
 
 ## Health and info
@@ -108,8 +109,8 @@ The parameters apply to every document in the request.
 #### Parameters
 
 Each parameter is read from the query string, the JSON body or a form field.
-The query string wins over the body, and the body wins over the server's
-setting. A present but unrecognised value returns `400`; it is never replaced
+The body or form field wins over the query string, and either wins over the
+server's setting. A present but unrecognised value returns `400`; it is never replaced
 by the default.
 
 | Parameter | Value | Default |
@@ -118,21 +119,22 @@ by the default.
 | `ontology_context_mode` | `selected_single_ontology`, `selected_vector_search_ontology` or `fixed_single_ontology` | [`ONTOLOGY_CONTEXT_MODE`](configuration/pipeline.md#ontology_context_mode) |
 | `ontology_context_fixed_ontology_id` | IRI, `ontology_id` or prefix of a catalog ontology. A non-empty value selects `fixed_single_ontology` whatever `ontology_context_mode` says | In fixed mode, [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](configuration/pipeline.md#ontology_context_fixed_ontology_id) |
 | `llm_graph_format` | `jsonld` or `turtle`: the format the model writes graphs in | [`LLM_GRAPH_FORMAT`](configuration/pipeline.md#llm_graph_format) |
-| `max_visits` | Integer of at least 1: retries of a render that failed outright | [`MAX_VISITS_PER_NODE`](configuration/pipeline.md#max_visits_per_node) |
-| `strip_provenance` | `true` to leave reification and provenance triples out of the returned Turtle | `false` |
+| `max_visits` | Integer of at least 1: render attempts per content unit when a render fails outright | [`MAX_VISITS_PER_NODE`](configuration/pipeline.md#max_visits_per_node) |
+| `strip_provenance` | `true` to leave the provenance OntoCast adds (statement reifiers, chunk nodes, an ontology header's `prov:wasDerivedFrom`) out of the returned Turtle; domain triples stay, PROV-O ones included | `false` |
 | `ontology_user_instruction` | Text added to the ontology prompt | none |
 | `ontology_selection_user_instruction` | Text added to the prompt that picks a catalog ontology | none |
 | `facts_user_instruction` | Text added to the facts prompt | none |
 | `target_sections` | Section labels to keep, comma-separated or a JSON array | all sections |
-| `exclude_sections` | Section labels to drop. An empty value drops nothing, overriding the section schema's default exclusions | the section schema's default exclusions |
-| `summarize_sections` | Section labels whose content units get a summary; `*` or an empty value summarizes every unit. Without `target_sections`, a list of labels also keeps only those sections | no summaries |
+| `exclude_sections` | Section labels to drop; a unit is dropped only when its label is strong. Any value replaces the section schema's default exclusions, so an empty value turns them off | the section schema's default exclusions (its boilerplate labels) |
+| `summarize_sections` | Section labels whose content units get a summary; `*` or an empty value summarizes every unit. It does not select what is extracted | no summaries |
 | `summary_max_sentences` | Positive integer: sentences per summary | `5` |
 | `section_schema_id` | Section label schema: `academic`, `clinical`, `fiction`, `financial`, `general`, `legal`, `manual`, `news`, `patent` or `standard` | resolved from the document |
 | `document_type_hint` | Free text describing the document, used to pick a section schema when `section_schema_id` is not given | none |
-| `document_metadata` | JSON object (or a string holding one) of identity facts you assert about the document; see [Ontologies and facts](../concepts/ontologies_and_facts.md) | none |
+| `document_metadata` | JSON object (or a string holding one) of identity facts you assert about the document; see [Document identity](../concepts/ontologies_and_facts.md#document-identity) | none |
 
-Section labels in a list are matched loosely (case, spaces and hyphens are
-ignored); unknown labels are dropped with a warning, and a list in which no
+Section labels in a list are matched loosely: case is ignored, spaces and
+hyphens read as underscores, and a heading such as `Materials and Methods`
+maps to its label. Unknown labels are dropped with a warning, and a list in which no
 label is known returns `400`. [User instructions](../guides/user_instructions.md)
 covers the three instruction fields.
 
@@ -208,6 +210,7 @@ the run changed nothing for that ontology, so no version was written.
 | `chunks_processed`, `chunks_remaining` | Content units processed and left unprocessed |
 | `budget` | LLM calls, cache hits, characters, triple counts and per-node timings; see [Reading run telemetry](../guides/telemetry.md) |
 | `retrieval_metrics` | Retrieval, extraction and validation counters; see [Telemetry counters](../internals/telemetry_counters.md) |
+| `unit_context_sources` | The ontology IRIs each unit's prompt context was drawn from, by block (`ontology`, `facts`) and unit index |
 | `facts_repairs` | Rule-based rewrites applied to each content unit's facts, keyed by unit index |
 | `failed_units` | Content units that produced no output, with stage and reason; empty on a clean run |
 | `improvement_suggestions` | Advisory notes from the structural check and the consistency critic; nothing acts on them |
@@ -280,7 +283,7 @@ against. Shapes are stored in their own partition, apart from the catalog; see
 | Route | Behavior |
 |---|---|
 | `GET /shapes` | Returns `graph_uris`, the stored documents, and `triples`, the size of all shapes merged |
-| `POST /shapes` | Adds a Turtle shapes document from the `file` form field. A document that declares `<iri> a owl:Ontology` is stored under that IRI, so uploading it again replaces it; otherwise it is named after the file. Returns `graph_uri` and `triples` |
+| `POST /shapes` | Adds a Turtle shapes document from the `file` form field. A document that declares `<iri> a owl:Ontology` is stored under that IRI, so uploading it again replaces it; otherwise it is named after the file. Returns `graph_uri` and `triples`, the size of all shapes merged |
 | `DELETE /shapes/{graph_uri}` | Removes the document. Documents loaded from [`FACTS_SHAPES_DIR`](configuration/facts-validation.md#facts_shapes_dir) come back at the next start |
 
 ```bash
@@ -307,7 +310,7 @@ curl -X POST "http://127.0.0.1:8999/flush?tenant=acme&project=reports"
 ## Graph matching
 
 These routes compare graphs, for example an extracted graph against a
-reference. The `match-graphs` command drives them; see [Entity
+reference. The `match-graphs` command runs the same matching locally; see [Entity
 disambiguation](../concepts/entity_disambiguation.md). Graphs are Turtle
 strings in the JSON body.
 
@@ -343,18 +346,20 @@ an upload route called without `file`, gets FastAPI's standard `422` with a
 
 | Status | Cause | `error_code` |
 |---|---|---|
-| `400` | Unsupported content type, or a form with no file | none |
+| `400` | Unsupported content type, a form with no file, or a file with no name | none |
+| `400` | More files than `MAX_FILES_PER_REQUEST` | `too_many_files` |
 | `400` | Unrecognised `render_mode`, `ontology_context_mode`, `llm_graph_format` or `strip_provenance` value | `invalid_param:<name>` |
-| `400` | A blank `tenant` or `project` | `invalid_param:<name>` on `/process`, `/process_unit` and `/flush` |
+| `400` | A `tenant` or `project` of only whitespace | `invalid_param:<name>` on `/process`, `/process_unit` and `/flush` |
 | `400` | `max_visits` or `summary_max_sentences` not a positive integer; `document_metadata` not a JSON object; a section list that is malformed JSON or names no known label | `invalid_param:<name>` |
 | `400` | `fixed_single_ontology` mode with no ontology id in the request or in `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID` | none |
 | `400` | No store configured on `/flush`; a Turtle file that does not parse, or whose ontology IRI does not match the path, on `/ontologies` or `/shapes` | none |
+| `404` | An unknown ontology or version on the `/ontologies/{ontology_id}/...` routes | none |
 | `409` | `selected_vector_search_ontology` requested but no vector store is configured and ready | `VECTOR_STORE_UNAVAILABLE` |
 | `409` | `POST /ontologies` with an IRI the catalog already holds | none |
 | `422` | No content unit produced output, including when the document could not be converted (`/process`) | `no_units_extracted` |
 | `422` | The uploaded file could not be converted (`/process_unit`) | `conversion_failed:<stage>` |
 | `422` | The single unit failed (`/process_unit`) | none |
-| `422` | A section selection (`target_sections`, `summarize_sections`, or `exclude_sections` including the schema's default exclusions) removed every part of the document, with [`CHUNK_SECTION_FILTER_ON_EMPTY`](configuration/chunking.md#chunk_section_filter_on_empty)`=error`; with the default `warn`, the run continues with nothing to extract (`/process`) | `empty_section_selection:<name>` |
+| `422` | A section selection (`target_sections`, or `exclude_sections` including the schema's default exclusions) removed every part of the document, with [`CHUNK_SECTION_FILTER_ON_EMPTY`](configuration/chunking.md#chunk_section_filter_on_empty)`=error`; with the default `warn`, the run continues with nothing to extract (`/process`) | `empty_section_selection:<name>` |
 | `422` | The document reached [`MAX_INPUT_TOKENS_PER_DOCUMENT`](configuration/pipeline.md#max_input_tokens_per_document) or [`MAX_OUTPUT_TOKENS_PER_DOCUMENT`](configuration/pipeline.md#max_output_tokens_per_document); `error_details.run_meter` holds the usage | `budget_exceeded` |
 | `500` | Any other failure during processing or in a store | none |
 | `503` | `/health` only: the LLM client is missing | none |

@@ -50,7 +50,7 @@ first names a new partition. Their names come from the tenant and project; see
 Datasets are created through Fuseki's admin API (`/$/datasets`), so
 `FUSEKI_AUTH` must name a user allowed to use it. Without `FUSEKI_AUTH`, the
 server's `shiro.ini` must allow anonymous access to both the admin API and the
-datasets; the bundled `docker/fuseki` setup requires credentials on every path.
+datasets; the bundled `docker/fuseki` setup requires credentials for both.
 A `401` or `403` while creating a dataset stops startup with an error naming
 `FUSEKI_AUTH`.
 
@@ -70,8 +70,10 @@ Because an ontology already in the store is never replaced by its seed file,
 an ontology that OntoCast extended in Fuseki keeps its extensions across
 restarts. To start over from your files, flush the partition.
 
-A directory that does not exist stops `ontocast process` and only warns under
-`ontocast serve`. To run with no seed ontologies when the setting is in your
+A seed directory that does not exist, or an ontology file that cannot be
+loaded, stops `ontocast process` before the catalog is loaded or a model is
+called; the error names each file and why. `ontocast serve` logs the problem
+and loads the files that parse. To run with no seed ontologies when the setting is in your
 environment, pass `--ontology-dir ''`.
 
 `POST /ontologies`, `PUT /ontologies/...`, `POST /shapes` and the matching

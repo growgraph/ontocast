@@ -2,8 +2,8 @@
 
 Every structured LLM call in OntoCast expects a JSON object. This page describes
 what happens to a response before it becomes a model, and what a malformed
-response costs. None of it is configurable. Each step is counted under `llm/*`
-in the run's `budget.counters`; see [Reading run
+response costs. None of it is configurable. The repairs and retries are
+counted under `llm/*` in the run's `budget.counters`; see [Reading run
 telemetry](../guides/telemetry.md).
 
 ## Steps
@@ -15,8 +15,10 @@ telemetry](../guides/telemetry.md).
    comments and trailing commas are then removed.
 2. **Parse strictly.** The text is parsed with a real JSON parser. The only
    leniency is raw control characters inside strings, which models do emit.
-3. **Fall back twice.** If that fails, a fenced ```` ```json ```` block is
-   extracted and parsed. If that fails too, closing brackets are rewritten to
+3. **Fall back.** If that fails, a fenced ```` ```json ```` block is
+   extracted and parsed. A complete object followed only by closing brackets
+   and whitespace is taken without them (`llm/json_surplus_closer`); any other
+   trailing content still fails. Otherwise closing brackets are rewritten to
    the kind their opening bracket needs. This repair only substitutes
    characters; it never inserts, deletes or reorders them, and it gives up on an
    unmatched closing bracket or an unclosed one at the end, because that is a
@@ -24,8 +26,8 @@ telemetry](../guides/telemetry.md).
    counts as `llm/json_bracket_repair`.
 4. **Fail with a location.** A response that still does not parse raises
    `LLMJsonParseError` with the line, the column and about 150 characters on
-   either side. The retry prompt shows the model that window, not the whole
-   response.
+   either side. The retry prompt shows the model this error and an excerpt of
+   its response around the error position, not the whole response.
 
 ## Retries
 

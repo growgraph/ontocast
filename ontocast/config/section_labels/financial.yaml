@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.3"
 id: financial
 description: SEC filings, annual and quarterly reports, investor documents
 document_profile: >-
@@ -7,6 +7,7 @@ document_profile: >-
     business risk for a fiscal period.
 labels:
 -   id: cover
+    description: 'Cover page and filing details: registrant, form, period, identifiers.'
     heading_patterns:
     -   '^form\s+10[-\s]?[qk]\s*$'
     -   '^cover\s+page\s*$'
@@ -18,6 +19,7 @@ labels:
     -   fiscal quarter
     -   fiscal year ended
 -   id: highlights
+    description: 'Key figures and events of the period in brief.'
     heading_patterns:
     -   '^highlights?\s*$'
     -   '^financial\s+highlights?\s*$'
@@ -27,6 +29,7 @@ labels:
     -   segment operating performance
     -   macroeconomic conditions
 -   id: business_overview
+    description: 'What the company does: segments, products, markets, strategy.'
     heading_patterns:
     -   '^item\s+1\.?\s*$'
     -   '^business\s*$'
@@ -37,12 +40,14 @@ labels:
     -   products and services
     -   available information
 -   id: risk_factors
+    description: 'Risks that could affect the business or its securities.'
     heading_patterns:
     -   '^item\s+1a\.?\s*$'
     -   '^risk\s+factors\s*$'
     keywords:
     -   risk factors
 -   id: md_and_a
+    description: 'Management''s discussion and analysis of results, liquidity and outlook.'
     heading_patterns:
     -   '^item\s+7\.?\s*$'
     -   '^management\s+discussion\s+and\s+analysis\s*$'
@@ -56,6 +61,7 @@ labels:
     -   net sales
     -   provision for income taxes
 -   id: financial_statements
+    description: 'Balance sheet, income statement, cash flows and equity statements.'
     heading_patterns:
     -   '^item\s+8\.?\s*$'
     -   '^financial\s+statements\s*$'
@@ -71,6 +77,7 @@ labels:
     -   shareholders' equity
     -   shareholders equity
 -   id: notes_to_financials
+    description: 'Notes explaining the accounting policies and line items of the statements.'
     heading_patterns:
     -   '^notes?\s+to\s+(?:consolidated\s+)?financial\s+statements\s*$'
     -   '^notes?\s+to\s+financial\s+statements\s*$'
@@ -94,6 +101,7 @@ labels:
     -   commitments and contingencies
     -   segment information
 -   id: auditor_report
+    description: 'The independent auditor''s opinion on the statements.'
     heading_patterns:
     -   '^report\s+of\s+independent\s+registered\s+public\s+accounting\s+firm\s*$'
     -   '^auditors?\s+report\s*$'
@@ -101,6 +109,7 @@ labels:
     -   independent registered public accounting firm
     -   auditor's report
 -   id: controls_procedures
+    description: 'Disclosure controls and internal control over financial reporting.'
     heading_patterns:
     -   '^item\s+9a\.?\s*$'
     -   '^controls\s+and\s+procedures\s*$'
@@ -110,18 +119,21 @@ labels:
     -   internal control over financial reporting
     -   disclosure controls
 -   id: legal_proceedings
+    description: 'Litigation and regulatory proceedings involving the company.'
     heading_patterns:
     -   '^item\s+3\.?\s*$'
     -   '^legal\s+proceedings\s*$'
     keywords:
     -   legal proceedings
 -   id: executive_compensation
+    description: 'Pay and benefits of executives and directors.'
     heading_patterns:
     -   '^item\s+11\.?\s*$'
     -   '^executive\s+compensation\s*$'
     keywords:
     -   executive compensation
 -   id: exhibits
+    description: 'Lists or copies of attached documents and filings.'
     heading_patterns:
     -   '^item\s+15\.?\s*$'
     -   '^exhibits?\s*$'
@@ -132,6 +144,9 @@ labels:
     -   defaults upon senior securities
     -   mine safety disclosures
 -   id: references
+    description: 'The list of cited works or sources.'
+    route_class: citations
+    terminal: true
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'

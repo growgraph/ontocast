@@ -334,6 +334,21 @@ def test_parse_json_object_rejects_non_object_json() -> None:
         common.parse_json_object("null")
 
 
+@pytest.mark.parametrize("tail", ["}", "]  ", "}\n]}"])
+def test_parse_json_object_drops_surplus_closers_after_a_complete_object(
+    tail: str,
+) -> None:
+    assert common.parse_json_object('{"a": {"b": [1, 2]}}' + tail) == {
+        "a": {"b": [1, 2]}
+    }
+
+
+@pytest.mark.parametrize("tail", [' {"c": 3}', " trailing", "}, 1"])
+def test_parse_json_object_keeps_failing_on_trailing_content(tail: str) -> None:
+    with pytest.raises(common.LLMJsonParseError):
+        common.parse_json_object('{"a": 1}' + tail)
+
+
 def test_parse_json_object_accepts_fenced_and_control_characters() -> None:
     fenced = '```json\n{"value": "line one\nline two"}\n```'
     assert common.parse_json_object(fenced) == {"value": "line one\nline two"}

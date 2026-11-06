@@ -13,6 +13,7 @@ import pytest
 from ontocast.config import Config, PathConfig, ToolConfig
 from ontocast.onto.enum import OntologyContextMode, RenderMode
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import SeedOntologyLoadError
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
 from ontocast.tool.vector_store.core import VectorStoreManager
@@ -327,3 +328,108 @@ def test_a_wipe_is_followed_by_a_reindex_from_the_seed_directory(monkeypatch) ->
 
         assert store.wiped
         assert set(store.indexed) == {seed.iri}
+
+
+def _seeded_toolbox(tmp: str, monkeypatch) -> tuple[ToolBox, list[int]]:
+    """A ToolBox over an in-memory store with one seed; counts catalog syncs."""
+    od = Path(tmp) / "ontologies"
+    od.mkdir()
+    _write_seed_ttl_with_terms(od)
+    toolbox = ToolBox(
+        Config(tool_config=ToolConfig(path_config=PathConfig(ontology_directory=od)))
+    )
+    toolbox.triple_store_manager = InMemoryTripleStoreManager()
+    toolbox.vector_store = None
+    monkeypatch.setattr("ontocast.toolbox.update_ontology_manager", AsyncMock())
+    syncs: list[int] = []
+    synchronize = toolbox._synchronize_ontologies
+
+    async def counted(seed_ontologies: list[Ontology] | None = None) -> list[Ontology]:
+        syncs.append(1)
+        return await synchronize(seed_ontologies)
+
+    monkeypatch.setattr(toolbox, "_synchronize_ontologies", counted)
+    return toolbox, syncs
+
+
+def _switch(toolbox: ToolBox, tenant: str) -> None:
+    asyncio.run(
+        toolbox.update_tenancy_with_vector_mode(
+            tenant,
+            "p1",
+            initialize_vector_store=False,
+            fail_on_vector_store_error=False,
+        )
+    )
+
+
+def test_a_first_tenancy_switch_after_initialize_repopulates_the_catalog(
+    monkeypatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        toolbox, _ = _seeded_toolbox(tmp, monkeypatch)
+        asyncio.run(toolbox.initialize())
+        assert toolbox.ontology_manager.has_ontologies
+
+        _switch(toolbox, "acme")
+
+        assert toolbox.ontology_manager.has_ontologies
+
+
+def test_a_first_tenancy_switch_before_initialize_leaves_population_to_it(
+    monkeypatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        toolbox, syncs = _seeded_toolbox(tmp, monkeypatch)
+
+        _switch(toolbox, "acme")
+        assert syncs == []
+        asyncio.run(toolbox.initialize())
+
+        assert syncs == [1]
+        assert toolbox.ontology_manager.has_ontologies
+
+
+def _toolbox_with_a_broken_seed(tmp: str) -> tuple[ToolBox, Path]:
+    """One good seed and one file that is not Turtle, over an in-memory store."""
+    od = Path(tmp) / "ontologies"
+    od.mkdir()
+    _write_seed_ttl_with_terms(od)
+    broken = od / "broken.ttl"
+    broken.write_text("this is not turtle", encoding="utf-8")
+    toolbox = ToolBox(
+        Config(tool_config=ToolConfig(path_config=PathConfig(ontology_directory=od)))
+    )
+    toolbox.triple_store_manager = InMemoryTripleStoreManager()
+    toolbox.vector_store = None
+    return toolbox, broken
+
+
+def test_a_batch_run_refuses_to_start_when_a_seed_fails_to_load(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        toolbox, broken = _toolbox_with_a_broken_seed(tmp)
+        enrich = AsyncMock()
+        monkeypatch.setattr("ontocast.toolbox.update_ontology_manager", enrich)
+
+        with pytest.raises(SeedOntologyLoadError) as raised:
+            asyncio.run(toolbox.initialize(require_all_seeds=True))
+
+        assert list(raised.value.failures) == [str(broken)]
+        assert str(broken) in str(raised.value)
+        enrich.assert_not_awaited()
+        store = cast(InMemoryTripleStoreManager, toolbox.triple_store_manager)
+        assert store.fetch_ontologies() == []
+        assert not toolbox.ontology_manager.has_ontologies
+
+
+def test_a_server_loads_the_seeds_that_parse_and_skips_a_broken_one(
+    monkeypatch,
+) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        toolbox, broken = _toolbox_with_a_broken_seed(tmp)
+        monkeypatch.setattr("ontocast.toolbox.update_ontology_manager", AsyncMock())
+
+        asyncio.run(toolbox.initialize())
+
+        assert toolbox.ontology_manager.has_ontologies
+        assert list(toolbox._seed_load_failures) == [str(broken)]

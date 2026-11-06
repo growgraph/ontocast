@@ -59,11 +59,22 @@ def merge_unit_deltas(deltas: list[OntologyDelta]) -> OntologyDelta:
 
 
 def build_document_excerpt(state: AgentState) -> str:
-    """Create a representative excerpt from sampled source units."""
+    """Create a representative excerpt from sampled source units.
+
+    Samples by position among the units routed to extraction: a reference
+    list or an author block kept under its own route would otherwise stand in
+    for the document whenever it is the last unit. Falls back to every unit
+    when none is plain content.
+    """
     excerpt_parts: list[str] = []
 
-    if state.content_units:
-        unit_count = len(state.content_units)
+    units = [
+        unit
+        for unit in state.content_units
+        if not unit.is_citation_metadata and not unit.is_non_content
+    ] or list(state.content_units)
+    if units:
+        unit_count = len(units)
         if unit_count == 1:
             sample_indices = [0]
         elif unit_count == 2:
@@ -76,7 +87,7 @@ def build_document_excerpt(state: AgentState) -> str:
             if index in visited_indices or index < 0 or index >= unit_count:
                 continue
             visited_indices.add(index)
-            unit_text = state.content_units[index].text.strip()
+            unit_text = units[index].text.strip()
             if not unit_text:
                 continue
             excerpt_parts.append(unit_text)

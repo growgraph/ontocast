@@ -59,7 +59,7 @@ request; see [Configuring OntoCast](configuration.md#how-settings-are-read).
 |---|---|---|---|
 | What a unit sees | The one catalog ontology the model picks for it, or none | The terms retrieval finds relevant, from every catalog ontology, with their surroundings | The same ontology for every unit |
 | Extra cost | One LLM call per unit | Embedding and vector search; no LLM call | None |
-| Needs | Ontologies with a title and description to choose by | A vector store and an embedding model | [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](../reference/configuration/pipeline.md#ontology_context_fixed_ontology_id) |
+| Needs | Ontologies with a description to choose by | A vector store and an embedding model | [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](../reference/configuration/pipeline.md#ontology_context_fixed_ontology_id) |
 | Pick it when | The catalog holds a few ontologies, each covering its own topic | The catalog is large, or one unit needs terms from several ontologies | You already know which ontology every document belongs to |
 
 **Selection.** The model sees each ontology's id, prefix and description, and
@@ -68,11 +68,13 @@ picks one or answers that none fits. Guide its choice with an
 instructions](user_instructions.md).
 
 **Fixed.** The id may be the ontology IRI, its `ontology_id`, or the prefix its
-Turtle binds to its namespace. A non-empty id selects fixed mode whatever
-`ONTOLOGY_CONTEXT_MODE` says, on a request as well as in the environment, so
-send an empty id to use another mode. `ontocast serve` and `ontocast process`
-refuse to start in fixed mode without an id, and a request in fixed mode
-without one gets `400`. An id that matches no catalog ontology is not an
+Turtle binds to its namespace. On a request, a non-empty
+`ontology_context_fixed_ontology_id` selects fixed mode whatever mode the
+request or the server names. `ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID` in the
+environment never selects the mode: it supplies the id when the mode is
+already fixed. `ontocast serve` and `ontocast process` refuse to start in fixed
+mode without an id, and a request in fixed mode without one, from the request
+or the environment, gets `400`. An id that matches no catalog ontology is not an
 error: the unit renders against an empty context, and the server log names the
 id that matched nothing.
 
@@ -97,9 +99,11 @@ Vector retrieval needs one backend, an embedding model and the mode:
    [`EMBEDDING_PROVIDER`](../reference/configuration/embeddings.md#embedding_provider)
    runs a local Hugging Face model, which needs `sentence-transformers` (the
    `doc-processing` extra installs it); `openai` and `ollama` call a service
-   instead. Set
+   instead. Name the model in
+   [`EMBEDDING_MODEL_NAME`](../reference/configuration/embeddings.md#embedding_model_name)
+   and set
    [`EMBEDDING_DIMENSION`](../reference/configuration/embeddings.md#embedding_dimension)
-   to the model's output size. Models trained with a query or passage
+   to its output size. Models trained with a query or passage
    instruction need
    [`EMBEDDING_QUERY_PREFIX`](../reference/configuration/embeddings.md#embedding_query_prefix)
    and
@@ -137,10 +141,11 @@ The wipe runs in every mode, but only vector mode refills the partition, so
 wipe with `ONTOLOGY_CONTEXT_MODE=selected_vector_search_ontology` set.
 
 A rebuild is needed after changing the embedding provider, model, dimension or
-prefixes, the BM25 model, or the settings that decide what is indexed; [How
-ontology retrieval works](../internals/retrieval.md#what-needs-a-reindex) lists
-them. Retrieval settings such as `VECTOR_STORE_TOP_K` apply at query time and
-need no rebuild.
+prefixes, the BM25 model, or the settings that decide what is indexed, and
+after an OntoCast upgrade that changes what is indexed; [How ontology retrieval
+works](../internals/retrieval.md#what-needs-a-reindex) lists them. Startup
+reports each case with `EmbeddingContractMismatchError`. Retrieval settings
+such as `VECTOR_STORE_TOP_K` apply at query time and need no rebuild.
 
 ## Seeding the catalog
 
@@ -157,10 +162,10 @@ curl -X DELETE "http://127.0.0.1:8999/ontologies/<url-encoded IRI>"
 ```
 
 Each file needs an `owl:Ontology` declaration whose subject is the ontology
-IRI. Give that declaration a title (`rdfs:label` or `dcterms:title`) and a
-description (`dcterms:description` or `rdfs:comment`): selection mode chooses
-by them, and for an ontology without them OntoCast asks the model for both at
-startup.
+IRI. Give that declaration a title (`dcterms:title` or `rdfs:label`; without
+one, the title is the ontology's id) and a description (`dcterms:description`
+or `rdfs:comment`). Selection mode chooses by the description; for an ontology
+without one, OntoCast asks the model to write one at startup.
 
 Uploads are never written to the directory. With the in-memory triple store
 they are gone when the process stops. With Fuseki, the stored version of an

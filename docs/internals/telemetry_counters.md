@@ -44,10 +44,10 @@ not what this run paid for.
 
 `node_durations` holds seconds. A plain pipeline node name is that node's wall
 clock, recorded by the `_timed` wrapper in `ontocast/stategraph/create.py`:
-`Convert to Text`, `Chunk Text`, `Update Ontology`,
-`Normalize Ontology Updates`, `Consolidate Ontology`, `Render Facts`,
-`Merge Facts`, `Validate Facts`, `Structural Check`, `Consistency Critic`,
-`Serialize`.
+`Convert to Text`, `Chunk Text`, `Resolve Home Ontology`, `Update Ontology`,
+`Normalize Ontology Updates`, `Consolidate Ontology`, `Structural Check`,
+`Consistency Critic`, `Render Facts`, `Merge Facts`, `Resolve Coreference`,
+`Validate Facts`, `Serialize`.
 
 The two fan-out nodes, `Update Ontology` and `Render Facts`, add keys written
 in `ontocast/stategraph/node_factories.py`:
@@ -71,7 +71,6 @@ Stage keys, summed over every call or unit:
 | `llm/provider` | `ontocast/tool/llm.py` | Inside the provider call, including rate-limiter waits |
 | `llm/inflight_wait` | `ontocast/tool/llm.py` | Waiting for an `LLM_MAX_INFLIGHT` slot |
 | `llm/cache_lookup` | `ontocast/tool/llm.py` | Reading the LLM response cache |
-| `chunk section classify/worker_wait` | `ontocast/tool/chunk/section_llm.py` | Section classification calls waiting for a worker slot |
 | `ctx/merge_document_ontology` | `ontocast/stategraph/context_resolver.py` | Merging the document's ontology for the facts fan-out |
 | `ctx/union_document_ontology` | `ontocast/stategraph/context_resolver.py` | Building the union chapter (`ONTOLOGY_CONTEXT_SCOPE=document`) |
 | `ctx/working_graph_copy` | `ontocast/stategraph/atomic.py` | Copying the ontology context into a unit's working graph |
@@ -99,6 +98,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `llm/calls_rejected` | `ontocast/tool/llm.py` | Requests the provider refused as configured; part of `llm/calls_failed`. Any non-zero value means the run stopped |
 | `llm/parse_retry` | `ontocast/agent/common.py` | Calls re-sent because the previous answer did not parse or validate |
 | `llm/json_bracket_repair` | `ontocast/agent/common.py` | Answers recovered by correcting mismatched closing brackets |
+| `llm/json_surplus_closer` | `ontocast/agent/common.py` | Answers recovered by dropping closing brackets after a complete object |
 | `llm/parse_abandoned` | `ontocast/agent/common.py` | Calls given up after the retries ran out or the same JSON error recurred |
 | `rdf/turtle_repair` | `ontocast/onto/rdfgraph.py` | Turtle payloads that parsed only after repair (truncated statement, unknown prefix, update-query wrapper) |
 | `rdf/jsonld_rdflib_fallback` | `ontocast/onto/rdfgraph.py` | JSON-LD payloads that failed URDNA2015 normalization and were parsed by rdflib instead |
@@ -117,12 +117,15 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `ontology/deletes_dropped_insert_only` | `ontocast/agent/render_ontology.py`, `ontocast/stategraph/node_factories.py` | Ontology delete triples dropped under `ONTOLOGY_UPDATE_MODE=insert_only` |
 | `ontology/model_header_triples_dropped` | `ontocast/agent/render_ontology.py` | `owl:Ontology` header triples a fresh render wrote and that were dropped: identity and the version header are written by code |
 | `llm/ontology_identity` | `ontocast/agent/resolve_home_ontology.py` | Home-ontology calls, one per document that can create vocabulary |
+| `chunk/outline_windows_failed` | `ontocast/tool/chunk/section_llm.py` | Outline windows of the model section tier whose call raised; those regions got no model vote |
+| `serialize/ontology_identity_conflict` | `ontocast/toolbox.py` | Ontology versions not written because their identity collides with the catalog or another version of the document; the facts are still written |
 
 `calls_count` equals `llm/calls_timed + llm/timeouts`: a call that raised for
 any other reason is not counted in `calls_count`. The
 `chapter/*` counters are recorded once per chapter built, not per call that
-reads it, and only when at least one text cap is set; [How prompts are
-built](prompt_construction.md#text-caps) describes the caps.
+reads it. `chapter/triples_over_budget` is recorded whenever a chapter stays
+over its triple budget; the other four only when at least one text cap is set.
+[How prompts are built](prompt_construction.md#text-caps) describes the caps.
 
 ## Retrieval metrics
 
@@ -172,6 +175,7 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 |---|---|
 | `facts_rejected_merges` | Entity merges the aggregator's guards refused, for the graph returned |
 | `facts_merge_repair_passes`, `facts_merge_vetoes`, `facts_merge_repairs_rejected` | The un-merge repair: passes kept, merge pairs vetoed, passes reverted |
+| `facts_coreference_pairs`, `facts_coreference_same`, `facts_coreference_different` | Coreference resolution: pairs put to the model, and those it judged one entity or two |
 | `validated_without_ontology_context` | `true` when the facts were validated with an empty ontology context |
 | `facts_validation_findings`, `facts_validation_errors` | Findings after validation, and those of error severity |
 | `facts_shacl_violations_before`, `facts_shacl_violations_after` | SHACL violations around the automatic repair. Present only when the repair ran |
@@ -221,12 +225,13 @@ left out.
 | `budget` | The full budget, as above |
 | `critic`, `ontology_critic` | Per loop: `calls`, `accepted`, score minimum, median, maximum and histogram, fix severity histograms, `accept_reason_histogram`, `incumbent_accepted`, patch passes, fix outcomes (`fixes_applied`, `fixes_noop`, `fixes_rolled_back`, `fixes_junk_refused`, `fixes_unresolved_prefix`, `patches_rolled_back`), `units_unreviewed`, `units_skipped`, triples deleted and inserted |
 | `completion` | `calls`, `units`, `subjects_inserted`, `subjects_rolled_back`, `triples_inserted`, `measurements_recovered` |
-| `selection` | `target_sections`, `exclude_sections`, `summarize_sections`, `summary_max_sentences`, `bibliography_mode`, `non_content_mode`, `labeled_units`, `unlabeled_units`, `section_label_histogram`, and the units skipped as bibliography, undersized or non-content |
+| `selection` | `target_sections`, `exclude_sections`, `summarize_sections`, `summary_max_sentences`, `bibliography_mode`, `non_content_mode`, `labeled_units`, `unlabeled_units`, `section_label_histogram`, `label_strength_chars` (characters of the kept units with a strong, weak or no label), the units skipped as bibliography, undersized or non-content, `route_histogram` (`<route>/<reason>` → units and characters, for every prepared unit), with `target_sections` the characters it removed (`allowlist_excluded_chars`) and how many of them were unlabeled (`allowlist_excluded_unlabeled_chars`), and with `CHUNK_SECTION_CLASSIFIER=llm` the model tier's `outline_labels` (`windows`, `windows_failed`, `errors` by error class) |
 | `validation_config` | `context_from_units`, `json_mode`, `shapes_prompt_contract`, `shapes_prompt_selection`, `shapes_triples`, `shacl_inference`, `numeric_coverage_mandatory`, and the length (not the text) of the facts user instruction |
 | `ontology_reduce_metrics` | Counts from reducing the units' ontology updates: duplicate minted terms and their pairs, deletes dropped, unattributed inserts and deletes, fresh graphs unioned, artifacts produced, and the apply step's own counts (`apply_deletes_no_match`, `apply_header_triples_dropped`) |
 | `graph_metrics` | The written facts graph: `nodes`, `edges`, `components`, `largest_component`, `isolated_nodes` |
 | `ontology_triples`, `facts_triples`, `facts_triples_serialized` | Ontology triples written; facts triples in memory, provenance included; facts triples in the `.facts.ttl` file |
 | `retrieval_metrics` | The same mapping `/process` returns |
+| `ontology_versions` | Ontology versions the run wrote (`role` `created` or `updated`) and read unchanged (`role` `read`), each with `iri` and `version_iri` |
 | `unit_context_sources` | Ontology IRIs behind each unit's context, by lane (`ontology`, `facts`) and unit index |
 | `effective_config`, `chunking_mode` | Every setting keyed by environment variable, credentials redacted; the chunker's mode after any fallback |
 

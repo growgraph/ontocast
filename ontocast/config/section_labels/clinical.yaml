@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.3"
 id: clinical
 description: Clinical trial protocols, CSRs, and registry entries
 document_profile: >-
@@ -7,6 +7,7 @@ document_profile: >-
     endpoints and adverse-event reporting.
 labels:
 -   id: synopsis
+    description: 'A summary of the whole protocol or report: design, population, endpoints, outcome.'
     heading_patterns:
     -   '^synopsis\s*$'
     -   '^study\s+synopsis\s*$'
@@ -16,6 +17,7 @@ labels:
     -   brief summary
     -   plain language summary
 -   id: background
+    description: 'The disease, the intervention and the rationale for the study.'
     heading_patterns:
     -   '^background\s*$'
     -   '^introduction\s*$'
@@ -24,6 +26,7 @@ labels:
     -   background and rationale
     -   rationale
 -   id: objectives
+    description: 'The questions or hypotheses the study sets out to answer.'
     heading_patterns:
     -   '^objectives?\s*$'
     -   '^study\s+objectives?\s*$'
@@ -33,6 +36,7 @@ labels:
     -   study objectives
     -   aims
 -   id: endpoints
+    description: 'The primary and secondary measures by which outcomes are judged.'
     heading_patterns:
     -   '^endpoints?\s*$'
     -   '^study\s+endpoints?\s*$'
@@ -42,6 +46,7 @@ labels:
     -   primary endpoint
     -   secondary endpoint
 -   id: study_design
+    description: 'How the study is organised: arms, randomisation, blinding, schedule.'
     heading_patterns:
     -   '^study\s+design\s*$'
     -   '^trial\s+design\s*$'
@@ -52,6 +57,7 @@ labels:
     -   study setting
     -   study status
 -   id: population
+    description: 'Who was studied: participant characteristics, recruitment, sample size.'
     heading_patterns:
     -   '^population\s*$'
     -   '^study\s+population\s*$'
@@ -61,6 +67,7 @@ labels:
     -   sample size
     -   recruitment
 -   id: eligibility
+    description: 'Inclusion and exclusion criteria for participants.'
     heading_patterns:
     -   '^eligibility\s*$'
     -   '^inclusion\s+(?:and\s+exclusion\s+)?criteria\s*$'
@@ -71,6 +78,7 @@ labels:
     -   exclusion criteria
     -   eligibility
 -   id: interventions
+    description: 'The treatments given: drugs, doses, procedures, comparators.'
     heading_patterns:
     -   '^interventions?\s*$'
     -   '^study\s+interventions?\s*$'
@@ -82,6 +90,7 @@ labels:
     -   dosing
     -   treatment arms
 -   id: outcomes
+    description: 'Results observed for the endpoints, with measured values.'
     heading_patterns:
     -   '^outcomes?\s*$'
     -   '^study\s+outcomes?\s*$'
@@ -90,6 +99,7 @@ labels:
     -   outcome measures
     -   follow-up
 -   id: adverse_events
+    description: 'Safety findings: adverse events, side effects, serious events.'
     heading_patterns:
     -   '^adverse\s+events?\s*$'
     -   '^safety\s*$'
@@ -100,6 +110,7 @@ labels:
     -   harms
     -   monitoring
 -   id: statistical_analysis
+    description: 'How the data were analysed: tests, models, power, handling of missing data.'
     heading_patterns:
     -   '^statistical\s+(?:analysis|methods?|considerations)\s*$'
     -   '^statistics?\s*$'
@@ -108,6 +119,7 @@ labels:
     -   sample size calculation
     -   power calculation
 -   id: ethics
+    description: 'Ethical approval, informed consent and regulatory compliance.'
     heading_patterns:
     -   '^ethics?\s*$'
     -   '^ethical\s+considerations\s*$'
@@ -120,6 +132,7 @@ labels:
     -   consent to participate
     -   institutional review board
 -   id: data_management
+    description: 'How data are collected, stored, monitored and shared.'
     heading_patterns:
     -   '^data\s+management\s*$'
     -   '^data\s+handling\s*$'
@@ -128,7 +141,51 @@ labels:
     -   data collection
     -   tissue collection
     -   data handling
+-   id: back_matter
+    description: 'Administrative statements: sponsors, conflicts of interest, registration, contributors.'
+    route_class: non_content
+    heading_patterns:
+    -   '^authors?\s*$'
+    -   '^authors?[’'']?s?\s+(?:details|addresses)\s*$'
+    -   '^affiliations?\s*$'
+    -   '^notes?\s*$'
+    -   '^orcid(?:\s*i\.?d\.?s?)?\s*$'
+    -   '^(?:data|code|materials?)(?:\s+and\s+(?:code|materials?|software))?\s+availability(?:\s+statement)?\s*$'
+    -   '^availability\s+of\s+(?:data|code|materials?)(?:\s+and\s+(?:code|materials?))?\s*$'
+    -   '^licen[cs]e(?:\s+information)?\s*$'
+    -   '^open\s+access\s*$'
+    -   '^rights\s+and\s+permissions\s*$'
+    -   '^additional\s+information\s*$'
+    -   '^publisher[’'']?s?\s+note\s*$'
+    -   '^copyright\s*$'
+    -   '^disclaimer\s*$'
+    -   '^author\s+(?:information|contributions?)\s*$'
+    -   '^acknowledg(?:e?ments?|ments?)\s*$'
+    -   '^funding(?:\s+(?:information|statement|sources?))?\s*$'
+    -   '^(?:competing|conflicts?\s+of)\s+(?:financial\s+)?interests?(?:\s+statement)?\s*$'
+    -   '^declarations?\s+of\s+(?:competing\s+)?interests?\s*$'
+    keywords:
+    -   orcid
+    -   author details
+    -   affiliations
+    -   data availability
+    -   code availability
+    -   data and code availability
+    -   open access
+    -   rights and permissions
+    -   additional information
+    -   publisher's note
+    -   disclaimer
+    -   author information
+    -   author contributions
+    -   acknowledgements
+    -   acknowledgments
+    -   competing interests
+    -   conflicts of interest
 -   id: references
+    description: 'The list of cited works, one bibliographic entry per item.'
+    route_class: citations
+    terminal: true
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'

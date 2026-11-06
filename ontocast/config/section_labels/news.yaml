@@ -1,17 +1,13 @@
-schema_version: "1.1"
+schema_version: "1.3"
 id: news
 description: News article and press release section headings
 document_profile: >-
     A news article or press release announcing a recent event, carrying a
     dateline, quotations attributed to named people, and closing organisational
     boilerplate about the issuing company.
-ordered: true
-default_exclude:
--   boilerplate
--   contact
 labels:
 -   id: headline
-    order: 10
+    description: 'The article''s title and standfirst.'
     heading_patterns:
     -   '^headline\s*$'
     -   '^(?:for\s+)?immediate\s+release\s*$'
@@ -23,7 +19,7 @@ labels:
     -   news release
     -   media release
 -   id: summary
-    order: 20
+    description: 'The lead: the news in brief, who, what, when, where.'
     heading_patterns:
     -   '^summary\s*$'
     -   '^key\s+points\s*$'
@@ -35,7 +31,7 @@ labels:
     -   key takeaways
     -   highlights
 -   id: body
-    order: 30
+    description: 'The main report of events and facts.'
     heading_patterns:
     -   '^body\s*$'
     -   '^story\s*$'
@@ -44,7 +40,7 @@ labels:
     -   full story
     -   story
 -   id: quotes
-    order: 40
+    description: 'Statements quoted from people involved.'
     heading_patterns:
     -   '^quotes?\s*$'
     -   '^statements?\s*$'
@@ -54,7 +50,7 @@ labels:
     -   statement from
     -   reaction
 -   id: background
-    order: 50
+    description: 'Context and history behind the news.'
     heading_patterns:
     -   '^background\s*$'
     -   '^context\s*$'
@@ -62,7 +58,8 @@ labels:
     -   background
     -   related news
 -   id: boilerplate
-    order: 60
+    description: 'Standard description of the issuing organisation, repeated across releases.'
+    route_class: boilerplate
     heading_patterns:
     -   '^about\s+.{0,60}$'
     -   '^boilerplate\s*$'
@@ -71,7 +68,8 @@ labels:
     -   forward-looking statements
     -   about the company
 -   id: contact
-    order: 70
+    description: 'Press contact names, phone numbers and addresses.'
+    route_class: boilerplate
     heading_patterns:
     -   '^(?:media\s+|press\s+|investor\s+)?contacts?\s*$'
     -   '^(?:media|press)\s+enquiries\s*$'

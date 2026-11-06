@@ -61,9 +61,9 @@ def make_ontocast_node(
         from_agent_state: Maps the finished ``AgentState`` and the original
             parent state to a parent-state delta.
         recursion_limit: LangGraph recursion limit for the inner run. Defaults
-            to a value derived from the configured chunk budget. **Leaving this
-            unset is safer than passing LangGraph's default of 25**, which a
-            multi-chunk document exceeds.
+            to a fixed limit above the document graph's depth, which does not
+            grow with the document. A ``recursion_limit`` in the caller's
+            ``RunnableConfig`` takes precedence.
         graph: A pre-compiled OntoCast graph to reuse instead of compiling one.
 
     Returns:
@@ -157,7 +157,7 @@ def _read_key(state: Any, key: str) -> Any:
 
 
 def _default_limit(tools: "ToolBox") -> int:
-    """Derive a recursion limit from the configured chunk budget."""
+    """The recursion limit for one document run (fixed; see ``calculate_recursion_limit``)."""
     from ontocast.api.process_helpers import calculate_recursion_limit
 
     server_config = tools.config.server

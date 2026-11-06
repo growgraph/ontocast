@@ -60,6 +60,21 @@ def label_tokens(label: str) -> list[str]:
     return [cleaned for token in label.split() if (cleaned := clean_label_token(token))]
 
 
+def numbers_agree(left: str, right: str) -> bool:
+    """True when two normalized names carry the same numbers.
+
+    A number in a name individuates what it names -- "June 2021" and
+    "29 June 2021", "TX5x" and "TX10x", results "at 2 °C" and results without
+    one -- so names whose digit-bearing tokens differ are never variants of
+    one name, however many words they share.
+    """
+
+    def numbers(label: str) -> set[str]:
+        return {t for t in label_tokens(label) if any(ch.isdigit() for ch in t)}
+
+    return numbers(left) == numbers(right)
+
+
 def tokens_alias_compatible(left: str, right: str) -> bool:
     """Exact token match, or a (possibly dotted) single-char initial of it."""
     if left == right:
@@ -84,6 +99,8 @@ def labels_alias_with_initials(
         for right_label in right_labels:
             right_tokens = label_tokens(right_label)
             if not left_tokens or not right_tokens:
+                continue
+            if not numbers_agree(left_label, right_label):
                 continue
             shorter, longer = (
                 (left_tokens, right_tokens)
@@ -114,9 +131,12 @@ def labels_alias_with_initials(
 
 
 def string_values_compatible(left: str, right: str) -> bool:
-    """Compatible when equal, prefix-related, or initial-abbreviations."""
+    """Compatible when equal, or carrying the same numbers (:func:`numbers_agree`)
+    and prefix-related or initial-abbreviations."""
     if left == right:
         return True
+    if not numbers_agree(left, right):
+        return False
     if left.startswith(right) or right.startswith(left):
         return True
     return labels_alias_with_initials({left}, {right})

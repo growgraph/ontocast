@@ -32,9 +32,10 @@ entries instead of misreading them.
 Because the whole prompt is part of the key, anything that changes the prompt
 misses the cache: a different document part, a changed ontology in the
 catalog, a user instruction, `LLM_GRAPH_FORMAT`, `LLM_OUTPUT_LAYOUT`,
-`ONTOLOGY_CHAPTER_FORMAT`, or an OntoCast upgrade that changes prompt wording. Settings that act only after
-the last LLM call, such as entity disambiguation (`AGG_*`), leave the cache
-warm.
+`ONTOLOGY_CHAPTER_FORMAT`, or an OntoCast upgrade that changes prompt wording.
+Settings that act after extraction leave the extraction calls warm: entity
+disambiguation (`AGG_*`) changes only the prompt of the coreference call that
+follows it.
 `LLM_PROMPT_CACHE_KEY` is not part of the key; `LLM_JSON_MODE` is, when it is on.
 
 Each entry is a JSON file holding the prompt, the response, the provider's
@@ -55,7 +56,7 @@ so concurrent workers never read a half-written entry.
 
 Read-only mode keeps a cache fixed, for example a cache shared by several
 runs that should all see the same responses. A miss still calls the provider,
-so it still needs a key.
+so it still needs an API key.
 
 ## Where the cache lives
 
@@ -65,8 +66,8 @@ The first of these that applies:
 2. `$XDG_CACHE_HOME/ontocast` when `XDG_CACHE_HOME` is set.
 3. `~/.cache/ontocast`, or `%USERPROFILE%\AppData\Local\ontocast` on Windows.
 
-Under pytest, the cache is `.test_cache/` in the working directory, so tests
-never touch your own cache. There is no command-line flag; to use another
+Under pytest, `.test_cache/` in the working directory replaces steps 2 and 3,
+so tests never touch your own cache unless `ONTOCAST_CACHE_DIR` points there. There is no command-line flag; to use another
 directory for one command, set the variable for it:
 
 ```bash

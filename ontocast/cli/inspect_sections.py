@@ -4,7 +4,9 @@ Section labels drive which parts of a document are extracted, so a wrong label
 silently changes the output: a chunk filtered out by ``--target-sections`` never
 reaches the pipeline and never appears in a log. This command shows the
 classifier's decisions -- the detected outline and the resulting chunk labels,
-each with the tier that decided it -- before any extraction cost is incurred.
+each with the tier that decided it -- and each unit's route (extract,
+citations, non-content or skip) with the reason, before any extraction cost is
+incurred.
 
 Example:
     ontocast sections --input-path ./paper.pdf
@@ -29,9 +31,11 @@ from ontocast.config import Config
 from ontocast.onto.docling_helpers import json_payload_text, plain_text_to_docling_doc
 from ontocast.tool.cache import Cacher
 from ontocast.tool.chunk.chunker import ChunkerTool
+from ontocast.tool.chunk.embedding import TextEmbedder
 from ontocast.tool.chunk.outline import build_document_outline
 from ontocast.tool.chunk.prepare import (
     PrepareOptions,
+    heading_embedder,
     prepare_content_units,
     resolve_prepare_schema,
 )
@@ -63,20 +67,24 @@ def _load_document(path: pathlib.Path, converter: ConverterTool):
     raise click.ClickException(f"Unsupported input type {suffix!r} for {path}")
 
 
-def _outline_rows(document_text: str, schema, text_headings: bool) -> list[dict]:
+def _outline_rows(
+    document_text: str, schema, text_headings: bool, embed: TextEmbedder | None
+) -> list[dict]:
     outline = build_document_outline(
-        document_text, schema, include_text_headings=text_headings
+        document_text, schema, include_text_headings=text_headings, embed=embed
     )
     return [
         {
             "offset": node.start,
             "level": node.level,
+            "number": node.number,
+            "parent": node.parent,
             "kind": "section" if node.sectionlike else "sub/desc",
             "heading": node.text,
             "normalised": node.normalised,
             "label": node.label,
             "source": node.source.value,
-            "confidence": round(node.confidence, 2),
+            "strength": node.strength.value if node.label else None,
         }
         for node in outline.nodes
     ]
@@ -93,7 +101,18 @@ def _chunk_rows(chunks) -> list[dict]:
                 if chunk.section_label_source is not None
                 else None
             ),
-            "confidence": round(chunk.section_label_confidence, 2),
+            "strength": (
+                chunk.section_label_strength.value
+                if chunk.section_label_strength is not None
+                else None
+            ),
+            "evidence": ", ".join(
+                f"{item.label}:{item.source.value}:{item.strength.value}"
+                for item in chunk.section_label_evidence
+            ),
+            "route": chunk.route.value,
+            "reason": chunk.route_reason.value,
+            "items": len(chunk.doc_item_refs),
             "preview": " ".join(chunk.text.split())[:70],
         }
         for index, chunk in enumerate(chunks)
@@ -217,13 +236,22 @@ def main(
     schema = decision.schema
     resolved_id = decision.schema_id
 
-    chunks = asyncio.run(
+    prepared = asyncio.run(
         prepare_content_units(docling_doc, chunker, chunk_config, options, tools)
     )
 
-    outline = _outline_rows(document_text, schema, chunk_config.section_text_headings)
-    chunk_rows = _chunk_rows(chunks)
+    outline = _outline_rows(
+        document_text,
+        schema,
+        chunk_config.section_text_headings,
+        heading_embedder(chunker, chunk_config),
+    )
+    chunk_rows = _chunk_rows(prepared.routed)
     labeled = sum(1 for row in chunk_rows if row["label"] is not None)
+    dropped_chars: dict[str, int] = {}
+    for unit in prepared.dropped:
+        reason = unit.route_reason.value
+        dropped_chars[reason] = dropped_chars.get(reason, 0) + len(unit.text)
     schema_rows = [
         {
             "candidate": ev.schema_id,
@@ -248,6 +276,17 @@ def main(
         "headings": len(outline),
         "chunks": len(chunk_rows),
         "labeled_chunks": labeled,
+        "kept_chunks": len(prepared.units),
+        "dropped_chars_by_reason": dropped_chars,
+        "allowlist_excluded_chars": prepared.allowlist_excluded_chars,
+        "allowlist_excluded_unlabeled_chars": (
+            prepared.allowlist_excluded_unlabeled_chars
+        ),
+        "outline_labels": (
+            prepared.outline_labels.model_dump()
+            if prepared.outline_labels is not None
+            else None
+        ),
     }
 
     if as_json:
@@ -292,10 +331,12 @@ def main(
         outline,
         [
             ("offset", 7),
+            ("number", 6),
+            ("parent", 6),
             ("kind", 8),
             ("label", 16),
             ("source", 18),
-            ("confidence", 5),
+            ("strength", 6),
             ("heading", 60),
         ],
     )
@@ -307,14 +348,45 @@ def main(
             ("chars", 6),
             ("label", 16),
             ("source", 18),
-            ("confidence", 5),
-            ("preview", 60),
+            ("strength", 6),
+            ("route", 11),
+            ("reason", 20),
+            ("items", 5),
+            ("preview", 50),
         ],
+    )
+    _print_table(
+        "Evidence (label:source:strength per tier that voted)",
+        [row for row in chunk_rows if row["evidence"]],
+        [("index", 5), ("label", 16), ("evidence", 100)],
     )
     click.echo(
         f"\n  {labeled}/{len(chunk_rows)} chunks labeled "
-        f"({len(chunk_rows) - labeled} unresolved)"
+        f"({len(chunk_rows) - labeled} unresolved); "
+        f"{len(prepared.units)} kept for extraction"
     )
+    if dropped_chars:
+        click.echo(
+            "  dropped: "
+            + ", ".join(
+                f"{reason} {chars} chars" for reason, chars in dropped_chars.items()
+            )
+        )
+    if options.target_sections is not None:
+        click.echo(
+            f"  target_sections removed {prepared.allowlist_excluded_chars} chars "
+            f"({prepared.allowlist_excluded_unlabeled_chars} unlabeled)"
+        )
+    report = prepared.outline_labels
+    if report is not None:
+        line = (
+            f"  model tier: {report.windows} window(s), {report.windows_failed} failed"
+        )
+        if report.errors:
+            line += (
+                " (" + ", ".join(f"{k} x{v}" for k, v in report.errors.items()) + ")"
+            )
+        click.echo(line)
 
 
 if __name__ == "__main__":

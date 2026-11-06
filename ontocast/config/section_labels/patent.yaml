@@ -1,23 +1,20 @@
-schema_version: "1.1"
+schema_version: "1.3"
 id: patent
 description: Patent application and granted-patent section headings
 document_profile: >-
     A patent application or granted patent disclosing an invention, setting out
     its technical field, the prior art it improves on, described embodiments,
     and numbered legal claims defining the scope of protection sought.
-ordered: true
-default_exclude:
--   citations
 labels:
 -   id: abstract
-    order: 10
+    description: 'A short summary of the invention.'
     heading_patterns:
     -   '^abstract\s*$'
     -   '^abstract\s+of\s+the\s+disclosure\s*$'
     keywords:
     -   abstract
 -   id: field
-    order: 20
+    description: 'The technical field the invention belongs to.'
     heading_patterns:
     -   '^(?:technical\s+)?field\s*$'
     -   '^field\s+of\s+the\s+invention\s*$'
@@ -27,7 +24,7 @@ labels:
     -   field of the invention
     -   field of the disclosure
 -   id: background
-    order: 30
+    description: 'The state of the art and the problem the invention addresses.'
     heading_patterns:
     -   '^background\s*$'
     -   '^background\s+(?:of\s+the\s+)?(?:invention|art|disclosure)\s*$'
@@ -35,7 +32,7 @@ labels:
     -   background of the invention
     -   background art
 -   id: prior_art
-    order: 35
+    description: 'Earlier patents and publications and their shortcomings.'
     heading_patterns:
     -   '^prior\s+art\s*$'
     -   '^related\s+art\s*$'
@@ -44,7 +41,7 @@ labels:
     -   prior art
     -   related art
 -   id: summary
-    order: 40
+    description: 'A summary of the invention and its advantages.'
     heading_patterns:
     -   '^summary\s*$'
     -   '^summary\s+of\s+the\s+(?:invention|disclosure)\s*$'
@@ -53,7 +50,7 @@ labels:
     -   summary of the disclosure
     -   disclosure of the invention
 -   id: brief_description_of_drawings
-    order: 50
+    description: 'One line per figure saying what it shows.'
     heading_patterns:
     -   '^brief\s+description\s+of\s+(?:the\s+)?(?:drawings?|figures?)\s*$'
     -   '^description\s+of\s+(?:the\s+)?(?:drawings?|figures?)\s*$'
@@ -62,7 +59,7 @@ labels:
     -   description of the drawings
     -   description of the figures
 -   id: detailed_description
-    order: 60
+    description: 'The full description of embodiments of the invention.'
     heading_patterns:
     -   '^detailed\s+description\s*$'
     -   '^detailed\s+description\s+of\s+(?:the\s+)?(?:invention|embodiments?|preferred\s+embodiments?)\s*$'
@@ -78,7 +75,7 @@ labels:
     -   landscapes
     -   classifications
 -   id: examples
-    order: 70
+    description: 'Worked examples or experiments carrying out the invention, often with measured values.'
     heading_patterns:
     -   '^examples?\s*$'
     -   '^working\s+examples?\s*$'
@@ -87,7 +84,7 @@ labels:
     -   working example
     -   working examples
 -   id: claims
-    order: 80
+    description: 'Numbered claims defining the legal scope of protection.'
     heading_patterns:
     -   '^claims?\s*$'
     -   '^what\s+is\s+claimed\s+is\s*$'
@@ -99,7 +96,8 @@ labels:
     -   we claim
     -   the invention claimed is
 -   id: citations
-    order: 90
+    description: 'Lists of patent and non-patent documents cited.'
+    route_class: boilerplate
     heading_patterns:
     -   '^citation\s+list\s*$'
     -   '^references?\s+cited\s*$'

@@ -14,14 +14,15 @@ import pathlib
 import re
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
-from rdflib import DCTERMS, OWL, RDF, RDFS, SH, Namespace, URIRef
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from rdflib import DCTERMS, OWL, RDF, RDFS, SH, URIRef
 
-from ontocast.onto.constants import ONTOCAST, ONTOLOGY_NULL_IRI, PROV
+from ontocast.onto.constants import ONTOCAST, ONTOLOGY_NULL_IRI, PROV, VANN
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.llm_graph_payload import LLMGraphWire
+from ontocast.onto.ontology_namespace import ontology_namespace
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 
@@ -42,7 +43,6 @@ SemanticVersion = Annotated[
 
 VersionIncrement = Literal["major", "minor", "patch"]
 
-VANN = Namespace("http://purl.org/vocab/vann/")
 
 #: Predicates the version header owns on the ontology subject. They are
 #: rewritten on every write and left out of the content hash.
@@ -156,6 +156,7 @@ class OntologyProperties(BaseModel):
         description: A few sentences on domain, purpose and applicability.
         version: Semantic version label of this version.
         iri: Ontology IRI, with no fragment.
+        namespace: The namespace its terms live under; ``<iri>#`` unless set.
     """
 
     ontology_id: str | None = Field(default=None)
@@ -163,11 +164,13 @@ class OntologyProperties(BaseModel):
     description: str | None = Field(default=None)
     version: SemanticVersion | None = Field(default=None)
     iri: str = Field(default=ONTOLOGY_NULL_IRI)
+    namespace: str = Field(default="")
 
-    @property
-    def namespace(self) -> str:
-        """The namespace its terms live under (``<iri>#``)."""
-        return normalize_namespace_iri(self.iri, context="ontology")
+    @model_validator(mode="after")
+    def _default_namespace(self) -> Self:
+        if not self.namespace:
+            self.namespace = normalize_namespace_iri(self.iri, context="ontology")
+        return self
 
 
 class OntologyPropertiesWithLineage(OntologyProperties):
@@ -225,6 +228,7 @@ class OntologyHeader(OntologyPropertiesWithLineage):
             title=ontology.title,
             description=ontology.description,
             version=ontology.version,
+            namespace=ontology.namespace,
             hash=ontology.hash,
             version_iri=ontology.version_iri,
             prior_version_iris=list(ontology.prior_version_iris),
@@ -245,12 +249,20 @@ class Ontology(OntologyPropertiesWithLineage):
             one for an update, two for a merge. Carried unchanged through
             in-run derivations so the stamped version's lineage points at
             stored versions only.
+        namespace: Unless set, read from ``graph``
+            (:func:`~ontocast.onto.ontology_namespace.ontology_namespace`).
     """
 
     graph: LLMGraphWire = Field(default_factory=RDFGraph)
     bases: list[OntologyHeader] = Field(default_factory=list)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @model_validator(mode="after")
+    def _default_namespace(self) -> Self:
+        if not self.namespace:
+            self.namespace = ontology_namespace(self.graph, self.iri)
+        return self
 
     def is_null(self) -> bool:
         """True for the null ontology (no identity, no graph)."""

@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ontocast.onto.model import LoopAttempt
+from ontocast.onto.section_models import OutlineLabelReport
 from ontocast.onto.state import BudgetTracker
 from ontocast.util.graph_metrics import GraphShapeMetrics
 
@@ -142,6 +143,41 @@ class RunManifestSelection(BaseModel):
             "label histogram only counts units that reached extraction, so "
             "without these three a unit count difference between two runs "
             "cannot be attributed to a routing knob."
+        ),
+    )
+    label_strength_chars: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Characters of the units kept for extraction by label strength: "
+            "'strong', 'weak' and 'unlabeled'. Only strong labels take part in "
+            "drops; target_sections acts on any label."
+        ),
+    )
+    route_histogram: dict[str, dict[str, int]] | None = Field(
+        default=None,
+        description=(
+            "'<route>/<reason>' -> {'units', 'chars'} for every prepared unit, "
+            "kept or dropped: what each routing rule removed or kept, and why."
+        ),
+    )
+    outline_labels: OutlineLabelReport | None = Field(
+        default=None,
+        description=(
+            "The model section tier (CHUNK_SECTION_CLASSIFIER=llm): windows "
+            "sent, windows whose call failed, and the failures by error class. "
+            "windows_failed above zero means part of the outline got no model "
+            "vote. Absent when the tier did not run."
+        ),
+    )
+    allowlist_excluded_chars: int | None = Field(
+        default=None,
+        description="Characters target_sections removed before sizing.",
+    )
+    allowlist_excluded_unlabeled_chars: int | None = Field(
+        default=None,
+        description=(
+            "The part of allowlist_excluded_chars that carried no label: a "
+            "strict selection loses such text whenever a label is missing."
         ),
     )
 

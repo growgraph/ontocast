@@ -32,7 +32,7 @@ pytestmark = pytest.mark.unit
 
 
 def test_atomizer_filters_minimal_provenance_predicates() -> None:
-    """Provenance/reification triples should not leak into embeddings."""
+    """The pipeline's provenance does not leak into embeddings; domain PROV does."""
     facts_namespace = "https://example.org/facts"
 
     graph = RDFGraph._from_turtle_str(
@@ -40,16 +40,20 @@ def test_atomizer_filters_minimal_provenance_predicates() -> None:
         @prefix cd: <https://example.org/facts/> .
         @prefix prov: <http://www.w3.org/ns/prov#> .
         @prefix dcterms: <http://purl.org/dc/terms/> .
+        @prefix foaf: <http://xmlns.com/foaf/0.1/> .
+        @prefix schema: <https://schema.org/> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix ex: <https://example.org/test/> .
 
+        cd:doc a prov:Entity, foaf:Document ; dcterms:source ex:Doc .
+        cd:chunk_0 a prov:Entity, schema:Text .
         cd:Alpha a ex:Thing ;
             ex:knows cd:Beta ;
-            dcterms:source ex:Doc .
-
+            prov:wasDerivedFrom cd:Gamma .
         cd:Beta a ex:Thing .
-        cd:Alpha prov:wasDerivedFrom ex:Other .
-        cd:Alpha rdf:reifies ex:Whatever .
+        cd:Gamma a ex:Thing .
+        [ a rdf:Statement ; rdf:subject cd:Alpha ; rdf:predicate ex:knows ;
+          rdf:object cd:Beta ; prov:wasDerivedFrom cd:chunk_0 ] .
         """
     )
 
@@ -64,14 +68,12 @@ def test_atomizer_filters_minimal_provenance_predicates() -> None:
 
     atoms = GraphAtomizer().atomize(source=facts, depth=1)
     assert atoms
+    assert not any(a.iri.endswith(("/chunk_0", "/doc")) for a in atoms)
 
     alpha_atom = next(a for a in atoms if a.iri.endswith("/Alpha"))
-    assert "was derived from" not in alpha_atom.core_representation
-    assert "reifies" not in alpha_atom.core_representation
-
-    assert "was derived from" not in alpha_atom.neighborhood_representation
-    assert "has relation source" not in alpha_atom.neighborhood_representation
-    assert "reifies" not in alpha_atom.neighborhood_representation
+    assert "chunk" not in alpha_atom.neighborhood_representation
+    assert "statement" not in alpha_atom.neighborhood_representation.lower()
+    assert "was derived from" in alpha_atom.neighborhood_representation
 
 
 def test_atomizer_facts_focal_entities_are_cd_only() -> None:
@@ -460,12 +462,25 @@ def test_a_label_alone_is_enough_to_be_atomized() -> None:
     assert "https://example.org/d#NamedOnly" in iris
 
 
-def test_index_undescribed_iris_restores_the_previous_behaviour() -> None:
-    """The old scope stays reachable for anyone relying on it."""
-    iris = _iris(_UNITS, index_undescribed_iris=True)
+_REFERENCED_OWN = """
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex:   <https://example.org/r#> .
+@prefix other: <https://other.example/v#> .
 
-    assert "http://qudt.org/vocab/dimensionvector/A0E0L2I0M1H0T-2D0" in iris
-    assert "http://qudt.org/vocab/sou/SI" in iris
+ex:Described a rdfs:Class ;
+    rdfs:label "described"@en ;
+    rdfs:seeAlso ex:ReferencedOnly , other:Elsewhere .
+ex:Second a rdfs:Class ; rdfs:label "second"@en .
+"""
+
+
+def test_index_undescribed_iris_widens_only_the_own_namespace() -> None:
+    """Referenced IRIs of the ontology's namespace join; other namespaces stay reuse."""
+    assert "https://example.org/r#ReferencedOnly" not in _iris(_REFERENCED_OWN)
+    iris = _iris(_REFERENCED_OWN, index_undescribed_iris=True)
+
+    assert "https://example.org/r#ReferencedOnly" in iris
+    assert "https://other.example/v#Elsewhere" not in iris
 
 
 def test_store_config_drives_the_atomizer_scope() -> None:
@@ -484,7 +499,6 @@ def test_atom_scope_only_fingerprints_a_divergence() -> None:
     """Defaults must not change the fingerprint, or every store needs a reindex."""
     assert atom_scope_fingerprint(VectorStoreConfig()) is None
     assert atom_scope_fingerprint(VectorStoreConfig(index_undescribed_iris=True))
-    assert atom_scope_fingerprint(VectorStoreConfig(embed_standard_vocab_iris=True))
     assert atom_scope_fingerprint(
         VectorStoreConfig(extra_excluded_namespace_prefixes=["http://qudt.org/"])
     )

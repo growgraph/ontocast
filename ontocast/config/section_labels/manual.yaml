@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.2"
 id: manual
 description: Product documentation, SOPs, and runbooks
 document_profile: >-
@@ -7,6 +7,7 @@ document_profile: >-
     practical guidance rather than as requirements binding on implementers.
 labels:
 -   id: overview
+    description: 'What the product or procedure is and what the document covers.'
     heading_patterns:
     -   '^overview\s*$'
     -   '^introduction\s*$'
@@ -18,6 +19,7 @@ labels:
     -   beginners guide
     -   introduction
 -   id: prerequisites
+    description: 'What must be in place before starting: requirements, dependencies, access.'
     heading_patterns:
     -   '^prerequisites?\s*$'
     -   '^requirements?\s*$'
@@ -27,6 +29,7 @@ labels:
     -   requirements
     -   before you begin
 -   id: installation
+    description: 'Steps to install or set up the product.'
     heading_patterns:
     -   '^installation\s*$'
     -   '^install(?:ation)?\s+guide\s*$'
@@ -38,6 +41,7 @@ labels:
     -   setting up
     -   building from source
 -   id: configuration
+    description: 'Settings and options and how to change them.'
     heading_patterns:
     -   '^configuration\s*$'
     -   '^config(?:uration)?\s*$'
@@ -48,6 +52,7 @@ labels:
     -   settings
     -   reloading configuration
 -   id: usage
+    description: 'How to use the product for its tasks, with steps and examples.'
     heading_patterns:
     -   '^usage\s*$'
     # Bounded at the tail: unanchored, these were the catalog's only open-ended
@@ -63,6 +68,7 @@ labels:
     -   command line
     -   examples
 -   id: operations
+    description: 'Running and maintaining it in service: monitoring, backups, upgrades.'
     heading_patterns:
     -   '^operations?\s*$'
     -   '^operation\s*$'
@@ -74,6 +80,7 @@ labels:
     -   deployment
     -   monitoring
 -   id: troubleshooting
+    description: 'Known problems, their symptoms and fixes.'
     heading_patterns:
     -   '^troubleshooting\s*$'
     -   '^faq\s*$'
@@ -85,6 +92,7 @@ labels:
     -   known issues
     -   debugging
 -   id: api_reference
+    description: 'Reference entries for commands, functions, endpoints or parameters.'
     heading_patterns:
     -   '^api\s+reference\s*$'
     -   '^api\s+documentation\s*$'
@@ -95,6 +103,7 @@ labels:
     -   directives
     -   command reference
 -   id: security
+    description: 'Security considerations, permissions and hardening.'
     heading_patterns:
     -   '^security\s*$'
     -   '^security\s+considerations\s*$'
@@ -103,6 +112,7 @@ labels:
     -   security considerations
     -   hardening
 -   id: changelog
+    description: 'A dated list of changes between versions.'
     heading_patterns:
     -   '^changelog\s*$'
     -   '^release\s+notes?\s*$'
@@ -113,6 +123,7 @@ labels:
     -   version history
     -   upgrading
 -   id: glossary
+    description: 'Terms and their definitions.'
     heading_patterns:
     -   '^glossary\s*$'
     -   '^terminology\s*$'
@@ -120,6 +131,7 @@ labels:
     -   glossary
     -   terminology
 -   id: appendix
+    description: 'Supplementary material after the main text.'
     heading_patterns:
     -   '^appendi(?:x|ces)\s*$'
     -   '^supplement(?:ary)?\s*$'

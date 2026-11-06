@@ -11,23 +11,67 @@ class Status(StrEnum):
 
 
 class SectionLabelSource(StrEnum):
-    """How a chunk's ``section_label`` was decided.
+    """Which tier gave a piece of section-label evidence. Values are wire names.
 
-    Ordered from strongest to weakest evidence. The source is not bookkeeping:
-    the chunk-prepare cascade uses it to decide whether a label may still be
-    overwritten by a later tier, and forward-fill refuses to cross a span whose
-    source is :attr:`OUTLINE_UNRESOLVED`.
+    :attr:`OUTLINE_UNRESOLVED` marks a section the outline saw a heading for
+    but could not name: no tier spreads a neighbour's label into it.
     """
 
     HEADING_PATTERN = "heading_pattern"
     HEADING_KEYWORD = "heading_keyword"
     HEADING_INHERITED = "heading_inherited"
+    #: A heading no pattern or keyword named, nearest a label by embedding.
+    HEADING_EMBEDDING = "heading_embedding"
     FRONT_MATTER = "front_matter"
-    SPAN_OVERLAP = "span_overlap"
     CONTENT_DENSITY = "content_density"
+    #: A citation run cut out of a unit by the block classifier.
+    CONTENT_BLOCK = "content_block"
     LLM = "llm"
-    FORWARD_FILL = "forward_fill"
     OUTLINE_UNRESOLVED = "outline_unresolved"
+
+
+class LabelStrength(StrEnum):
+    """Whether a section label may take part in a drop decision. Wire names."""
+
+    STRONG = "strong"
+    WEAK = "weak"
+
+
+class UnitRoute(StrEnum):
+    """What happens to a unit before extraction. Values are wire names."""
+
+    EXTRACT = "extract"
+    #: Kept; the facts renderer extracts bibliographic metadata only.
+    CITATIONS = "citations"
+    #: Kept and flagged ``is_non_content``; checks that presume domain prose stand down.
+    NON_CONTENT = "non_content"
+    SKIP = "skip"
+
+
+class RouteReason(StrEnum):
+    """Why a unit took its route. Values are wire names (run manifest, logs)."""
+
+    CONTENT = "content"
+    #: A label that could have dropped the unit was weak.
+    WEAK_LABEL = "weak_label"
+    #: A strong citations or boilerplate label the content disagrees with.
+    LABEL_CONTRADICTED = "label_contradicted"
+    #: A boilerplate label under a schema nobody chose: no default exclusions.
+    FALLBACK_SCHEMA = "fallback_schema"
+    #: A boilerplate label the request's exclude_sections did not name.
+    EXCLUSION_OVERRIDDEN = "exclusion_overridden"
+    #: The content alone is a reference list.
+    CITATION_LIST = "citation_list"
+    #: A strong citations-class label and content that agrees.
+    CITATION_LABEL = "citation_label"
+    #: A strong boilerplate-class label on text that states no measurement.
+    BOILERPLATE = "boilerplate"
+    #: Front/back matter recognised from the content.
+    NON_CONTENT = "non_content"
+    #: The content alone is a table of contents or a list of figures or tables.
+    CONTENTS_LIST = "contents_list"
+    EXCLUDED_BY_REQUEST = "excluded_by_request"
+    UNDERSIZED = "undersized"
 
 
 class RetrievalMetric(StrEnum):
@@ -110,6 +154,10 @@ class RetrievalMetric(StrEnum):
     FACTS_MERGE_REPAIR_PASSES = "facts_merge_repair_passes"
     FACTS_MERGE_VETOES = "facts_merge_vetoes"
     FACTS_MERGE_REPAIRS_REJECTED = "facts_merge_repairs_rejected"
+    #: Coreference resolution: pairs put to the model, and its verdicts.
+    FACTS_COREFERENCE_PAIRS = "facts_coreference_pairs"
+    FACTS_COREFERENCE_SAME = "facts_coreference_same"
+    FACTS_COREFERENCE_DIFFERENT = "facts_coreference_different"
 
     # Validation gate. Written identically by both entry paths.
     VALIDATED_WITHOUT_ONTOLOGY_CONTEXT = "validated_without_ontology_context"
@@ -273,6 +321,7 @@ class WorkflowNode(StrEnum):
     NORMALIZE_ONTOLOGY_UPDATES = "Normalize Ontology Updates"
     CONSOLIDATE_ONTOLOGY = "Consolidate Ontology"
     MERGE_FACTS = "Merge Facts"
+    RESOLVE_COREFERENCE = "Resolve Coreference"
     VALIDATE_FACTS = "Validate Facts"
     PLAN_EXTERNAL_EVIDENCE = "Plan External Evidence"
     FETCH_EXTERNAL_EVIDENCE = "Fetch External Evidence"
@@ -291,6 +340,7 @@ class LLMPhase(StrEnum):
     FACTS_RENDER = "facts_render"
     FACTS_CRITIC = "facts_critic"
     FACTS_COMPLETION = "facts_completion"
+    FACTS_COREFERENCE = "facts_coreference"
     ONTOLOGY_IDENTITY = "ontology_identity"
     ONTOLOGY_RENDER = "ontology_render"
     ONTOLOGY_CRITIC = "ontology_critic"

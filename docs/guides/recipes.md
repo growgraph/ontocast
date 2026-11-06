@@ -37,8 +37,9 @@ ONTOCAST_ONTOLOGY_DIRECTORY=./my-ontologies    # optional: a few seed ontologies
 ontocast process --input-path ./paper.pdf --head-chunks 3 --output-dir ./out
 ```
 
-`--head-chunks 3` stops after the first three parts of the document, which is
-enough to judge the output and costs a fraction of the whole document.
+`--head-chunks 3` extracts only the first three parts of the document kept for
+extraction, which is enough to judge the output and costs a fraction of the
+whole document.
 
 **What to check.** Open `out/paper.run.json` (the run manifest) before the
 graphs. It records the settings the run actually used and its `budget`: LLM
@@ -74,7 +75,7 @@ came from your catalog.
 Starting with no ontology at all is supported. When a part's ontology context
 is empty, OntoCast creates a new ontology from the text, under
 `CURRENT_DOMAIN`. To declare "no seed ontologies" for one run, even when
-`ONTOCAST_ONTOLOGY_DIRECTORY` is set, pass an empty directory:
+`ONTOCAST_ONTOLOGY_DIRECTORY` is set, pass an empty `--ontology-dir`:
 
 ```bash
 ontocast process --input-path ./docs --ontology-dir '' --ontology-output-dir ./onto
@@ -158,9 +159,9 @@ If parts get the wrong terms, change one setting per run, in this order:
 
 Retrieval gives every part its own slice of the ontology, so no two prompts
 share a prefix that a provider's prompt cache could serve.
-`ONTOLOGY_CONTEXT_SCOPE=document` with `FANOUT_WARMUP_UNITS=1` makes the slice
-the same for every part of a document; [Performance
-tuning](performance.md) explains when that pays.
+In a facts-only run, `ONTOLOGY_CONTEXT_SCOPE=document` with
+`FANOUT_WARMUP_UNITS=1` makes the slice the same for every part of a document;
+[Performance tuning](performance.md) explains when that pays.
 
 **What to check.** `retrieval_metrics.patch_retrieval` in the response or run
 manifest shows what retrieval selected for each part. An empty selection means
@@ -203,8 +204,8 @@ explains them.
 
 ## Local models
 
-The defaults load local sentence-transformer models for chunking and for
-entity disambiguation, and a third under vector retrieval. With Ollama as the
+The defaults load two local sentence-transformer models: one for chunking, and
+one that entity disambiguation shares with vector retrieval. With Ollama as the
 LLM provider, raise `LLM_NUM_CTX`, since Ollama's default context window is too
 small for most prompts. [Performance tuning](performance.md) explains the memory
 the local models take and how to load one model instead of two.

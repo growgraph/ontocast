@@ -39,8 +39,11 @@ _DEFAULT_MINIMAL_LABEL_LIMIT = 5
 # synonyms previously vanished from both retrieval lanes and the prompt), and atoms
 # carry case-preserved symbol_surfaces so merge-time can demote counterfeit
 # case-folded symbol matches (prose "meV" retrieving symbol "MeV"); both change the
-# stored surface forms and the payload schema.
-_SURFACE_FORM_CONTRACT = "sf6"
+# stored surface forms and the payload schema. ``sf7``: an ontology contributes the
+# terms of the namespace it defines them in (``Ontology.namespace``) instead of every
+# namespace outside a fixed list of standard vocabularies, so a standard vocabulary
+# uploaded as an ontology is indexed and terms an ontology reuses are not.
+_SURFACE_FORM_CONTRACT = "sf7"
 
 
 class EmbeddingContractMismatchError(ValueError):
@@ -76,8 +79,6 @@ def atom_scope_fingerprint(store_config: VectorStoreConfig) -> str | None:
     parts: list[str] = []
     if store_config.index_undescribed_iris:
         parts.append("undescribed")
-    if store_config.embed_standard_vocab_iris:
-        parts.append("stdvocab")
     for prefix in sorted(store_config.extra_excluded_namespace_prefixes):
         parts.append(f"x:{prefix}")
 
@@ -478,7 +479,6 @@ def sync_atomizer_from_store_config(
     atomizer.label_predicates = list(store_config.label_predicates)
     atomizer.symbol_predicates = list(store_config.symbol_predicates)
     atomizer.index_undescribed_iris = store_config.index_undescribed_iris
-    atomizer.embed_standard_vocab_iris = store_config.embed_standard_vocab_iris
     atomizer.extra_excluded_namespace_prefixes = list(
         store_config.extra_excluded_namespace_prefixes
     )

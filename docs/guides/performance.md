@@ -12,7 +12,7 @@ Four settings bound how much work is in flight:
 
 | Setting | What it bounds |
 |---|---|
-| [`MAX_CONCURRENT_PROCESSES`](../reference/configuration/pipeline.md#max_concurrent_processes) | `/process` and `/process_unit` requests the server runs at once. Further requests wait for a slot; they are not rejected. Unset means no limit |
+| [`MAX_CONCURRENT_PROCESSES`](../reference/configuration/pipeline.md#max_concurrent_processes) | Documents of `/process` and `/process_unit` requests the server runs at once. Further documents wait for a slot; they are not rejected. Unset means no limit |
 | [`PARALLEL_WORKERS`](../reference/configuration/pipeline.md#parallel_workers) | Content units of one document processed at once |
 | [`LLM_MAX_INFLIGHT`](../reference/configuration/llm.md#llm_max_inflight) | Provider calls in flight across the whole process, all documents together |
 | [`LLM_REQUEST_TIMEOUT_SECONDS`](../reference/configuration/llm.md#llm_request_timeout_seconds) | How long one provider call may take before it is abandoned |
@@ -186,9 +186,10 @@ Three settings make the whole fan-out share one:
   (OpenAI only) routes requests that share a prefix to the same cache. Use one
   fixed string per deployment, never one per request.
 
-Keep [`FACTS_SHAPES_PROMPT_CONTRACT`](../reference/configuration/facts-validation.md#facts_shapes_prompt_contract)
-at `full` with a document scope: `context` picks shapes per unit, which makes
-the conformance chapter, and so the prefix, differ between units.
+Set [`FACTS_SHAPES_PROMPT_CONTRACT`](../reference/configuration/facts-validation.md#facts_shapes_prompt_contract)
+to `full` with a document scope: `context`, which the default `auto` becomes
+once the shapes exceed `FACTS_SHAPES_PROMPT_MAX_LINES`, picks shapes per unit,
+which makes the conformance chapter, and so the prefix, differ between units.
 
 !!! warning "Check that the provider reads its cache"
     These settings pay off only if the provider serves cached prefixes and
@@ -202,7 +203,7 @@ its own setting:
 
 | Setting | Used by |
 |---|---|
-| [`CHUNK_EMBEDDING_MODEL`](../reference/configuration/chunking.md#chunk_embedding_model) | Semantic chunking and embedding-based schema detection |
+| [`CHUNK_EMBEDDING_MODEL`](../reference/configuration/chunking.md#chunk_embedding_model) | Semantic chunking, embedding-based schema detection, and section labels for headings no keyword names |
 | [`EMBEDDING_MODEL_NAME`](../reference/configuration/embeddings.md#embedding_model_name) | Ontology retrieval |
 | [`AGG_EMBEDDING_MODEL`](../reference/configuration/aggregation.md#agg_embedding_model) | Entity disambiguation |
 

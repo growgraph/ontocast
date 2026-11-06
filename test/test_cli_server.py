@@ -760,15 +760,21 @@ def test_dump_facts_ttl_can_keep_provenance(tmp_path) -> None:
     chunk references at all, so nothing in it can be traced back to a source
     span or re-verified against the document.
     """
-    from rdflib import Literal
+    from rdflib import RDF, BNode, URIRef
 
     from ontocast.api.process_helpers import dump_facts_ttl
-    from ontocast.onto.constants import PROV
+    from ontocast.onto.constants import PROV, SCHEMA
 
     src = tmp_path / "paper.pdf"
     src.write_bytes(b"x")
     state = _batch_state()
-    state.aggregated_facts.add((state.doc_iri, PROV.wasDerivedFrom, Literal("chunk-3")))
+    chunk = URIRef(f"{state.doc_iri}/chunk-3")
+    reifier = BNode()
+    facts = state.aggregated_facts
+    facts.add((chunk, RDF.type, PROV.Entity))
+    facts.add((chunk, RDF.type, SCHEMA.Text))
+    facts.add((reifier, RDF.type, RDF.Statement))
+    facts.add((reifier, PROV.wasDerivedFrom, chunk))
 
     stripped = dump_facts_ttl(state, src, output_dir=tmp_path / "stripped")
     assert stripped is not None

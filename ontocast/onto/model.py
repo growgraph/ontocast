@@ -5,7 +5,7 @@ from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from ontocast.onto.identity import OntologyId
+from ontocast.onto.identity import MintedOntologyId
 from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
@@ -623,6 +623,43 @@ class ExternalEvidenceCacheEntry(BaseModel):
     domains: list[str] = Field(default_factory=list)
 
 
+class CoreferenceCandidate(BaseModel):
+    """A pair of unit-minted entities whose identity is put to the model.
+
+    ``kind`` says why: ``unconfirmed_merge`` (merged on a plausible lexical
+    tier only), ``near_miss`` (refused for ``lexical`` alone) or
+    ``shared_link`` (same type, different units, pointing to one node by one
+    predicate).
+    """
+
+    left: str
+    right: str
+    kind: Literal["unconfirmed_merge", "near_miss", "shared_link"]
+    similarity: float = 0.0
+
+
+class CoreferenceVerdict(BaseModel):
+    """The model's answer for one numbered pair of entities."""
+
+    pair: int = Field(description="The pair's number, as listed.")
+    verdict: Literal["same", "different", "unsure"] = Field(
+        description=(
+            "'same' when both denote one real-world thing, 'different' when "
+            "they denote distinct things, 'unsure' when the evidence does not "
+            "decide."
+        )
+    )
+    reason: str = Field(
+        default="", max_length=300, description="One short sentence on why."
+    )
+
+
+class CoreferenceReport(BaseModel):
+    """Verdicts for the pairs put to the model; a pair left out is 'unsure'."""
+
+    verdicts: list[CoreferenceVerdict] = Field(default_factory=list)
+
+
 class OntologyIdentityProposal(BaseModel):
     """What the model proposes for a document's home ontology.
 
@@ -631,7 +668,7 @@ class OntologyIdentityProposal(BaseModel):
     ontology; any other id names a new one.
     """
 
-    ontology_id: OntologyId = Field(
+    ontology_id: MintedOntologyId = Field(
         description=(
             "Short lowercase handle (2-32 chars, letters, digits, '_' or '-', "
             "starting with a letter), e.g. 'abc' for a hypothetical A... B... C... "

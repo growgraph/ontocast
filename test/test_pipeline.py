@@ -910,6 +910,7 @@ def test_agent_graph_topology_is_pinned() -> None:
         str(WorkflowNode.CONSISTENCY_CRITIC),
         str(WorkflowNode.RENDER_FACTS),
         str(WorkflowNode.MERGE_FACTS),
+        str(WorkflowNode.RESOLVE_COREFERENCE),
         str(WorkflowNode.VALIDATE_FACTS),
         str(WorkflowNode.SERIALIZE),
     }
@@ -953,7 +954,12 @@ def test_agent_graph_topology_is_pinned() -> None:
         (str(WorkflowNode.CONSISTENCY_CRITIC), str(WorkflowNode.RENDER_FACTS), True),
         (str(WorkflowNode.CONSISTENCY_CRITIC), str(WorkflowNode.SERIALIZE), True),
         (str(WorkflowNode.RENDER_FACTS), str(WorkflowNode.MERGE_FACTS), False),
-        (str(WorkflowNode.MERGE_FACTS), str(WorkflowNode.VALIDATE_FACTS), False),
+        (str(WorkflowNode.MERGE_FACTS), str(WorkflowNode.RESOLVE_COREFERENCE), False),
+        (
+            str(WorkflowNode.RESOLVE_COREFERENCE),
+            str(WorkflowNode.VALIDATE_FACTS),
+            False,
+        ),
         (str(WorkflowNode.VALIDATE_FACTS), str(WorkflowNode.SERIALIZE), False),
         (str(WorkflowNode.SERIALIZE), "__end__", False),
     }
@@ -966,6 +972,9 @@ def test_route_after_tag_or_chunk_facts_only_skips_ontology() -> None:
 
 def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
     class RecordingOntologyManager:
+        def identity_conflicts(self, ontologies: list[Ontology]) -> dict[str, str]:
+            return {}
+
         def __init__(self) -> None:
             self.added = 0
 
@@ -999,6 +1008,9 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
 
 def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
     class RecordingOntologyManager:
+        def identity_conflicts(self, ontologies: list[Ontology]) -> dict[str, str]:
+            return {}
+
         async def aadd_ontology(self, ontology: Ontology) -> None:
             return None
 
@@ -1030,6 +1042,9 @@ def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
 
 def test_toolbox_serialize_persists_all_ontology_artifacts() -> None:
     class RecordingOntologyManager:
+        def identity_conflicts(self, ontologies: list[Ontology]) -> dict[str, str]:
+            return {}
+
         def __init__(self) -> None:
             self.added = 0
 

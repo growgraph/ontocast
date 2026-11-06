@@ -14,6 +14,7 @@ from ontocast.onto.enum import OntologyContextMode, RenderMode, VectorStoreBacke
 from ontocast.onto.identity import OntologyVersionRecord, VersionRef
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
+from ontocast.onto.ontology_header import SeedOntologyLoadError
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState, BudgetTracker
 from ontocast.onto.tenancy import TenancyScope
@@ -229,6 +230,10 @@ class ToolBox:
         self.shapes_catalog.register_triple_store(self.triple_store_manager)
         # Tenancy the in-memory catalog currently reflects; None until first set.
         self._active_tenancy: tuple[str, str] | None = None
+        # Whether initialize() has populated the catalog. A first tenancy
+        # assignment after it must repopulate, or the catalog it resets stays
+        # empty.
+        self._initialized = False
         # Guards the tenancy retarget, which mutates ToolBox-wide state (dataset
         # names, the ontology catalog, vector-store table names) across awaits.
         # It is driven by a per-request query parameter with no concurrency cap,
@@ -256,6 +261,8 @@ class ToolBox:
         # materialize exactly those and nothing else -- rewriting a whole
         # catalog on every switch is what scoped ToolBoxes exist to avoid.
         self._last_seed_repairs: list[Ontology] = []
+        # Seed files the last directory load could not read, path -> reason.
+        self._seed_load_failures: dict[str, str] = {}
         self._vector_store_init_lock = asyncio.Lock()
 
         # Both supported backends need the BM25 tool, so the only case that
@@ -637,15 +644,15 @@ class ToolBox:
             # partition-scoped. Carrying them across a switch leaks one tenant's
             # ontologies into another's requests -- and its alias ledger can reject
             # a legitimately distinct ontology that reuses an ontology_id.
-            # ``None`` means this is the first assignment, which happens at startup
-            # before ``initialize()``; leave the population to it rather than
-            # fetching twice. Any later switch must repopulate -- including when the
-            # partition we are leaving was empty.
-            is_first_assignment = self._active_tenancy is None
+            # A first assignment before ``initialize()`` leaves the population to
+            # it rather than fetching twice. Every other switch must repopulate --
+            # a first one after ``initialize()`` included, and when the partition
+            # we are leaving was empty.
+            leave_to_initialize = self._active_tenancy is None and not self._initialized
             self.ontology_manager.reset_catalog()
             self.shapes_catalog.reset()
             self._active_tenancy = (t, p)
-            if not is_first_assignment and triple is not None:
+            if not leave_to_initialize and triple is not None:
                 # Seed TTLs are replayed into the new partition, but only where
                 # it serves no graph of its own: a scope whose catalog is empty
                 # for want of a bootstrap is the same fault as a startup one,
@@ -818,9 +825,14 @@ class ToolBox:
         """Persist the document's ontology versions and facts (async form).
 
         Each artifact is stamped as a version; one whose content equals its
-        base's is not written. Versions are written to the store first, then
-        registered and indexed, then the facts: a refused write raises before
-        anything downstream can point at a version that does not exist.
+        base's is not written. A version whose identity collides with the
+        catalog or with another version of this document is not written either
+        (``serialize/ontology_identity_conflict``): that is checked before the
+        first write, so the store never holds a version the catalog refused,
+        and the document's facts are still written. Versions are written to the
+        store first, then registered and indexed, then the facts: a refused
+        write raises before anything downstream can point at a version that
+        does not exist.
 
         Raises:
             TripleStoreWriteError: the store refused a write.
@@ -842,6 +854,12 @@ class ToolBox:
                 logger.info("Ontology %s is unchanged; no new version", artifact.iri)
                 continue
             stamped.append(version)
+
+        conflicts = self.ontology_manager.identity_conflicts(stamped)
+        for iri, reason in conflicts.items():
+            logger.warning("Ontology %s is not written: %s", iri, reason)
+            state.budget_tracker.incr("serialize/ontology_identity_conflict")
+        stamped = [version for version in stamped if version.iri not in conflicts]
 
         if self.triple_store_manager is not None:
             for version in stamped:
@@ -1132,6 +1150,7 @@ class ToolBox:
         wipe_vector_store: bool | None = None,
         prune_orphan_iris: bool | None = None,
         require_populated_catalog: bool = False,
+        require_all_seeds: bool = False,
     ) -> None:
         """Initialize the toolbox with ontologies and their properties.
 
@@ -1154,8 +1173,14 @@ class ToolBox:
                 only yield an ungrounded graph. A server leaves it False:
                 starting empty and being filled through ``POST /ontologies`` is
                 a supported way to run.
+            require_all_seeds: Fail when any ``*.ttl`` in ``ontology_directory``
+                cannot be loaded, before anything is written or a model is
+                called. A batch run sets this; a server logs the file and loads
+                the rest.
 
         Raises:
+            SeedOntologyLoadError: ``require_all_seeds`` and a seed file failed
+                to load.
             EmptyOntologyContextError: ``require_populated_catalog`` and
                 ``ONTOLOGY_CONTEXT_REQUIRED`` are both set and the catalog or
                 its index is empty once synchronization has finished.
@@ -1173,6 +1198,12 @@ class ToolBox:
             if prune_orphan_iris is None
             else prune_orphan_iris
         )
+
+        seed_ontologies = await asyncio.to_thread(
+            self._load_seed_ontologies_from_directory
+        )
+        if require_all_seeds and self._seed_load_failures:
+            raise SeedOntologyLoadError(self._seed_load_failures)
 
         if self.triple_store_manager is not None:
             await self.triple_store_manager.async_init()
@@ -1239,7 +1270,7 @@ class ToolBox:
         )
 
         sync_started = time.perf_counter()
-        synchronized_ontologies = await self._synchronize_ontologies()
+        synchronized_ontologies = await self._synchronize_ontologies(seed_ontologies)
         logger.info(
             "Ontology sync finished: %d ontolog(ies) in %.2fs",
             len(synchronized_ontologies),
@@ -1310,6 +1341,7 @@ class ToolBox:
         # After materialization, not before: the wipe above is unconditional and
         # the refill is not, so an empty index is only evidence of a fault once
         # the reindex has had its turn.
+        self._initialized = True
         await self._check_catalog_ready(
             synchronized_ontologies, required=require_populated_catalog
         )
@@ -1322,6 +1354,7 @@ class ToolBox:
         against a catalog that happens to live in the triple store, and it is
         the difference between a five-minute diagnosis and a long one.
         """
+        self._seed_load_failures = {}
         ontology_dir = self.config.tool_config.path_config.ontology_directory
         if ontology_dir is None:
             logger.info(
@@ -1349,6 +1382,7 @@ class ToolBox:
                 ontologies.append(Ontology.from_file(path))
                 logger.debug("Loaded seed ontology from %s", path)
             except Exception as exc:
+                self._seed_load_failures[str(path)] = f"{type(exc).__name__}: {exc}"
                 logger.error("Failed to load seed ontology %s: %s", path, exc)
         return ontologies
 
@@ -1394,8 +1428,13 @@ class ToolBox:
             missing.append(seed)
         return missing
 
-    async def _synchronize_ontologies(self) -> list[Ontology]:
+    async def _synchronize_ontologies(
+        self, seed_ontologies: list[Ontology] | None = None
+    ) -> list[Ontology]:
         """Resolve the catalog from the triple store, repaired from disk.
+
+        ``seed_ontologies`` are the directory's seeds when the caller has
+        already loaded them; ``None`` loads them here.
 
         Records the seeds it had to supply on ``_last_seed_repairs`` so a caller
         that is not :meth:`initialize` -- which materializes everything anyway --
@@ -1403,9 +1442,10 @@ class ToolBox:
         """
         import asyncio
 
-        seed_ontologies = await asyncio.to_thread(
-            self._load_seed_ontologies_from_directory
-        )
+        if seed_ontologies is None:
+            seed_ontologies = await asyncio.to_thread(
+                self._load_seed_ontologies_from_directory
+            )
         logger.info(
             "Found %d seed ontolog(ies) in ontology_directory",
             len(seed_ontologies),

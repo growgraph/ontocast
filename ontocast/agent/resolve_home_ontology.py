@@ -58,6 +58,7 @@ def identity_for_existing(tools: ToolBox, ontology_id: str) -> OntologyIdentity 
         iri=head.iri,
         title=head.title or head.ontology_id or ontology_id,
         description=head.description or "",
+        namespace=head.namespace,
     )
 
 

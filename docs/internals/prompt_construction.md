@@ -81,8 +81,8 @@ bytes:
 
 A line keeps:
 
-- the prefixed name, and the shortest `rdfs:label` or `skos:prefLabel` as the
-  display name;
+- the prefixed name, and as the display name the shortest `rdfs:label`, or
+  the shortest `skos:prefLabel` when the term has no `rdfs:label`;
 - every other label and `skos:altLabel` after `~`, without a count limit;
 - for a class, its named parents (`rdfs:subClassOf`, `owl:equivalentClass`);
   for a property, `domain -> range` and its super-properties; for an
@@ -180,10 +180,10 @@ delete one, and a clipped literal would not match the statement it names.
 With every cap unset, literals are left exactly as authored and prompts do not
 change.
 
-The `chapter/*` counters are recorded once per chapter built, not per call
-that reads it, and only when at least one cap is set; with caps set they are
-recorded even when nothing was clipped. See [Telemetry
-counters](telemetry_counters.md#budget-counters).
+The `chapter/text_*` and `chapter/literals_clipped` counters are recorded
+once per chapter built, not per call that reads it, and only when at least one
+cap is set; with caps set they are recorded even when nothing was clipped.
+See [Telemetry counters](telemetry_counters.md#budget-counters).
 
 ## Document-scope chapters
 
@@ -234,6 +234,7 @@ prompt text and `llm_cache_config` in `ontocast/tool/llm.py`:
 - the cache format version, provider, model name, temperature and base URL;
 - `LLM_THINK`, `LLM_NUM_PREDICT` and `LLM_NUM_CTX`;
 - `LLM_REASONING_EFFORT` and `LLM_THINKING_BUDGET`, only when set;
+- `LLM_JSON_MODE`, only when on;
 - the output schema name, for structured calls, and any call arguments.
 
 Everything on this page reaches the key through the prompt text: the chapter

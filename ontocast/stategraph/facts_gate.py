@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from itertools import combinations
 
-from rdflib import BNode, URIRef
+from rdflib import BNode, Literal, URIRef
 from rdflib.term import Node
 
 from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import (
     FactsGateRepairKind,
@@ -34,6 +36,11 @@ from ontocast.onto.model import (
 from ontocast.onto.rdfgraph import RDFGraph, drop_reifiers_mentioning
 from ontocast.onto.state import AgentState
 from ontocast.tool.agg.aggregate import AggregationResult
+from ontocast.tool.agg.signatures import (
+    canonical_literal,
+    normalize_string_value,
+    string_values_compatible,
+)
 from ontocast.tool.facts_validation import (
     FactsValidationReport,
     ShaclRepairResult,
@@ -71,40 +78,141 @@ MERGE_SIGNATURE_KINDS = frozenset(
 )
 
 
+def _value_key(term: Node, canonical: dict[str, str]) -> tuple[str, str]:
+    """``(kind, value)`` a member's object is compared by.
+
+    IRIs by the cluster they belong to, numbers and dates by value, strings by
+    their normalized form (compared for alias compatibility, not equality).
+    """
+    if isinstance(term, Literal):
+        value = canonical_literal(term)
+        if value is not None:
+            return value[1], value[0]
+        return "string", normalize_string_value(str(term))
+    return "node", canonical.get(str(term), str(term))
+
+
+def _values_conflict(left: tuple[str, str], right: tuple[str, str]) -> bool:
+    if left[0] != right[0]:
+        return False
+    if left[0] == "string":
+        return not string_values_compatible(left[1], right[1])
+    return left[1] != right[1]
+
+
+def _conflicting_pairs(
+    members: Sequence[str],
+    values: dict[str, set[tuple[str, str]]],
+) -> set[frozenset[URIRef]]:
+    """Member pairs whose values on a predicate share nothing compatible."""
+    pairs: set[frozenset[URIRef]] = set()
+    for left, right in combinations(sorted(members), 2):
+        left_values, right_values = values.get(left), values.get(right)
+        if not left_values or not right_values:
+            continue
+        if all(_values_conflict(a, b) for a in left_values for b in right_values):
+            pairs.add(frozenset((URIRef(left), URIRef(right))))
+    return pairs
+
+
 def vetoes_from_findings(
     findings: list[FactsValidationFinding],
     clusters: dict[str, list[str]],
+    units: Sequence[ContentUnit] = (),
 ) -> set[frozenset[URIRef]]:
-    """Full-cluster pair vetoes for merge-signature error findings.
+    """Pair vetoes for merge-signature error findings.
 
-    Both the finding's subject and its IRI-valued objects are candidate merge
-    victims. DEGENERATE_COREFERENCE reports the *pointing* node as subject and
+    A finding implicates the cluster whose merge could have produced it. A
+    merged subject collects the objects of all its members, so
+    FUNCTIONAL_VIOLATION and SUSPECT_MULTI_VALUE implicate the subject; its
+    objects are innocent (merging objects can only reduce the values a subject
+    carries). DEGENERATE_COREFERENCE reports the *pointing* node as subject and
     the over-merged endpoint in ``values`` (``range1 hasLowerBound v1 ;
-    hasUpperBound v1`` -- ``v1`` is the collapsed cluster, ``range1`` usually
-    is not merged at all), so a subject-only lookup could never repair it.
-    The same holds for the IRI-object branch of SUSPECT_MULTI_VALUE.
+    hasUpperBound v1``); either merge can produce it, so it implicates both.
+
+    Within an implicated cluster only the members that disagree are split:
+    two members are vetoed when every value one carried on the finding's
+    predicate, in its own unit, conflicts with every value the other carried
+    (for DEGENERATE_COREFERENCE: when they use, or are reached by, different
+    ones of its predicates). Members that carried nothing there keep their
+    merges. When ``units`` cannot attribute the disagreement, or are not
+    given, every pair of the implicated cluster is vetoed.
 
     Args:
         findings: Error findings from the validation report.
-        clusters: Identity-merge clusters keyed by representative IRI.
+        clusters: Identity-merge clusters keyed by final IRI; members are the
+            entity IRIs of the unit graphs.
+        units: The aggregated units, whose graphs say which member carried
+            which value.
 
     Returns:
         Pairs of IRIs that must not be merged on a re-aggregation pass.
     """
+    canonical = {
+        member: min(members) for members in clusters.values() for member in members
+    }
+    graphs = [unit.graph for unit in units if unit.graph is not None]
     vetoes: set[frozenset[URIRef]] = set()
     for finding in findings:
         if finding.kind not in MERGE_SIGNATURE_KINDS:
             continue
-        candidates = [finding.subject, *finding.values]
-        for candidate in candidates:
+        degenerate = finding.kind == FactsValidationFindingKind.DEGENERATE_COREFERENCE
+        implicated = (
+            [finding.subject, *finding.values] if degenerate else [finding.subject]
+        )
+        for candidate in implicated:
             members = clusters.get(candidate, [])
             if len(members) < 2:
                 continue
-            refs = [URIRef(member) for member in members]
-            for index, left in enumerate(refs):
-                for right in refs[index + 1 :]:
-                    vetoes.add(frozenset((left, right)))
+            values: dict[str, set[tuple[str, str]]] = {}
+            if degenerate:
+                # A member's "value" is which of the finding's predicates it
+                # uses (pointing side) or is reached by (endpoint side): one
+                # endpoint is a lower bound, the other an upper.
+                predicates = [URIRef(p) for p in finding.predicate.split(", ") if p]
+                pointing = candidate == finding.subject
+                for graph in graphs:
+                    for member in members:
+                        node = URIRef(member)
+                        for predicate in predicates:
+                            pattern = (
+                                (node, predicate, None)
+                                if pointing
+                                else (None, predicate, node)
+                            )
+                            if pattern in graph:
+                                values.setdefault(member, set()).add(
+                                    ("node", str(predicate))
+                                )
+            else:
+                predicate = URIRef(finding.predicate)
+                for graph in graphs:
+                    for member in members:
+                        for obj in graph.objects(URIRef(member), predicate):
+                            values.setdefault(member, set()).add(
+                                _value_key(obj, canonical)
+                            )
+            pairs = _conflicting_pairs(members, values)
+            if not pairs:
+                pairs = {
+                    frozenset((URIRef(left), URIRef(right)))
+                    for left, right in combinations(sorted(members), 2)
+                }
+            vetoes |= pairs
     return vetoes
+
+
+def _pairs(pairs: Sequence[tuple[str, str]]) -> set[frozenset[URIRef]]:
+    return {frozenset((URIRef(left), URIRef(right))) for left, right in pairs}
+
+
+def stored_pairs(pairs: set[frozenset[URIRef]]) -> list[tuple[str, str]]:
+    """Entity pairs as the state stores them: sorted ``(left, right)`` strings."""
+    out: list[tuple[str, str]] = []
+    for pair in pairs:
+        left, right = sorted(str(iri) for iri in pair)
+        out.append((left, right))
+    return sorted(out)
 
 
 def _remove_orphaned_blank_nodes(
@@ -309,7 +417,7 @@ def run_facts_gate(
         if not previous_errors:
             break
         new_vetoes = vetoes_from_findings(
-            report.error_findings, state.aggregation_clusters
+            report.error_findings, state.aggregation_clusters, state.facts_units
         )
         if not (new_vetoes - vetoes):
             break
@@ -326,9 +434,10 @@ def run_facts_gate(
             doc_iri=state.doc_iri,
             document_metadata=document_metadata,
             doc_namespace=state.doc_namespace,
-            merge_vetoes=vetoes,
+            merge_vetoes=vetoes | _pairs(state.coreference_vetoes),
+            confirmed_pairs=_pairs(state.coreference_confirmations),
         )
-        # Un-merging is destructive: a veto dissolves a whole cluster, so a
+        # Un-merging is destructive: a veto splits correct merges too, so a
         # pass that does not strictly reduce the error count has traded real
         # coreference for nothing and must not be kept.
         previous_graph = state.aggregated_facts

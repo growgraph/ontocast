@@ -1,4 +1,4 @@
-schema_version: "1.1"
+schema_version: "1.3"
 id: standard
 description: Technical standard and specification section headings (RFC, ISO/ASTM, W3C)
 document_profile: >-
@@ -6,12 +6,9 @@ document_profile: >-
     terminology and conformance criteria that implementers must satisfy. It
     prescribes what a conforming implementation shall do, rather than
     instructing a user how to operate a particular product.
-ordered: true
-default_exclude:
--   acknowledgements
 labels:
 -   id: status
-    order: 10
+    description: 'The document''s status, publication and copyright notice.'
     heading_patterns:
     -   '^status\s+of\s+this\s+memo\s*$'
     -   '^status\s+of\s+this\s+document\s*$'
@@ -23,7 +20,7 @@ labels:
     -   copyright notice
     -   foreword
 -   id: introduction
-    order: 20
+    description: 'Purpose and context of the specification.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?introduction\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?motivation\s*$'
@@ -31,7 +28,7 @@ labels:
     -   introduction
     -   motivation
 -   id: scope
-    order: 30
+    description: 'What the specification covers and does not cover.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?scope\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?applicability\s*$'
@@ -40,7 +37,8 @@ labels:
     -   applicability
     -   field of application
 -   id: normative_references
-    order: 40
+    description: 'Documents indispensable for applying this one.'
+    route_class: citations
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?normative\s+references\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?informative\s+references\s*$'
@@ -48,7 +46,7 @@ labels:
     -   normative references
     -   informative references
 -   id: terms_and_definitions
-    order: 50
+    description: 'Defined terms, symbols and abbreviations.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?terms\s+and\s+definitions\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:terminology|notation|conventions)\s*$'
@@ -61,7 +59,7 @@ labels:
     -   syntax notation
     -   symbols and abbreviated terms
 -   id: requirements
-    order: 60
+    description: 'The normative requirements: what conforming implementations must do.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?requirements?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:general\s+requirements?|specification|protocol\s+(?:overview|specification))\s*$'
@@ -83,7 +81,7 @@ labels:
     -   payload semantics
     -   media type
 -   id: test_methods
-    order: 70
+    description: 'Procedures for testing or measuring conformance.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?test\s+methods?\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:test\s+procedures?|sampling)\s*$'
@@ -93,7 +91,7 @@ labels:
     -   test procedure
     -   sampling
 -   id: conformance
-    order: 80
+    description: 'What it means to conform and how conformance is claimed.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?conformance\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?(?:compliance|interoperability)\s*$'
@@ -106,7 +104,7 @@ labels:
     -   cacheable
     -   safe methods
 -   id: security_considerations
-    order: 85
+    description: 'Security risks and mitigations relevant to the specification.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?security\s+considerations\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?privacy\s+considerations\s*$'
@@ -114,14 +112,15 @@ labels:
     -   security considerations
     -   privacy considerations
 -   id: iana_considerations
-    order: 88
+    description: 'Registry actions requested from IANA or another registry.'
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?iana\s+considerations\s*$'
     keywords:
     -   iana considerations
     -   registration procedures
 -   id: acknowledgements
-    order: 90
+    description: 'Thanks to contributors and reviewers.'
+    route_class: boilerplate
     heading_patterns:
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?acknowledg(?:e?ments?|ments?)\s*$'
     -   '^(?:(?:\d+|[IVXivx]+)(?:\.\d+)*[.)]\s*)?contributors?\s*$'
@@ -130,7 +129,7 @@ labels:
     -   acknowledgements
     -   contributors
 -   id: annex
-    order: 95
+    description: 'Normative or informative annexes after the main text.'
     heading_patterns:
     -   '^annex\s*(?:[A-Z]|\d+)?\s*$'
     -   '^appendi(?:x|ces)\s*(?:[A-Z]|\d+)?\s*$'
@@ -138,7 +137,9 @@ labels:
     -   annex
     -   appendix
 -   id: references
-    order: 100
+    description: 'The list of cited works, one bibliographic entry per item.'
+    route_class: citations
+    terminal: true
     heading_patterns:
     -   '^references\s*$'
     -   '^bibliography\s*$'

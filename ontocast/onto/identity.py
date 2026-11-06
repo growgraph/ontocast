@@ -3,39 +3,63 @@
 An ontology's identity is minted by code, never written by a model: the model
 proposes an ``ontology_id`` (and a title and description), and the IRI is
 ``<CURRENT_DOMAIN>/<ontology_id>``. Everything that would let two spellings of
-one ontology coexist -- a fragment on the IRI, an id that is also a standard
-prefix, an id that collides with the document or facts namespaces -- is
-refused here, at construction.
+one ontology coexist -- a fragment on the IRI, a standard prefix bound to
+anything but its standard namespace, an id that collides with the document or
+facts namespaces -- is refused here, at construction; an empty fragment is
+dropped.
+
+An id is also the prefix an ontology's terms are shown under, so a standard
+prefix is a binding, not a name: ``sosa`` may name the ontology whose namespace
+is ``http://www.w3.org/ns/sosa/`` (W3C SOSA, adopted from its file) and
+nothing else, and never an ontology minted here.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from ontocast.onto.constants import COMMON_PREFIXES, WELL_KNOWN_PREFIXES
+from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.util import CONVENTIONAL_MAPPINGS
 
 #: A valid Turtle prefix name that is also a safe path segment.
 ONTOLOGY_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 
-#: Ids that name something else already: standard-vocabulary prefixes, the
-#: facts and document namespaces of the library itself, and the contract
-#: vocabularies the header is written in.
-RESERVED_ONTOLOGY_IDS: frozenset[str] = frozenset(
-    {*COMMON_PREFIXES, *WELL_KNOWN_PREFIXES, *CONVENTIONAL_MAPPINGS.values()}
-    | {"cd", "doc", "facts", "vann", "sh", "oc", "ontocast"}
+#: Ids of the library's own namespaces (facts, documents, its vocabulary):
+#: never an ontology's.
+LIBRARY_ONTOLOGY_IDS: frozenset[str] = frozenset(
+    {"cd", "doc", "facts", "oc", "ontocast"}
 )
+
+
+def _standard_prefix_namespaces() -> dict[str, frozenset[str]]:
+    namespaces: dict[str, set[str]] = {}
+    for prefix, namespace in COMMON_PREFIXES.items():
+        namespaces.setdefault(prefix, set()).add(namespace.strip("<>"))
+    for prefix, namespace in WELL_KNOWN_PREFIXES.items():
+        namespaces.setdefault(prefix, set()).add(namespace)
+    for namespace, prefix in CONVENTIONAL_MAPPINGS.items():
+        namespaces.setdefault(prefix, set()).add(namespace)
+    namespaces.setdefault("vann", set()).add("http://purl.org/vocab/vann/")
+    return {prefix: frozenset(found) for prefix, found in namespaces.items()}
+
+
+#: Standard prefixes and the namespaces each stands for. Such a prefix names
+#: an ontology only when the ontology's namespace is one of these.
+STANDARD_PREFIX_NAMESPACES: dict[str, frozenset[str]] = _standard_prefix_namespaces()
 
 
 def validate_ontology_id(value: str) -> str:
     """Return ``value`` as an ontology id, or raise ``ValueError``.
 
     Only whitespace is stripped and case folded; any other repair would let two
-    proposals that differ in spelling land on one id.
+    proposals that differ in spelling land on one id. A standard prefix passes
+    here: whether it may name an ontology depends on the ontology's namespace
+    (:func:`check_prefix_binding`).
     """
     cleaned = value.strip().lower()
     if not ONTOLOGY_ID_PATTERN.match(cleaned):
@@ -44,21 +68,55 @@ def validate_ontology_id(value: str) -> str:
             "lowercase letters, digits, '_' or '-', 2-32 characters, starting "
             "with a letter"
         )
-    if cleaned in RESERVED_ONTOLOGY_IDS:
+    if cleaned in LIBRARY_ONTOLOGY_IDS:
         raise ValueError(
-            f"ontology_id {cleaned!r} is reserved (a standard prefix or a "
-            "namespace the library itself uses)"
+            f"ontology_id {cleaned!r} is reserved (a namespace the library itself uses)"
         )
     return cleaned
 
 
+def validate_minted_ontology_id(value: str) -> str:
+    """An id for an ontology minted under ``CURRENT_DOMAIN``: no standard prefix.
+
+    A minted ontology's namespace is never a standard one, so a standard prefix
+    would show its terms under a prefix that already means something else.
+    """
+    cleaned = validate_ontology_id(value)
+    if cleaned in STANDARD_PREFIX_NAMESPACES:
+        raise ValueError(
+            f"ontology_id {cleaned!r} is reserved (a standard prefix); choose "
+            "another id"
+        )
+    return cleaned
+
+
+def check_prefix_binding(ontology_id: str, namespace: str) -> None:
+    """Refuse a standard prefix as the id of an ontology outside its namespace.
+
+    Raises:
+        ValueError: ``ontology_id`` is a standard prefix and ``namespace`` is not
+            the namespace it stands for.
+    """
+    expected = STANDARD_PREFIX_NAMESPACES.get(ontology_id)
+    if expected is not None and namespace not in expected:
+        raise ValueError(
+            f"ontology_id {ontology_id!r} is a standard prefix for "
+            f"{' or '.join(sorted(expected))}; this ontology's namespace is "
+            f"{namespace or '(none)'!s}, so it needs another id"
+        )
+
+
 def validate_ontology_iri(value: str) -> str:
-    """Return ``value`` as an ontology IRI, or raise ``ValueError``.
+    """Return ``value`` as a canonical ontology IRI, or raise ``ValueError``.
 
     An absolute ``http(s)`` IRI with no fragment: the version graph of each
-    version is ``<iri>#<key>``, so the IRI itself cannot carry a ``#``.
+    version is ``<iri>#<key>``, so the IRI itself cannot carry a ``#``. An
+    empty fragment (``…/prov#``, common in published vocabularies) names the
+    same document and is dropped; any other fragment is refused.
     """
     text = value.strip()
+    if text.endswith("#"):
+        text = text[:-1]
     parts = urlsplit(text)
     if parts.scheme not in ("http", "https") or not parts.netloc:
         raise ValueError(f"ontology IRI {value!r} must be an absolute http(s) IRI")
@@ -87,13 +145,15 @@ def validate_current_domain(value: str) -> str:
 
 
 OntologyId = Annotated[str, AfterValidator(validate_ontology_id)]
+MintedOntologyId = Annotated[str, AfterValidator(validate_minted_ontology_id)]
 OntologyIri = Annotated[str, AfterValidator(validate_ontology_iri)]
 
 
 def mint_ontology_iri(current_domain: str, ontology_id: str) -> str:
     """The IRI of the ontology ``ontology_id`` under ``current_domain``."""
     return validate_ontology_iri(
-        f"{validate_current_domain(current_domain)}/{validate_ontology_id(ontology_id)}"
+        f"{validate_current_domain(current_domain)}/"
+        f"{validate_minted_ontology_id(ontology_id)}"
     )
 
 
@@ -117,7 +177,11 @@ def split_version_iri(version_iri: str) -> tuple[str, str]:
 
 
 class OntologyIdentity(BaseModel):
-    """What names an ontology: its id, its IRI, and how it describes itself."""
+    """What names an ontology: its id, its IRI, and how it describes itself.
+
+    ``namespace`` is where its terms live: an existing ontology's own, else
+    ``<iri>#``, where a new ontology's terms are minted.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -125,14 +189,23 @@ class OntologyIdentity(BaseModel):
     iri: OntologyIri
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=2000)
+    namespace: str = Field(default="")
 
-    @property
-    def namespace(self) -> str:
-        """The namespace its terms are minted under: ``<iri>#``, or the IRI
-        itself when it already ends with a delimiter."""
-        from ontocast.onto.iri_policy import normalize_namespace_iri
+    @model_validator(mode="before")
+    @classmethod
+    def _default_namespace(cls, data: Any) -> Any:
+        if isinstance(data, dict) and not data.get("namespace") and data.get("iri"):
+            iri = validate_ontology_iri(str(data["iri"]))
+            data = {
+                **data,
+                "namespace": normalize_namespace_iri(iri, context="ontology"),
+            }
+        return data
 
-        return normalize_namespace_iri(self.iri, context="ontology")
+    @model_validator(mode="after")
+    def _prefix_matches_namespace(self) -> OntologyIdentity:
+        check_prefix_binding(self.ontology_id, self.namespace)
+        return self
 
 
 class VersionRef(BaseModel):

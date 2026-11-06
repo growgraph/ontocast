@@ -96,7 +96,7 @@ cp .env.example .env
 **Example `docker/qdrant/.env.example`:**
 
 ```bash
-IMAGE_VERSION=qdrant/qdrant:v1.18.1
+IMAGE_VERSION=qdrant/qdrant:v1.20.0
 SPEC=ontocast
 CONTAINER_NAME="${SPEC}.qdrant"
 QDRANT_HTTP_PORT=6333

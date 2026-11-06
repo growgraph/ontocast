@@ -62,7 +62,7 @@ agent = create_agent(model, tools=ontocast_tools(tools))
 | `ontocast_sparql_select` | by default | Read-only SELECT or ASK, returned as JSON rows |
 | `ontocast_sparql_construct` | by default | Read-only CONSTRUCT or DESCRIBE, returned as Turtle |
 | `ontocast_chunk_text` | by default, with `documents` | Split a document into parts |
-| `ontocast_extract` | by default | Run extraction over a passage, as one part |
+| `ontocast_extract` | by default, with `documents` | Run extraction over a passage, as one part |
 | `ontocast_apply_graph_update` | `mutating=True` | Apply an insert/delete patch |
 | `ontocast_ingest_ontology_ttl` | `mutating=True` | Register a new ontology |
 | `ontocast_delete_ontology` | `mutating=True` | Delete an ontology from the triple store and the vector store |
@@ -106,8 +106,9 @@ good: `ontocast_delete_ontology` drops every stored version of an ontology and
 its vectors, from one IRI the model chose. It leaves your seed directory alone,
 so an ontology that is still there returns at the next start. The SPARQL tools refuse
 `INSERT`, `DELETE`, `DROP`, `CLEAR` and the other update keywords; writes go
-through `ontocast_apply_graph_update`, which validates the patch and caps its
-size.
+through `ontocast_apply_graph_update`, which parses the patch and, with
+[`ONTOLOGY_MAX_TRIPLES`](../reference/configuration/pipeline.md#ontology_max_triples)
+set, refuses one that would grow the graph past it.
 
 `max_chars` bounds each tool's result. A result cut to fit is marked as cut, so
 the model does not read truncated Turtle as a complete graph.
@@ -125,9 +126,10 @@ from ontocast.onto.enum import OntologyContextMode
 
 config = Config.in_memory()
 config.tool_config.lancedb.enabled = True
-config.tool_config.embedding.provider = (
-    "openai"  # embed through the API, no local model
-)
+# Embed through the API, no local model.
+config.tool_config.embedding.provider = "openai"
+config.tool_config.embedding.model_name = "text-embedding-3-small"
+config.tool_config.embedding.dimension = 1536
 config.server.ontology_context_mode = (
     OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
 )
@@ -192,10 +194,10 @@ builder.add_node(
 `ontology_ttl` and `facts_ttl`; pass `text_key`, `ontology_key` and `facts_key`
 to use your own names, or write the two mapping functions yourself.
 
-!!! warning "Leave `recursion_limit` unset"
-    LangGraph's default recursion limit is 25, which a document of more than a
-    few parts exceeds. `make_ontocast_node` derives a limit from your chunk and
-    retry budgets instead.
+The document graph runs the same number of steps for any document, because
+parts are processed inside its nodes rather than as graph steps. The node runs
+it under its own recursion limit, or the `recursion_limit` you pass; a
+`recursion_limit` set in your `RunnableConfig` takes precedence over both.
 
 The node compiles the graph once, when you create it, and merges your
 `RunnableConfig` into its own, so callbacks and tracing metadata reach the
@@ -257,8 +259,9 @@ else:
   meter = RunMeter(limit=within_budget)
   ```
 
-- The limit is checked before each provider call. The first call that would
-  go past it is not sent, and the run raises `BudgetExceededError` with the
+- The limit is checked before each provider call. Once a cap is reached or
+  `limit` returns a reason, the next call is not sent, and the run raises
+  `BudgetExceededError` with the
   meter's `snapshot` once its parallel units have finished. Calls already in
   flight complete and are recorded, so the final usage can go over the limit
   by what those calls used.
@@ -270,9 +273,9 @@ routes, and `make_ontocast_node` apply
 [`MAX_INPUT_TOKENS_PER_DOCUMENT`](../reference/configuration/pipeline.md#max_input_tokens_per_document)
 and
 [`MAX_OUTPUT_TOKENS_PER_DOCUMENT`](../reference/configuration/pipeline.md#max_output_tokens_per_document)
-to each document. The routes answer `422` with `error_code`
-`budget_exceeded`, and `ontocast process` records the document as failed and
-goes on to the next one. A meter you bind yourself replaces these settings.
+to each document. On the routes, that document's result is a `422` with
+`error_code` `budget_exceeded`; `ontocast process` records the document as
+failed and goes on to the next one. A meter you bind yourself replaces these settings.
 
 ## Several tenants in one process
 

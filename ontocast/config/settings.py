@@ -545,20 +545,13 @@ class ChunkConfig(BaseSettings):
     embedding_model: str = Field(
         default="sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
         description=(
-            "Sentence-transformers checkpoint for semantic chunking and "
-            "embedding-based schema detection. Shared process-wide with "
+            "Sentence-transformers checkpoint for semantic chunking, "
+            "embedding-based schema detection, and the embedding vote that "
+            "labels headings no pattern or keyword names (classifier "
+            "'heuristic' or 'llm'). Shared process-wide with "
             "EMBEDDING_MODEL_NAME and AGG_EMBEDDING_MODEL when the names match, "
             "so aligning all three halves resident local-model memory. Changing "
             "it invalidates the on-disk chunk cache and shifts chunk boundaries."
-        ),
-    )
-    segmenter: Literal["semantic", "docling"] = Field(
-        default="semantic",
-        description=(
-            "Primary segmenter: 'semantic' splits the markdown export inside "
-            "detected section boundaries with the built-in semantic chunker "
-            "(naive fallback without torch extras); 'docling' uses docling's "
-            "HybridChunker structural segments."
         ),
     )
     chunking_mode: Literal["semantic", "naive"] = Field(
@@ -573,20 +566,25 @@ class ChunkConfig(BaseSettings):
     section_classifier: Literal["llm", "heuristic", "heading", "off"] = Field(
         default="heuristic",
         description=(
-            "Chunk section classification cascade, in increasing cost: "
-            "'off' = no section tagging (disables section filters and schema "
-            "default exclusions); 'heading' = document outline plus heading "
+            "Section classification tiers, in increasing cost; each adds its "
+            "vote and the strongest decides: "
+            "'off' = no section tagging (section filters and boilerplate "
+            "exclusions are off; reference lists and front/back matter are "
+            "still recognised from content); 'heading' = document outline plus heading "
             "pattern/keyword matching; 'heuristic' (default) = heading plus "
-            "content-density classification for regions with no usable "
-            "heading; 'llm' = heuristic plus a batched LLM pass over whatever "
-            "remains unlabeled. Only 'llm' makes LLM calls during chunking."
+            "an embedding vote on section-like headings no pattern or keyword "
+            "names (when the chunker's model is installed) and a "
+            "content-density vote on every part, which also labels regions "
+            "with no usable heading; 'llm' = heuristic plus one LLM call that "
+            "labels the whole outline, as a weak vote. Only 'llm' makes LLM "
+            "calls during chunking."
         ),
     )
     section_tag_min_chars: int = Field(
         default=80,
         description=(
-            "Min stripped length for LLM section tagging; smaller segments merge "
-            "into neighbors before tagging"
+            "Min stripped length of a segment; smaller segments merge into "
+            "neighbours before they are typed"
         ),
     )
     section_text_headings: bool = Field(
@@ -641,40 +639,44 @@ class ChunkConfig(BaseSettings):
     section_schema_detect_content_min_margin: float = Field(
         default=4.0,
         description=(
-            "Stricter margin for the content-based tier, which is measurably "
-            "less reliable than the heading tiers: body prose from one domain "
-            "readily resembles another (scientific prose reads like a technical "
-            "specification). Only used when CHUNK_SECTION_SCHEMA_DETECT=auto."
+            "Stricter margin for the content-based tier: body prose from one "
+            "document type can resemble another's, so content separates "
+            "schemas less sharply than headings do. Only used when "
+            "CHUNK_SECTION_SCHEMA_DETECT=auto."
         ),
     )
     section_llm_batch_size: int = Field(
         default=40,
+        ge=1,
         description=(
-            "Excerpts per LLM call when CHUNK_SECTION_CLASSIFIER=llm. One call "
-            "covers a whole document's residual instead of one call per chunk; "
-            "0 restores per-chunk calls."
+            "Outline regions per LLM call when CHUNK_SECTION_CLASSIFIER=llm: "
+            "a region is a headed section or a part of unheaded text. A longer "
+            "outline is sent in consecutive windows of this size."
         ),
     )
     section_filter_on_empty: Literal["warn", "error"] = Field(
         default="warn",
         description=(
-            "What to do when a section selection removes every segment. 'warn' "
+            "What to do when a section selection removes every unit. 'warn' "
             "(default) logs and continues, which yields an empty facts graph "
             "indistinguishable from a document that genuinely had nothing to "
-            "extract; 'error' fails the request instead (HTTP 422, non-zero "
-            "exit for a batch run). Covers both the target_sections / "
-            "summarize_sections allowlist and the exclude_sections denylist, "
-            "including a schema's default_exclude."
+            "extract; 'error' fails the document instead (status 422 in its "
+            "/process result; the batch run counts it as failed and exits "
+            "non-zero). Covers the target_sections allowlist and "
+            "the exclusions: exclude_sections, or the schema's boilerplate "
+            "sections when it is unset."
         ),
     )
     bibliography_mode: Literal["domain_facts", "citations_only", "skip"] = Field(
         default="skip",
         description=(
-            "Routing for chunks detected as bibliography/reference lists "
-            "(section label or citation-density heuristics): 'skip' (default) "
-            "drops the chunks before extraction, 'citations_only' extracts "
-            "bibliographic metadata only, 'domain_facts' disables special "
-            "handling."
+            "Routing for units detected as reference lists: by their content "
+            "alone, or by a strong citations-class label (such as an exact "
+            "References heading) their content agrees with; "
+            "a reference list at a unit's start or end is first cut into a "
+            "unit of its own. 'skip' (default) drops those units before "
+            "extraction, 'citations_only' extracts bibliographic metadata "
+            "only, 'domain_facts' disables special handling."
         ),
     )
     min_unit_chars: int = Field(
@@ -692,14 +694,14 @@ class ChunkConfig(BaseSettings):
     non_content_mode: Literal["extract", "skip"] = Field(
         default="extract",
         description=(
-            "What to do with front or back matter that states no domain "
-            "facts: a unit headed by author information, notes, ORCID, data "
-            "availability, competing interests, licence or similar that "
-            "contains no number with a unit, or a unit made mostly of emails,"
-            " URLs, ORCIDs and initials. 'extract' keeps it and marks it "
-            "is_non_content; 'skip' drops it before extraction and counts it "
-            "in the run manifest. A measurement anywhere in the unit keeps "
-            "it."
+            "What to do with units that state no domain facts: front or back "
+            "matter (a strong non-content label, or a heading the document's "
+            "schema names as front or back matter, on text with no number "
+            "with a unit; under any schema, text made mostly of emails, URLs, "
+            "ORCIDs and initials, or a short licence notice), and tables of "
+            "contents or lists of figures or tables. 'extract' keeps such a "
+            "unit and marks it is_non_content; 'skip' drops it before "
+            "extraction and counts it in the run manifest."
         ),
     )
     max_measurements_per_unit: int = Field(
@@ -708,10 +710,10 @@ class ChunkConfig(BaseSettings):
         description=(
             "Split a sized unit at the sentence boundary nearest its midpoint, "
             "recursively, while it states more unit-adjacent numbers than "
-            "this; 0 (default) disables. Extraction loss tracks how densely a "
-            "unit packs measurements rather than how long it is, so this "
-            "targets the dense units without shrinking every unit's share of "
-            "the prompt. Pieces never go below min_size: a dense unit shorter "
+            "this; 0 (default) disables. A unit dense with measurements asks "
+            "the model for many facts in one call; this splits only those "
+            "units and leaves every other unit's size unchanged. Pieces never "
+            "go below min_size: a dense unit shorter "
             "than twice min_size is left whole."
         ),
     )
@@ -988,8 +990,9 @@ class ServerConfig(BaseSettings):
         default=1,
         ge=1,
         description=(
-            "Retries of a render that failed outright (unparseable response, "
-            "provider error). A render that succeeds is not repeated; "
+            "Render attempts per content unit, counting the first, when a "
+            "render fails outright (unparseable response, provider error); "
+            "1 makes no retry. A render that succeeds is not repeated; "
             "improving it is the critic's job (FACTS_CRITIC_PASSES, "
             "ONTOLOGY_CRITIC_PASSES)."
         ),
@@ -1662,6 +1665,26 @@ class AggregationConfig(BaseSettings):
             "distinguish entities."
         ),
     )
+    llm_coreference: bool = Field(
+        default=True,
+        description=(
+            "After aggregation, put the identity pairs the symbolic tiers "
+            "cannot settle to the model in one call per document of two or "
+            "more units: merges made on a plausible lexical tier only, "
+            "candidates refused for wording alone, and same-type entities of "
+            "different units pointing to one node by one predicate. A 'same' "
+            "verdict merges like a shared key and 'different' vetoes; every "
+            "distinctness guard still applies."
+        ),
+    )
+    llm_coreference_max_pairs: int = Field(
+        default=40,
+        ge=1,
+        description=(
+            "Most pairs put to the model per document; the three kinds of "
+            "candidate take turns up to it."
+        ),
+    )
     natural_key_merge: bool = Field(
         default=True,
         description=(
@@ -2321,7 +2344,7 @@ class VectorStoreConfig(BaseSettings):
     index_undescribed_iris: bool = Field(
         default=False,
         description=(
-            "Index every IRI in an ontology, including those that appear only"
+            "Also index IRIs of an ontology's own namespace that appear only"
             " as an object or predicate. By default only terms the ontology "
             "describes (as a subject, or with a label) are indexed: a merely "
             "referenced IRI has no text but its local name, and such strings "
@@ -2330,22 +2353,13 @@ class VectorStoreConfig(BaseSettings):
             "expansion. Changing this requires a reindex."
         ),
     )
-    embed_standard_vocab_iris: bool = Field(
-        default=False,
-        description=(
-            "If True, atomize focal IRIs in standard RDF/OWL/SKOS/DC/SHACL/schema.org "
-            "namespaces instead of skipping them. These are scaffolding an ontology "
-            "reuses rather than terms it defines, so they carry no retrieval signal for "
-            "the document being processed. Changing this requires a reindex."
-        ),
-    )
     extra_excluded_namespace_prefixes: list[str] = Field(
         default_factory=list,
         description=(
-            "IRI prefixes never indexed from ontology sources, in addition to"
-            " the standard vocabularies. Use it for an upper ontology or "
-            "external vocabulary that a catalog includes but that should not "
-            "compete in retrieval (BFO, SOSA, OM-2); merely referenced "
+            "IRI prefixes never indexed from ontology sources. An ontology "
+            "contributes only the namespace it defines its terms in; this "
+            "removes a whole vocabulary that a catalog includes but that should "
+            "not compete in retrieval (BFO, SOSA, OM-2). Merely referenced "
             "vocabularies are already skipped while index_undescribed_iris is"
             " false. Changing this requires a reindex."
         ),

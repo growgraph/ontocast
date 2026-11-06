@@ -110,6 +110,46 @@ def test_in_memory_tenancy_isolation() -> None:
     asyncio.run(main())
 
 
+def test_in_memory_serializes_facts_with_reified_provenance() -> None:
+    """A reifier's ``rdf:reifies`` object is a triple term, kept as one.
+
+    The aggregated facts graph carries RDF 1.2 provenance, which rdflib yields
+    as a plain tuple; converting that as a term failed the whole document at
+    serialization.
+    """
+    from typing import cast
+
+    from ontocast.onto.constants import RDF_REIFIES
+    from ontocast.onto.rdfgraph import _oxigraph_inner_store
+
+    graph_uri = "https://example.org/doc/a/"
+    facts = RDFGraph(store="oxigraph", identifier=URIRef(graph_uri))
+    facts.add((URIRef("https://example.org/doc/a/x"), RDFS.label, Literal("x")))
+    triple_term = ox.Triple(
+        ox.NamedNode("https://example.org/doc/a/x"),
+        ox.NamedNode(str(RDFS.label)),
+        ox.Literal("x"),
+    )
+    cast(ox.Store, _oxigraph_inner_store(facts.store)).add(
+        ox.Quad(
+            ox.BlankNode(),
+            ox.NamedNode(str(RDF_REIFIES)),
+            triple_term,
+            ox.NamedNode(graph_uri),
+        )
+    )
+
+    manager = InMemoryTripleStoreManager()
+    manager.serialize(facts, graph_uri=graph_uri)
+
+    stored = list(
+        manager._active_partition().facts.quads_for_pattern(
+            None, ox.NamedNode(str(RDF_REIFIES)), None, ox.NamedNode(graph_uri)
+        )
+    )
+    assert [quad.object for quad in stored] == [triple_term]
+
+
 def test_in_memory_clean_and_clean_tenancy() -> None:
     async def main() -> None:
         manager = InMemoryTripleStoreManager()

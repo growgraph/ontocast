@@ -119,8 +119,10 @@ async def test_chunking_charges_the_document_tracker(monkeypatch) -> None:
     seen: list[object] = []
 
     async def fake_prepare(*_args, **_kwargs):
+        from ontocast.tool.chunk.prepare import PreparedDocument
+
         seen.append(_active_budget_tracker.get())
-        return []
+        return PreparedDocument(routed=[])
 
     monkeypatch.setattr(chunk_module, "prepare_content_units", fake_prepare)
     state = AgentState()

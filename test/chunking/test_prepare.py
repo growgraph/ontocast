@@ -82,13 +82,14 @@ async def _prepare(
         section_filter_on_empty=section_filter_on_empty,
     )
     opts = options if options is not None else _SECTION_OPTS
-    return await prepare_content_units(
+    document = await prepare_content_units(
         doc,
         tools.chunker,
         tools.chunker.config,
         opts,
         tools,
     )
+    return document.units
 
 
 def test_prepare_merges_segments_within_section() -> None:
@@ -234,7 +235,8 @@ Supplementary derivations and additional tables are provided for completeness.
 """
 
 
-def test_academic_default_exclude_drops_acknowledgements_and_appendix() -> None:
+def test_academic_boilerplate_drops_acknowledgements_and_keeps_appendix() -> None:
+    """Acknowledgements are boilerplate; an appendix is content (often data)."""
     doc = doc_from_markdown_lines(_EXCLUDABLE_DOC)
     chunks = asyncio.run(
         _prepare(
@@ -248,7 +250,7 @@ def test_academic_default_exclude_drops_acknowledgements_and_appendix() -> None:
     assert "introduction" in labels
     assert "results" in labels
     assert "acknowledgements" not in labels
-    assert "appendix" not in labels
+    assert "appendix" in labels
 
 
 def test_explicit_empty_exclude_overrides_schema_default() -> None:
@@ -327,39 +329,6 @@ def test_sections_first_semantic_labels_inherited_without_llm() -> None:
     assert all(chunk.section_label is not None for chunk in chunks)
 
 
-@pytest.mark.slow  # the docling segmenter loads a HuggingFace tokenizer
-def test_docling_segmenter_option_still_supported() -> None:
-    doc = doc_from_markdown_lines(_EXCLUDABLE_DOC)
-    config = ChunkConfig(min_size=40, max_size=500, segmenter="docling")
-
-    async def default_llm(_prompt):
-        raise AssertionError("LLM should not be called")
-
-    tools = cast(
-        ToolBox,
-        SimpleNamespace(
-            chunker=ChunkerTool(chunk_config=config),
-            config=SimpleNamespace(
-                chunk_config=config,
-                server=SimpleNamespace(parallel_workers=2),
-            ),
-            llm=default_llm,
-        ),
-    )
-    chunks = asyncio.run(
-        prepare_content_units(
-            doc,
-            tools.chunker,
-            tools.chunker.config,
-            PrepareOptions(document_type_hint="research article"),
-            tools,
-        )
-    )
-    labels = {chunk.section_label for chunk in chunks}
-    assert "results" in labels
-    assert "acknowledgements" not in labels
-
-
 _UNRECOGNISED_HEADINGS_DOC = """# Introduction
 Perovskite solar cells have attracted attention for a decade now.
 
@@ -402,7 +371,7 @@ def test_target_sections_selects_only_the_requested_section():
 def test_undersized_unlabeled_chunks_merge_and_stay_unlabeled():
     """Unresolved neighbours are sized together; the result claims no label."""
     doc = doc_from_markdown_lines(
-        "# Notes\nFirst unnamed section body text here.\n\n"
+        "# Miscellany\nFirst unnamed section body text here.\n\n"
         "# Vocabulary\nSecond unnamed section body text here.\n"
     )
     chunks = asyncio.run(
@@ -476,20 +445,19 @@ def test_allowlist_matching_nothing_raises_under_error_mode() -> None:
     assert excinfo.value.param == "target_sections"
 
 
-def test_summarize_sections_allowlist_names_its_own_param() -> None:
-    """The message must blame the option the caller actually passed."""
+def test_summarize_sections_never_filters_extraction() -> None:
+    """summarize_sections chooses summaries; only target_sections selects."""
     doc = doc_from_markdown_lines(_MULTI_SECTION_DOC)
 
-    with pytest.raises(SectionSelectionEmptyError) as excinfo:
-        asyncio.run(
-            _prepare(
-                doc,
-                options=PrepareOptions(summarize_sections=["nonexistent"]),
-                section_filter_on_empty="error",
-            )
+    chunks = asyncio.run(
+        _prepare(
+            doc,
+            options=PrepareOptions(summarize_sections=["nonexistent"]),
+            section_filter_on_empty="error",
         )
+    )
 
-    assert excinfo.value.param == "summarize_sections"
+    assert {chunk.section_label for chunk in chunks} >= {"introduction", "methods"}
 
 
 def test_denylist_emptying_the_document_raises_under_error_mode() -> None:
@@ -540,22 +508,34 @@ def test_a_selection_that_matches_is_unaffected_by_error_mode() -> None:
     assert {chunk.section_label for chunk in chunks} == {"methods"}
 
 
-def test_partial_exclusion_names_label_size_and_tier(caplog) -> None:
-    """A dropped segment is reported with its label, size and labelling tier,
-    so a content-density misfire is visible without a dry run."""
-    from ontocast.onto.enum import SectionLabelSource
-    from ontocast.tool.chunk.prepare import PrepareSegment, _filter_segments_excluding
+def test_routing_names_label_size_tier_and_reason(caplog) -> None:
+    """A dropped unit is reported with its label, size, labelling tier and
+    reason, so a misfire is visible without a dry run."""
+    from ontocast.config.section_labels import load_section_label_schema
+    from ontocast.onto.enum import LabelStrength, SectionLabelSource
+    from ontocast.tool.chunk.prepare import PreparedChunk, _route_chunks
 
-    segments = [
-        PrepareSegment(text="Body text.", section_label="results"),
-        PrepareSegment(
-            text="x" * 120,
+    chunks = [
+        PreparedChunk(text="Body text.", headings=None, section_label="results"),
+        PreparedChunk(
+            text="We thank the facility staff. " * 4,
+            headings=None,
             section_label="acknowledgements",
             section_label_source=SectionLabelSource.CONTENT_DENSITY,
+            section_label_strength=LabelStrength.STRONG,
         ),
     ]
     with caplog.at_level("INFO", logger="ontocast.tool.chunk.prepare"):
-        kept = _filter_segments_excluding(segments, ["acknowledgements"])
+        routed = _route_chunks(
+            chunks,
+            schema=load_section_label_schema("academic"),
+            schema_fallback=False,
+            exclude_sections=None,
+            config=ChunkConfig(),
+        )
 
-    assert len(kept) == 1
-    assert "acknowledgements: 1 segment(s), 120 chars (content_density)" in caplog.text
+    assert [unit.route.value for unit in routed] == ["extract", "skip"]
+    assert (
+        "Unit 1 (116 chars, section_label='acknowledgements', "
+        "source=content_density) routed skip: boilerplate" in caplog.text
+    )

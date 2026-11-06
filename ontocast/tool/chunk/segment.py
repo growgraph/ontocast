@@ -3,43 +3,49 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ontocast.config.section_labels import SectionLabelSchema, match_heading_line
-from ontocast.onto.enum import SectionLabelSource
+from ontocast.onto.enum import LabelStrength, SectionLabelSource
+from ontocast.onto.section_models import LabelEvidence
 from ontocast.tool.chunk.sizing import DEFAULT_PART_SEPARATOR
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SectionRegion:
+    """The headed section a segment belongs to, as the model is shown it.
+
+    Every segment of one headed section shares one region and so one model
+    vote. Unheaded text has no region: each such segment is shown on its own.
+
+    Attributes:
+        index: Position of the section in the document's section blocks.
+        excerpt: The heading line and the opening of the section's text.
+    """
+
+    index: int
+    excerpt: str
 
 
 @dataclass
 class PrepareSegment:
     """One logical segment prior to min/max sizing.
 
-    ``section_label_source`` records *how* the label was decided. It is load
-    bearing, not bookkeeping: forward-fill refuses to overwrite a segment whose
-    section is explicitly unresolved, which is what stops a neighbouring label
-    from being smeared across an unrecognised section.
+    ``evidence`` holds every tier's vote; the label, its source and its
+    strength are decided from it (:func:`ontocast.tool.chunk.assignment.assign`).
+    With no evidence, a source of ``OUTLINE_UNRESOLVED`` marks a section the
+    outline saw but could not name.
     """
 
     text: str
     headings: list[str] | None = None
-    doc_item_refs: tuple[str, ...] = ()
     section_label: str | None = None
     section_label_source: SectionLabelSource | None = None
-    section_label_confidence: float = 0.0
-
-
-def merge_doc_item_refs(
-    left: tuple[str, ...], right: tuple[str, ...]
-) -> tuple[str, ...]:
-    seen: set[str] = set()
-    merged: list[str] = []
-    for ref in left + right:
-        if ref not in seen:
-            seen.add(ref)
-            merged.append(ref)
-    return tuple(merged)
+    section_label_strength: LabelStrength | None = None
+    evidence: list[LabelEvidence] = field(default_factory=list)
+    region: SectionRegion | None = None
 
 
 def _first_non_empty_line(text: str) -> str:
@@ -88,10 +94,11 @@ def merge_into_right(left: PrepareSegment, right: PrepareSegment) -> PrepareSegm
     return PrepareSegment(
         text=combined_text,
         headings=right.headings or left.headings,
-        doc_item_refs=merge_doc_item_refs(left.doc_item_refs, right.doc_item_refs),
         section_label=winner.section_label,
         section_label_source=winner.section_label_source,
-        section_label_confidence=winner.section_label_confidence,
+        section_label_strength=winner.section_label_strength,
+        evidence=list(winner.evidence),
+        region=winner.region,
     )
 
 
@@ -120,10 +127,11 @@ def merge_into_left(left: PrepareSegment, right: PrepareSegment) -> PrepareSegme
     return PrepareSegment(
         text=combined_text,
         headings=left.headings or right.headings,
-        doc_item_refs=merge_doc_item_refs(left.doc_item_refs, right.doc_item_refs),
         section_label=winner.section_label,
         section_label_source=winner.section_label_source,
-        section_label_confidence=winner.section_label_confidence,
+        section_label_strength=winner.section_label_strength,
+        evidence=list(winner.evidence),
+        region=winner.region,
     )
 
 

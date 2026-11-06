@@ -329,7 +329,7 @@ class GraphRewriter:
             prov:generatedAtTime <datetime> ;
             schema:articleSection <section_label> ;
             ontocast:sectionLabelSource <how the label was decided> ;
-            ontocast:sectionLabelConfidence <0..1> .
+            ontocast:sectionLabelStrength "strong" | "weak" .
 
         The last three appear only for a unit that carries a section label.
         Without them a finished run cannot be audited for *which* part of the
@@ -357,9 +357,8 @@ class GraphRewriter:
         )
         graph.add((unit_uri, _SCHEMA.identifier, Literal(unit.hid)))
         if unit.section_label is not None:
-            # Guarded as a block: source and confidence describe the label, and
-            # a bare confidence of 0.0 on an unlabeled chunk would read as "we
-            # are certain of nothing" rather than "there is no label".
+            # Guarded as a block: source and strength describe the label, so
+            # an unlabeled chunk carries none of them.
             graph.add((unit_uri, _SCHEMA.articleSection, Literal(unit.section_label)))
             if unit.section_label_source is not None:
                 graph.add(
@@ -369,15 +368,14 @@ class GraphRewriter:
                         Literal(str(unit.section_label_source)),
                     )
                 )
-            # xsd:decimal, not xsd:double: this is a bounded ratio read by
-            # humans, and rdflib renders a double through its "%e" shorthand.
-            graph.add(
-                (
-                    unit_uri,
-                    _ONTOCAST.sectionLabelConfidence,
-                    Literal(unit.section_label_confidence, datatype=XSD.decimal),
+            if unit.section_label_strength is not None:
+                graph.add(
+                    (
+                        unit_uri,
+                        _ONTOCAST.sectionLabelStrength,
+                        Literal(str(unit.section_label_strength)),
+                    )
                 )
-            )
         return unit_uri
 
     def _add_reified_provenance(

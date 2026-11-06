@@ -104,7 +104,7 @@ def test_prepare_splits_dense_unit_and_keeps_its_label() -> None:
             PrepareOptions(summarize_sections=["*"]),
             tools,
         )
-    )
+    ).units
 
     assert len(chunks) >= 2
     assert all(chunk.section_label == "methods" for chunk in chunks)
@@ -132,7 +132,7 @@ def test_prepare_leaves_units_whole_when_cap_is_off() -> None:
             PrepareOptions(summarize_sections=["*"]),
             tools,
         )
-    )
+    ).units
 
     assert len(chunks) == 1
 

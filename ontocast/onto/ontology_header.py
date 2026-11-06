@@ -8,7 +8,7 @@ Every stored version of an ontology is a named graph ``<iri>#<key>`` whose
 | ``owl:versionIRI`` | the named graph (``<iri>#<key>``) |
 | ``owl:priorVersion`` | the version IRI(s) it was derived from; none on a root |
 | ``owl:versionInfo`` | a semantic version label |
-| ``vann:preferredNamespacePrefix`` / ``vann:preferredNamespaceUri`` | the id and ``<iri>#`` |
+| ``vann:preferredNamespacePrefix`` / ``vann:preferredNamespaceUri`` | the id and the namespace its terms live under |
 | ``dcterms:title`` and ``rdfs:label`` | the title |
 | ``dcterms:description`` | the description, when there is one |
 | ``dcterms:created`` / ``dcterms:modified`` | when the lineage began / when this version was made |
@@ -30,6 +30,7 @@ from rdflib import DCTERMS, OWL, RDF, RDFS, SH, XSD, Literal, URIRef
 from ontocast.onto.constants import DEFAULT_DOMAIN, PROV
 from ontocast.onto.identity import (
     OntologyIdentity,
+    check_prefix_binding,
     mint_ontology_iri,
     split_version_iri,
     validate_ontology_id,
@@ -47,6 +48,7 @@ from ontocast.onto.ontology import (
     increment_type_for,
     normalize_semantic_version,
 )
+from ontocast.onto.ontology_namespace import ontology_namespace
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.util import derive_ontology_id
@@ -61,6 +63,7 @@ __all__ = [
     "CatalogContractError",
     "DivergedOntologyError",
     "OntologyHeader",
+    "SeedOntologyLoadError",
     "VersionDiff",
     "adopt_ontology",
     "catalog_heads",
@@ -86,6 +89,24 @@ class CatalogContractError(ValueError):
         super().__init__(
             f"graph {graph_uri} is not a version of an ontology: "
             f"missing {', '.join(self.missing)}"
+        )
+
+
+class SeedOntologyLoadError(ValueError):
+    """Seed ontology files that could not be loaded, by path.
+
+    A batch run raises it before any write or model call: extracting against a
+    catalog that silently lacks a vocabulary the user supplied yields a graph
+    that cannot be told apart from a good one.
+    """
+
+    error_code: str = "SEED_ONTOLOGY_LOAD_FAILED"
+
+    def __init__(self, failures: Mapping[str, str]) -> None:
+        self.failures = dict(failures)
+        lines = "; ".join(f"{path}: {reason}" for path, reason in self.failures.items())
+        super().__init__(
+            f"{len(self.failures)} seed ontolog(ies) failed to load: {lines}"
         )
 
 
@@ -121,8 +142,8 @@ def header_from_fields(
     """Build the header of ``graph_uri`` from its predicate values.
 
     ``fields`` maps a short name (``onto``, ``versionIri``, ``version``,
-    ``prior``, ``prefix``, ``title``, ``description``, ``created``, ``modified``,
-    ``removed``) to the lexical values found, so a SPARQL row and a parsed graph
+    ``prior``, ``prefix``, ``namespace``, ``title``, ``description``,
+    ``created``, ``modified``, ``removed``) to the lexical values found, so a SPARQL row and a parsed graph
     feed the same check.
 
     Raises:
@@ -163,6 +184,7 @@ def header_from_fields(
         validate_ontology_iri(iri)
         base_iri, _ = split_version_iri(version_iri)
         ontology_id = validate_ontology_id(first("prefix") or "")
+        check_prefix_binding(ontology_id, first("namespace") or "")
         created_at = _parse_datetime(first("created") or "")
         modified_at = _parse_datetime(first("modified") or "")
     except ValueError as exc:
@@ -178,6 +200,7 @@ def header_from_fields(
         title=first("title"),
         description=first("description"),
         version=version,
+        namespace=first("namespace") or "",
         version_iri=version_iri,
         prior_version_iris=sorted(set(fields.get("prior") or [])),
         created_at=created_at,
@@ -213,6 +236,7 @@ def read_header(graph: RDFGraph, graph_uri: str) -> OntologyHeader:
         "version": values(OWL.versionInfo),
         "prior": values(OWL.priorVersion),
         "prefix": values(VANN.preferredNamespacePrefix),
+        "namespace": values(VANN.preferredNamespaceUri),
         "title": values(DCTERMS.title),
         "description": values(DCTERMS.description),
         "created": values(DCTERMS.created),
@@ -285,6 +309,7 @@ def mint_ontology(identity: OntologyIdentity, graph: RDFGraph) -> Ontology:
         iri=identity.iri,
         title=identity.title,
         description=identity.description or None,
+        namespace=identity.namespace,
         graph=terms,
     )
     artifact.content_hash()
@@ -323,6 +348,7 @@ def stamp_version(
         iri=artifact.iri,
         title=artifact.title or "",
         description=artifact.description or "",
+        namespace=artifact.namespace or "",
     )
     digest = artifact.content_hash()
     stamped_at = _now(now)
@@ -377,11 +403,15 @@ def adopt_ontology(
 ) -> Ontology:
     """Adopt an author's ontology as a root version.
 
-    The graph must declare exactly one named ``owl:Ontology`` whose IRI has no
-    fragment. The id comes from ``ontology_id``, else the file's
-    ``vann:preferredNamespacePrefix``, else is derived from the IRI; the title
-    from ``dcterms:title``, else ``rdfs:label``, else the id; the version label
-    from ``owl:versionInfo`` when it parses, else ``1.0.0``.
+    The graph must declare exactly one named ``owl:Ontology`` that says
+    anything about itself; a header that is only typed ``owl:Ontology`` is
+    dropped. Its IRI must have no fragment; an empty one (``…/prov#``) is
+    dropped, and the header is rewritten to that IRI. The id comes from
+    ``ontology_id``, else the file's ``vann:preferredNamespacePrefix``, else is
+    derived from the IRI; the title from ``dcterms:title``, else
+    ``rdfs:label``, else the id; the version label from ``owl:versionInfo``
+    when it parses, else ``1.0.0``; the namespace from
+    :func:`~ontocast.onto.ontology_namespace.ontology_namespace`.
 
     Args:
         current_domain: Unused for identity (the file's IRI is kept); accepted
@@ -392,17 +422,32 @@ def adopt_ontology(
             or id is not acceptable.
     """
     _ = current_domain
-    subjects = {
+    graph = graph.copy()
+    headers = {
         s
         for s, _, _ in graph.triples((None, RDF.type, OWL.Ontology))
         if isinstance(s, URIRef)
     }
+    bare = {s for s in headers if len(set(graph.predicate_objects(s))) == 1}
+    subjects = headers - bare if len(headers) > 1 else headers
     if len(subjects) != 1:
         raise ValueError(
-            f"an ontology declares exactly one owl:Ontology subject; found {len(subjects)}"
+            "an ontology declares exactly one owl:Ontology subject that describes "
+            f"itself; found {len(subjects)}"
         )
+    for header in headers - subjects:
+        graph.remove((header, RDF.type, OWL.Ontology))
     subject = next(iter(subjects))
     iri = validate_ontology_iri(str(subject))
+    if str(subject) != iri:
+        canonical = URIRef(iri)
+        for s, p, o in list(graph.triples((subject, None, None))):
+            graph.remove((s, p, o))
+            graph.add((canonical, p, canonical if o == subject else o))
+        for s, p, o in list(graph.triples((None, None, subject))):
+            graph.remove((s, p, o))
+            graph.add((s, p, canonical))
+        subject = canonical
 
     def first(predicate: URIRef) -> str | None:
         values = sorted(str(o) for o in graph.objects(subject, predicate))
@@ -414,18 +459,22 @@ def adopt_ontology(
         or derive_ontology_id(iri)
         or ""
     )
+    # The namespace is decided before the identity: a standard prefix is a
+    # valid id only for the ontology that lives in its standard namespace.
+    namespace = ontology_namespace(graph, iri)
     identity = OntologyIdentity(
         ontology_id=candidate_id,
         iri=iri,
         title=first(DCTERMS.title) or first(RDFS.label) or candidate_id,
         description=first(DCTERMS.description) or first(RDFS.comment) or "",
+        namespace=namespace,
     )
     label = normalize_semantic_version(first(OWL.versionInfo) or "") or "1.0.0"
-    terms = graph.copy()
+    terms = graph
     for p in _REWRITTEN_PREDICATES:
         for o in list(terms.objects(subject, p)):
             terms.remove((subject, p, o))
-    terms.bind(identity.ontology_id, identity.namespace, override=True)
+    terms.bind(identity.ontology_id, namespace, override=True)
     terms.bind_implicit_namespaces(prefix_base=identity.ontology_id)
     root = Ontology(
         ontology_id=identity.ontology_id,
@@ -433,6 +482,7 @@ def adopt_ontology(
         title=identity.title,
         description=identity.description or None,
         version=label,
+        namespace=namespace,
         graph=terms,
     )
     stamped = stamp_version(root, now=now)
@@ -450,12 +500,16 @@ def ontology_from_version_graph(graph_uri: str, graph: RDFGraph) -> Ontology:
         CatalogContractError: the graph is not a version of an ontology.
     """
     header = read_header(graph, graph_uri)
+    # A declared namespace that holds no term (written by an older release
+    # as <iri>#) gives way to the one the terms are in.
+    header.namespace = ontology_namespace(graph, header.iri)
     ontology = Ontology(
         ontology_id=header.ontology_id,
         iri=header.iri,
         title=header.title,
         description=header.description,
         version=header.version,
+        namespace=header.namespace,
         version_iri=header.version_iri,
         prior_version_iris=list(header.prior_version_iris),
         created_at=header.created_at,
@@ -517,6 +571,7 @@ def tombstone_graph(graph: RDFGraph, graph_uri: str) -> RDFGraph:
         title=header.title,
         description=header.description,
         version=header.version,
+        namespace=header.namespace,
         version_iri=header.version_iri,
         prior_version_iris=list(header.prior_version_iris),
         created_at=header.created_at,

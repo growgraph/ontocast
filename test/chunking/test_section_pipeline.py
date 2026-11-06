@@ -21,17 +21,9 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyContextMode, RenderMode, Status, WorkflowNode
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.routing import route_after_tag_or_chunk
-from ontocast.tool.chunk.prepare import (
-    PrepareSegment,
-    _forward_fill_section_labels,
-    _tag_segments,
-)
 from ontocast.tool.chunk.sections import (
     detect_section_spans,
     document_text_for_section_tagging,
-    label_from_headings,
-    label_text_from_spans,
-    resolve_section_label,
 )
 from ontocast.toolbox import ToolBox
 from test.docling_test_helpers import doc_from_markdown_lines
@@ -74,13 +66,7 @@ def test_detect_section_spans_injects_unheaded_abstract() -> None:
     labels = [span.label for span in spans]
     assert labels[0] == "abstract"
     assert "introduction" in labels
-    label, _ = label_text_from_spans(
-        "We study nanocrystal superlattices",
-        document_text,
-        spans,
-        0,
-    )
-    assert label == "abstract"
+    assert "We study nanocrystal superlattices" in document_text[: spans[0].end]
 
 
 def test_detect_section_spans_on_exported_markdown() -> None:
@@ -92,21 +78,6 @@ def test_detect_section_spans_on_exported_markdown() -> None:
     assert "methods" in labels
     assert "results" in labels
     assert "future_work" in labels
-
-
-def test_label_text_from_spans_inherits_section_in_order() -> None:
-    doc = doc_from_markdown_lines(_SAMPLE_DOC)
-    document_text = document_text_for_section_tagging(doc)
-    spans = detect_section_spans(document_text, _academic_schema())
-    search_from = 0
-    label, search_from = label_text_from_spans(
-        "We survey prior work.", document_text, spans, search_from
-    )
-    assert label == "introduction"
-    label, search_from = label_text_from_spans(
-        "We used a benchmark.", document_text, spans, search_from
-    )
-    assert label == "methods"
 
 
 def test_should_summarize_unit_wildcard_and_named() -> None:
@@ -279,7 +250,7 @@ def _sample_units() -> list[ContentUnit]:
 
 
 @pytest.mark.anyio
-async def test_chunk_prepare_filters_summarize_sections_allowlist() -> None:
+async def test_summarize_sections_does_not_filter_chunking() -> None:
     doc = doc_from_markdown_lines(_SAMPLE_DOC)
     state = AgentState(
         docling_doc=doc,
@@ -288,9 +259,7 @@ async def test_chunk_prepare_filters_summarize_sections_allowlist() -> None:
     result = await chunk_text(state, _chunk_tools())
     assert result.status == Status.SUCCESS
     labels = {unit.section_label for unit in result.content_units}
-    assert labels <= {"methods", "results"}
-    assert "methods" in labels
-    assert "results" in labels
+    assert {"introduction", "methods", "results"} <= labels
 
 
 @pytest.mark.anyio
@@ -354,163 +323,3 @@ def test_content_unit_extraction_text_prefers_summary() -> None:
         summary="short summary",
     )
     assert unit.extraction_text == "short summary"
-
-
-# ---------------------------------------------------------------------------
-# label_from_headings — heading-breadcrumb labeling
-# ---------------------------------------------------------------------------
-
-
-def test_label_from_headings_most_specific_wins() -> None:
-    schema = _academic_schema()
-    # "Dataset" matches the "data" label — most specific (last) heading wins.
-    assert label_from_headings(["Paper Title", "Methods", "Dataset"], schema) == "data"
-
-
-def test_label_from_headings_falls_back_to_broader() -> None:
-    schema = _academic_schema()
-    # "Unknown Subsection" does not match; falls back to "Results" which does.
-    assert label_from_headings(["Results", "Unknown Subsection"], schema) == "results"
-
-
-def test_label_from_headings_none_when_no_match() -> None:
-    schema = _academic_schema()
-    assert label_from_headings(["Paper Title", "Some Unknown Section"], schema) is None
-
-
-def test_label_from_headings_empty_returns_none() -> None:
-    schema = _academic_schema()
-    assert label_from_headings([], schema) is None
-    assert label_from_headings(None, schema) is None
-
-
-# ---------------------------------------------------------------------------
-# resolve_section_label — search_from cursor preservation
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_section_label_preserves_cursor_on_miss() -> None:
-    """When chunk text is not found, search_from must not reset to 0."""
-
-    document_text = "# Introduction\nBody text.\n# Results\nFindings here."
-    spans = detect_section_spans(document_text, _academic_schema())
-    # Advance cursor past the introduction span.
-    _, advanced = resolve_section_label("Body text.", document_text, spans, 0)
-    assert advanced > 0
-    # Now a chunk whose text doesn't appear in the document at all.
-    label, cursor_after_miss = resolve_section_label(
-        "TEXT_NOT_IN_DOCUMENT", document_text, spans, advanced
-    )
-    assert label is None
-    assert cursor_after_miss == advanced, (
-        "Cursor must not reset to 0 on a failed find; "
-        f"expected {advanced}, got {cursor_after_miss}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# _tag_segments — headings take priority over span search
-# ---------------------------------------------------------------------------
-
-
-def test_tag_segments_prefers_headings_over_span_search() -> None:
-    """Segments with docling heading metadata are labeled via headings, not span search."""
-    schema = _academic_schema()
-    doc = doc_from_markdown_lines(_SAMPLE_DOC)
-    document_text = document_text_for_section_tagging(doc)
-    spans = detect_section_spans(document_text, schema)
-
-    # Segment whose text does NOT appear verbatim in document_text but whose
-    # headings clearly identify the section.
-    segment = PrepareSegment(
-        text="This text is not in the document at all.",
-        headings=["Paper Title", "Results"],
-    )
-    _tag_segments([segment], document_text, spans, schema)
-    assert segment.section_label == "results"
-
-
-def test_tag_segments_falls_back_to_span_when_no_headings() -> None:
-    schema = _academic_schema()
-    doc = doc_from_markdown_lines(_SAMPLE_DOC)
-    document_text = document_text_for_section_tagging(doc)
-    spans = detect_section_spans(document_text, schema)
-
-    segment = PrepareSegment(
-        text="We used a benchmark.",
-        headings=None,
-    )
-    _tag_segments([segment], document_text, spans, schema)
-    assert segment.section_label == "methods"
-
-
-# ---------------------------------------------------------------------------
-# _forward_fill_section_labels
-# ---------------------------------------------------------------------------
-
-
-def test_forward_fill_propagates_label_to_unlabeled_neighbor() -> None:
-    schema = _academic_schema()
-    segments = [
-        PrepareSegment(text="We discuss findings.", section_label="results"),
-        PrepareSegment(text="Further analysis shows improvement."),
-        PrepareSegment(text="Table 3 summarizes the data."),
-    ]
-    _forward_fill_section_labels(segments, schema)
-    assert segments[1].section_label == "results"
-    assert segments[2].section_label == "results"
-
-
-def test_forward_fill_does_not_spread_an_excluded_density_label() -> None:
-    """Density judged each neighbour itself; spreading an excluded label from
-    one content guess would drop text no tier labelled."""
-    from ontocast.onto.enum import SectionLabelSource
-
-    schema = _academic_schema()
-    segments = [
-        PrepareSegment(
-            text="We thank the facility staff.",
-            section_label="acknowledgements",
-            section_label_source=SectionLabelSource.CONTENT_DENSITY,
-        ),
-        PrepareSegment(text="Films were annealed at 100 C."),
-    ]
-    _forward_fill_section_labels(segments, schema)
-    assert segments[1].section_label is None
-
-
-def test_forward_fill_spreads_an_excluded_heading_label() -> None:
-    from ontocast.onto.enum import SectionLabelSource
-
-    schema = _academic_schema()
-    segments = [
-        PrepareSegment(
-            text="We thank the facility staff.",
-            section_label="acknowledgements",
-            section_label_source=SectionLabelSource.HEADING_KEYWORD,
-        ),
-        PrepareSegment(text="and colleagues for discussions."),
-    ]
-    _forward_fill_section_labels(segments, schema)
-    assert segments[1].section_label == "acknowledgements"
-
-
-def test_forward_fill_does_not_propagate_before_first_label() -> None:
-    schema = _academic_schema()
-    segments = [
-        PrepareSegment(text="Some preamble without a label."),
-        PrepareSegment(text="Introduction body.", section_label="introduction"),
-    ]
-    _forward_fill_section_labels(segments, schema)
-    assert segments[0].section_label is None
-
-
-def test_forward_fill_blocked_by_section_heading_line() -> None:
-    """A segment that starts with a heading must not inherit the preceding label."""
-    schema = _academic_schema()
-    segments = [
-        PrepareSegment(text="Results body text here.", section_label="results"),
-        PrepareSegment(text="# Methods\nWe used a dataset."),
-    ]
-    _forward_fill_section_labels(segments, schema)
-    assert segments[1].section_label is None

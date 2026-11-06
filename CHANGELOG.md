@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- At the `heuristic` and `llm` levels, a section-like heading no pattern or keyword names takes its nearest content label by embedding (the chunker's model), as a weak vote, when that label is close and clearly ahead of the next; numbered subsections inherit it weakly. Source `heading_embedding`.
+- Coreference resolution (`Resolve Coreference` node, `AGG_LLM_COREFERENCE`, on by default): after merging, one LLM call per document of two or more units decides the entity pairs the symbolic tiers cannot settle; a verdict merges like a shared key or vetoes, and every guard still applies. Pairs per call: `AGG_LLM_COREFERENCE_MAX_PAIRS`; counters `facts_coreference_*`, phase `facts_coreference`.
+- Tables of contents and lists of figures or tables are recognised from their content (lines or two-column table rows ending in ascending page numbers) and routed as non-content, reason `contents_list`.
+- Every content unit records why it was routed (`route_reason`). The run manifest's `selection` block adds `route_histogram` (units and characters per route and reason) and, under `target_sections`, the characters it removed and how many were unlabeled. `ontocast sections` shows each unit's route and reason.
+- With `CHUNK_SECTION_CLASSIFIER=llm`, the run manifest's `selection.outline_labels` records the outline windows sent and failed, by error class (counter `chunk/outline_windows_failed`); `ontocast sections` prints it.
+
+### Changed
+
+- `ontocast process` fails before the catalog is loaded or a model is called when a seed ontology file cannot be loaded, naming each file and the reason (`SeedOntologyLoadError`); it used to log the file and run on a smaller catalog. `ontocast serve` still loads the files that parse.
+- A section label alone no longer drops a unit. Dropping needs a strong label (an exact heading, or content evidence) that the content agrees with, or content that is conclusive on its own; a keyword inside a longer heading, inherited, forward-filled and model labels never drop. A heading that is exactly one of a label's keywords ("Author Contributions") counts as an exact heading.
+- A reference list at a unit's start or end is cut into a unit of its own, so the prose around it is extracted. Reference lists are recognised per paragraph: table rows and entries that state a measurement are not cited works.
+- Section schemas mark each label's route class (`content`, `boilerplate`, `citations`) in place of `default_exclude`. Academic appendices and Supporting Information are now extracted; a schema used only as the fallback drops no boilerplate.
+- `summarize_sections` only chooses which units are summarized; it no longer limits extraction to those sections.
+- Front- and back-matter headings (authors, affiliations, ORCID, notes, data availability, licence, publisher's note…) are a `back_matter` label of route class `non_content` in the academic and clinical schemas instead of one list for every document type, so `Notes` in a manual is content. `is_non_content_unit` takes the schema.
+- Heading keywords resolve by head noun ("Characterization Results" is results, "Summary of Results" a summary), and the head of a subtitled heading is typed ("Appendix A: Derivation …" opens the appendix). "Data Availability" and "Associated Content" are back matter, no longer data and appendix.
+- `references` is terminal: descriptive headings after a reference list no longer inherit its label, and the keyword names it only as a whole part of a heading ("Notes and References"), never inside a phrase ("Comparison with literature references").
+- `max_chunks` counts units kept for extraction.
+- Numbered headings are placed by their number: "2.1" takes the label of "2" unless it names its own, and a numbered top-level heading the schema does not name opens an unlabeled section instead of inheriting the previous one. Markdown levels place headings the same way in documents that use more than one level.
+- Converted documents mark captions, footnotes, formulas, code and pictures; captions, formulas and code never count as cited works. Every unit's `doc_item_refs` lists the docling items whose text it holds whole. `ontocast sections` shows heading numbers and parents.
+- A unit's section label is decided from every step's vote: strong evidence beats weak, and between equals the heading's. Acknowledgements or a reference list recognised from the content relabel a part whose heading label was weak. A numbered heading inside a section with a strong label inherits it as strong, so `exclude_sections` reaches it; the aggressive content tier's guesses are weak.
+- Content units carry `section_label_strength` (`strong`/`weak`) and `section_label_evidence` in place of `section_label_confidence`; the provenance graph carries `ontocast:sectionLabelStrength` in place of `ontocast:sectionLabelConfidence`. The run manifest's `selection` adds `label_strength_chars`, and `ontocast sections` shows strength and every step's vote. `resolve_heading_label` returns `(label, source)` and `match_heading_keywords` the label.
+- With `CHUNK_SECTION_CLASSIFIER=llm` the model labels the whole outline in one call (each headed section once, unheaded text part by part), shown every label's `description`; its vote is weak and decides where no heading word or content spoke, overriding only the embedding vote. `CHUNK_SECTION_LLM_BATCH_SIZE` now counts outline regions per call, and a failed call no longer falls back to one call per segment.
+- The `standard` schema's `normative_references` is a citations-class label. A reference run cut out of a unit keeps the unit's label when that is a citations-class label.
+- Section schemas require a `description` on every label and reject unknown keys; the unused `order` and `ordered` fields are removed.
+
+- A standard prefix (`sosa`, `prov`, `skos`, …) is a valid `ontology_id` for the ontology whose namespace is that prefix's standard one, so W3C SOSA and PROV-O load from their published files under `sosa` and `prov`. Any other ontology still needs another id, and the home ontology a run creates never takes one; `cd`, `doc`, `facts`, `oc` and `ontocast` stay refused.
+- An ontology's namespace is where its terms live, read from the file at adoption (`vann:preferredNamespaceUri` when terms live there, else the namespace with the most described terms) and stored in its header, instead of `<iri>#`. Ontologies whose terms sit under `<iri>/` (OM-2) or elsewhere (PROV-O) get the right prefix in prompts.
+- An ontology contributes to the vector index the terms of its own namespace, so a standard vocabulary uploaded as an ontology (PROV-O, SKOS, schema.org) is indexed, and terms an ontology only reuses are not. `VECTOR_STORE_EMBED_STANDARD_VOCAB_IRIS` is removed; `VECTOR_STORE_INDEX_UNDESCRIBED_IRIS` widens only the ontology's own namespace. The surface-form contract is now `sf7`: existing vector stores need a reindex.
+- Provenance scaffolding is the chunk nodes and statement reifiers the pipeline mints (`ontocast.onto.scaffolding`), not the PROV namespace: facts in PROV-O count as links, are validated, embedded and kept by `strip_provenance`. `PROVENANCE_METADATA_TERMS` is removed.
+- Two named fact entities are merged on their labels only; an equal IRI local name merges them only when a side has no label, or against a catalog term.
+- Two entities one unit minted are never merged (`same_unit`), and names that carry different numbers ("June 2021", "29 June 2021") are never variants of one name, in aggregation and in the facts gate.
+- The facts prompt asks a node standing for a date or a time to carry its ISO 8601 value (the ontology's property, else `rdf:value`), so date nodes are told apart by value.
+
+### Removed
+
+- The `default_exclude` field of section schemas (replaced by `route_class`).
+- `CHUNK_SEGMENTER` and docling's HybridChunker segmentation: units are always cut at section boundaries of the markdown export. The `span_overlap` section-label source goes with it.
+- The `documents` extra no longer installs `docling-core[chunking]` (`transformers`, `semchunk`, `tree-sitter`), which only the HybridChunker used. Code that imports `docling_core.transforms.chunker` must install it itself.
+- Forward filling of section labels, and the `forward_fill` label source.
+
+### Fixed
+
+- `pdfs-to-markdown` writes `<name>.md` instead of a JSON string that `ontocast process` rejected; the files read back with their headings.
+- The `ontocast_ingest_ontology_ttl` tool no longer tells agents it writes to the ontology directory: the ontology goes to the triple store (and the vector index, when one is configured), and nothing is written to disk.
+- Sections were dropped whole when they mentioned references: headings such as "Comparison with literature references", descriptive sections after a References heading, literature-comparison tables with a DOI column, and units whose prose ended in a reference list.
+- More reference styles are recognised as cited works: author names spelled out before the year, bare-number and bracketed-label markers (`[RFC3986]`), volume with issue (`17(2), 87-96`), `year;volume` and proceedings venues (`In Proceedings`, `pages N-M`), and web sources. An entry split over several paragraphs counts as one, and percent signs or digits inside links and DOIs no longer read as a measurement.
+- Keyword-matched headings such as "Funding Mechanisms" or "Supporting Information" no longer drop their section through the default exclusions.
+- The home-ontology excerpt samples only units routed to extraction, never a reference list or an author block.
+- LLM section classification judged a segment by the first heading anywhere in it; it now sees each section by its own heading.
+- A weak label (the model's, say) on text next to a strong section of the same label no longer weakens that section when undersized chunks are merged, so `CHUNK_SECTION_CLASSIFIER=llm` no longer lets a reference list through; chunks of different label strength are never merged.
+- Coreference resolution no longer spends its pairs on entities of citation-metadata units (`CHUNK_BIBLIOGRAPHY_MODE=citations_only`).
+- The facts gate's un-merge repair dissolves only the cluster a finding implicates: a multi-valued or functional-property finding no longer splits the correctly merged entities its subject points at.
+- Within that cluster, the repair splits only the members whose values on the finding's predicate disagree; members that carried no value keep their merges.
+- An ontology whose IRI ends in an empty fragment (`http://www.w3.org/ns/prov#`) is adopted under the IRI without it; a header that is only typed `owl:Ontology` beside a described one (W3C PROV-O) is dropped.
+- An ontology version whose identity collides with the catalog or with another version of the document no longer fails serialization after it was written: it is left unwritten (`serialize/ontology_identity_conflict`) and the document's facts are written. A prefix-shaped namespace (`fro:`) never becomes an ontology's IRI.
+- A first tenancy switch after `ToolBox.initialize()` no longer leaves the catalog empty.
+- The in-memory triple store (the default without Fuseki) stores a facts graph with its RDF 1.2 provenance: a reifier's triple-term object no longer fails the document at serialization.
+- The facts and ontology prompts name the domain namespaces where the context's terms live, under the prefixes the term sheet shows. A standard vocabulary loaded as an ontology (PROV-O, SOSA) is listed, and a namespace terms only point to is not: PROV-O facts were written under a non-existent `…/prov-o#`, the target of every PROV term's `rdfs:isDefinedBy`, which also no longer gets a prefix at adoption.
+- The coreference prompt no longer shows entity IRIs: two parts can mint one local name for unrelated things, and the model took the shared name as evidence.
+- An LLM answer that closes a complete JSON object with surplus brackets is taken without them (`llm/json_surplus_closer`) instead of being re-requested.
+
 ## [0.8.2]
 
 ### Fixed

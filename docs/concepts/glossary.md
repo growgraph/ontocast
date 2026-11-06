@@ -23,6 +23,11 @@ The terms these pages use, each with the page that explains it.
     own and in parallel with the others. See [How OntoCast
     works](index.md#chunk).
 
+**Coreference resolution**
+:   At most one LLM call per document, after the merge, that decides the entity pairs
+    the merge could not settle (`AGG_LLM_COREFERENCE`). See [How OntoCast
+    works](index.md#the-facts-block).
+
 **Critic**
 :   The LLM call that reviews a render and names the statements to fix.
     OntoCast applies the fixes as a patch without another call. See [Validation
@@ -105,9 +110,28 @@ The terms these pages use, each with the page that explains it.
     (`<name>.run.json`): the model, the settings and what the run cost. See
     [Reading run telemetry](../guides/telemetry.md).
 
+**Route**
+:   What happens to a content unit before extraction: extracted, extracted as
+    bibliographic records, kept but flagged as non-content (front or back
+    matter, a table of contents), or dropped, with the reason recorded. See [Structured
+    documents](structured_documents.md#how-a-unit-is-routed).
+
+**Route class**
+:   What a section label's sections hold, set in its section schema:
+    `content`, `boilerplate`, `non_content` (front and back matter) or
+    `citations` (a reference list). Evidence for the route, never a decision
+    on its own.
+
 **Section label**
 :   The section a content unit came from, such as `methods` or `results`, used
-    to select what to extract. See [Structured
+    to select what to extract. A label is *strong* when it comes from an exact
+    heading, a heading placed inside a strong section by its number or level,
+    or a reference list or acknowledgements recognised from the content, and
+    *weak* otherwise (a keyword in a longer heading, a heading's nearest label
+    by embedding, inheritance by wording or from a weak parent, front matter
+    recognised by position, other guesses from the content, the model); only a
+    strong label can take part in dropping a unit.
+    Each step's vote is kept as the label's evidence. See [Structured
     documents](structured_documents.md#section-labels).
 
 **Section schema**
@@ -138,7 +162,8 @@ The terms these pages use, each with the page that explains it.
 
 **Turtle**
 :   A compact text format for RDF: triples ending in `.`, with prefixes keeping
-    IRIs short. It is the format OntoCast's models read and write.
+    IRIs short. OntoCast returns graphs in it, and its models write it by
+    default (`LLM_GRAPH_FORMAT`).
 
 **Unit pipeline**
 :   The per-unit loops run on a single piece of text, with no conversion,
@@ -147,7 +172,8 @@ The terms these pages use, each with the page that explains it.
 
 **User instruction**
 :   Your own guidance, added to the prompts of one request
-    (`facts_user_instruction`, `ontology_user_instruction`). See [Writing user
+    (`facts_user_instruction`, `ontology_user_instruction`,
+    `ontology_selection_user_instruction`). See [Writing user
     instructions](../guides/user_instructions.md).
 
 **Vector retrieval**

@@ -24,7 +24,7 @@ def _clear_caches():
 
 def test_manifest_loads_all_schemas() -> None:
     manifest = load_manifest()
-    assert manifest.catalog_version == "1.1"
+    assert manifest.catalog_version == "1.3"
     assert manifest.default_schema == "academic"
     schema_ids = {entry.id for entry in manifest.schemas}
     assert schema_ids == {
@@ -119,3 +119,24 @@ def test_normalise_llm_label_validates_against_schema() -> None:
     schema = load_section_label_schema("academic")
     assert normalise_llm_label("Results", schema) == "results"
     assert normalise_llm_label("not_a_section", schema) is None
+
+
+def test_every_label_describes_its_role() -> None:
+    """The model that labels the outline is shown each label's description."""
+    for entry in load_manifest().schemas:
+        for label in load_section_label_schema(entry.id).labels:
+            assert label.description.strip(), (entry.id, label.id)
+
+
+def test_a_label_definition_rejects_unknown_keys() -> None:
+    """A stale or misspelt key fails loading instead of being ignored."""
+    from pydantic import ValidationError
+
+    from ontocast.config.section_labels import SectionLabelDef
+
+    with pytest.raises(ValidationError):
+        SectionLabelDef.model_validate(
+            {"id": "methods", "description": "How it was done.", "order": 40}
+        )
+    with pytest.raises(ValidationError):
+        SectionLabelDef.model_validate({"id": "methods"})

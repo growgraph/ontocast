@@ -9,7 +9,7 @@ never ran".
 
 | Symptom | Likely cause | What to change or check |
 |---|---|---|
-| `422` from `/process`, or no facts at all | Every part failed, the document did not convert, or facts were never requested | [No facts, or a 422](#no-facts-or-a-422) |
+| A `422` result from `/process`, or no facts at all | Every part failed, the document did not convert, or facts were never requested | [No facts, or a 422](#no-facts-or-a-422) |
 | Run stops with `EmptyOntologyContextError` | A part was shown no ontology, and the run requires one | [Empty ontology context](#empty-ontology-context) |
 | Facts-only run produced almost nothing | Empty catalog, or a fixed ontology id that matches nothing | [Facts-only run produced nothing](#facts-only-run-produced-nothing) |
 | New terms invented instead of yours | Catalog not loaded, or the wrong ontology shown to each part | [Extraction ignores my ontology](#extraction-ignores-my-ontology) |
@@ -22,6 +22,7 @@ never ran".
 | Warning that the ontology context is still over budget | The ontology is too large to show whole | Split the catalog, or switch to `selected_vector_search_ontology`; see [Choosing ontology context](ontology_context.md) |
 | Parts split mid-argument, or too coarse | Chunk size bounds | [`CHUNK_MIN_SIZE`](../reference/configuration/chunking.md#chunk_min_size), [`CHUNK_MAX_SIZE`](../reference/configuration/chunking.md#chunk_max_size) |
 | Reference list extracted as domain facts | Bibliography routing | [`CHUNK_BIBLIOGRAPHY_MODE`](../reference/configuration/chunking.md#chunk_bibliography_mode) |
+| A section is missing from the facts | It was not selected or was dropped before extraction | `ontocast sections` shows each part's route and reason; `route_histogram` in the run manifest counts them. See [How a unit is routed](../concepts/structured_documents.md#how-a-unit-is-routed) |
 | Gaps inside words in PDF text (`di ff usion`) | Ligature repair | [`CONVERTER_REPAIR_LIGATURE_GAPS=true`](../reference/configuration/conversion.md#converter_repair_ligature_gaps) |
 | A born-digital PDF converted as if scanned, or the reverse | Converter profile | Fix [`CONVERTER_PROFILE`](../reference/configuration/conversion.md#converter_profile) to `fast` or `ocr` |
 | Equations missing from the text (`<!-- formula-not-decoded -->`) | Formula decoding is off | [`CONVERTER_PROFILE=lean`](../reference/configuration/conversion.md#converter_profile), or [`CONVERTER_DO_FORMULA_ENRICHMENT=true`](../reference/configuration/conversion.md#converter_do_formula_enrichment); conversion slows with each equation |
@@ -29,13 +30,15 @@ never ran".
 
 ## No facts, or a 422
 
-`/process` answers `422` when no part of the document produced output. The
-body says why. With `error_code` `no_units_extracted`, `error_details` gives the
-failing stage and reason, and `unit_failures` lists each part that failed; a
-document that could not be converted fails here too. An `error_code` starting
-with `empty_section_selection` means `target_sections` or `exclude_sections`
-left nothing to process. `/process_unit` reports a conversion failure as
-`conversion_failed`.
+`/process` answers with one result per document, and a document's result has
+`status_code` `422` when no part of it produced output. Its `outcome` says why.
+With `error_code` `no_units_extracted`, `error_details` gives the failing stage
+and reason, and `unit_failures` lists each part that failed; a document that
+could not be converted fails here too. An `error_code` starting with
+`empty_section_selection` means `target_sections` or the exclusions
+(`exclude_sections`, or the schema's boilerplate sections) left nothing to
+process. `/process_unit` reports a conversion failure with an `error_code`
+starting with `conversion_failed`.
 
 For a conversion failure, check the file type against `input_types` in `GET
 /info`: converted formats need the `doc-processing` extra, and
@@ -82,9 +85,9 @@ context stops the run.
 
 When the output invents terms that your ontology already has:
 
-1. **Check the catalog loaded.** The startup log names the seed directory, or says none is configured, and reports how many ontologies the sync found. A directory that does not exist stops `ontocast process` and only warns under `ontocast serve`. On a server, a request with `?tenant=` or `?project=` reads a different partition from one without, so an ontology uploaded to one is not seen by the other.
+1. **Check the catalog loaded.** The startup log names the seed directory, or says none is configured, and reports how many ontologies the sync found. A directory that does not exist, or a seed file that cannot be loaded, stops `ontocast process` and only warns under `ontocast serve`. On a server, a request with `?tenant=` or `?project=` reads a different partition from one without, so an ontology uploaded to one is not seen by the other.
 2. **Check which ontology each part saw.** In the default `selected_single_ontology` mode the model picks one ontology per part, and may pick another or none. Steer it with `ontology_selection_user_instruction` (see [Writing user instructions](user_instructions.md)), fix the ontology with `fixed_single_ontology`, or switch to `selected_vector_search_ontology` when parts need terms from several ontologies.
-3. **Check the context fits.** `retrieval_metrics.ontology_snapshot_triples` is the size of the slice shown. [`ONTOLOGY_CONTEXT_MAX_TRIPLES`](../reference/configuration/pipeline.md#ontology_context_max_triples) caps it; over the cap, comments and definitions go first. In vector mode, raise [`VECTOR_STORE_TOP_K`](../reference/configuration/ontology-retrieval.md#vector_store_top_k) or [`VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES`](../reference/configuration/ontology-retrieval.md#vector_store_induced_subgraph_max_total_triples).
+3. **Check the context fits.** `retrieval_metrics.ontology_snapshot_triples` is the size of the slice shown. [`ONTOLOGY_CONTEXT_MAX_TRIPLES`](../reference/configuration/pipeline.md#ontology_context_max_triples) caps it; over the cap, header annotations and redundant structure go first, then comments and definitions. In vector mode, raise [`VECTOR_STORE_TOP_K`](../reference/configuration/ontology-retrieval.md#vector_store_top_k) or [`VECTOR_STORE_INDUCED_SUBGRAPH_MAX_TOTAL_TRIPLES`](../reference/configuration/ontology-retrieval.md#vector_store_induced_subgraph_max_total_triples).
 
 Facts always go in the `cd:` namespace, typed with your ontology's classes.
 A `cd:` entity is expected; a `cd:` class or property is not. See [Ontologies

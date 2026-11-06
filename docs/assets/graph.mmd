@@ -18,25 +18,29 @@ graph TD;
 	__start__([<p>__start__</p>]):::first
 	Convert\20to\20Text(Convert to Text)
 	Chunk\20Text(Chunk Text)
+	Resolve\20Home\20Ontology(Resolve Home Ontology)
 	Update\20Ontology(Update Ontology)
 	Normalize\20Ontology\20Updates(Normalize Ontology Updates)
 	Consolidate\20Ontology(Consolidate Ontology)
 	Render\20Facts(Render Facts)
 	Merge\20Facts(Merge Facts)
+	Resolve\20Coreference(Resolve Coreference)
 	Validate\20Facts(Validate Facts)
 	Structural\20Check(Structural Check)
 	Consistency\20Critic(Consistency Critic)
 	Serialize(Serialize)
 	__end__([<p>__end__</p>]):::last
 	Chunk\20Text -.-> Render\20Facts;
-	Chunk\20Text -.-> Update\20Ontology;
+	Chunk\20Text -.-> Resolve\20Home\20Ontology;
 	Consistency\20Critic -.-> Render\20Facts;
 	Consistency\20Critic -.-> Serialize;
 	Consolidate\20Ontology --> Structural\20Check;
 	Convert\20to\20Text --> Chunk\20Text;
-	Merge\20Facts --> Validate\20Facts;
+	Merge\20Facts --> Resolve\20Coreference;
 	Normalize\20Ontology\20Updates --> Consolidate\20Ontology;
 	Render\20Facts --> Merge\20Facts;
+	Resolve\20Coreference --> Validate\20Facts;
+	Resolve\20Home\20Ontology --> Update\20Ontology;
 	Structural\20Check --> Consistency\20Critic;
 	Update\20Ontology --> Normalize\20Ontology\20Updates;
 	Validate\20Facts --> Serialize;

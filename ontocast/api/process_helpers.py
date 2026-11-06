@@ -33,6 +33,7 @@ from ontocast.onto.run_meter import (
     active_run_meter,
     run_meter_scope,
 )
+from ontocast.onto.section_models import OutlineLabelReport
 from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
@@ -337,9 +338,16 @@ def dump_validation_report(
 def _selection_manifest(state: AgentState, config: Config) -> RunManifestSelection:
     """Selection settings plus the label census that says whether they acted."""
     histogram: dict[str, int] = {}
+    strength_chars: dict[str, int] = {}
     for unit in state.content_units or []:
         label = unit.section_label or "(unlabeled)"
         histogram[label] = histogram.get(label, 0) + 1
+        strength = (
+            str(unit.section_label_strength)
+            if unit.section_label is not None and unit.section_label_strength
+            else "unlabeled"
+        )
+        strength_chars[strength] = strength_chars.get(strength, 0) + len(unit.text)
     unlabeled = histogram.get("(unlabeled)", 0)
     return RunManifestSelection(
         target_sections=state.target_sections,
@@ -355,9 +363,18 @@ def _selection_manifest(state: AgentState, config: Config) -> RunManifestSelecti
         labeled_units=(sum(histogram.values()) - unlabeled) if histogram else None,
         unlabeled_units=unlabeled if histogram else None,
         section_label_histogram=histogram or None,
+        label_strength_chars=strength_chars or None,
         bibliography_units_skipped=state.bibliography_units_skipped,
         undersized_units_skipped=state.undersized_units_skipped,
         non_content_units_skipped=state.non_content_units_skipped,
+        route_histogram=state.route_histogram or None,
+        outline_labels=state.outline_labels,
+        allowlist_excluded_chars=(
+            state.allowlist_excluded_chars if state.target_sections else None
+        ),
+        allowlist_excluded_unlabeled_chars=(
+            state.allowlist_excluded_unlabeled_chars if state.target_sections else None
+        ),
     )
 
 
@@ -809,10 +826,18 @@ def _merge_workflow_state_into_agent_state(
         "bibliography_units_skipped",
         "undersized_units_skipped",
         "non_content_units_skipped",
+        "allowlist_excluded_chars",
+        "allowlist_excluded_unlabeled_chars",
     ):
         value = workflow_state.get(counter)
         if value:
             setattr(state, counter, int(value))
+    route_histogram = workflow_state.get("route_histogram")
+    if route_histogram:
+        state.route_histogram = dict(route_histogram)
+    outline_labels = workflow_state.get("outline_labels")
+    if outline_labels is not None:
+        state.outline_labels = OutlineLabelReport.model_validate(outline_labels)
     # The manifest's critic blocks read these; without this copy the manifest
     # would report no critic calls while retrieval_metrics recorded them.
     facts_telemetry = workflow_state.get("facts_loop_telemetry")

@@ -146,7 +146,7 @@ context](ontology_context.md) explains the trade-offs.
 |---|---|
 | [`ONTOCAST_ONTOLOGY_DIRECTORY`](../reference/configuration/storage.md#ontocast_ontology_directory) | Turtle files loaded into the catalog at startup. Same as `--ontology-dir` |
 | [`FACTS_SHAPES_DIR`](../reference/configuration/facts-validation.md#facts_shapes_dir) | SHACL shapes that extracted facts are validated against (`shacl` extra). Same as `--shapes-dir` |
-| [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain) | The base of the document IRIs OntoCast creates (`<domain>/doc/<hash>`). Set it once per project: it ends up in every graph you write. Extracted entities always use the fixed facts namespace `cd:`; see [Ontologies and facts](../concepts/ontologies_and_facts.md) |
+| [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain) | The base of the document IRIs (`<domain>/doc/<hash>`) and of the ontologies OntoCast creates (`<domain>/<ontology_id>`). Set it once per project: it ends up in every graph you write. Extracted entities always use the fixed facts namespace `cd:`; see [Ontologies and facts](../concepts/ontologies_and_facts.md) |
 
 Ontologies and shapes can also be uploaded to a running server; see the [HTTP
 API](../reference/http_api.md).
@@ -174,6 +174,7 @@ in exchange for quality:
 | [`FACTS_CRITIC_PASSES`](../reference/configuration/facts-validation.md#facts_critic_passes) | One call per part: a review of the extracted facts, with fixes applied as a patch |
 | [`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes) | The same for ontology changes; off by default. [`ONTOLOGY_UPDATE_MODE=insert_only`](../reference/configuration/ontology-validation.md#ontology_update_mode) keeps ontology changes additive: deletes from the model, consolidation and the critic are dropped and counted |
 | [`FACTS_COMPLETION_PASSES`](../reference/configuration/facts-validation.md#facts_completion_passes) | One call per part that still misses measurements stated in the text; off by default |
+| [`AGG_LLM_COREFERENCE`](../reference/configuration/aggregation.md#agg_llm_coreference) | One call per document of two parts or more: the model decides the entity pairs merging cannot settle; on by default, bounded by `AGG_LLM_COREFERENCE_MAX_PAIRS` |
 | [`MAX_VISITS_PER_NODE`](../reference/configuration/pipeline.md#max_visits_per_node) | Retries of an extraction that failed outright. A successful extraction is never repeated |
 
 Two settings decide how fast a document goes through:
@@ -204,11 +205,11 @@ a proxy that authenticates sits in front of it.
 |---|---|
 | [`CONVERTER_PROFILE`](../reference/configuration/conversion.md#converter_profile) | `auto` (default) checks each PDF for a text layer: `fast` (no OCR, fast tables) when it has one, `ocr` when its pages are images. `lean` adds equations as LaTeX, at a model call per equation. Fix a profile when every input is of one kind |
 | [`CHUNK_MIN_SIZE`](../reference/configuration/chunking.md#chunk_min_size), [`CHUNK_MAX_SIZE`](../reference/configuration/chunking.md#chunk_max_size) | Size of each part in characters: larger parts give the model more context per call |
-| [`CHUNK_BIBLIOGRAPHY_MODE`](../reference/configuration/chunking.md#chunk_bibliography_mode) | Reference lists are skipped by default; `citations_only` extracts them as bibliographic records |
+| [`CHUNK_BIBLIOGRAPHY_MODE`](../reference/configuration/chunking.md#chunk_bibliography_mode) | Reference lists, recognized from their content, are skipped by default; `citations_only` extracts them as bibliographic records |
 
 To process only some sections of a document, such as the methods and results
 of a paper, pass `target_sections` or `exclude_sections` with the request; see
-the [HTTP API](../reference/http_api.md).
+[Structured documents](../concepts/structured_documents.md).
 
 ## What to read next
 

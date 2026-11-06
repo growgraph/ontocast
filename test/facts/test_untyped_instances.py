@@ -132,8 +132,8 @@ def test_an_object_only_instance_is_reported() -> None:
         'cd:s a schema:Person ; rdfs:label "s" .',
         # Blank nodes are never instances.
         'cd:s a ex:Sample ; ex:hasValue [ ex:numericValue "3"^^xsd:decimal ] .',
-        # Alias and lineage handles are not instances.
-        "cd:s a ex:Sample ; owl:sameAs cd:s_alias ; prov:wasDerivedFrom cd:chunk_0 .",
+        # Alias handles are not instances.
+        "cd:s a ex:Sample ; owl:sameAs cd:s_alias .",
     ],
     ids=["catalog class", "thing plus class", "generic class", "blank node", "handles"],
 )
@@ -148,12 +148,17 @@ def test_chunk_and_document_scaffolding_is_not_an_instance() -> None:
             schema:position "0"^^xsd:integer ;
             schema:identifier "h0" ;
             prov:generatedAtTime "2024-01-01T00:00:00"^^xsd:dateTime .
-        cd:other_chunk schema:position "1"^^xsd:integer .
         cd:s a ex:Sample ; prov:wasDerivedFrom cd:chunk_0 .
         """
     )
 
     assert untyped_instances(graph, [CD]) == []
+
+
+def test_a_domain_provenance_object_is_an_instance() -> None:
+    graph = _facts("cd:report a ex:Report ; prov:wasDerivedFrom cd:dataset .")
+
+    assert untyped_instances(graph, [CD]) == [_cd("dataset")]
 
 
 def test_suggestions_come_from_domain_range_and_name_tokens() -> None:

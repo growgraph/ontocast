@@ -4,7 +4,7 @@ from rdflib.namespace import DCTERMS, FOAF, RDFS, XSD
 
 from ontocast.onto.constants import DEFAULT_IRI, ONTOCAST, PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
-from ontocast.onto.enum import SectionLabelSource
+from ontocast.onto.enum import LabelStrength, SectionLabelSource
 from ontocast.onto.iri_policy import join_namespace_local, normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.agg.aggregate import (
@@ -62,7 +62,7 @@ def _labeled_unit(**overrides) -> ContentUnit:
         "type": OutputType.FACTS,
         "section_label": "results",
         "section_label_source": SectionLabelSource.HEADING_KEYWORD,
-        "section_label_confidence": 0.75,
+        "section_label_strength": LabelStrength.WEAK,
     }
     fields.update(overrides)
     return ContentUnit(**fields)
@@ -86,29 +86,25 @@ def test_section_label_reaches_the_provenance_artifact(
         ONTOCAST.sectionLabelSource,
         Literal("heading_keyword"),
     ) in merged
-    assert (
-        unit_uri,
-        ONTOCAST.sectionLabelConfidence,
-        Literal("0.75", datatype=XSD.decimal),
-    ) in merged
+    assert (unit_uri, ONTOCAST.sectionLabelStrength, Literal("weak")) in merged
+    assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelConfidence)) == []
 
 
 def test_unlabeled_unit_emits_no_section_triples(
     graph_rewriter: GraphRewriter,
 ) -> None:
-    """A bare confidence of 0.0 would read as certainty about nothing."""
     unit = _labeled_unit(
-        section_label=None, section_label_source=None, section_label_confidence=0.0
+        section_label=None, section_label_source=None, section_label_strength=None
     )
     merged = graph_rewriter.merge_graphs_with_provenance([unit], mapping={})
     unit_uri = URIRef(unit.iri_absolute)
 
     assert list(merged.objects(unit_uri, SCHEMA.articleSection)) == []
     assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelSource)) == []
-    assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelConfidence)) == []
+    assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelStrength)) == []
 
 
-def test_label_without_a_source_still_emits_label_and_confidence(
+def test_label_without_a_source_still_emits_label_and_strength(
     graph_rewriter: GraphRewriter,
 ) -> None:
     unit = _labeled_unit(section_label_source=None)
@@ -117,7 +113,7 @@ def test_label_without_a_source_still_emits_label_and_confidence(
 
     assert (unit_uri, SCHEMA.articleSection, Literal("results")) in merged
     assert list(merged.objects(unit_uri, ONTOCAST.sectionLabelSource)) == []
-    assert len(list(merged.objects(unit_uri, ONTOCAST.sectionLabelConfidence))) == 1
+    assert len(list(merged.objects(unit_uri, ONTOCAST.sectionLabelStrength))) == 1
 
 
 def test_strip_provenance_removes_the_chunk_metadata_it_is_given(
