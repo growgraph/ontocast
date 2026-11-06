@@ -1,5 +1,7 @@
 """Facts rendering operational guidelines (format-specific)."""
 
+from ontocast.onto.well_known import well_known_prompt_list
+
 # Fallback vocabulary for bounded/approximate quantities when retrieval supplied
 # no suitable class. QUDT by default because it is the most widely deployed
 # quantity vocabulary -- but a default, not a compiled-in assumption: override
@@ -42,15 +44,11 @@ facts_instruction_shared = """\n\n
       `rdfs:subPropertyOf` of `onto:hasPart` and its domain/range fit the subject and object.
     - CORRECT: `cd:assembly_1 onto:hasComponent cd:widget_1 .`
 
-2. VOCABULARY PRECEDENCE (read before choosing any term):
-   - The ONTOLOGY section of this prompt is the vocabulary you are being asked to use. Search it FIRST for every class and property you need, and prefer its terms even when a generic vocabulary has a term that would also fit.
-   - Generic vocabularies (RDFS, OWL, schema.org, …) are a LAST RESORT, for concepts the provided ontology genuinely does not cover. They are not an equal alternative.
-   - The reason is mechanical, not stylistic: the deployment validates this graph against shapes written for the provided ontology. A term from that ontology is checked and queryable; a generic substitute is invisible to every shape and every downstream query, so it reads as extracted but answers nothing.
-   - If the ONTOLOGY section is empty or has no term for a concept, type the instance with a specific class from a generic core vocabulary (e.g. `schema:Person`, `schema:Organization`) that states what it is — never with an ontology term whose meaning differs from what the text asserts, and never with `owl:Thing`, `rdfs:Resource` or `schema:Thing`, which state nothing. An instance without a concrete type is dropped downstream.
-3. Thoroughly Extract and Link: extract all possible text mentions that correspond to entities, classes, types, or relationships defined in the provided ontology
-3a. QUANTITATIVE COMPLETENESS: extract EVERY quantitative statement in the text — every measured value, duration, condition, concentration, ratio, threshold, and uncertainty — even when the provided ontology has no term for it (the quantity fallback of rule 8 applies in that case). A number attached to a stated quantity is a fact and must reach the graph with its verbatim value and unit; a bare citation, page, figure, or equation token is typography and must not (rule 4). Completeness of the measured content is judged, so silently skipping a stated measurement is a defect, not a simplification.
-3b. CONNECT WHAT THE TEXT CONNECTS: when the text relates two instances — one is part of, belongs to, takes part in, measures, or describes the other — assert that link with a property of the provided ontology. A `cd:` instance left with only its type, label and literal values often means a stated relation was missed; look for it. Assert only relations the text states or directly entails: never invent or guess a link to connect an instance, and leave an instance unlinked when the text relates it to nothing. When the text mentions one thing in several places, use one `cd:` IRI for it throughout this extraction instead of minting one per mention.
-4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class — from the provided ontology wherever one fits (e.g. `onto:Trial`), and only otherwise from a generic core vocabulary (e.g. `schema:Person`).
+{vocabulary_precedence_rule}
+3. EXTRACT STATEMENTS: extract every statement the text makes in the terms of the provided ontology — the relations between things and the values it gives them. Mint a `cd:` instance only for a thing a statement is about: it is the subject or the object of a relation, or it holds a value. A mention the text says nothing about is not a fact; do not mint it.
+{quantitative_completeness_rule}
+{connect_rule}
+{typing_rule}
    - CRITICAL: NEVER type a `cd:` instance as `rdfs:Class` or `rdf:Property` (you are extracting data occurrences, not rewriting or defining the schema), nor as `owl:Thing` alone — a vacuous type is no type.
    - Do NOT mint an entity for a bare number, a citation marker, or a reference token (`[12]`, "19", equation numbers). These are typography, not facts.
 5. Declare every namespace prefix you use (rdf, rdfs, owl, schema, domain ontologies, cd, etc.).
@@ -85,10 +83,22 @@ facts_instruction_shared = """\n\n
 {literal_encoding_rules}
    - NEVER encode a numeric measurement as xsd:string, even if the source
      text is approximate or bounded.
+   - A STRUCTURED VALUE (a quantity value, a range, a bound — a node that
+     only holds a value) has no identity of its own: write it as a blank node
+     (Turtle `[ … ]`, JSON-LD an object without `@id`), as the object of the
+     property that carries it — the property of the entity, observation or
+     result it measures that the provided ontology offers.
+{carrier_fallback_clause}
+     Never mint a `cd:`
+     IRI for a value, and never leave a value standing alone: a value no
+     statement carries is dropped downstream. Give it an `rdfs:label` with
+     its verbatim text.
+     CORRECT: `cd:sample_1 onto:hasThickness [ a onto:QuantityValue ; rdfs:label "about 20 nm" ; … ] .`
+     WRONG:   `cd:value_1 a onto:QuantityValue ; rdfs:label "about 20 nm" .` — a value with no carrier
    - When a measurement appears with an epistemic qualifier — approximation
      (∼, ~, ≈, ca., about), bound (<, >, ≤, ≥, up to, at least, more than,
      exceeding), range (X–Y, X to Y), or uncertainty (X ± Y) — decompose
-     it into a structured node:
+     it into a structured value (a blank node under its carrier):
        * Search the provided ontology for a class representing approximate or
          bounded quantity values (e.g. a QuantityValue subclass, a
          MeasuredValue class, or equivalent).
@@ -119,13 +129,13 @@ facts_instruction_shared = """\n\n
      matching its `rdfs:label`, `skos:notation`, symbol, or code annotations,
      preserving case exactly (a lowercase symbol and its uppercase variant denote
      DIFFERENT individuals — match character-for-character).
-   - WRONG:   `cd:value_1 qudt:unit "nm" .` — string on an object property
-   - CORRECT: `cd:value_1 qudt:unit unit:NanoM .` — when that individual's
+   - WRONG:   `[ … qudt:unit "nm" ]` — string on an object property
+   - CORRECT: `[ … qudt:unit unit:NanoM ]` — when that individual's
      label/notation matches the text token; use only unit IRIs that appear
      verbatim in the provided context, never invent one
    - Only if NO individual in the provided context matches the token: keep the raw
      token in a literal-code annotation property (e.g. `qudt:ucumCode` or
-     `rdfs:comment`) on the `cd:` node instead of putting a string on the
+     `rdfs:comment`) on the value node instead of putting a string on the
      object property, so the surface form is preserved without breaking typing.
 
 9. To extract data from tables, use CSV on the Web (CSVW) to describe tables.
@@ -138,7 +148,8 @@ facts_instruction_shared = """\n\n
 Before finalizing output, verify:
 - Are there any PascalCase IRIs acting as graph subjects or objects (excluding `rdf:type` targets)? If yes, fix them into `cd:` instances.
 - Did you use `rdfs:Class` or `rdf:Property` anywhere as an instance type? If yes, replace it with its meaningful domain-specific concept class.
-- For each `cd:` instance not linked to any other instance: does the text state a relation you missed? Add it only if the text states it (rule 3b); never invent one.
+- For each `cd:` instance not linked to any other instance: does the text state a relation you missed? Add it only if the text states it (rule 3b); never invent one. If it is linked to nothing and holds no value, remove it (rule 3).
+- Is every structured value a blank node, the object of the property that carries it (rule 8)?
 """
 
 facts_literal_rules_turtle = """\
@@ -164,7 +175,7 @@ facts_output_hygiene_jsonld = (
 
 
 _QUANTITY_FALLBACK_TEMPLATE = """       * If no such class is found in the domain ontology, use {value_class}
-         as the type and attach the numeric parts with {numeric_value} /
+         as the type of the value node and attach the numeric parts with {numeric_value} /
          {unit}, adding a plain qualifier annotation (e.g. rdfs:comment
          or a well-known approximation property)."""
 
@@ -199,6 +210,116 @@ def format_quantity_fallback_clause(vocabulary: dict[str, str]) -> str:
     )
 
 
+# The vocabulary rules of the facts prompt, per FACTS_VOCABULARY. Both modes
+# use the provided ontology first and the well-known vocabularies
+# (ontocast.onto.well_known) where it has no term. ``strict`` stops there:
+# nothing those cannot type or relate is extracted. ``open`` also admits any
+# other established vocabulary the model knows.
+VOCABULARY_MODES = ("strict", "open")
+
+_PRECEDENCE_REASON = (
+    "   - Prefer the ontology even when another term would also fit. The reason "
+    "is mechanical, not stylistic: the deployment validates this graph against "
+    "shapes written for the provided ontology and queries it in the ontology's "
+    "terms; a substitute is invisible to every shape and every such query."
+)
+_NO_VACUOUS_TYPE = (
+    "   - Never type an instance with `owl:Thing`, `rdfs:Resource` or "
+    "`schema:Thing`, which state nothing."
+)
+
+_VOCABULARY_PRECEDENCE_STRICT = """2. VOCABULARY PRECEDENCE (strict vocabulary): use the ONTOLOGY section of this prompt first, for every class and property it has. Where it has none, use a term of these well-known vocabularies, which you know: {vocabularies}.
+   - Use only terms that exist in these vocabularies, under their real namespace IRIs; never invent a term, and never mint one in an ontology's namespace.
+   - No other vocabulary is available. A thing that neither the provided ontology nor a well-known vocabulary has a class for, or a relation neither has a property for, is not extracted.
+{reason}
+{vacuous}"""
+
+_VOCABULARY_PRECEDENCE_OPEN = """2. VOCABULARY PRECEDENCE (open vocabulary): use the ONTOLOGY section of this prompt first, for every class and property it has. Where it has none, use a term of these well-known vocabularies: {vocabularies}. Where none of them has one, use a term of another established vocabulary you know well, under its real namespace IRI.
+   - Vocabularies outside the ontology are a LAST RESORT, in that order, for concepts the provided ontology genuinely does not cover. They are not an equal alternative.
+   - Use only terms that exist in a vocabulary; never invent a term, and never mint one in an ontology's namespace.
+{reason}
+{vacuous}"""
+
+_QUANTITATIVE_COMPLETENESS_STRICT = """3a. QUANTITATIVE COMPLETENESS: extract EVERY quantitative statement these vocabularies can express — every measured value, duration, condition, concentration, ratio, threshold, and uncertainty for which the provided ontology or a well-known vocabulary (QUDT among them) offers a value class (rule 8) and a property that carries it. A number attached to a stated quantity is a fact and must reach the graph with its verbatim value and unit; a bare citation, page, figure, or equation token is typography and must not (rule 4). Silently skipping a quantity these vocabularies can express is a defect, not a simplification."""
+
+_QUANTITATIVE_COMPLETENESS_OPEN = """3a. QUANTITATIVE COMPLETENESS: extract EVERY quantitative statement in the text — every measured value, duration, condition, concentration, ratio, threshold, and uncertainty — even when the provided ontology has no term for it (rule 2 and the quantity fallback of rule 8 apply in that case). A number attached to a stated quantity is a fact and must reach the graph with its verbatim value and unit; a bare citation, page, figure, or equation token is typography and must not (rule 4). Completeness of the measured content is judged, so silently skipping a stated measurement is a defect, not a simplification."""
+
+_CONNECT = """3b. CONNECT WHAT THE TEXT CONNECTS: when the text relates two instances — one is part of, belongs to, takes part in, measures, or describes the other — assert that link with a property of the provided ontology, or, when it has none for that relation, {fallback} (rule 2). A `cd:` instance left with only its type, label and literal values often means a stated relation was missed; look for it. Assert only relations the text states or directly entails: never invent or guess a link. An instance the text relates to nothing these vocabularies can express, and that holds no value, is a mention (rule 3) — leave it out. When the text mentions one thing in several places, use one `cd:` IRI for it throughout this extraction instead of minting one per mention."""
+
+_TYPING = """4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class — from the provided ontology wherever one fits (e.g. `onto:Trial`), and only otherwise {fallback} (e.g. `schema:Person`). An instance no class of these fits is not minted."""
+
+_CARRIER = """     If the provided ontology has no property to carry it, use {carrier}.{rest}"""
+
+
+def format_vocabulary_rules(
+    vocabulary: str,
+    quantity_fallback_vocabulary: dict[str, str] | None = None,
+    additional_namespaces: tuple[str, ...] | list[str] = (),
+) -> dict[str, str]:
+    """The prompt's vocabulary rules for one mode.
+
+    Args:
+        vocabulary: ``strict`` or ``open`` (``FACTS_VOCABULARY``).
+        quantity_fallback_vocabulary: Role -> term mapping; its optional
+            ``carrier`` role names the property that carries a quantity whose
+            entity has none in the ontology.
+        additional_namespaces: The deployment's own shared vocabularies
+            (``FACTS_ADDITIONAL_STANDARD_NAMESPACES``), named beside the
+            well-known ones.
+
+    Returns:
+        dict[str, str]: Template fields ``vocabulary_precedence_rule``,
+        ``quantitative_completeness_rule``, ``connect_rule``, ``typing_rule``
+        and ``carrier_fallback_clause``.
+
+    Raises:
+        ValueError: If ``vocabulary`` is not a known mode.
+    """
+    if vocabulary not in VOCABULARY_MODES:
+        raise ValueError(
+            f"unknown facts vocabulary {vocabulary!r}; expected one of {VOCABULARY_MODES}"
+        )
+    vocabularies = well_known_prompt_list() + "".join(
+        f", <{namespace}>" for namespace in additional_namespaces
+    )
+    strict = vocabulary == "strict"
+    precedence = (
+        _VOCABULARY_PRECEDENCE_STRICT if strict else _VOCABULARY_PRECEDENCE_OPEN
+    )
+    fallback = (
+        "a term of a well-known vocabulary"
+        if strict
+        else "a term of a well-known or another established vocabulary"
+    )
+    carrier = (quantity_fallback_vocabulary or {}).get("carrier") or (
+        f"a property of a well-known{'' if strict else ' or another established'} "
+        "vocabulary (rule 2)"
+    )
+    return {
+        "vocabulary_precedence_rule": precedence.format(
+            vocabularies=vocabularies,
+            reason=_PRECEDENCE_REASON,
+            vacuous=_NO_VACUOUS_TYPE,
+        ),
+        "quantitative_completeness_rule": (
+            _QUANTITATIVE_COMPLETENESS_STRICT
+            if strict
+            else _QUANTITATIVE_COMPLETENESS_OPEN
+        ),
+        "connect_rule": _CONNECT.format(fallback=f"with {fallback}"),
+        "typing_rule": _TYPING.format(fallback=f"from {fallback}"),
+        "carrier_fallback_clause": _CARRIER.format(
+            carrier=carrier,
+            rest=(
+                " A value none of these vocabularies can carry is not extracted"
+                " (rule 3a)."
+                if strict
+                else ""
+            ),
+        ),
+    }
+
+
 def format_facts_operational_guidelines(
     *,
     facts_namespace: str,
@@ -206,11 +327,22 @@ def format_facts_operational_guidelines(
     jsonld: bool,
     quantity_fallback_vocabulary: dict[str, str] | None = None,
     search_guidelines: str = "",
+    vocabulary: str = "strict",
+    additional_namespaces: tuple[str, ...] | list[str] = (),
 ) -> str:
-    """Build operational guidelines for the active graph format."""
+    """Build operational guidelines for the active graph format.
+
+    ``vocabulary`` (``FACTS_VOCABULARY``) picks the vocabulary rules: the
+    provided ontology, then the well-known vocabularies and
+    ``additional_namespaces``, and in open mode any other established
+    vocabulary (:func:`format_vocabulary_rules`).
+    """
     literal_rules = facts_literal_rules_jsonld if jsonld else facts_literal_rules_turtle
     hygiene = facts_output_hygiene_jsonld if jsonld else facts_output_hygiene_turtle
     guidelines = facts_instruction_shared.format(
+        **format_vocabulary_rules(
+            vocabulary, quantity_fallback_vocabulary, additional_namespaces
+        ),
         domain_ontologies_clause=domain_ontologies_clause,
         facts_namespace=facts_namespace,
         literal_encoding_rules=literal_rules,

@@ -299,27 +299,41 @@ async def test_render_and_critic_prompts_share_the_prefix_through_the_ontology(
         assert prompt.index("# TEXT") >= end_of_ontology
 
 
+def _rendered_facts_guidelines() -> list[str]:
+    """The facts guidelines as a prompt sees them, in both vocabulary modes."""
+    from ontocast.prompt.facts_guidelines import (
+        VOCABULARY_MODES,
+        format_facts_operational_guidelines,
+    )
+
+    return [
+        format_facts_operational_guidelines(
+            facts_namespace="https://example.com/facts/",
+            domain_ontologies_clause="`ex:`",
+            jsonld=False,
+            vocabulary=mode,
+        )
+        for mode in VOCABULARY_MODES
+    ]
+
+
 def test_quantitative_completeness_rule_is_stated() -> None:
     """Rule 3a counters the ontology-scoped selectivity of rule 3 without
     weakening the anti-junk guard of rule 4."""
-    from ontocast.prompt import facts_guidelines
-
-    text = facts_guidelines.facts_instruction_shared
-    assert "QUANTITATIVE COMPLETENESS" in text
-    assert "EVERY quantitative statement" in text
-    # The anti-junk guard stays verbatim.
-    assert "Do NOT mint an entity for a bare number" in text
+    for text in _rendered_facts_guidelines():
+        assert "QUANTITATIVE COMPLETENESS" in text
+        assert "EVERY quantitative statement" in text
+        # The anti-junk guard stays verbatim.
+        assert "Do NOT mint an entity for a bare number" in text
 
 
 def test_facts_guidelines_never_permit_an_untyped_instance() -> None:
     """Rule 2 must not undercut rule 4: a concept the ontology lacks is typed
     with a generic class, never left without a type."""
-    from ontocast.prompt import facts_guidelines
-
-    text = facts_guidelines.facts_instruction_shared
-    assert "untyped" not in text.lower()
-    assert "must be linked via `rdf:type`" in text
-    assert "owl:Thing" in text
+    for text in _rendered_facts_guidelines():
+        assert "untyped" not in text.lower()
+        assert "must be linked via `rdf:type`" in text
+        assert "owl:Thing" in text
 
 
 def test_critic_completeness_guideline_routes_misses_to_the_completion_pass() -> None:

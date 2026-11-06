@@ -17,7 +17,10 @@ from ontocast.tool.facts_validation.connectivity import (
     FactsConnectivity,
     facts_connectivity,
     instance_links,
+    isolated_instances,
     links_lost,
+    silent_instances,
+    twin_labels,
 )
 from ontocast.tool.facts_validation.critic_patch import (
     CompiledFixes,
@@ -73,7 +76,10 @@ __all__ = [
     "FactsConnectivity",
     "facts_connectivity",
     "instance_links",
+    "isolated_instances",
     "links_lost",
+    "silent_instances",
+    "twin_labels",
     "CompiledFixes",
     "CriticPatchPolicy",
     "FactsAcceptancePolicy",

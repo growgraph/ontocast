@@ -43,10 +43,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from rdflib import RDF, RDFS, SKOS, BNode, Graph, URIRef
-from rdflib.namespace import DCTERMS
+from rdflib import RDF, BNode, Graph, URIRef
 from rdflib.term import Node
 
+from ontocast.onto.annotation import is_annotation
 from ontocast.onto.model import TripleFix
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
@@ -575,8 +575,6 @@ def _deletes_by_id(
 _JUNK_LOCAL_NAME = re.compile(
     r"(ignored|typograph|artifact|placeholder|_token\b|token_)", re.IGNORECASE
 )
-_ANNOTATION_PREDICATES = frozenset({RDFS.label, RDFS.comment, DCTERMS.description})
-_SKOS_NAMESPACE = str(SKOS)
 
 
 def _local_name(iri: str) -> str:
@@ -585,12 +583,6 @@ def _local_name(iri: str) -> str:
         if sep and local:
             return local
     return iri
-
-
-def _is_annotation(predicate: Node) -> bool:
-    return predicate in _ANNOTATION_PREDICATES or str(predicate).startswith(
-        _SKOS_NAMESPACE
-    )
 
 
 def _junk_reason(inserts: list[Triple], graph: Graph) -> str | None:
@@ -613,7 +605,7 @@ def _junk_reason(inserts: list[Triple], graph: Graph) -> str | None:
         predicates = {predicate for s, predicate, _ in inserts if s == subject}
         if RDF.type in predicates:
             continue
-        if predicates and all(_is_annotation(p) for p in predicates):
+        if predicates and all(is_annotation(p) for p in predicates):
             return "annotation_only"
     return None
 

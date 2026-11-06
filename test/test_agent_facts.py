@@ -72,6 +72,8 @@ def _build_tools() -> AtomicToolBox:
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,
+            facts_vocabulary="strict",
+            additional_standard_namespaces=(),
             acceptance_policy=None,
         ),
     )

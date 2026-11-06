@@ -2843,16 +2843,29 @@ class FactsValidationConfig(BaseSettings):
             "identifier as a quantity value. 0 judges every non-empty render."
         ),
     )
-    additional_standard_namespaces: list[str] = Field(
-        default_factory=lambda: ["https://schema.org/", "http://schema.org/"],
+    vocabulary: Literal["strict", "open"] = Field(
+        default="strict",
         description=(
-            "Namespaces exempt from UNKNOWN_TERM findings in addition to the "
-            "RDF/OWL substrate and annotation/provenance terms. Only "
-            "meta-vocabularies are built in; a domain vocabulary a deployment "
-            "genuinely shares across catalogs (SOSA/SSN, CSVW, FOAF, "
-            "schema.org, Dublin Core application profiles) is exempted here. "
-            "schema.org is the default because the shipped citation "
-            "vocabulary uses it."
+            "Which vocabulary the facts may use. Both modes use the catalog "
+            "first and, where it has no term, the built-in well-known "
+            "vocabularies (RDF, RDFS, OWL, XSD, SKOS, Dublin Core, PROV-O, SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF, schema.org and QUDT) plus "
+            "FACTS_ADDITIONAL_STANDARD_NAMESPACES; a well-known term must "
+            "exist in its vocabulary. 'strict' stops there: a thing these "
+            "cannot type or relate is not minted, a term of any other "
+            "vocabulary is an UNKNOWN_TERM finding, and "
+            "NON_CATALOG_VOCABULARY is an error at the gate for it. 'open' "
+            "also admits any other established vocabulary, reported as "
+            "NON_CATALOG_VOCABULARY warnings."
+        ),
+    )
+    additional_standard_namespaces: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Namespaces of a deployment's own shared vocabularies, admitted "
+            "beside the catalog and the built-in well-known vocabularies "
+            "(RDF, RDFS, OWL, XSD, SKOS, Dublin Core, PROV-O, SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF, schema.org and QUDT) and named to the model with them. A term in one "
+            "is never UNKNOWN_TERM; unlike a well-known term, its existence "
+            "is not checked."
         ),
     )
     quantity_fallback_vocabulary: dict[str, str] = Field(

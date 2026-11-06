@@ -117,9 +117,18 @@ def test_facts_guidelines_domain_clause_appears_once() -> None:
     assert "above" not in guidelines
     # Catalog terms outrank generic vocabulary; the two used to be offered as
     # equals ("either ... or standard core vocabularies"), which is what an
-    # empty ontology chapter turned into a wholly generic extraction.
+    # empty ontology chapter turned into a wholly generic extraction. The
+    # default (strict) vocabulary offers none; the open one offers it last.
     assert "VOCABULARY PRECEDENCE" in guidelines
-    assert "LAST RESORT" in guidelines
+    assert "No other vocabulary is available" in guidelines
+    assert "LAST RESORT" not in guidelines
+    open_guidelines = format_facts_operational_guidelines(
+        facts_namespace="https://example.com/facts/",
+        domain_ontologies_clause=clause,
+        jsonld=False,
+        vocabulary="open",
+    )
+    assert "LAST RESORT" in open_guidelines
     # `ex:` is a MANDATORY repair finding, so the prompt must never advertise it:
     # every occurrence used to cost a repair render. This is the one behavioural
     # guard worth keeping from the old prompt-wording smoke tests; the rest

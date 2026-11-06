@@ -174,6 +174,7 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | Key | Meaning |
 |---|---|
 | `facts_rejected_merges` | Entity merges the aggregator's guards refused, for the graph returned |
+| `facts_merge_rejections_by_reason` | Those refusals by reason (`same_unit`, `sibling`, `literal_conflict`, `functional_iri_conflict`, `initials_conflict`, `role`, `type`, `lexical`, `cluster_veto`); a pair refused for several reasons counts under each |
 | `facts_merge_repair_passes`, `facts_merge_vetoes`, `facts_merge_repairs_rejected` | The un-merge repair: passes kept, merge pairs vetoed, passes reverted |
 | `facts_coreference_pairs`, `facts_coreference_same`, `facts_coreference_different` | Coreference resolution: pairs put to the model, and those it judged one entity or two |
 | `validated_without_ontology_context` | `true` when the facts were validated with an empty ontology context |
@@ -182,8 +183,10 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | `facts_shacl_repairs`, `facts_shacl_autofix_passes`, `facts_shacl_autofix_reverted` | Repairs applied, passes kept, and whether a pass was reverted. Present only when the repair ran |
 | `facts_untyped_inferred` | Instances untyped after aggregation that the gate typed from the domains and ranges of their links, against the whole ontology context |
 | `facts_untyped_dropped` | Instances dropped at the gate for carrying no concrete `rdf:type` after aggregation; their IRIs are `AgentState.facts_untyped_dropped` |
+| `facts_unlinked_dropped` | Instances dropped at the gate for stating nothing (linked to no other instance nor the document, no value of their own), plus values no statement carries |
 | `facts_links_removed` | Links between instances that the gate's SHACL prune and untyped drop removed |
-| `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance |
+| `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance (each holds a value of its own) |
+| `facts_twin_labels` | Labels that two or more served instances share: duplicates aggregation left, or distinct things with one name |
 | `structural_ontology_components_max` | The highest connected-component count among the ontologies the structural check examined |
 | `consistency_conflicts` | Conflicts the consistency critic reported |
 

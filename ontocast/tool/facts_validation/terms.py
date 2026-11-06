@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import typing
 from collections.abc import Sequence
 from difflib import SequenceMatcher
 
@@ -25,6 +26,7 @@ from ontocast.onto.scaffolding import (
     is_scaffolding,
     scaffolding_nodes,
 )
+from ontocast.onto.well_known import well_known_namespaces
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +151,11 @@ class ValidationPolicy(BaseModel):
     """
 
     additional_standard_namespaces: tuple[str, ...] = ()
+    #: ``strict`` closes the vocabulary to the catalog, the vocabularies it
+    #: borrows from, the well-known vocabularies and the terms named here:
+    #: any other class or property is UNKNOWN_TERM. ``open`` lets any other
+    #: vocabulary pass, so only a member of a closed namespace is unknown.
+    vocabulary: typing.Literal["strict", "open"] = "strict"
     quantity_fallback_vocabulary: dict[str, str] | None = None
     code_predicates: tuple[str, ...] = ()
     #: IRIs the shapes-derived conformance chapter instructs the renderer to
@@ -171,8 +178,14 @@ class ValidationPolicy(BaseModel):
     domain_adherence_min_terms: int = 4
 
     def standard_namespaces(self) -> tuple[str, ...]:
-        """Built-in meta-vocabulary namespaces plus the configured ones."""
-        return (*_STANDARD_NAMESPACES, *self.additional_standard_namespaces)
+        """Namespaces no catalog owns: the meta-vocabularies, the well-known
+        vocabularies (:mod:`ontocast.onto.well_known`) and the configured
+        ones. A term of a well-known vocabulary must still exist in it."""
+        return (
+            *_STANDARD_NAMESPACES,
+            *well_known_namespaces(),
+            *self.additional_standard_namespaces,
+        )
 
     def exempt_terms(self, *graphs: RDFGraph | None) -> set[str]:
         """Exact IRIs configuration blessed: fallback vocabulary, code
@@ -347,7 +360,7 @@ def resolve_unique_surface(index: dict[str, set[str]], text: str) -> URIRef | No
     return URIRef(next(iter(candidates)))
 
 
-def _superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIRef]:
+def superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIRef]:
     """Asserted supertypes of *class_iri*, including itself.
 
     Walks ``rdfs:subClassOf`` and steps through ``owl:equivalentClass``

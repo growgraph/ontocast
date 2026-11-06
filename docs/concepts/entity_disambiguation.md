@@ -54,13 +54,17 @@ the log names each pair and the reasons, which can be several:
 | `functional_iri_conflict` | They point to different things through a property that allows one value, such as two different units | [`AGG_FUNCTIONAL_MIN_EMPIRICAL_SUPPORT`](../reference/configuration/aggregation.md#agg_functional_min_empirical_support) |
 | `initials_conflict` | Their labels differ only in an initial or a single letter: "Sample A" and "Sample B" | [`AGG_INITIALS_DISTINCT_GUARD`](../reference/configuration/aggregation.md#agg_initials_distinct_guard) |
 | `role` | One is used as a property, the other as a thing | |
-| `type` | Their types are incompatible | [`AGG_TYPE_GUARD_UNTYPED`](../reference/configuration/aggregation.md#agg_type_guard_untyped) decides whether a typed and an untyped entity may merge |
+| `type` | Two entities found in the text: your ontologies declare their types, or the types' superclasses, disjoint (`owl:disjointWith`, `owl:AllDisjointClasses`), or their types share no class (superclasses included) and their names match only plausibly. Parts of a document type one thing differently, so differing types merge on an equal label, initials, a shared key or a coreference verdict. An entity and an individual of your ontology: they share no type | [`AGG_TYPE_GUARD_UNTYPED`](../reference/configuration/aggregation.md#agg_type_guard_untyped) decides whether a typed and an untyped entity may merge |
 | `lexical` | Their labels are not close enough. Entities that carry values must match exactly; others may match loosely. Two labelled entities are compared by their labels alone; the local name of their IRI counts only when one has no label, or against a term of your ontology. Labels that carry different numbers ("June 2021", "29 June 2021") never match | [`AGG_LEXICAL_LABEL_JACCARD`](../reference/configuration/aggregation.md#agg_lexical_label_jaccard), [`AGG_LEXICAL_SEQUENCE_RATIO`](../reference/configuration/aggregation.md#agg_lexical_sequence_ratio), [`AGG_LEXICAL_TOKEN_JACCARD`](../reference/configuration/aggregation.md#agg_lexical_token_jaccard) |
 | `cluster_veto` | The pair itself was fine, but merging it would have joined two entities another guard had refused | |
 
 A property counts as allowing one value when the ontology says so, or when
 every subject in the document uses it once and at least
 `AGG_FUNCTIONAL_MIN_EMPIRICAL_SUPPORT` subjects use it.
+
+Entities that share a label are always compared, even when their embeddings
+place them apart; a label shared by more than eight entities is generic and
+brings nothing together.
 
 ## Coreference the guards cannot settle
 

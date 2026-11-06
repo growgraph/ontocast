@@ -34,12 +34,12 @@ from ontocast.tool.facts_validation.terms import (
     _name_tokens,
     _namespace_of,
     _resolve_type_literal,
-    _superclass_closure,
     _vocabulary_role_subset,
     collect_catalog_terms,
     collect_declared_namespaces,
     expand_vocabulary_terms,
     resolve_unique_surface,
+    superclass_closure,
 )
 from ontocast.tool.llm import record_active_count
 from ontocast.tool.validate import _predicate_expects_iri_object
@@ -81,16 +81,6 @@ _RETYPABLE_RANGE_DATATYPES = (
     | _PARSE_CHECKED_RANGE_DATATYPES
     | set(_GREGORIAN_RANGE_PATTERNS)
 )
-
-# Meta-vocabularies: the RDF/OWL substrate plus the annotation and provenance
-# terms every facts graph carries regardless of catalog. Exempting these from
-# UNKNOWN_TERM keeps the signal readable -- flagging rdfs:label would bury it.
-#
-# Domain vocabularies do NOT belong here. SOSA/SSN (sensor observations),
-# CSVW (tabular metadata), FOAF and schema.org (people, organizations,
-# creative works) model a subject area; a catalog that does not declare them
-# should hear about it. They are exempted by configuration
-# (FACTS_ADDITIONAL_STANDARD_NAMESPACES) when a deployment wants them, not by
 
 
 def normalize_literals_against_schema(
@@ -358,7 +348,7 @@ def materialize_entailed_types(
 
     def closure(class_iri: URIRef) -> set[URIRef]:
         if class_iri not in closures:
-            closures[class_iri] = _superclass_closure(class_iri, ontology_graph)
+            closures[class_iri] = superclass_closure(class_iri, ontology_graph)
         return closures[class_iri]
 
     def admissible(node: Node, entailed: URIRef) -> bool:
@@ -669,7 +659,7 @@ def resolve_code_literals(
 
     def closure(class_iri: URIRef) -> set[URIRef]:
         if class_iri not in closures:
-            closures[class_iri] = _superclass_closure(class_iri, ontology_graph)
+            closures[class_iri] = superclass_closure(class_iri, ontology_graph)
         return closures[class_iri]
 
     # The usage-evidence scan is a full graph walk; build it lazily, once,

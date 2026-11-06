@@ -388,7 +388,8 @@ def test_gate_records_dropped_instances_on_the_state() -> None:
     state.doc_hid = "1"
     state.aggregated_facts = _facts(
         """
-        cd:s a ex:Sample ; rdfs:label "s" ; ex:relatesTo cd:ghost_b, cd:ghost_a .
+        cd:s a ex:Sample ; rdfs:label "s" ; ex:hasCode "S1" ;
+            ex:relatesTo cd:ghost_b, cd:ghost_a .
         cd:ghost_a rdfs:label "a" .
         cd:ghost_b rdfs:label "b" .
         """
@@ -413,7 +414,9 @@ def test_gate_metric_is_zero_when_nothing_is_dropped() -> None:
     state = AgentState()
     state.current_domain = "https://x.org"
     state.doc_hid = "1"
-    state.aggregated_facts = _facts('cd:s a ex:Sample ; rdfs:label "s" .')
+    state.aggregated_facts = _facts(
+        'cd:s a ex:Sample ; rdfs:label "s" ; ex:hasCode "S1" .'
+    )
 
     run_facts_gate(state, _ontology(), _fake_tools(), merge_repair=False)
 
@@ -457,12 +460,13 @@ def test_gate_counts_components_and_isolated_instances() -> None:
         """
         cd:s a ex:Sample ; ex:measuredOn cd:d .
         cd:d a ex:Device .
-        cd:alone a ex:Process ; rdfs:label "alone" .
+        cd:alone a ex:Process ; rdfs:label "alone" ; ex:hasCode "P7" .
         """
     )
 
     run_facts_gate(state, _ontology(), _fake_tools(), merge_repair=False)
 
+    # An isolated instance holding a value of its own stays, and counts.
     assert state.retrieval_metrics[RetrievalMetric.FACTS_COMPONENTS] == 2
     assert state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED] == 1
     assert state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_INFERRED] == 0

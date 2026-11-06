@@ -1099,6 +1099,9 @@ def _store_aggregation(state: AgentState, result: AggregationResult) -> None:
     state.retrieval_metrics[RetrievalMetric.FACTS_REJECTED_MERGES] = (
         result.rejected_merge_count
     )
+    state.retrieval_metrics[RetrievalMetric.FACTS_MERGE_REJECTIONS_BY_REASON] = dict(
+        result.rejected_by_reason
+    )
 
 
 def make_resolve_coreference_node(tools: ToolBox):

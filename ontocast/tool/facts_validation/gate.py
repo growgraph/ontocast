@@ -26,6 +26,7 @@ from ontocast.onto.rdfgraph import (
     RDFGraph,
 )
 from ontocast.onto.scaffolding import document_nodes, is_scaffolding, scaffolding_nodes
+from ontocast.onto.well_known import well_known_vocabulary
 from ontocast.tool.agg.signatures import (
     canonical_literal,
     harvest_max_one_predicates,
@@ -308,6 +309,8 @@ def _non_catalog_vocabulary_findings(
     *,
     scaffolding: set[Node],
     document: set[Node],
+    severity: str = "warning",
+    declared_namespaces: tuple[str, ...] = (),
 ) -> list[FactsValidationFinding]:
     """Report terms the facts graph uses that the ontology context never supplied.
 
@@ -320,14 +323,22 @@ def _non_catalog_vocabulary_findings(
     evidence of a *retrieval* miss, so it is worth a finding even though the
     facts graph itself is well-formed.
 
-    Warning severity: this is telemetry about context assembly, not the
-    signature of a bad merge, and must not drive the un-merge repair.
+    Never the signature of a bad merge, so it must not drive the un-merge
+    repair whatever its severity. Under an open vocabulary it is a warning:
+    telemetry about context assembly. Under a strict one a term outside the
+    catalog is a defect, reported at ``severity``; a term of a namespace the
+    deployment declared as its own (``declared_namespaces``) or of the
+    configured fallback vocabulary stays a warning in both, and so does a
+    term of a well-known vocabulary (:mod:`ontocast.onto.well_known`) that
+    exists in it; one it does not have is reported at ``severity``.
 
     Args:
         graph: Aggregated facts graph.
         ontology_graph: Merged ontology context that was offered to the renderer.
         namespaces: Fact namespaces; terms minted there are the extraction, not
             borrowed vocabulary.
+        severity: Severity of a term outside every configured vocabulary.
+        declared_namespaces: Namespaces the deployment counts as its own.
 
     Returns:
         list: One finding per non-catalog term, ordered by IRI.
@@ -374,22 +385,50 @@ def _non_catalog_vocabulary_findings(
         # choice the prompt instructed. Still a retrieval miss worth reporting,
         # but not the same signal as vocabulary invented out of nowhere -- the
         # message must not accuse the renderer of improvising what it was told.
-        configured = _is_configured_fallback(term, fallback_namespaces)
+        vocabulary = well_known_vocabulary(term)
+        missing_from = (
+            vocabulary
+            if vocabulary is not None
+            and not vocabulary.has_term(term[len(_namespace_of(term)) :])
+            else None
+        )
+        configured = missing_from is None and (
+            vocabulary is not None
+            or _is_configured_fallback(term, fallback_namespaces)
+            or (bool(declared_namespaces) and term.startswith(declared_namespaces))
+        )
+        if missing_from is not None:
+            message = (
+                f"<{term}> is used by {len(subjects)} subject(s) but is not a "
+                f"term of {missing_from.title}."
+            )
+        elif configured:
+            message = (
+                f"<{term}> is used by {len(subjects)} subject(s) but was "
+                "absent from the ontology context — the renderer took the "
+                "configured fallback vocabulary, which points at a "
+                "retrieval miss rather than a modeling choice."
+            )
+        elif severity == "error":
+            message = (
+                f"<{term}> is used by {len(subjects)} subject(s) but is not "
+                "a term of the catalog — the vocabulary is strict, so the "
+                "statements carrying it are outside the projection."
+            )
+        else:
+            message = (
+                f"<{term}> is used by {len(subjects)} subject(s) but was "
+                "absent from the ontology context — the renderer fell back "
+                "to outside vocabulary, which points at a retrieval miss "
+                "rather than a modeling choice."
+            )
         findings.append(
             FactsValidationFinding(
                 kind=FactsValidationFindingKind.NON_CATALOG_VOCABULARY,
-                severity="warning",
-                message=(
-                    f"<{term}> is used by {len(subjects)} subject(s) but was "
-                    "absent from the ontology context — the renderer took the "
-                    "configured fallback vocabulary, which points at a "
-                    "retrieval miss rather than a modeling choice."
-                    if configured
-                    else f"<{term}> is used by {len(subjects)} subject(s) but "
-                    "was absent from the ontology context — the renderer fell "
-                    "back to outside vocabulary, which points at a retrieval "
-                    "miss rather than a modeling choice."
-                ),
+                severity="error"
+                if severity == "error" and not configured
+                else "warning",
+                message=message,
                 subject=subjects[0],
                 predicate=term,
                 values=subjects,
@@ -449,6 +488,8 @@ def validate_aggregated_facts(
     shacl_max_triples: int = 0,
     key_supported_subjects: Sequence[str] | None = None,
     cross_unit_pairs: Sequence[tuple[str, str]] | None = None,
+    non_catalog_severity: str = "warning",
+    additional_standard_namespaces: Sequence[str] = (),
 ) -> FactsValidationReport:
     """Check post-merge invariants over the aggregated facts graph.
 
@@ -475,9 +516,12 @@ def validate_aggregated_facts(
         - ``DEGENERATE_COREFERENCE``: one IRI object shared by >= 2 distinct
           functional-ish predicates of one subject (collapsed range bounds).
         - ``SHACL``: optional, when ``pyshacl`` is installed and shapes exist.
-        - ``NON_CATALOG_VOCABULARY``: warning-only telemetry for terms the
-          ontology context never supplied, which mark a retrieval miss the
-          renderer papered over with a documented fallback.
+        - ``NON_CATALOG_VOCABULARY``: terms the ontology context never
+          supplied. A warning under an open vocabulary (a retrieval miss the
+          renderer papered over with a documented fallback);
+          ``non_catalog_severity`` under a strict one, where such a term is
+          outside the projection. Terms of ``additional_standard_namespaces``
+          and of the fallback vocabulary are warnings either way.
         - ``MIXED_OBJECT_KINDS``: warning-only telemetry for predicates used
           with both IRI and literal objects across the graph.
 
@@ -754,6 +798,8 @@ def validate_aggregated_facts(
             quantity_fallback_vocabulary,
             scaffolding=scaffolding,
             document=document,
+            severity=non_catalog_severity,
+            declared_namespaces=tuple(additional_standard_namespaces),
         )
     )
 

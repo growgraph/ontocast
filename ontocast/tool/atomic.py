@@ -164,10 +164,15 @@ class AtomicToolBox:
         self.additional_standard_namespaces: tuple[str, ...] = tuple(
             facts_validation.additional_standard_namespaces
         )
+        # strict: the facts are projected onto the catalog and the declared
+        # vocabulary above; open: generic core vocabularies fill its gaps.
+        # Read by the facts prompt and by the term checks alike.
+        self.facts_vocabulary: str = facts_validation.vocabulary
         # Everything the deterministic term checks must treat as blessed, as
         # one object -- see ValidationPolicy.
         self.validation_policy = ValidationPolicy(
             additional_standard_namespaces=self.additional_standard_namespaces,
+            vocabulary=facts_validation.vocabulary,
             quantity_fallback_vocabulary=self.quantity_fallback_vocabulary,
             code_predicates=self.code_predicates,
             numeric_identifier_guard=facts_validation.numeric_identifier_guard,

@@ -17,8 +17,8 @@ from decimal import Decimal, InvalidOperation
 from weakref import WeakKeyDictionary
 
 from rdflib import RDF, RDFS, SKOS, Graph, Literal, URIRef
-from rdflib.namespace import DCTERMS
 
+from ontocast.onto.annotation import is_annotation
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.util.measurement_lexicon import (
     Mention,
@@ -122,18 +122,6 @@ def extract_numeric_tokens(
     return tokens
 
 
-#: Predicates whose literals describe a node rather than assert a value. A
-#: number inside one of these is prose, not data.
-_ANNOTATION_PREDICATES = frozenset({RDFS.label, RDFS.comment, DCTERMS.description})
-_SKOS_NAMESPACE = str(SKOS)
-
-
-def _is_annotation(predicate: object) -> bool:
-    return predicate in _ANNOTATION_PREDICATES or str(predicate).startswith(
-        _SKOS_NAMESPACE
-    )
-
-
 def numeric_literals_in_graph(
     graph: RDFGraph, *, include_annotations: bool = False
 ) -> set[str]:
@@ -154,7 +142,7 @@ def numeric_literals_in_graph(
     for _, predicate, obj in graph:
         if not isinstance(obj, Literal):
             continue
-        if not include_annotations and _is_annotation(predicate):
+        if not include_annotations and is_annotation(predicate):
             continue
         text = str(obj)
         canonical = canonical_number(text.strip())
@@ -294,7 +282,7 @@ def measurement_pairs_in_graph(
         for _, predicate, obj in graph.triples((subject, None, None)):
             pred = str(predicate)
             if pred in numeric_props and isinstance(obj, Literal):
-                if _is_annotation(predicate):
+                if is_annotation(predicate):
                     continue
                 canonical = canonical_number(str(obj).strip())
                 if canonical is not None:

@@ -136,11 +136,69 @@ The model is instructed to:
 - treat a matching class as a type, not as an identity: two mentions of a
   sample are new `cd:` entities typed with the ontology's `Sample` class, not
   the class itself;
-- never type a `cd:` entity as a class or a property.
+- never type a `cd:` entity as a class or a property;
+- extract statements: mint an entity only when a statement is about it (it is
+  linked to another entity or holds a value), never for a bare mention;
+- write a structured value (a quantity, a range, a bound) as a blank node, the
+  object of the property that carries it, never as an entity of its own.
+
+The served graph holds statements only. After merging, an entity linked to
+nothing and holding no value is dropped, and so is a value no statement
+carries (`facts_unlinked_dropped`). Values are never merged with each other;
+each is named under its carrier, `<carrier>.<property>` (then a number when a
+carrier holds several values on one property), so it has a stable IRI.
 
 You can add your own guidance on top of these rules with
 `facts_user_instruction`; see [Writing user
 instructions](../guides/user_instructions.md).
+
+## Two vocabulary modes
+
+`FACTS_VOCABULARY` says what the facts may be written in. Both modes use your
+catalog first, for every class and property it has. Where it has none, the
+model uses a well-known vocabulary, and then the namespaces you list in
+`FACTS_ADDITIONAL_STANDARD_NAMESPACES`. The prompt names them all, with their
+namespace IRIs:
+
+| Prefix | Vocabulary | Terms checked |
+|---|---|---|
+| `rdf`, `rdfs`, `owl`, `xsd` | RDF, RDF Schema, OWL, XML Schema datatypes | yes |
+| `skos` | SKOS | yes |
+| `dcterms`, `dc` | DCMI Metadata Terms, Dublin Core elements | yes |
+| `prov` | PROV-O | yes |
+| `sosa`, `ssn` | SOSA, SSN | yes |
+| `time` | OWL-Time | yes |
+| `csvw` | CSVW | yes |
+| `dcat` | DCAT | yes |
+| `org` | the Organization Ontology | yes |
+| `vcard` | vCard | no |
+| `foaf` | FOAF | yes |
+| `schema` | schema.org (`https://` and `http://`) | yes |
+| `qudt`, `unit`, `quantitykind` | QUDT | no |
+
+The model writes well-known terms from memory, so a term must exist in its
+vocabulary: one it does not have, such as `schema:vulnerableTo`, is an
+`unknown_term` finding with the vocabulary's near-misses as suggestions. A
+vocabulary marked "no" is admitted by namespace, as are your own namespaces.
+
+**`strict`** (the default) stops there. A thing that neither your catalog nor
+these vocabularies can type or relate, and a quantity they have no value class
+or carrier property for, is not extracted. A class or property from any other
+vocabulary is an `unknown_term` finding the renderer must rewrite or remove,
+and at the gate `non_catalog_vocabulary` is an error for it. The model sees the
+unit's retrieved context, not the whole catalog, so a property retrieval missed
+is a statement made in a well-known vocabulary or not made at all: watch
+`non_catalog_vocabulary`, `facts_isolated` and `facts_unlinked_dropped`, and
+widen the context (`ONTOLOGY_CONTEXT_MODE`) when they grow.
+
+**`open`** also admits any other established vocabulary the model knows, as a
+last resort after the well-known ones. Such terms pass the unit validator and
+are listed per document as `non_catalog_vocabulary` warnings, so the gaps in
+your catalog are visible.
+
+In both modes the `carrier` role of `FACTS_QUANTITY_FALLBACK_VOCABULARY` names
+the property that carries a quantity when your catalog has none, and an entity
+linked to nothing and holding no value is dropped at the gate.
 
 ## Provenance
 

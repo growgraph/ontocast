@@ -865,6 +865,9 @@ class FactsGateRepairKind(StrEnum):
     #: A fact-namespace instance still untyped after aggregation, removed
     #: with every triple that mentions it.
     UNTYPED_DROPPED = "untyped_dropped"
+    #: A fact-namespace instance that states nothing (no link, no value),
+    #: removed with its names.
+    UNLINKED_DROPPED = "unlinked_dropped"
 
 
 class GraphRepairRecord(BaseModel):

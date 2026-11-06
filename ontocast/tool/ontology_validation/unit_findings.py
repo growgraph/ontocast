@@ -32,15 +32,16 @@ from ontocast.onto.model import (
     TripleFix,
 )
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.well_known import well_known_vocabulary
 from ontocast.tool.agg.signatures import harvest_max_one_predicates
 from ontocast.tool.facts_validation.terms import (
     _FORBIDDEN_NAMESPACES,
     ValidationPolicy,
     _catalog_term_roles,
     _namespace_of,
-    _superclass_closure,
     build_surface_index,
     collect_declared_namespaces,
+    superclass_closure,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,21 @@ def _namespace_findings(
             # authority to check against.
             continue
         namespace = _namespace_of(text)
+        vocabulary = well_known_vocabulary(text)
+        if vocabulary is not None and not vocabulary.has_term(text[len(namespace) :]):
+            findings.append(
+                OntologyUnitFinding(
+                    kind=OntologyUnitFindingKind.FOREIGN_NAMESPACE,
+                    message=(
+                        f"<{text}> is minted under <{namespace}>, the namespace "
+                        f"of {vocabulary.title}, which has no such term. "
+                        "Declare the term under one of the context ontology "
+                        "namespaces."
+                    ),
+                    subject=text,
+                )
+            )
+            continue
         if namespace in declared_namespaces or namespace.startswith(
             standard_namespaces
         ):
@@ -235,7 +251,7 @@ def _subclass_cycle_findings(
                 )
             )
             continue
-        if subject in _superclass_closure(obj, merged_graph):
+        if subject in superclass_closure(obj, merged_graph):
             findings.append(
                 OntologyUnitFinding(
                     kind=OntologyUnitFindingKind.SUBCLASS_CYCLE,

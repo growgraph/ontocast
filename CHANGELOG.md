@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `FACTS_VOCABULARY=strict|open`. Both modes use the catalog first, then the built-in well-known vocabularies (RDF, RDFS, OWL, XSD, SKOS, Dublin Core, PROV-O, SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF, schema.org and QUDT) and `FACTS_ADDITIONAL_STANDARD_NAMESPACES`, all named in the prompt. `strict` (the default) stops there: a thing these cannot type or relate is not minted, a term of any other vocabulary is `unknown_term`, and `non_catalog_vocabulary` is an error. `open` also admits any other established vocabulary, as warnings. `FACTS_QUANTITY_FALLBACK_VOCABULARY` takes an optional `carrier` role.
+- A term of a well-known vocabulary must exist in it: one it does not have is `unknown_term` with near-miss suggestions, an error at the gate under `strict`, and `foreign_namespace` when an ontology render mints it. vCard and QUDT are admitted by namespace.
+
+### Changed
+
+- `FACTS_ADDITIONAL_STANDARD_NAMESPACES` defaults to empty and only adds to the well-known vocabularies; schema.org is built in.
+- The facts prompt asks for statements: an entity is minted only when a statement is about it, and a structured value is a blank node under the property that carries it, never an entity of its own.
+- Between two entities found in the text, different types no longer block a merge: only an `owl:disjointWith` (or `owl:AllDisjointClasses`) declared on their types or superclasses does. Types that share no class merge on an equal label, initials, a shared key or a coreference verdict, not on a plausible name match. A merge with an individual of the ontology still needs a shared type. Entities sharing a label are compared even when their embeddings place them apart.
+- `facts_merge_rejections_by_reason` (the aggregator's refusals by reason) and `facts_twin_labels` (labels several served instances share) in `retrieval_metrics`.
+- The facts gate drops entities that state nothing (no link, no value) and values no statement carries (`facts_unlinked_dropped`, repair kind `unlinked_dropped`), then names each value under its carrier, `<carrier>.<property>`.
+
 ## [0.9.0]
 
 ### Added

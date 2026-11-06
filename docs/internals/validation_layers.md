@@ -162,17 +162,33 @@ statement in place, never by deleting it.
 
 A namespace is **closed**, so that a member the catalog does not list is
 reported, only when the ontology context *declares* terms in it (uses them as
-subjects). A namespace the catalog only references, such as `qudt:` in an
+subjects). A well-known namespace is the exception: its own term list closes
+it, whatever part of it the catalog redeclares. A namespace the catalog only references, such as `qudt:` in an
 `rdfs:subClassOf` or `owl:onProperty`, is a borrowed vocabulary and stays open.
 Membership is checked against the whole catalog, not the unit's snapshot: a
 term retrieval did not bring into the unit is still a term.
 
 Never reported as unknown: the built-in meta-vocabularies (RDF, RDFS, OWL, XSD,
-SKOS, Dublin Core, PROV), `FACTS_ADDITIONAL_STANDARD_NAMESPACES`, the terms of
+SKOS, Dublin Core, PROV), the other well-known vocabularies
+(`ontocast.onto.well_known`: SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF,
+schema.org, QUDT), `FACTS_ADDITIONAL_STANDARD_NAMESPACES`, the terms of
 `FACTS_QUANTITY_FALLBACK_VOCABULARY` (the prompt recommends them),
 `FACTS_CODE_PREDICATES`, and every term the SHACL shapes require. Replacement
 candidates are offered only by token containment and filtered by role, so a
 property is never offered as a class or the reverse.
+
+A well-known term must exist in its vocabulary, checked against rdflib's
+bundled term lists (vCard and QUDT have none and are admitted by namespace).
+One it does not have is `unknown_term` in both modes, with the vocabulary's
+near-misses as suggestions; an ontology render that mints one gets
+`foreign_namespace`.
+
+Under `FACTS_VOCABULARY=strict` (the default) a term of any other vocabulary
+the catalog neither declares nor borrows from is unknown as well: the facts are
+a projection onto the catalog, the vocabularies it builds on, the well-known
+vocabularies and the declared ones, and a statement they cannot express is
+rewritten in their terms or left out. Under `open` only a member of a closed
+namespace is unknown, and a term of another vocabulary passes.
 
 At the gate, the shapes are cross-checked against these rules: a property the
 shapes require that the term validator would flag is logged as an error once
@@ -224,6 +240,7 @@ Screening then withholds what a pass may not destroy:
 | A `REMOVE` may not empty a subject | Removing the last statement about a node deletes the node |
 | A `REPLACE` may not write about a different subject than it deletes | That is a rename: it orphans the old node and leaves the new one bare. `FACTS_CRITIC_ALLOW_SUBJECT_RENAME` opts in (facts only) |
 | A blank node is deleted whole or not at all | A partial delete leaves a stub |
+| A value is addressed through its carrier | A structured value is a blank node, so a fix names the statement that carries it, never the value as a subject |
 
 The surviving fixes are applied **one at a time**, each judged against the graph
 the previous kept fix left. A fix is rolled back on its own when it:
@@ -293,7 +310,7 @@ The passes stop as soon as nothing is missing.
     | `suspect_multi_value`: two numeric values on one property; irreconcilable short strings on a property that is single-valued for most subjects; or two IRIs on such a property | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | un-merge when an error |
     | `degenerate_coreference`: one IRI object shared by two single-valued properties of a subject | error | un-merge |
     | `shacl` | from the shape | autofix |
-    | `non_catalog_vocabulary` | warning | reported (a retrieval miss) |
+    | `non_catalog_vocabulary` | a term of an existing well-known, declared or fallback vocabulary: warning; any other term, or a well-known term that does not exist: error under `FACTS_VOCABULARY=strict`, warning under `open` | reported (a retrieval miss, or outside the projection) |
     | `dangling_reference` | warning | reported |
     | `mixed_object_kinds`: a property used with both IRI and literal objects | warning | reported |
 
@@ -335,14 +352,22 @@ The passes stop as soon as nothing is missing.
    object of, the blank nodes reachable only through those triples, and the
    reifiers quoting them. Each drop is a `facts_gate_repairs` record of kind
    `untyped_dropped`; the IRIs are on `facts_untyped_dropped` (capped at 200)
-   and the count is the `facts_untyped_dropped` metric.
+   and the count is the `facts_untyped_dropped` metric. Then every instance
+   that states nothing (`drop_unlinked_instances`: linked to no other
+   instance nor the document, with no value of its own, only a type and
+   names) is removed the same way, and so is every blank-node value no
+   statement carries; records are kind `unlinked_dropped`, and the
+   `facts_unlinked_dropped` metric counts both.
 6. **Connectivity**: `facts_links_removed` counts the links between instances
    that steps 4 and 5 removed; `facts_components` and `facts_isolated` count the
    connected groups of instances in the served graph and the instances linked
    to no other instance (links run through blank nodes; the document node joins
    what it links but is not an instance; typing, `owl:sameAs` and the
    pipeline's provenance link nothing, while a domain property links in any
-   vocabulary, PROV-O included).
+   vocabulary, PROV-O included). An isolated instance left holds a value of its
+   own. `facts_twin_labels` counts the labels two or more instances share.
+   Then each blank-node value is named under its carrier
+   (`<carrier>.<property>`), with the reifiers of its statements repointed.
 7. **Summary**: `facts_conformance`, `facts_validation_findings` and
    `facts_gate_repairs`, plus the gate counters in `retrieval_metrics`.
 

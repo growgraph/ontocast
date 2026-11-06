@@ -151,6 +151,10 @@ class RetrievalMetric(StrEnum):
 
     # Aggregation and the un-merge repair.
     FACTS_REJECTED_MERGES = "facts_rejected_merges"
+    #: The refused merges by reason (same_unit, sibling, literal_conflict,
+    #: functional_iri_conflict, initials_conflict, role, type, lexical,
+    #: cluster_veto), a pair counting under each reason that refused it.
+    FACTS_MERGE_REJECTIONS_BY_REASON = "facts_merge_rejections_by_reason"
     FACTS_MERGE_REPAIR_PASSES = "facts_merge_repair_passes"
     FACTS_MERGE_VETOES = "facts_merge_vetoes"
     FACTS_MERGE_REPAIRS_REJECTED = "facts_merge_repairs_rejected"
@@ -175,13 +179,20 @@ class RetrievalMetric(StrEnum):
     #: domains and ranges of their links (against the whole ontology context,
     #: which a unit's context may have lacked), instead of dropping them.
     FACTS_UNTYPED_INFERRED = "facts_untyped_inferred"
+    #: Instances dropped for stating nothing: linked to no other instance nor
+    #: the document, and holding no value, only a type and names.
+    FACTS_UNLINKED_DROPPED = "facts_unlinked_dropped"
     #: Links between instances the gate's repairs removed (SHACL prune and
     #: the untyped drop), counted after any un-merge pass.
     FACTS_LINKS_REMOVED = "facts_links_removed"
     #: Connected groups of instances in the served facts, the document node
-    #: joining what it links, and instances linked to nothing.
+    #: joining what it links, and instances linked to nothing (those left hold
+    #: a value of their own).
     FACTS_COMPONENTS = "facts_components"
     FACTS_ISOLATED = "facts_isolated"
+    #: Labels two or more served instances share: the duplicates aggregation
+    #: left, or distinct things with one name.
+    FACTS_TWIN_LABELS = "facts_twin_labels"
 
     # Post-aggregation checks.
     STRUCTURAL_ONTOLOGY_COMPONENTS_MAX = "structural_ontology_components_max"

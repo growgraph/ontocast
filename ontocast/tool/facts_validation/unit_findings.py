@@ -22,6 +22,7 @@ from ontocast.onto.rdfgraph import (
     RDFGraph,
     RejectedLiteralTriple,
 )
+from ontocast.onto.well_known import well_known_terms, well_known_vocabulary
 from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
 from ontocast.tool.facts_validation.terms import (
     _FORBIDDEN_NAMESPACES,
@@ -35,11 +36,11 @@ from ontocast.tool.facts_validation.terms import (
     _name_tokens,
     _namespace_of,
     _resolve_type_literal,
-    _superclass_closure,
     _vocabulary_role_subset,
     collect_catalog_terms,
     collect_declared_namespaces,
     expand_vocabulary_terms,
+    superclass_closure,
     untyped_instances,
 )
 from ontocast.util.measurement_lexicon import unit_adjacent_numbers
@@ -177,7 +178,7 @@ def domain_violation_findings(
 
         def closure(class_iri: URIRef) -> set[URIRef]:
             if class_iri not in closures:
-                closures[class_iri] = _superclass_closure(class_iri, ontology_graph)
+                closures[class_iri] = superclass_closure(class_iri, ontology_graph)
             return closures[class_iri]
 
         # Compatible in either direction: the asserted type specializes a
@@ -773,6 +774,14 @@ def collect_unit_findings(
     known_terms = set(full_catalog_terms or ())
     findings: list[FactsUnitFinding] = []
     standard_namespaces = policy.standard_namespaces()
+    # The vocabularies the catalog builds on: a namespace it declares terms
+    # in, or borrows a term from (a superclass, a restricted property). A
+    # strict vocabulary closes everything outside them; what the catalog
+    # borrows it is no authority on, so a borrowed namespace stays open.
+    catalog_namespaces = {
+        _namespace_of(term)
+        for term in (*known_terms, *collect_catalog_terms(ontology_graph))
+    }
     fallback_terms = policy.exempt_terms(graph, ontology_graph)
     quantity_fallback_vocabulary = policy.quantity_fallback_vocabulary
 
@@ -890,24 +899,23 @@ def collect_unit_findings(
                 )
                 continue
             namespace = _namespace_of(text)
-            if (
-                catalog_terms
-                and namespace in declared_namespaces
-                and text not in catalog_terms
-                and text not in known_terms
-                and text not in fallback_terms
-                and not namespace.startswith(standard_namespaces)
-            ):
+            if text in catalog_terms or text in known_terms or text in fallback_terms:
+                continue
+            vocabulary = well_known_vocabulary(text)
+            if vocabulary is not None and not vocabulary.has_term(_local_name(text)):
+                # Written from memory: the prompt names the vocabulary, not
+                # its terms, so a plausible term it does not have is caught
+                # here, with near-misses from the vocabulary itself.
                 flagged_terms.add(text)
                 findings.append(
                     FactsUnitFinding(
                         kind=FactsUnitFindingKind.UNKNOWN_TERM,
                         message=(
-                            f"<{text}> does not exist in its ontology; rewrite "
-                            "the term IN PLACE to the closest correct term from "
-                            "the ontology chapter (or a suggested candidate), "
-                            "keeping the statement and its value. Do NOT delete "
-                            "the statement."
+                            f"<{text}> is not a term of {vocabulary.title}; "
+                            "rewrite the statement IN PLACE with a term that "
+                            "exists in it (or a suggested candidate), or with a "
+                            "term from the ontology chapter, keeping the "
+                            "statement and its value."
                         ),
                         predicate=text,
                         suggestions=_containment_qualified(
@@ -915,13 +923,55 @@ def collect_unit_findings(
                             _alias_candidates(
                                 term,
                                 graph,
-                                catalog_terms,
-                                ontology_graph=ontology_graph,
+                                well_known_terms(namespace),
                                 position=position,
                             ),
                         ),
                     )
                 )
+                continue
+            if not catalog_terms or namespace.startswith(standard_namespaces):
+                continue
+            if namespace in declared_namespaces:
+                # A member of a closed namespace: a near-miss of a real term.
+                message = (
+                    f"<{text}> does not exist in its ontology; rewrite "
+                    "the term IN PLACE to the closest correct term from "
+                    "the ontology chapter (or a suggested candidate), "
+                    "keeping the statement and its value. Do NOT delete "
+                    "the statement."
+                )
+            elif policy.vocabulary == "strict" and namespace not in catalog_namespaces:
+                # A vocabulary that is neither the catalog's, one it borrows
+                # from, nor well-known. The strict vocabulary admits nothing
+                # else, so the statement is re-expressed or left out.
+                message = (
+                    f"<{text}> is not a term of the ontology nor of a "
+                    "well-known vocabulary, and the vocabulary is strict: "
+                    "rewrite the statement with a term from the ontology "
+                    "chapter or a well-known vocabulary, or leave the "
+                    "statement out if none can express it."
+                )
+            else:
+                continue
+            flagged_terms.add(text)
+            findings.append(
+                FactsUnitFinding(
+                    kind=FactsUnitFindingKind.UNKNOWN_TERM,
+                    message=message,
+                    predicate=text,
+                    suggestions=_containment_qualified(
+                        term,
+                        _alias_candidates(
+                            term,
+                            graph,
+                            catalog_terms,
+                            ontology_graph=ontology_graph,
+                            position=position,
+                        ),
+                    ),
+                )
+            )
 
     findings.extend(
         _scalar_as_bounds_findings(graph, ontology_graph, normalized_fact_namespaces)

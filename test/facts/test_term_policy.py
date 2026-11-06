@@ -173,9 +173,20 @@ class TestShaclCatalogContradictions:
     """
 
     def test_contradiction_reported_when_namespace_closed(self) -> None:
+        shapes = _graph(
+            self.SHAPES.replace(
+                "qq:numericLowerBound ; sh:minCount 0", "qq:centre ; sh:minCount 1"
+            )
+        )
+        contradictions = shacl_catalog_contradictions(shapes, _graph(ONTOLOGY))
+        assert contradictions == [f"{QQ}centre"]
+
+    def test_a_catalog_redeclaring_well_known_terms_does_not_close_them(self) -> None:
+        """A well-known namespace is closed by its own term list, not by the
+        part of it a catalog redeclares: ``qudt:numericValue`` is a QUDT term."""
         ontology = _graph(ONTOLOGY + "\nqudt:ucumCode a owl:DatatypeProperty .")
         contradictions = shacl_catalog_contradictions(_graph(self.SHAPES), ontology)
-        assert contradictions == [f"{QUDT}numericValue"]
+        assert contradictions == []
 
     def test_fallback_vocabulary_clears_the_contradiction(self) -> None:
         ontology = _graph(ONTOLOGY + "\nqudt:ucumCode a owl:DatatypeProperty .")

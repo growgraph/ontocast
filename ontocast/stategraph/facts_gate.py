@@ -41,6 +41,7 @@ from ontocast.tool.agg.signatures import (
     normalize_string_value,
     string_values_compatible,
 )
+from ontocast.tool.agg.value_names import carrierless_values, name_values
 from ontocast.tool.facts_validation import (
     FactsValidationReport,
     ShaclRepairResult,
@@ -55,7 +56,9 @@ from ontocast.tool.facts_validation import (
     materialize_entailed_types,
     record_facts_gate_metrics,
     shacl_catalog_contradictions,
+    silent_instances,
     summarize_conformance,
+    twin_labels,
     untyped_instances,
     validate_aggregated_facts,
 )
@@ -264,11 +267,57 @@ def drop_untyped_instances(
         Tuple of (the same graph, dropped instance IRIs ordered by IRI).
     """
     untyped = untyped_instances(graph, fact_namespaces)
-    if not untyped:
-        return graph, []
+    _remove_instances(graph, untyped)
+    if untyped:
+        logger.info(
+            "Dropped %d untyped instance(s) from the aggregated facts", len(untyped)
+        )
+    return graph, [str(instance) for instance in untyped]
+
+
+def drop_unlinked_instances(
+    graph: RDFGraph, fact_namespaces: Sequence[str], document: URIRef | None
+) -> tuple[RDFGraph, list[str], int]:
+    """Remove every instance that states nothing, and every value no statement carries.
+
+    Served facts are statements: an instance linked to no other instance nor
+    to ``document``, holding no value of its own
+    (:func:`~ontocast.tool.facts_validation.connectivity.silent_instances`),
+    is a type and a name, a mention rather than a fact; a blank-node value
+    nothing points to has lost its statement. Runs on the aggregated graph,
+    so a mention another unit links has merged first.
+
+    Args:
+        graph: Aggregated facts graph, mutated in place.
+        fact_namespaces: Namespaces holding minted instances.
+        document: The document node; a link to it counts.
+
+    Returns:
+        Tuple of (the same graph, dropped instance IRIs ordered by IRI, the
+        number of carrierless values dropped).
+    """
+    silent = sorted(silent_instances(graph, fact_namespaces, document), key=str)
+    _remove_instances(graph, silent)
+    orphaned, _ = _remove_orphaned_blank_nodes(graph, carrierless_values(graph))
+    drop_reifiers_mentioning(graph, orphaned)
+    if silent or orphaned:
+        logger.info(
+            "Dropped %d instance(s) stating nothing and %d value(s) with no "
+            "carrier from the aggregated facts",
+            len(silent),
+            len(orphaned),
+        )
+    return graph, [str(instance) for instance in silent], len(orphaned)
+
+
+def _remove_instances(graph: RDFGraph, instances: Sequence[URIRef]) -> None:
+    """Remove every triple naming ``instances``, the blank nodes only those
+    triples reached, and the reifiers quoting any removed statement."""
+    if not instances:
+        return
     orphan_candidates: set[BNode] = set()
-    removed_nodes: set[Node] = set(untyped)
-    for instance in untyped:
+    removed_nodes: set[Node] = set(instances)
+    for instance in instances:
         for triple in [
             *graph.triples((instance, None, None)),
             *graph.triples((None, None, instance)),
@@ -280,10 +329,6 @@ def drop_untyped_instances(
     orphaned, _ = _remove_orphaned_blank_nodes(graph, orphan_candidates)
     removed_nodes |= orphaned
     drop_reifiers_mentioning(graph, removed_nodes)
-    logger.info(
-        "Dropped %d untyped instance(s) from the aggregated facts", len(untyped)
-    )
-    return graph, [str(instance) for instance in untyped]
 
 
 def run_facts_gate(
@@ -308,10 +353,13 @@ def run_facts_gate(
     still untyped take the types their links' domains and ranges entail in the
     whole ontology context (``facts_untyped_inferred``), and those still
     untyped are dropped (:func:`drop_untyped_instances`;
-    ``facts_untyped_dropped``). The links these repairs removed
-    (``facts_links_removed``) and how the served instances hang together
-    (``facts_components``, ``facts_isolated``) are recorded. Residual findings
-    stay on the state as telemetry.
+    ``facts_untyped_dropped``), and so are instances that state nothing
+    (:func:`drop_unlinked_instances`; ``facts_unlinked_dropped``). The links
+    these repairs removed
+    (``facts_links_removed``), how the served instances hang together
+    (``facts_components``, ``facts_isolated``) and the labels several of them
+    share (``facts_twin_labels``) are recorded. Residual findings stay on the
+    state as telemetry.
 
     Args:
         state: Document state carrying ``aggregated_facts`` and the facts units.
@@ -346,6 +394,7 @@ def run_facts_gate(
             quantity_fallback_vocabulary=facts_validation.quantity_fallback_vocabulary,
             code_predicates=tuple(facts_validation.code_predicates),
             contract_exempt_terms=contract_terms,
+            vocabulary=facts_validation.vocabulary,
         ),
         catalog_terms=tools.ontology_manager.catalog_terms(),
     )
@@ -387,6 +436,12 @@ def run_facts_gate(
                 state.aggregation_cross_unit_pairs
                 if facts_validation.suspect_multi_value_require_cross_unit
                 else None
+            ),
+            non_catalog_severity=(
+                "error" if facts_validation.vocabulary == "strict" else "warning"
+            ),
+            additional_standard_namespaces=tuple(
+                facts_validation.additional_standard_namespaces
             ),
         )
 
@@ -528,6 +583,18 @@ def run_facts_gate(
     state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_DROPPED] = len(
         untyped_dropped
     )
+    _, unlinked_dropped, values_dropped = drop_unlinked_instances(
+        state.aggregated_facts, fact_namespaces, state.doc_iri
+    )
+    untyped_records.extend(
+        GraphRepairRecord(
+            kind=FactsGateRepairKind.UNLINKED_DROPPED, source=iri, target=""
+        )
+        for iri in unlinked_dropped
+    )
+    state.retrieval_metrics[RetrievalMetric.FACTS_UNLINKED_DROPPED] = (
+        len(unlinked_dropped) + values_dropped
+    )
 
     state.retrieval_metrics[RetrievalMetric.FACTS_LINKS_REMOVED] = links_lost(
         links_before, state.aggregated_facts
@@ -537,8 +604,14 @@ def run_facts_gate(
     )
     state.retrieval_metrics[RetrievalMetric.FACTS_COMPONENTS] = connectivity.components
     state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED] = connectivity.isolated
+    state.retrieval_metrics[RetrievalMetric.FACTS_TWIN_LABELS] = len(
+        twin_labels(state.aggregated_facts, fact_namespaces, state.doc_iri)
+    )
+    # Values are blank nodes under their carriers until here, so the counts
+    # above see them as parts of statements; the served graph names them.
+    name_values(state.aggregated_facts)
 
-    if repair_result.records or untyped_dropped or inferred_records:
+    if repair_result.records or untyped_records or inferred_records:
         report = run_validation()
 
     if dedupe_records or repair_result.records or untyped_records or inferred_records:

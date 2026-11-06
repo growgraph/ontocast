@@ -217,6 +217,8 @@ def _prepare_prompt_data(
     citation_vocabulary: dict[str, str] | None = None,
     quantity_fallback_vocabulary: dict[str, str] | None = None,
     search_guidelines: str = "",
+    vocabulary: str = "strict",
+    additional_namespaces: tuple[str, ...] = (),
 ) -> dict[str, str]:
     """Prepare common prompt data for both fresh and update rendering.
 
@@ -276,6 +278,8 @@ def _prepare_prompt_data(
         domain_ontologies_clause=format_ontologies_clause(domain_pairs),
         quantity_fallback_vocabulary=quantity_fallback_vocabulary,
         search_guidelines=search_guidelines,
+        vocabulary=vocabulary,
+        additional_namespaces=additional_namespaces,
     )
 
     text_chapter = text_template.format(text=state.content_unit.extraction_text)
@@ -385,6 +389,8 @@ async def render_facts_fresh(
         search_guidelines=search_guidelines_for(
             WorkflowNode.TEXT_TO_FACTS, web_search_enabled
         ),
+        vocabulary=tools.facts_vocabulary,
+        additional_namespaces=tools.additional_standard_namespaces,
     )
     prompt_data_fresh = {
         "preamble": preamble,
