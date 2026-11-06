@@ -435,39 +435,31 @@ def test_model_validate_uses_explicit_llm_graph_format_context() -> None:
     assert len(report.insert_graph) >= 1
 
 
-def test_serialize_canonical_turtle_handles_oxigraph_triple_terms() -> None:
-    """Oxigraph-backed graphs may hold RDF 1.2 triple terms.
+def test_serialize_canonical_turtle_writes_reifications() -> None:
+    """Provenance is written as RDF 1.2 triple terms beside the triples."""
+    from rdflib import BNode
 
-    oxrdflib surfaces those as plain Python tuples, which rdflib's Turtle
-    writer cannot serialize, so the canonical writer must delegate to
-    pyoxigraph for oxigraph stores regardless of the Turtle flavour requested.
-    """
-    from typing import cast
-
-    import pyoxigraph as ox
-    from oxrdflib._converter import to_ox
-
-    from ontocast.onto.rdfgraph import _oxigraph_inner_store
-
-    graph = RDFGraph(store="oxigraph")
-    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
-    context = to_ox(graph.identifier)
-    assert isinstance(context, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
-    inner.load(
-        b"""
-        @prefix cd: <https://growgraph.dev/facts/> .
-        cd:a cd:p cd:b .
-        cd:s cd:annotates <<( cd:a cd:p cd:b )>> .
-        """,
-        format=ox.RdfFormat.TURTLE,
-        to_graph=context,
-    )
-    graph.bind("cd", "https://growgraph.dev/facts/")
+    cd = "https://growgraph.dev/facts/"
+    statement = (URIRef(f"{cd}a"), URIRef(f"{cd}p"), URIRef(f"{cd}b"))
+    graph = RDFGraph()
+    graph.bind("cd", cd)
+    graph.add(statement)
+    graph.reifications.add(BNode(), statement)
 
     turtle = graph.serialize_canonical_turtle()
 
     assert "cd:a cd:p cd:b" in turtle
-    assert "cd:s cd:annotates <<( cd:a cd:p cd:b )>>" in turtle
+    assert "<<( cd:a cd:p cd:b )>>" in turtle
+
+
+def test_a_triple_term_outside_rdf_reifies_is_refused() -> None:
+    with pytest.raises(ValueError, match="rdf:reifies"):
+        RDFGraph._from_turtle_str(
+            """
+            @prefix cd: <https://growgraph.dev/facts/> .
+            cd:s cd:annotates <<( cd:a cd:p cd:b )>> .
+            """
+        )
 
 
 def test_serialize_canonical_turtle_keeps_double_precision() -> None:

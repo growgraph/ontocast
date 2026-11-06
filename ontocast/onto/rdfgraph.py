@@ -8,8 +8,9 @@ from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
-from typing import Any, Union, cast
+from typing import Any, Union
 
+import pyoxigraph as ox
 from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler
 from pydantic_core import core_schema
 from pyld import jsonld
@@ -26,6 +27,12 @@ from ontocast.onto.constants import (
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.iri_policy import normalize_namespace_iri, sanitize_prefix_map
 from ontocast.onto.namespace_merge import choose_best_prefix, merge_namespace_bindings
+from ontocast.onto.reification import (
+    ProvenanceFormatError,
+    Reifications,
+    from_ox,
+    ox_triple,
+)
 from ontocast.onto.util import is_rdflib_default_namespace
 from ontocast.util.hash import render_text_hash
 
@@ -67,179 +74,89 @@ plugin.register(
 )
 
 
-def _oxigraph_inner_store(rdflib_store: object) -> object:
-    """Return the underlying pyoxigraph ``Store`` from an ``OxigraphStore``."""
-    inner = getattr(rdflib_store, "_inner", None)
-    if inner is None:
-        raise RuntimeError("Expected an OxigraphStore with a pyoxigraph _inner store")
-    return inner
+_REIFIES = ox.NamedNode(str(RDF_REIFIES))
+
+#: The formats that carry RDF 1.2 triple terms, by rdflib format name.
+_RDF12_FORMATS: dict[str, ox.RdfFormat] = {
+    "turtle": ox.RdfFormat.TURTLE,
+    "ttl": ox.RdfFormat.TURTLE,
+    "text/turtle": ox.RdfFormat.TURTLE,
+    LOSSLESS_TURTLE_FORMAT: ox.RdfFormat.TURTLE,
+    "nt": ox.RdfFormat.N_TRIPLES,
+    "ntriples": ox.RdfFormat.N_TRIPLES,
+    "nt11": ox.RdfFormat.N_TRIPLES,
+    "nquads": ox.RdfFormat.N_QUADS,
+    "trig": ox.RdfFormat.TRIG,
+}
+
+#: Turtle that states something about a statement: a triple term, the
+#: reified-triple shorthand, or an annotation block.
+_TRIPLE_TERM_SYNTAX = re.compile(r"<<\(|<<\s|\{\|")
 
 
-def is_rdflib_triple(triple: object) -> bool:
-    """True when every position of ``triple`` is an rdflib :class:`~rdflib.Node`.
-
-    Oxigraph-backed graphs may carry RDF 1.2 triple terms (see
-    ``ontocast.tool.agg.rewriter``), which the oxrdflib iterator yields as plain
-    tuples. Those tuples are not rdflib terms: ``Graph.add`` asserts on them and
-    SPARQL has no syntax for them, so every path that copies or serialises
-    triples out of such a graph has to filter first.
-    """
-    if not isinstance(triple, tuple) or len(triple) != 3:
-        return False
-    return all(isinstance(position, Node) for position in triple)
-
-
-def copy_triples(source: Iterable, target: Graph, *, origin: str) -> int:
-    """Add every rdflib triple of ``source`` to ``target``, dropping triple terms.
-
-    Args:
-        source: Any iterable of triples, typically a graph.
-        target: Graph to add to.
-        origin: Caller name, used in the warning when triples are dropped.
+def copy_triples(source: Iterable, target: Graph) -> int:
+    """Add every triple of ``source`` to ``target``.
 
     Returns:
-        The number of triples skipped because they were not rdflib triples.
+        The number of triples added.
     """
-    dropped = 0
+    count = 0
     for triple in source:
-        if not is_rdflib_triple(triple):
-            dropped += 1
-            continue
         target.add(triple)
-    if dropped:
-        # Expected on every graph the aggregator annotated: its rdf:reifies
-        # provenance is triple-term syntax, which the rdflib copy for SHACL
-        # cannot hold. Not a loss -- the facts dump keeps them.
-        logger.debug(
-            "%s: dropped %d RDF 1.2 triple-term triple(s); rdflib graphs cannot "
-            "hold them",
-            origin,
-            dropped,
-        )
-    return dropped
+        count += 1
+    return count
 
 
 def drop_reifiers_mentioning(graph: Graph, nodes: Collection[Node]) -> int:
-    """Delete reifier descriptions whose triple term mentions any of ``nodes``.
+    """Delete the provenance of statements that mention any of ``nodes``.
 
-    Provenance is RDF 1.2 reification — ``_:r rdf:reifies <<( s p o )>>`` plus
-    ``prov:`` arcs — so a node being removed from the graph is referenced from
-    *inside* a triple term. No subject/object pattern matches that, which left
-    the reifier and its provenance describing a statement that no longer
-    existed once the node's own triples were deleted.
-
-    Goes through pyoxigraph rather than rdflib: ``Graph.remove`` raises
-    ``ValueError`` on a triple whose object is a triple term, so the
-    ``rdf:reifies`` quad is not removable through the rdflib API at all.
+    Provenance is RDF 1.2 reification (``_:r rdf:reifies <<( s p o )>>`` plus
+    ``prov:`` arcs), so a node removed from the graph is still referenced from
+    *inside* a triple term, which no subject/object pattern matches. This
+    removes those reifications and every other arc of their reifiers.
 
     Args:
-        graph: Graph to sweep, mutated in place. A non-oxigraph store cannot
-            hold triple terms, so it is a no-op.
+        graph: Graph to sweep, mutated in place. A graph without reifications
+            is left alone.
         nodes: Nodes whose triples have been removed.
 
     Returns:
-        The number of quads removed.
+        The number of statements removed.
     """
-    if not nodes or type(graph.store).__name__ != "OxigraphStore":
+    if not nodes or not isinstance(graph, RDFGraph) or not graph.has_reifications:
         return 0
-
-    import pyoxigraph as ox
-    from oxrdflib._converter import to_ox
-
-    store = cast("ox.Store", _oxigraph_inner_store(graph.store))
-    graph_ctx_raw = to_ox(graph.identifier)
-    assert isinstance(graph_ctx_raw, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
-    graph_ctx: ox.NamedNode | ox.BlankNode | ox.DefaultGraph = graph_ctx_raw
-    targets = {to_ox(node) for node in nodes}
-
-    doomed = set()
-    for quad in store.quads_for_pattern(
-        None, ox.NamedNode(str(RDF_REIFIES)), None, graph_ctx
-    ):
-        term = quad.object
-        if not isinstance(term, ox.Triple):
-            continue
-        if targets & {term.subject, term.predicate, term.object}:
-            doomed.add(quad.subject)
-
-    removed = 0
-    for reifier in doomed:
-        for quad in list(store.quads_for_pattern(reifier, None, None, graph_ctx)):
-            store.remove(quad)
+    reifiers = graph.reifications.drop_mentioning(nodes)
+    removed = len(reifiers)
+    for reifier in reifiers:
+        for triple in list(graph.triples((reifier, None, None))):
+            graph.remove(triple)
             removed += 1
     return removed
 
 
-def ox_triple_term(triple: tuple) -> Any:
-    """Convert an rdflib triple to a pyoxigraph triple term, or ``None``.
-
-    Returns ``None`` rather than raising when a position cannot be a triple
-    term (a literal subject, say): a repair plan is best-effort provenance
-    bookkeeping and must never bring down the validation gate.
-    """
-    import pyoxigraph as ox
-    from oxrdflib._converter import to_ox
-
-    if not is_rdflib_triple(triple):
-        return None
-    subject, predicate, obj = (to_ox(position) for position in triple)
-    if not isinstance(subject, (ox.NamedNode, ox.BlankNode)):
-        return None
-    if not isinstance(predicate, ox.NamedNode):
-        return None
-    if not isinstance(obj, (ox.NamedNode, ox.BlankNode, ox.Literal, ox.Triple)):
-        return None
-    return ox.Triple(subject, predicate, obj)
-
-
 def retarget_reifiers(graph: Graph, replacements: Mapping[tuple, tuple]) -> int:
-    """Repoint reifier triple terms from a removed statement onto its replacement.
+    """Repoint provenance from a removed statement onto the one that replaced it.
 
     Companion to :func:`drop_reifiers_mentioning`, for the repairs that
-    *rewrite* a statement rather than delete it. A SHACL retype or a
-    code-to-IRI resolution removes ``s p o`` and adds ``s p o'``; without this
-    the ``_:r rdf:reifies <<( s p o )>>`` quad keeps describing a statement
-    that no longer exists. The provenance is not wrong, it is dangling — and
-    dropping it instead would lose the derivation of a triple that survived the
-    repair.
-
-    Goes through pyoxigraph for the same reason the sweep does: rdflib cannot
-    add or remove a triple whose object is a triple term. The reifier node
-    itself is untouched, so its ``prov:wasDerivedFrom`` arcs move with it.
+    *rewrite* a statement rather than delete it (a SHACL retype, a code
+    resolved to a catalog IRI). The reifier is kept, so its
+    ``prov:wasDerivedFrom`` arcs move with it.
 
     Args:
-        graph: Graph to rewrite, mutated in place. A non-oxigraph store cannot
-            hold triple terms, so it is a no-op.
+        graph: Graph to rewrite, mutated in place. A graph without
+            reifications is left alone.
         replacements: Removed triple -> the triple that replaced it.
 
     Returns:
-        The number of ``rdf:reifies`` quads repointed.
+        The number of reifications repointed.
     """
-    if not replacements or type(graph.store).__name__ != "OxigraphStore":
+    if (
+        not replacements
+        or not isinstance(graph, RDFGraph)
+        or not graph.has_reifications
+    ):
         return 0
-
-    import pyoxigraph as ox
-    from oxrdflib._converter import to_ox
-
-    store = cast("ox.Store", _oxigraph_inner_store(graph.store))
-    graph_ctx_raw = to_ox(graph.identifier)
-    assert isinstance(graph_ctx_raw, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
-    graph_ctx: ox.NamedNode | ox.BlankNode | ox.DefaultGraph = graph_ctx_raw
-    reifies = ox.NamedNode(str(RDF_REIFIES))
-
-    moved = 0
-    for removed, replacement in replacements.items():
-        old_term = ox_triple_term(removed)
-        new_term = ox_triple_term(replacement)
-        if old_term is None or new_term is None or old_term == new_term:
-            continue
-        # A triple term is legal in object position, so this is a keyed lookup
-        # rather than a scan over every reifier in the graph.
-        for quad in list(store.quads_for_pattern(None, reifies, old_term, graph_ctx)):
-            store.remove(quad)
-            store.add(ox.Quad(quad.subject, reifies, new_term, graph_ctx))
-            moved += 1
-    return moved
+    return graph.reifications.retarget(replacements)
 
 
 PREFIX_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<[^>]+>\s+\.")
@@ -743,6 +660,30 @@ class RDFGraph(Graph):
             ),
         )
 
+    @property
+    def reifications(self) -> Reifications:
+        """The graph's RDF 1.2 provenance: every ``rdf:reifies`` statement.
+
+        rdflib cannot hold a triple term, so these live beside the graph; the
+        reifiers' other arcs (``prov:wasDerivedFrom``) are ordinary triples of
+        the graph. Created on first use.
+        """
+        reifications = self.__dict__.get("_reifications")
+        if reifications is None:
+            reifications = Reifications()
+            self.__dict__["_reifications"] = reifications
+        return reifications
+
+    @property
+    def has_reifications(self) -> bool:
+        """Whether the graph carries any RDF 1.2 provenance."""
+        reifications = self.__dict__.get("_reifications")
+        return reifications is not None and len(reifications) > 0
+
+    def _take_reifications(self, other: object) -> None:
+        if isinstance(other, RDFGraph) and other.has_reifications:
+            self.reifications.update(other.reifications)
+
     def __add__(self, other: Union["RDFGraph", Graph, Iterable]) -> "RDFGraph":
         """Addition operator for RDFGraph instances.
 
@@ -757,9 +698,10 @@ class RDFGraph(Graph):
         # Create a new RDFGraph instance
         result = RDFGraph()
 
-        # Copy all triples from both graphs
-        copy_triples(self, result, origin="RDFGraph.__add__")
-        copy_triples(other, result, origin="RDFGraph.__add__")
+        copy_triples(self, result)
+        copy_triples(other, result)
+        result._take_reifications(self)
+        result._take_reifications(other)
 
         existing = {prefix: str(uri) for prefix, uri in self.namespaces() if prefix}
         incoming: dict[str, str] = {}
@@ -793,7 +735,8 @@ class RDFGraph(Graph):
             incoming = {
                 prefix: str(uri) for prefix, uri in other.namespaces() if prefix
             }
-        copy_triples(other, self, origin="RDFGraph.__iadd__")
+        copy_triples(other, self)
+        self._take_reifications(other)
         for prefix, uri in merge_namespace_bindings(existing, incoming).items():
             if existing.get(prefix) != uri:
                 self.bind(prefix, uri)
@@ -803,14 +746,12 @@ class RDFGraph(Graph):
         """Create a copy of this RDFGraph.
 
         Returns:
-            RDFGraph: A new RDFGraph instance with all triples and namespace bindings copied.
+            RDFGraph: A new RDFGraph with the triples, the reifications and the
+            namespace bindings copied.
         """
         result = RDFGraph()
-
-        # Copy all triples. An oxigraph-backed graph may hold RDF 1.2 triple
-        # terms, which a plain rdflib graph cannot represent -- this is the path
-        # __deepcopy__ takes, so it degrades instead of raising.
-        copy_triples(self, result, origin="RDFGraph.copy")
+        copy_triples(self, result)
+        result._take_reifications(self)
 
         # Copy namespace bindings
         for prefix, uri in self.namespaces():
@@ -955,6 +896,13 @@ class RDFGraph(Graph):
         Returns:
             RDFGraph: A new RDFGraph instance.
         """
+        if _TRIPLE_TERM_SYNTAX.search(turtle_str):
+            try:
+                return cls._from_rdf12_text(turtle_str, ox.RdfFormat.TURTLE)
+            except SyntaxError:
+                # Not RDF 1.2 after all (``<<`` inside a literal): the rdflib
+                # path below, with its repairs, decides.
+                pass
         normalized_turtle = cls._normalize_turtle_input(turtle_str)
         patched_turtle = cls._coerce_invalid_numeric_typed_literals(
             cls._quote_unquoted_typed_literals(cls._ensure_prefixes(normalized_turtle))
@@ -1519,9 +1467,9 @@ class RDFGraph(Graph):
     def _to_turtle_str(g: Any) -> str:
         """Convert an RDFGraph to a Turtle string.
 
-        For graphs backed by the *oxigraph* store the serialisation is
-        delegated to ``pyoxigraph`` so that RDF 1.2 triple-term syntax
-        (``<<( s p o )>>``) is emitted correctly.
+        A graph with reifications is written as Turtle 1.2 through pyoxigraph,
+        so its provenance (``<<( s p o )>>``) round-trips through
+        :meth:`_from_str`.
 
         Args:
             g: The RDFGraph instance.
@@ -1529,93 +1477,120 @@ class RDFGraph(Graph):
         Returns:
             str: The Turtle (or Turtle-star) string representation.
         """
-        if hasattr(g, "store") and type(g.store).__name__ == "OxigraphStore":
+        if isinstance(g, RDFGraph) and g.has_reifications:
             return g.serialize_turtle_star()
         return g.serialize(format="turtle")
 
     def serialize_turtle_star(self) -> str:
-        """Serialize an oxigraph-backed graph to Turtle-star via *pyoxigraph*.
+        """Serialize to Turtle 1.2, reifications included."""
+        return self._serialize_rdf12(ox.RdfFormat.TURTLE)
 
-        This method extracts all quads belonging to this graph's context
-        from the underlying ``pyoxigraph.Store`` and serialises them into
-        the default graph using ``pyoxigraph.serialize`` with the Turtle
-        format, which natively supports RDF 1.2 ``<<( … )>>`` syntax.
+    def _serialize_rdf12(self, rdf_format: ox.RdfFormat) -> str:
+        """Write the triples and the reifications as one RDF 1.2 document.
 
-        Returns:
-            Turtle-star string.
+        Goes through ``pyoxigraph.serialize`` over the statements themselves,
+        never through a pyoxigraph ``Store``: a Store re-encodes numeric
+        literals (``"2.0"`` comes back as ``"2"``), and values are written as
+        extracted.
 
         Raises:
-            RuntimeError: If the graph is not backed by an oxigraph store.
+            TypeError: A triple of the graph is not a valid RDF statement.
         """
-        try:
-            import pyoxigraph as ox
-            from oxrdflib._converter import to_ox
-        except ImportError as exc:
-            raise RuntimeError(
-                "pyoxigraph / oxrdflib must be installed for Turtle-star serialisation"
-            ) from exc
-
-        inner_store = cast(ox.Store, _oxigraph_inner_store(self.store))
-        graph_ctx_raw = to_ox(self.identifier)
-        assert isinstance(
-            graph_ctx_raw,
-            (ox.NamedNode, ox.BlankNode, ox.DefaultGraph),
-        )
-        graph_ctx: ox.NamedNode | ox.BlankNode | ox.DefaultGraph = graph_ctx_raw
-
-        # Copy quads into a temporary store under the default graph so
-        # that ``ox.serialize`` can emit plain Turtle (Turtle-star).
-        tmp = ox.Store()
-        used_iri_terms: set[str] = set()
-
-        def _collect_used_iris(term: Any) -> None:
-            if isinstance(term, ox.NamedNode):
-                used_iri_terms.add(term.value)
-                return
-            if isinstance(term, ox.Triple):
-                _collect_used_iris(term.subject)
-                _collect_used_iris(term.predicate)
-                _collect_used_iris(term.object)
-
-        for quad in inner_store.quads_for_pattern(
-            None,
-            None,
-            None,
-            graph_ctx,
-        ):
-            _collect_used_iris(quad.subject)
-            _collect_used_iris(quad.predicate)
-            _collect_used_iris(quad.object)
-            tmp.add(
-                ox.Quad(quad.subject, quad.predicate, quad.object, ox.DefaultGraph())
+        quads: list[ox.Quad] = []
+        for triple in self:
+            term = ox_triple(triple)
+            if term is None:
+                raise TypeError(f"{triple!r} is not a valid RDF statement")
+            quads.append(
+                ox.Quad(term.subject, term.predicate, term.object, ox.DefaultGraph())
             )
+        if self.has_reifications:
+            quads.extend(self.reifications.quads())
+        prefixes = (
+            self._prefixes_used_by(quads)
+            if rdf_format in (ox.RdfFormat.TURTLE, ox.RdfFormat.TRIG)
+            else {}
+        )
+        raw = ox.serialize(quads, format=rdf_format, prefixes=prefixes or None)
+        return raw.decode("utf-8") if raw else ""
+
+    def _prefixes_used_by(self, quads: Iterable[ox.Quad]) -> dict[str, str]:
+        """The graph's bindings that some IRI of ``quads`` uses, shortest
+        prefix first when a namespace has several."""
+        used: set[str] = set()
+
+        def collect(term: object) -> None:
+            if isinstance(term, ox.NamedNode):
+                used.add(term.value)
+            elif isinstance(term, ox.Triple):
+                collect(term.subject)
+                collect(term.predicate)
+                collect(term.object)
+
+        for quad in quads:
+            collect(quad.subject)
+            collect(quad.predicate)
+            collect(quad.object)
 
         namespace_to_prefix: dict[str, str] = {}
         for prefix, namespace in self.namespaces():
             if not prefix:
                 continue
-            prefix_str = str(prefix)
-            namespace_str = str(namespace)
+            prefix_str, namespace_str = str(prefix), str(namespace)
             current = namespace_to_prefix.get(namespace_str)
             if current is None or (len(prefix_str), prefix_str) < (
                 len(current),
                 current,
             ):
                 namespace_to_prefix[namespace_str] = prefix_str
-
-        prefixes = {
+        return {
             prefix: namespace
             for namespace, prefix in namespace_to_prefix.items()
-            if any(iri.startswith(namespace) for iri in used_iri_terms)
+            if any(iri.startswith(namespace) for iri in used)
         }
-        raw = tmp.dump(
-            format=ox.RdfFormat.TURTLE,
-            from_graph=ox.DefaultGraph(),
-            prefixes=prefixes or None,
-        )
-        if raw is None:
-            raise RuntimeError("pyoxigraph dump returned no data")
-        return raw.decode()
+
+    @classmethod
+    def from_ox_quads(
+        cls,
+        quads: Iterable[ox.Quad | ox.Triple],
+        prefixes: Mapping[str, str] | None = None,
+    ) -> "RDFGraph":
+        """Build a graph from pyoxigraph statements, graph names ignored.
+
+        A statement whose object is a triple term becomes a reification.
+
+        Raises:
+            ValueError: A triple term anywhere but as the object of
+                ``rdf:reifies``.
+        """
+        graph = cls()
+        for prefix, namespace in (prefixes or {}).items():
+            graph.bind(prefix, namespace)
+        for quad in quads:
+            subject, predicate, obj = quad.subject, quad.predicate, quad.object
+            if isinstance(obj, ox.Triple):
+                if predicate != _REIFIES or not isinstance(
+                    subject, (ox.NamedNode, ox.BlankNode)
+                ):
+                    raise ValueError(
+                        f"a triple term is supported only as the object of "
+                        f"rdf:reifies, not in {quad}"
+                    )
+                graph.reifications.add_ox(subject, obj)
+                continue
+            graph.add((from_ox(subject), from_ox(predicate), from_ox(obj)))
+        return graph
+
+    @classmethod
+    def _from_rdf12_text(cls, text: str, rdf_format: ox.RdfFormat) -> "RDFGraph":
+        """Parse an RDF 1.2 document with pyoxigraph, keeping its prefixes.
+
+        Raises:
+            SyntaxError: The text does not parse.
+        """
+        parser = ox.parse(text, format=rdf_format)
+        quads = list(parser)
+        return cls.from_ox_quads(quads, prefixes=parser.prefixes)
 
     def canonicalize_bnodes(self) -> "RDFGraph":
         """Return a copy whose blank nodes carry content-derived labels.
@@ -1686,6 +1661,9 @@ class RDFGraph(Graph):
                     renamed.get(obj, obj),
                 )
             )
+        if self.has_reifications:
+            canonical.reifications.update(self.reifications)
+            canonical.reifications.rename(lambda term: renamed.get(term, term))
         return canonical
 
     def serialize_canonical_turtle(self) -> str:
@@ -1818,30 +1796,34 @@ class RDFGraph(Graph):
         encoding: str | None = None,
         **args: Any,
     ) -> Any:
-        """Serialize the graph, delegating to pyoxigraph for oxigraph stores.
+        """Serialize the graph, with its reifications when it has any.
 
-        When the graph is backed by an *oxigraph* store and the requested
-        format is any Turtle flavour (``"turtle"``, ``"ttl"`` or
-        :data:`LOSSLESS_TURTLE_FORMAT`), serialisation is handled by
-        ``pyoxigraph`` which natively supports RDF 1.2 triple terms.
-        For all other stores or formats the default rdflib serialiser is
-        used.
+        A graph without reifications is written by rdflib. One with
+        reifications is written through pyoxigraph in a format that carries
+        RDF 1.2 triple terms (Turtle, N-Triples, N-Quads, TriG), literals as
+        extracted.
 
-        The lossless flavour has to be routed here too: oxrdflib surfaces a
-        pyoxigraph triple term as a plain Python tuple, which rdflib's Turtle
-        writer cannot label (``'tuple' object has no attribute 'n3'``).
-        pyoxigraph's own writer is value-preserving for floating-point
-        literals, so nothing the lossless serializer exists for is given up.
+        Raises:
+            ProvenanceFormatError: The graph has reifications and ``format``
+                cannot carry them (JSON-LD, RDF/XML, ...). Write an RDF 1.2
+                format, or strip the provenance first
+                (``TripleStoreManager.strip_provenance``).
         """
-        is_ox = type(self.store).__name__ == "OxigraphStore"
-        if is_ox and format in ("turtle", "ttl", LOSSLESS_TURTLE_FORMAT):
-            ttl = self.serialize_turtle_star()
+        if self.has_reifications:
+            rdf_format = _RDF12_FORMATS.get(format)
+            if rdf_format is None:
+                raise ProvenanceFormatError(
+                    f"{format!r} cannot carry this graph's RDF 1.2 provenance "
+                    f"({len(self.reifications)} reified statement(s)); write "
+                    "Turtle, N-Triples, N-Quads or TriG, or strip the provenance "
+                    "first (TripleStoreManager.strip_provenance)"
+                )
+            text = self._serialize_rdf12(rdf_format)
             if destination is not None:
-                enc = encoding or "utf-8"
-                with open(destination, "w", encoding=enc) as fh:
-                    fh.write(ttl)
+                with open(destination, "w", encoding=encoding or "utf-8") as fh:
+                    fh.write(text)
                 return None
-            return ttl
+            return text.encode(encoding) if encoding else text
         return super().serialize(
             destination=destination,
             format=format,
@@ -2168,10 +2150,9 @@ class RDFGraph(Graph):
         # Create new graph
         new_graph = RDFGraph()
 
-        # Copy all triples (URIs are already expanded internally); an
-        # oxigraph-backed source may hold RDF 1.2 triple terms a plain rdflib
-        # graph cannot represent.
-        copy_triples(self, new_graph, origin="RDFGraph.unbind_chunk_namespaces")
+        # URIs are already expanded internally.
+        copy_triples(self, new_graph)
+        new_graph._take_reifications(self)
 
         # Bind only non-chunk namespace prefixes to the new graph
         for prefix, uri_str in prefix_to_normalized.items():
@@ -2187,28 +2168,25 @@ class RDFGraph(Graph):
         return new_graph
 
     def remap_namespaces(self, old_namespace, new_namespace) -> None:
+        """Move every IRI under ``old_namespace`` to ``new_namespace``,
+        in the triples and in the reifications alike."""
+        old, new = str(old_namespace), str(new_namespace)
+
+        def remap(term: Node) -> Node:
+            if isinstance(term, URIRef) and str(term).startswith(old):
+                return URIRef(str(term).replace(old, new, 1))
+            return term
+
         updates = {}
-        for s, p, o in self:
-            new_s, new_p, new_o = s, p, o
-            if isinstance(s, URIRef) and str(s).startswith(str(old_namespace)):
-                new_s = URIRef(
-                    str(s).replace(str(old_namespace), str(new_namespace), 1)
-                )
-            if isinstance(p, URIRef) and str(p).startswith(str(old_namespace)):
-                new_p = URIRef(
-                    str(p).replace(str(old_namespace), str(new_namespace), 1)
-                )
-            if isinstance(o, URIRef) and str(o).startswith(str(old_namespace)):
-                new_o = URIRef(
-                    str(o).replace(str(old_namespace), str(new_namespace), 1)
-                )
-
-            if (new_s, new_p, new_o) != (s, p, o):
-                updates[(s, p, o)] = (new_s, new_p, new_o)
-
-        for (s, p, o), (new_s, new_p, new_o) in updates.items():
-            self.remove((s, p, o))
-            self.add((new_s, new_p, new_o))
+        for triple in self:
+            moved = (remap(triple[0]), remap(triple[1]), remap(triple[2]))
+            if moved != triple:
+                updates[triple] = moved
+        for triple, moved in updates.items():
+            self.remove(triple)
+            self.add(moved)
+        if self.has_reifications:
+            self.reifications.rename(remap)
 
     def add_triple(self, subject: str, predicate: str, object_: str) -> None:
         """Add a triple to the graph.
@@ -2255,7 +2233,10 @@ class RDFGraph(Graph):
         logger.debug(f"Removed triple: {subj} {pred} {obj}")
 
     def hash(self: Graph) -> str:
-        """Return the SHA-256 content hash of this graph.
+        """Return the SHA-256 content hash of this graph's statements.
+
+        Reifications (provenance) are not part of it: two runs that state the
+        same facts from different chunks hash alike.
 
         The hash is taken over the RDF **value** space, not the lexical space:
         literals are canonicalized with :func:`canonical_literal` before

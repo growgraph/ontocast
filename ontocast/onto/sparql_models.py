@@ -13,7 +13,7 @@ from rdflib import BNode, Literal, Node, URIRef
 
 from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.llm_graph_payload import LLMGraphWire
-from ontocast.onto.rdfgraph import RDFGraph, copy_triples, is_rdflib_triple
+from ontocast.onto.rdfgraph import RDFGraph, copy_triples
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +147,7 @@ class GraphUpdate(BaseModel):
         result = RDFGraph()
         for op in self.triple_operations:
             if op.type == "insert" and len(op.graph) > 0:
-                copy_triples(
-                    op.graph, result, origin="GraphUpdate.extract_insert_graph"
-                )
+                copy_triples(op.graph, result)
                 for prefix, uri in op.graph.namespaces():
                     if prefix:
                         result.bind(prefix, uri)
@@ -205,26 +203,12 @@ class GraphUpdate(BaseModel):
 
     @staticmethod
     def _serializable_triples(graph: RDFGraph) -> list[tuple[Node, Node, Node]]:
-        """Return the triples of ``graph`` that SPARQL can express.
+        """Return the triples of ``graph`` for a SPARQL update.
 
-        Oxigraph-backed graphs yield RDF 1.2 triple terms as plain tuples, which
-        have no SPARQL syntax. Dropping them keeps the rest of the update valid;
-        emitting them produced a Python repr inside the query and a
-        ``ParseException`` at apply time.
+        The graph's reifications are not part of an update: rdflib's SPARQL
+        has no syntax for a triple term.
         """
-        triples: list[tuple[Node, Node, Node]] = []
-        dropped = 0
-        for triple in graph:
-            if not is_rdflib_triple(triple):
-                dropped += 1
-                continue
-            triples.append(triple)
-        if dropped:
-            logger.warning(
-                "Skipped %d RDF 1.2 triple-term triple(s): not expressible in SPARQL",
-                dropped,
-            )
-        return triples
+        return list(graph)
 
     def _generate_insert_query(
         self, graph: RDFGraph, prefix_block: str, prefixes: Set[str] = frozenset()

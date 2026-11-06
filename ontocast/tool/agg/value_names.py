@@ -15,7 +15,7 @@ from collections import deque
 from rdflib import BNode, Literal, URIRef
 from rdflib.term import Node
 
-from ontocast.onto.rdfgraph import RDFGraph, is_rdflib_triple, retarget_reifiers
+from ontocast.onto.rdfgraph import RDFGraph, retarget_reifiers
 from ontocast.onto.scaffolding import scaffolding_nodes
 
 
@@ -98,7 +98,7 @@ def name_values(graph: RDFGraph) -> int:
         return names.get(term, term) if isinstance(term, BNode) else term
 
     replacements: dict[tuple, tuple] = {}
-    for triple in [t for t in graph if is_rdflib_triple(t)]:
+    for triple in list(graph):
         subject, predicate, obj = triple
         if subject in names or obj in names:
             replacements[triple] = (rename(subject), predicate, rename(obj))

@@ -300,10 +300,12 @@ def test_reduce_ontology_units_strips_provenance_and_stores_artifact() -> None:
     reifier = BNode()
     source_chunk = URIRef(f"{doc_iri}/chunk-1")
 
-    graph = RDFGraph(store="oxigraph")
+    graph = RDFGraph()
     graph.add((appeal_court, RDF.type, court))
     graph.add((appeal_court, OWL.sameAs, court))
+    # Typed as the rewriter types a chunk: prov:Entity and schema:Text.
     graph.add((source_chunk, RDF.type, PROV.Entity))
+    graph.add((source_chunk, RDF.type, SCHEMA.Text))
     graph.add((source_chunk, SCHEMA.identifier, Literal("chunk-1")))
     graph.add((reifier, RDF_REIFIES, Literal("quoted-triple")))
     graph.add((reifier, PROV.wasDerivedFrom, source_chunk))

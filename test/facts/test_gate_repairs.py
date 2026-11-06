@@ -508,47 +508,26 @@ def test_node_with_data_is_never_pruned_and_never_invented() -> None:
     ) in result.graph
 
 
-def test_oxigraph_reified_graph_survives_the_shacl_gate() -> None:
-    """The aggregated graph is oxigraph-backed and carries RDF 1.2 triple terms.
+def test_reified_graph_survives_the_shacl_gate() -> None:
+    """The aggregated graph carries RDF 1.2 provenance beside its triples.
 
-    ``rdflib.Graph.add`` asserts on a triple term, so the gate must neither
-    crash handing such a graph to pyshacl nor drop the reification provenance
-    from the repaired graph (repairs are applied in place, not on a copy).
+    The gate must neither crash handing such a graph to pyshacl nor drop the
+    provenance from the repaired graph (repairs are applied in place, not on a
+    copy).
     """
-    ox = pytest.importorskip("pyoxigraph")
-    from oxrdflib._converter import to_ox
-
-    from ontocast.onto.constants import RDF_REIFIES
-    from ontocast.onto.rdfgraph import _oxigraph_inner_store, is_rdflib_triple
-
-    graph = RDFGraph(store="oxigraph")
+    graph = RDFGraph()
     node = URIRef(CD + "v1")
     graph.add((node, RDF.type, VALUE_CLASS))
     graph.add((node, NUMERIC, Literal("230")))
     graph.add((node, UNIT, URIRef(Q + "DAY")))
     # Reified provenance, as tool/agg/rewriter.py emits it.
-    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
-    graph_ctx = to_ox(graph.identifier)
-    inner.add(
-        ox.Quad(
-            ox.BlankNode(),
-            ox.NamedNode(str(RDF_REIFIES)),
-            ox.Triple(
-                ox.NamedNode(str(node)),
-                ox.NamedNode(str(NUMERIC)),
-                ox.Literal("230"),
-            ),
-            graph_ctx,
-        )
-    )
-    assert any(not is_rdflib_triple(triple) for triple in graph)
+    graph.reifications.add(BNode(), (node, NUMERIC, Literal("230")))
 
     result = _repair(graph)
 
     assert [record.kind for record in result.records] == ["shacl_retype"]
     assert (node, NUMERIC, Literal("230", datatype=XSD.decimal)) in result.graph
-    # The provenance triple term is still there.
-    assert any(not is_rdflib_triple(triple) for triple in result.graph)
+    assert result.graph.has_reifications
 
 
 def test_catalog_only_focus_never_produces_a_phantom_prune() -> None:
@@ -852,106 +831,37 @@ def test_pruning_sweeps_the_provenance_reifier_of_the_removed_triple() -> None:
     triple term, so the reifier and its ``prov:wasDerivedFrom`` used to survive
     the prune, describing a statement that no longer exists.
     """
-    ox = pytest.importorskip("pyoxigraph")
-    from oxrdflib._converter import to_ox
-
-    from ontocast.onto.constants import PROV, RDF_REIFIES
-    from ontocast.onto.rdfgraph import _oxigraph_inner_store
-
-    graph = RDFGraph(store="oxigraph")
+    graph = RDFGraph()
     placeholder = URIRef(CD + "v_empty")
     observation = URIRef(CD + "obs")
     has_value = URIRef(Q + "hasValue")
     graph.add((placeholder, RDF.type, VALUE_CLASS))
     graph.add((placeholder, RDFS.label, Literal("efficiency")))
     graph.add((observation, has_value, placeholder))
-
-    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
-    graph_ctx = to_ox(graph.identifier)
-    reifier = ox.BlankNode()
-    inner.add(
-        ox.Quad(
-            reifier,
-            ox.NamedNode(str(RDF_REIFIES)),
-            ox.Triple(
-                ox.NamedNode(str(observation)),
-                ox.NamedNode(str(has_value)),
-                ox.NamedNode(str(placeholder)),
-            ),
-            graph_ctx,
-        )
-    )
-    inner.add(
-        ox.Quad(
-            reifier,
-            ox.NamedNode(str(PROV.wasDerivedFrom)),
-            ox.NamedNode("https://example.org/doc/chunk0"),
-            graph_ctx,
-        )
+    _reified(
+        graph, (observation, has_value, placeholder), "https://example.org/doc/chunk0"
     )
 
     result = _repair(graph)
 
     assert [record.kind for record in result.records] == ["shacl_prune"]
+    # The reifier's prov:wasDerivedFrom went with its reification.
     assert len(result.graph) == 0
-    assert (
-        list(
-            inner.quads_for_pattern(
-                None, ox.NamedNode(str(RDF_REIFIES)), None, graph_ctx
-            )
-        )
-        == []
-    )
-    assert (
-        list(
-            inner.quads_for_pattern(
-                None, ox.NamedNode(str(PROV.wasDerivedFrom)), None, graph_ctx
-            )
-        )
-        == []
-    )
+    assert not result.graph.has_reifications
 
 
-def _reified(graph: RDFGraph, triple: tuple, derived_from: str):
-    """Attach an RDF 1.2 reifier with one ``prov:wasDerivedFrom`` arc.
+def _reified(graph: RDFGraph, triple: tuple, derived_from: str) -> BNode:
+    """Attach an RDF 1.2 reifier with one ``prov:wasDerivedFrom`` arc."""
+    from ontocast.onto.constants import PROV
 
-    Returns ``(pyoxigraph module, inner store, graph context, reifier node)``.
-    """
-    ox = pytest.importorskip("pyoxigraph")
-    from oxrdflib._converter import to_ox
-
-    from ontocast.onto.constants import PROV, RDF_REIFIES
-    from ontocast.onto.rdfgraph import _oxigraph_inner_store
-
-    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
-    graph_ctx = to_ox(graph.identifier)
-    reifier = ox.BlankNode()
-    subject, predicate, obj = (to_ox(position) for position in triple)
-    inner.add(
-        ox.Quad(
-            reifier,
-            ox.NamedNode(str(RDF_REIFIES)),
-            ox.Triple(subject, predicate, obj),
-            graph_ctx,
-        )
-    )
-    inner.add(
-        ox.Quad(
-            reifier,
-            ox.NamedNode(str(PROV.wasDerivedFrom)),
-            ox.NamedNode(derived_from),
-            graph_ctx,
-        )
-    )
-    return ox, inner, graph_ctx, reifier
+    reifier = BNode()
+    graph.reifications.add(reifier, triple)
+    graph.add((reifier, PROV.wasDerivedFrom, URIRef(derived_from)))
+    return reifier
 
 
-def _reifies_quads(ox, inner, graph_ctx) -> list:
-    from ontocast.onto.constants import RDF_REIFIES
-
-    return list(
-        inner.quads_for_pattern(None, ox.NamedNode(str(RDF_REIFIES)), None, graph_ctx)
-    )
+def _reified_triples(graph: RDFGraph) -> list[tuple]:
+    return [triple for _, triple in graph.reifications]
 
 
 def test_retype_moves_the_provenance_reifier_to_the_retyped_statement() -> None:
@@ -961,70 +871,49 @@ def test_retype_moves_the_provenance_reifier_to_the_retyped_statement() -> None:
     statement survives with a different object, so dropping the reifier would
     lose the derivation of a triple that is still served.
     """
-    graph = RDFGraph(store="oxigraph")
+    from ontocast.onto.constants import PROV
+
+    graph = RDFGraph()
     node = URIRef(CD + "v1")
     graph.add((node, RDF.type, VALUE_CLASS))
     graph.add((node, NUMERIC, Literal("230")))
     graph.add((node, UNIT, URIRef(Q + "DAY")))
-
-    ox, inner, graph_ctx, reifier = _reified(
+    reifier = _reified(
         graph, (node, NUMERIC, Literal("230")), "https://example.org/doc/chunk0"
     )
 
     result = _repair(graph)
 
     assert [record.kind for record in result.records] == ["shacl_retype"]
-    quads = _reifies_quads(ox, inner, graph_ctx)
-    assert len(quads) == 1
-    term = quads[0].object
-    assert isinstance(term, ox.Triple)
-    assert term.object == ox.Literal("230", datatype=ox.NamedNode(str(XSD.decimal)))
+    assert list(graph.reifications) == [
+        (reifier, (node, NUMERIC, Literal("230", datatype=XSD.decimal)))
+    ]
     # The reifier node is untouched, so its prov arcs travel with it.
-    assert quads[0].subject == reifier
-    from ontocast.onto.constants import PROV
-
-    assert (
-        len(
-            list(
-                inner.quads_for_pattern(
-                    reifier, ox.NamedNode(str(PROV.wasDerivedFrom)), None, graph_ctx
-                )
-            )
-        )
-        == 1
-    )
+    assert len(list(graph.objects(reifier, PROV.wasDerivedFrom))) == 1
 
 
 def test_code_resolution_moves_the_provenance_reifier() -> None:
     """Resolving ``unit "d"`` to a catalog IRI carries the reifier across too."""
-    graph = RDFGraph(store="oxigraph")
+    graph = RDFGraph()
     node = URIRef(CD + "v1")
     graph.add((node, RDF.type, VALUE_CLASS))
     graph.add((node, NUMERIC, Literal("230", datatype=XSD.decimal)))
     graph.add((node, UNIT, Literal("d")))
-
-    ox, inner, graph_ctx, _ = _reified(
-        graph, (node, UNIT, Literal("d")), "https://example.org/doc/chunk0"
-    )
+    _reified(graph, (node, UNIT, Literal("d")), "https://example.org/doc/chunk0")
 
     result = _repair(graph)
 
     assert [record.kind for record in result.records] == ["shacl_code_resolved"]
-    quads = _reifies_quads(ox, inner, graph_ctx)
-    assert len(quads) == 1
-    term = quads[0].object
-    assert isinstance(term, ox.Triple)
-    assert term.object == ox.NamedNode(Q + "DAY")
+    assert _reified_triples(graph) == [(node, UNIT, URIRef(Q + "DAY"))]
 
 
 def test_reverted_pass_leaves_the_retyped_reifier_alone() -> None:
     """Retargeting runs after the accept test, so a reverted pass is a no-op."""
-    graph = RDFGraph(store="oxigraph")
+    graph = RDFGraph()
     node = URIRef(CD + "v1")
     graph.add((node, RDF.type, VALUE_CLASS))
     graph.add((node, NUMERIC, Literal("not-a-number")))
-
-    ox, inner, graph_ctx, _ = _reified(
+    _reified(
         graph,
         (node, NUMERIC, Literal("not-a-number")),
         "https://example.org/doc/chunk0",
@@ -1032,53 +921,20 @@ def test_reverted_pass_leaves_the_retyped_reifier_alone() -> None:
 
     _repair(graph)
 
-    quads = _reifies_quads(ox, inner, graph_ctx)
-    assert len(quads) == 1
-    term = quads[0].object
-    assert isinstance(term, ox.Triple)
-    assert term.object == ox.Literal("not-a-number")
+    assert _reified_triples(graph) == [(node, NUMERIC, Literal("not-a-number"))]
 
 
 def test_reverted_pass_leaves_the_provenance_reifier_alone() -> None:
     """The sweep runs only after a pass is accepted, so a revert keeps it."""
-    ox = pytest.importorskip("pyoxigraph")
-    from oxrdflib._converter import to_ox
-
-    from ontocast.onto.constants import RDF_REIFIES
-    from ontocast.onto.rdfgraph import _oxigraph_inner_store
-
-    graph = RDFGraph(store="oxigraph")
+    graph = RDFGraph()
     node = URIRef(CD + "v1")
     graph.add((node, RDF.type, VALUE_CLASS))
     graph.add((node, NUMERIC, Literal("not-a-number")))
-
-    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
-    graph_ctx = to_ox(graph.identifier)
-    inner.add(
-        ox.Quad(
-            ox.BlankNode(),
-            ox.NamedNode(str(RDF_REIFIES)),
-            ox.Triple(
-                ox.NamedNode(str(node)),
-                ox.NamedNode(str(NUMERIC)),
-                ox.Literal("not-a-number"),
-            ),
-            graph_ctx,
-        )
-    )
+    graph.reifications.add(BNode(), (node, NUMERIC, Literal("not-a-number")))
 
     _repair(graph)
 
-    assert (
-        len(
-            list(
-                inner.quads_for_pattern(
-                    None, ox.NamedNode(str(RDF_REIFIES)), None, graph_ctx
-                )
-            )
-        )
-        == 1
-    )
+    assert len(graph.reifications) == 1
 
 
 def test_blank_node_shacl_violation_reaches_the_report() -> None:

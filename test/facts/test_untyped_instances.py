@@ -19,7 +19,7 @@ from ontocast.config import FactsValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import FactsGateRepairKind, FactsUnitFindingKind
-from ontocast.onto.rdfgraph import RDFGraph, is_rdflib_triple
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import drop_untyped_instances, run_facts_gate
 from ontocast.tool.facts_validation import (
@@ -259,65 +259,35 @@ def test_entailment_without_context_is_a_no_op() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _reified_oxigraph_graph(body: str) -> RDFGraph:
-    """An oxigraph-backed facts graph, every triple reified as the aggregator does."""
-    pytest.importorskip("oxrdflib")
-    import pyoxigraph as ox
-
-    from ontocast.onto.constants import RDF_REIFIES
-    from ontocast.onto.rdfgraph import _oxigraph_inner_store
-
-    parsed = _facts(body)
-    graph = RDFGraph(store="oxigraph")
-    for triple in parsed:
-        graph.add(triple)
-    store = cast(ox.Store, _oxigraph_inner_store(graph.store))
-    context = ox.BlankNode(str(graph.identifier))
-    for subject, predicate, obj in parsed:
+def _reified_graph(body: str) -> RDFGraph:
+    """A facts graph whose IRI-to-IRI triples are reified, as the aggregator does."""
+    graph = _facts(body)
+    for subject, predicate, obj in list(graph):
         if not isinstance(subject, URIRef) or not isinstance(obj, URIRef):
             continue
-        reifier = ox.BlankNode()
-        store.add(
-            ox.Quad(
-                reifier,
-                ox.NamedNode(str(RDF_REIFIES)),
-                ox.Triple(
-                    ox.NamedNode(str(subject)),
-                    ox.NamedNode(str(predicate)),
-                    ox.NamedNode(str(obj)),
-                ),
-                context,
-            )
-        )
-        store.add(
-            ox.Quad(
-                reifier,
-                ox.NamedNode(str(PROV.wasDerivedFrom)),
-                ox.NamedNode(f"{CD}chunk_0"),
-                context,
-            )
-        )
+        reifier = BNode()
+        graph.reifications.add(reifier, (subject, predicate, obj))
+        graph.add((reifier, PROV.wasDerivedFrom, URIRef(f"{CD}chunk_0")))
     return graph
 
 
 def _reifier_count(graph: RDFGraph) -> int:
-    return sum(1 for triple in graph if not is_rdflib_triple(triple))
+    return len(graph.reifications)
 
 
 def _value_blank_nodes(graph: RDFGraph) -> set[BNode]:
     """Blank nodes of the facts themselves; reifiers are not counted."""
-    reifiers = {triple[0] for triple in graph if not is_rdflib_triple(triple)}
+    reifiers = graph.reifications.reifiers()
     return {
         term
         for triple in graph
-        if is_rdflib_triple(triple)
         for term in triple
         if isinstance(term, BNode) and term not in reifiers
     }
 
 
 def test_drop_cascades_through_triples_blank_nodes_and_reifiers() -> None:
-    graph = _reified_oxigraph_graph(
+    graph = _reified_graph(
         """
         cd:typed a ex:Sample ; rdfs:label "typed" ;
             ex:measuredOn cd:ghost ;

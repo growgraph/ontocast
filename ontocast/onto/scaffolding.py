@@ -35,10 +35,21 @@ def chunk_nodes(graph: Graph) -> set[Node]:
 
 
 def reifier_nodes(graph: Graph) -> set[Node]:
-    """Statement reifiers, in either provenance profile."""
-    return set(graph.subjects(RDF_REIFIES, None)) | set(
+    """Statement reifiers, in either provenance profile.
+
+    RDF 1.2 reifiers are those of an
+    :class:`~ontocast.onto.rdfgraph.RDFGraph`'s reifications, or subjects of
+    ``rdf:reifies`` in a graph read otherwise; classic ones are typed
+    ``rdf:Statement``.
+    """
+    from ontocast.onto.rdfgraph import RDFGraph
+
+    nodes = set(graph.subjects(RDF_REIFIES, None)) | set(
         graph.subjects(RDF.type, RDF.Statement)
     )
+    if isinstance(graph, RDFGraph) and graph.has_reifications:
+        nodes |= graph.reifications.reifiers()
+    return nodes
 
 
 def document_nodes(graph: Graph) -> set[Node]:

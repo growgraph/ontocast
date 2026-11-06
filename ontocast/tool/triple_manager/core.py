@@ -176,8 +176,8 @@ class TripleStoreManager(Tool):
         """Return a graph without the provenance the pipeline writes.
 
         Removed: every triple touching a chunk node or reifier
-        (:mod:`ontocast.onto.scaffolding`), and the ``prov:wasDerivedFrom``
-        lineage on an ontology header. Domain triples stay whatever their
+        (:mod:`ontocast.onto.scaffolding`), the graph's RDF 1.2 reifications,
+        and the ``prov:wasDerivedFrom`` lineage on an ontology header. Domain triples stay whatever their
         vocabulary, PROV-O included.
         """
         clean = RDFGraph()

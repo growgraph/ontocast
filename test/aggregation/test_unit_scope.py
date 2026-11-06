@@ -16,7 +16,7 @@ import pytest
 from rdflib import OWL, RDF, Literal, URIRef
 
 from ontocast.config import AggregationConfig, FactsValidationConfig
-from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES
+from ontocast.onto.constants import DEFAULT_IRI, PROV
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.iri_policy import split_namespace_local
 from ontocast.onto.rdfgraph import RDFGraph
@@ -305,10 +305,12 @@ def test_final_iris_and_provenance_carry_no_scope(
 
     assert not _scoped(merged)
     subjects = set(merged.subjects())
-    reifiers = list(merged.subjects(RDF_REIFIES, None))
+    reifiers = list(merged.reifications.reifiers())
     assert reifiers
     for reifier in reifiers:
-        for quoted in merged.objects(reifier, RDF_REIFIES):
+        for quoted in (
+            triple for node, triple in merged.reifications if node == reifier
+        ):
             assert isinstance(quoted, tuple)
             assert quoted[0] in subjects
             assert not any(

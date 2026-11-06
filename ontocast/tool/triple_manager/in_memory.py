@@ -9,13 +9,13 @@ from dataclasses import dataclass, field
 from typing import Literal, overload
 
 import pyoxigraph as ox
-from oxrdflib._converter import to_ox
 from rdflib import Graph
 from rdflib.term import Node
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
-from ontocast.onto.rdfgraph import RDFGraph, ox_triple_term
+from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.reification import to_ox
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
@@ -58,15 +58,11 @@ def _clear_named_graph(store: ox.Store, graph_ctx: ox.NamedNode) -> None:
         store.remove(quad)
 
 
-#: What each triple position accepts once converted. ``to_ox`` maps
-#: ``urn:x-rdflib:default`` to :class:`ox.DefaultGraph` and ``None`` to
-#: ``None``, neither of which is a term, so a graph carrying either in a triple
-#: position reaches oxigraph as a type error rather than as a diagnosis.
+#: What each triple position accepts once converted.
 _OX_POSITION_TYPES: dict[str, tuple[type, ...]] = {
     "subject": (ox.NamedNode, ox.BlankNode),
     "predicate": (ox.NamedNode,),
-    # A triple term: the object of a reifier's ``rdf:reifies`` (RDF 1.2).
-    "object": (ox.NamedNode, ox.BlankNode, ox.Literal, ox.Triple),
+    "object": (ox.NamedNode, ox.BlankNode, ox.Literal),
 }
 
 
@@ -84,15 +80,15 @@ def _to_ox_term(
 
 @overload
 def _to_ox_term(
-    term: Node | tuple, position: Literal["object"], graph_ctx: ox.NamedNode
-) -> ox.NamedNode | ox.BlankNode | ox.Literal | ox.Triple: ...
+    term: Node, position: Literal["object"], graph_ctx: ox.NamedNode
+) -> ox.NamedNode | ox.BlankNode | ox.Literal: ...
 
 
 def _to_ox_term(
-    term: Node | tuple,
+    term: Node,
     position: Literal["subject", "predicate", "object"],
     graph_ctx: ox.NamedNode,
-) -> ox.NamedNode | ox.BlankNode | ox.Literal | ox.Triple:
+) -> ox.NamedNode | ox.BlankNode | ox.Literal:
     """Convert one rdflib term, naming the graph and position when it cannot be.
 
     Args:
@@ -107,29 +103,15 @@ def _to_ox_term(
     Raises:
         TypeError: The term does not convert to something valid in ``position``.
     """
-    if isinstance(term, tuple):
-        # An oxigraph-backed graph yields an RDF 1.2 triple term as a plain
-        # tuple; to_ox would read it as a quad.
-        converted = ox_triple_term(term)
-        if converted is None:
-            raise TypeError(
-                f"cannot serialize {position} {term!r} of graph "
-                f"<{graph_ctx.value}>: not a valid triple term"
-            )
-    else:
-        try:
-            converted = to_ox(term)
-        except ValueError as exc:
-            raise TypeError(
-                f"cannot serialize {position} {term!r} "
-                f"(rdflib type {type(term).__name__}) of graph "
-                f"<{graph_ctx.value}>: {exc}"
-            ) from exc
-    # Two checks, not one: the first narrows the union for the type checker,
-    # the second enforces what this particular position accepts.
-    if not isinstance(
-        converted, (ox.NamedNode, ox.BlankNode, ox.Literal, ox.Triple)
-    ) or not isinstance(converted, _OX_POSITION_TYPES[position]):
+    try:
+        converted = to_ox(term)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"cannot serialize {position} {term!r} "
+            f"(rdflib type {type(term).__name__}) of graph "
+            f"<{graph_ctx.value}>: {exc}"
+        ) from exc
+    if not isinstance(converted, _OX_POSITION_TYPES[position]):
         raise TypeError(
             f"{position} {term!r} (rdflib type {type(term).__name__}) of graph "
             f"<{graph_ctx.value}> converts to {type(converted).__name__}, which "
@@ -139,7 +121,7 @@ def _to_ox_term(
 
 
 def _rdflib_graph_to_quads(graph: Graph, graph_ctx: ox.NamedNode) -> list[ox.Quad]:
-    """Convert an rdflib graph to oxigraph quads in ``graph_ctx``.
+    """Convert an rdflib graph and its reifications to oxigraph quads in ``graph_ctx``.
 
     Raises:
         TypeError: A term does not convert to something valid in its position.
@@ -157,22 +139,18 @@ def _rdflib_graph_to_quads(graph: Graph, graph_ctx: ox.NamedNode) -> list[ox.Qua
                 graph_ctx,
             )
         )
+    if isinstance(graph, RDFGraph) and graph.has_reifications:
+        quads.extend(
+            ox.Quad(quad.subject, quad.predicate, quad.object, graph_ctx)
+            for quad in graph.reifications.quads()
+        )
     return quads
 
 
 def _export_named_graph(store: ox.Store, graph_uri: str) -> RDFGraph:
+    """The named graph as an RDFGraph, reifications included."""
     graph_ctx = _to_ox_graph(graph_uri)
-    tmp = ox.Store()
-    for quad in store.quads_for_pattern(None, None, None, graph_ctx):
-        tmp.add(ox.Quad(quad.subject, quad.predicate, quad.object, ox.DefaultGraph()))
-    if len(tmp) == 0:
-        return RDFGraph()
-    raw = tmp.dump(format=ox.RdfFormat.TURTLE, from_graph=ox.DefaultGraph())
-    if raw is None:
-        return RDFGraph()
-    result = RDFGraph()
-    result.parse(data=raw.decode("utf-8"), format="turtle")
-    return result
+    return RDFGraph.from_ox_quads(store.quads_for_pattern(None, None, None, graph_ctx))
 
 
 def _run_select(store: ox.Store, query: str) -> list[dict[str, str]]:

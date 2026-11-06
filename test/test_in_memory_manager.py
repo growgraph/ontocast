@@ -7,7 +7,6 @@ import asyncio
 import pyoxigraph as ox
 import pytest
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
-from rdflib.graph import DATASET_DEFAULT_GRAPH_ID
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import CatalogContractError
@@ -110,34 +109,21 @@ def test_in_memory_tenancy_isolation() -> None:
     asyncio.run(main())
 
 
-def test_in_memory_serializes_facts_with_reified_provenance() -> None:
+def test_in_memory_stores_and_reads_back_reified_provenance() -> None:
     """A reifier's ``rdf:reifies`` object is a triple term, kept as one.
 
-    The aggregated facts graph carries RDF 1.2 provenance, which rdflib yields
-    as a plain tuple; converting that as a term failed the whole document at
-    serialization.
+    The facts graph's reifications are written as triple-term quads and come
+    back as reifications when the graph is read.
     """
-    from typing import cast
+    from rdflib import BNode
 
     from ontocast.onto.constants import RDF_REIFIES
-    from ontocast.onto.rdfgraph import _oxigraph_inner_store
 
     graph_uri = "https://example.org/doc/a/"
-    facts = RDFGraph(store="oxigraph", identifier=URIRef(graph_uri))
-    facts.add((URIRef("https://example.org/doc/a/x"), RDFS.label, Literal("x")))
-    triple_term = ox.Triple(
-        ox.NamedNode("https://example.org/doc/a/x"),
-        ox.NamedNode(str(RDFS.label)),
-        ox.Literal("x"),
-    )
-    cast(ox.Store, _oxigraph_inner_store(facts.store)).add(
-        ox.Quad(
-            ox.BlankNode(),
-            ox.NamedNode(str(RDF_REIFIES)),
-            triple_term,
-            ox.NamedNode(graph_uri),
-        )
-    )
+    subject = URIRef("https://example.org/doc/a/x")
+    facts = RDFGraph(identifier=URIRef(graph_uri))
+    facts.add((subject, RDFS.label, Literal("x")))
+    facts.reifications.add(BNode(), (subject, RDFS.label, Literal("x")))
 
     manager = InMemoryTripleStoreManager()
     manager.serialize(facts, graph_uri=graph_uri)
@@ -147,7 +133,16 @@ def test_in_memory_serializes_facts_with_reified_provenance() -> None:
             None, ox.NamedNode(str(RDF_REIFIES)), None, ox.NamedNode(graph_uri)
         )
     )
-    assert [quad.object for quad in stored] == [triple_term]
+    assert [quad.object for quad in stored] == [
+        ox.Triple(
+            ox.NamedNode(str(subject)), ox.NamedNode(str(RDFS.label)), ox.Literal("x")
+        )
+    ]
+    fetched = asyncio.run(manager.afetch_named_graph(graph_uri, store="facts"))
+    assert fetched is not None
+    assert [triple for _, triple in fetched.reifications] == [
+        (subject, RDFS.label, Literal("x"))
+    ]
 
 
 def test_in_memory_clean_and_clean_tenancy() -> None:
@@ -425,19 +420,16 @@ def test_aconstruct_respects_tenancy() -> None:
 
 
 def test_unserializable_object_names_term_position_and_graph() -> None:
-    """A bad term must be diagnosable, not a bare AssertionError.
+    """A bad term must be diagnosable, not a bare AssertionError."""
+    from rdflib.term import Variable
 
-    ``to_ox`` maps ``urn:x-rdflib:default`` to a DefaultGraph, which is not a
-    term, so a graph carrying it in a triple position used to trip an
-    unmessaged assert far from the code that built the graph.
-    """
     graph = RDFGraph()
-    graph.add((URIRef("urn:s"), URIRef("urn:p"), DATASET_DEFAULT_GRAPH_ID))
+    graph.add((URIRef("urn:s"), URIRef("urn:p"), Variable("x")))
     with pytest.raises(TypeError) as excinfo:
         _rdflib_graph_to_quads(graph, ox.NamedNode("urn:g"))
     message = str(excinfo.value)
     assert "object" in message
-    assert "urn:x-rdflib:default" in message
+    assert "Variable" in message
     assert "urn:g" in message
 
 

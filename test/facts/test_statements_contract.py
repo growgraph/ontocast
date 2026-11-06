@@ -12,10 +12,10 @@ import pytest
 from rdflib import RDFS, BNode, Literal, URIRef
 
 from ontocast.config import FactsValidationConfig
-from ontocast.onto.constants import DEFAULT_IRI, RDF_REIFIES
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import FactsGateRepairKind
-from ontocast.onto.rdfgraph import RDFGraph, is_rdflib_triple
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import drop_unlinked_instances, run_facts_gate
 from ontocast.tool.agg.value_names import carrierless_values, name_values
@@ -45,29 +45,10 @@ def _facts(body: str) -> RDFGraph:
 
 
 def _reified(body: str) -> RDFGraph:
-    """An oxigraph-backed graph with every triple reified, as the aggregator does."""
-    pytest.importorskip("oxrdflib")
-    import pyoxigraph as ox
-    from oxrdflib._converter import to_ox
-
-    from ontocast.onto.rdfgraph import _oxigraph_inner_store, ox_triple_term
-
-    parsed = _facts(body)
-    graph = RDFGraph(store="oxigraph")
-    for triple in parsed:
-        graph.add(triple)
-    store = cast(ox.Store, _oxigraph_inner_store(graph.store))
-    context = to_ox(graph.identifier)
-    assert isinstance(context, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
-    for subject, predicate, obj in parsed:
-        store.add(
-            ox.Quad(
-                ox.BlankNode(),
-                ox.NamedNode(str(RDF_REIFIES)),
-                ox_triple_term((subject, predicate, obj)),
-                context,
-            )
-        )
+    """A facts graph with every triple reified, as the aggregator does."""
+    graph = _facts(body)
+    for triple in list(graph):
+        graph.reifications.add(BNode(), triple)
     return graph
 
 
@@ -76,11 +57,7 @@ def _cd(name: str) -> URIRef:
 
 
 def _quoted(graph: RDFGraph) -> set[tuple]:
-    return {
-        triple[2]
-        for triple in graph
-        if not is_rdflib_triple(triple) and isinstance(triple[2], tuple)
-    }
+    return {triple for _, triple in graph.reifications}
 
 
 # ---------------------------------------------------------------------------

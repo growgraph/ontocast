@@ -243,6 +243,16 @@ leave provenance out of what you get back:
 A graph without provenance has no link back to the text, so nothing in it can
 be checked against the source.
 
+Provenance is written in the formats that carry RDF 1.2 triple terms: Turtle,
+N-Triples, N-Quads and TriG. JSON-LD and RDF/XML cannot carry them, so asking
+for either on a graph with provenance raises `ProvenanceFormatError`; strip the
+provenance first (`TripleStoreManager.strip_provenance`) to write those.
+
+In Python, an `RDFGraph` keeps its reifications beside its triples, in
+`graph.reifications`. Copying, merging (`+`, `+=`) and a pydantic dump and load
+carry them.
+`graph.hash()` covers the statements, not the provenance.
+
 ## Document identity
 
 Each document gets an IRI built from

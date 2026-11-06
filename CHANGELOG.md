@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `facts_merge_rejections_by_reason` (the aggregator's refusals by reason) and `facts_twin_labels` (labels several served instances share) in `retrieval_metrics`.
 - The facts gate drops entities that state nothing (no link, no value) and values no statement carries (`facts_unlinked_dropped`, repair kind `unlinked_dropped`), then names each value under its carrier, `<carrier>.<property>`.
 
+### Fixed
+
+- Provenance survives copying, merging and a JSON round trip of a facts graph; it used to be dropped silently, and loading a dumped graph raised.
+- N-Triples, N-Quads and TriG output carry provenance; JSON-LD and RDF/XML refuse a graph with provenance (`ProvenanceFormatError`) instead of failing obscurely.
+
+### Removed
+
+- The `oxrdflib` dependency.
+
 ## [0.9.0]
 
 ### Added

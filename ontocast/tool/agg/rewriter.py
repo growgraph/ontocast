@@ -15,21 +15,18 @@ When the same triple originates from multiple chunks the reifier
 accumulates several ``prov:wasDerivedFrom`` arcs.  Chunk metadata
 (``index``, ``hid``) is recorded as separate triples on the chunk URI.
 
-The merged graph is backed by the *oxigraph* store so that RDF 1.2
-triple-term syntax (``<<( s p o )>>``) is serialised correctly via
-``pyoxigraph``.
+The ``rdf:reifies`` statements live in the merged graph's
+:attr:`~ontocast.onto.rdfgraph.RDFGraph.reifications`; the ``prov:`` arcs are
+ordinary triples of the graph.
 """
 
 import logging
 from collections import defaultdict
-from typing import cast
 
-import pyoxigraph as ox
-from oxrdflib._converter import to_ox
-from rdflib import Literal, Node, URIRef
+from rdflib import BNode, Literal, Node, URIRef
 from rdflib.namespace import OWL, RDF, XSD
 
-from ontocast.onto.constants import ONTOCAST, PROV, RDF_REIFIES, SCHEMA
+from ontocast.onto.constants import ONTOCAST, PROV, SCHEMA
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.iri_policy import is_in_namespace, normalize_namespace_iri
 from ontocast.onto.rdfgraph import RDFGraph
@@ -300,20 +297,6 @@ class GraphRewriter:
     # provenance helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _to_ox_term(
-        node: Node,
-    ) -> ox.NamedNode | ox.BlankNode | ox.Literal:
-        """Convert an rdflib term to a pyoxigraph term via oxrdflib.
-
-        The ``oxrdflib._converter.to_ox`` function has a broad return
-        type, but for RDF *terms* (``URIRef``, ``Literal``, ``BNode``)
-        it always produces the corresponding pyoxigraph type.
-        """
-        result = to_ox(node)
-        assert isinstance(result, (ox.NamedNode, ox.BlankNode, ox.Literal))
-        return result
-
     def _add_unit_metadata(
         self,
         graph: RDFGraph,
@@ -385,75 +368,34 @@ class GraphRewriter:
         p: Node,
         o: Node,
         chunk_uri: URIRef,
-        reifier: ox.BlankNode | None = None,
-    ) -> ox.BlankNode:
+        reifier: BNode | None = None,
+    ) -> BNode:
         """Attach provenance to a triple using RDF 1.2 reification.
 
-        Creates (or reuses) a reifier blank node and emits::
+        Creates (or reuses) a reifier blank node and states::
 
             _:r  rdf:reifies  <<( s p o )>> .
             _:r  prov:wasDerivedFrom  <chunk_uri> .
 
-        The ``rdf:reifies`` quad is only added when a *new* reifier is
-        created.  The ``prov:wasDerivedFrom`` quad is always added so that
-        a shared triple accumulates one arc per source chunk.
+        ``rdf:reifies`` is recorded once per reifier, in the graph's
+        reifications; ``prov:wasDerivedFrom`` is added every time, so a shared
+        triple accumulates one arc per source chunk.
 
         Args:
-            graph: Oxigraph-backed :class:`RDFGraph`.
-            s: Triple subject (rdflib term).
-            p: Triple predicate (rdflib term).
-            o: Triple object (rdflib term).
+            graph: The merged graph.
+            s: Triple subject.
+            p: Triple predicate.
+            o: Triple object.
             chunk_uri: URI of the source :class:`ContentUnit`.
-            reifier: Existing reifier to reuse.  When *None* a fresh
-                blank node is created.
+            reifier: Existing reifier to reuse; a fresh blank node when *None*.
 
         Returns:
-            The reifier blank node (for later reuse).
+            The reifier (for later reuse).
         """
-        # Access the underlying pyoxigraph Store and graph context so
-        # that triples added here are visible through the rdflib API.
-        from ontocast.onto.rdfgraph import _oxigraph_inner_store
-
-        ox_store = cast(ox.Store, _oxigraph_inner_store(graph.store))
-        graph_ctx_raw = to_ox(graph.identifier)
-        assert isinstance(graph_ctx_raw, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
-        graph_ctx: ox.NamedNode | ox.BlankNode | ox.DefaultGraph = graph_ctx_raw
-
-        # Convert rdflib terms → pyoxigraph terms
-        s_ox = self._to_ox_term(s)
-        p_ox = self._to_ox_term(p)
-        o_ox = self._to_ox_term(o)
-
-        # Narrow types for ox.Triple (subject: NamedNode|BlankNode|Triple,
-        # predicate: NamedNode, object: any ox term).
-        assert isinstance(s_ox, (ox.NamedNode, ox.BlankNode))
-        assert isinstance(p_ox, ox.NamedNode)
-
-        # RDF 1.2 triple term
-        triple_term = ox.Triple(s_ox, p_ox, o_ox)
-
         if reifier is None:
-            reifier = ox.BlankNode()
-            # rdf:reifies is emitted only once per reifier
-            ox_store.add(
-                ox.Quad(
-                    reifier,
-                    ox.NamedNode(str(RDF_REIFIES)),
-                    triple_term,
-                    graph_ctx,
-                )
-            )
-
-        # prov:wasDerivedFrom — one arc per source chunk
-        ox_store.add(
-            ox.Quad(
-                reifier,
-                ox.NamedNode(str(_PROV.wasDerivedFrom)),
-                ox.NamedNode(str(chunk_uri)),
-                graph_ctx,
-            )
-        )
-
+            reifier = BNode()
+            graph.reifications.add(reifier, (s, p, o))
+        graph.add((reifier, _PROV.wasDerivedFrom, chunk_uri))
         return reifier
 
     def merge_graphs_with_provenance(
@@ -478,9 +420,6 @@ class GraphRewriter:
            several chunks the reifier accumulates multiple
            ``prov:wasDerivedFrom`` arcs.
 
-        The merged graph is backed by the *oxigraph* store so that
-        RDF 1.2 triple-term serialisation is available natively.
-
         Args:
             units: Content units whose graphs are to be merged.
             mapping: Entity mapping ``e → e'``.
@@ -488,7 +427,7 @@ class GraphRewriter:
         Returns:
             Merged RDF graph with RDF 1.2 provenance annotations.
         """
-        merged = RDFGraph(store="oxigraph")
+        merged = RDFGraph()
 
         # Bind well-known namespaces
         merged.bind("prov", str(_PROV))
@@ -522,7 +461,7 @@ class GraphRewriter:
         # Track reifier blank nodes keyed by triple signature so that a
         # shared triple accumulates multiple prov:wasDerivedFrom arcs on
         # the *same* reifier.
-        reifier_map: dict[tuple[Node, Node, Node], ox.BlankNode] = {}
+        reifier_map: dict[tuple[Node, Node, Node], BNode] = {}
 
         # Merged-entity tracking for owl:sameAs
         merged_entities: dict[URIRef, set[URIRef]] = defaultdict(set)

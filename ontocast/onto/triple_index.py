@@ -131,9 +131,8 @@ class TripleIndex:
 
 
 def _sorted_triples(graph: RDFGraph, nsmgr: NamespaceManager) -> list[Triple]:
-    # rdflib's iteration order is store-dependent -- RDFGraph branches on
-    # OxigraphStore in several places -- so the order is imposed here rather
-    # than inherited. Predicates sort with rdf:type first so a subject's block
+    # rdflib's iteration order is not stable across graphs, so the order is
+    # imposed here rather than inherited. Predicates sort with rdf:type first so a subject's block
     # opens with what it is.
     def key(triple: Triple) -> tuple:
         subject, predicate, obj = triple
