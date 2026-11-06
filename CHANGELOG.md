@@ -62,6 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An ontology whose IRI ends in an empty fragment (`http://www.w3.org/ns/prov#`) is adopted under the IRI without it; a header that is only typed `owl:Ontology` beside a described one (W3C PROV-O) is dropped.
 - An ontology version whose identity collides with the catalog or with another version of the document no longer fails serialization after it was written: it is left unwritten (`serialize/ontology_identity_conflict`) and the document's facts are written. A prefix-shaped namespace (`fro:`) never becomes an ontology's IRI.
 - A first tenancy switch after `ToolBox.initialize()` no longer leaves the catalog empty.
+- The in-memory triple store (the default without Fuseki) stores a facts graph with its RDF 1.2 provenance: a reifier's triple-term object no longer fails the document at serialization.
+- The facts and ontology prompts name the domain namespaces where the context's terms live, under the prefixes the term sheet shows. A standard vocabulary loaded as an ontology (PROV-O, SOSA) is listed, and a namespace terms only point to is not: PROV-O facts were written under a non-existent `…/prov-o#`, the target of every PROV term's `rdfs:isDefinedBy`, which also no longer gets a prefix at adoption.
+- The coreference prompt no longer shows entity IRIs: two parts can mint one local name for unrelated things, and the model took the shared name as evidence.
 - An LLM answer that closes a complete JSON object with surplus brackets is taken without them (`llm/json_surplus_closer`) instead of being re-requested.
 
 ## [0.8.2]

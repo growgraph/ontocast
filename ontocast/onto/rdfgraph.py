@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler
 from pydantic_core import core_schema
 from pyld import jsonld
 from rdflib import BNode, Graph, Literal, Namespace, Node, URIRef, plugin
-from rdflib.namespace import SH, XSD, NamespaceManager
+from rdflib.namespace import RDF, SH, XSD, NamespaceManager
 from rdflib.plugins.serializers.turtle import _GEN_QNAME_FOR_DT, TurtleSerializer
 from rdflib.serializer import Serializer
 
@@ -170,7 +170,7 @@ def drop_reifiers_mentioning(graph: Graph, nodes: Collection[Node]) -> int:
     return removed
 
 
-def _ox_triple_term(triple: tuple) -> Any:
+def ox_triple_term(triple: tuple) -> Any:
     """Convert an rdflib triple to a pyoxigraph triple term, or ``None``.
 
     Returns ``None`` rather than raising when a position cannot be a triple
@@ -229,8 +229,8 @@ def retarget_reifiers(graph: Graph, replacements: Mapping[tuple, tuple]) -> int:
 
     moved = 0
     for removed, replacement in replacements.items():
-        old_term = _ox_triple_term(removed)
-        new_term = _ox_triple_term(replacement)
+        old_term = ox_triple_term(removed)
+        new_term = ox_triple_term(replacement)
         if old_term is None or new_term is None or old_term == new_term:
             continue
         # A triple term is legal in object position, so this is a keyed lookup
@@ -1971,7 +1971,8 @@ class RDFGraph(Graph):
     def bind_implicit_namespaces(self, prefix_base: str | None = None) -> None:
         """Bind namespace prefixes for IRI stems used in the graph but not declared.
 
-        Scans all URIRef terms in the graph, extracts their namespace stems
+        Scans the graph's terms (subjects, predicates and ``rdf:type`` objects),
+        extracts their namespace stems
         (the IRI up to and including the last ``#`` or ``/``), and auto-binds
         any stem that appears in at least two IRIs but has no declared prefix.
 
@@ -1990,7 +1991,11 @@ class RDFGraph(Graph):
 
         stem_counts: dict[str, int] = {}
         for s, p, o in self:
-            for term in (s, p, o):
+            # Terms only: what the graph describes, its predicates and the
+            # classes it types with. Any other object is something a term
+            # points to -- a document (``rdfs:isDefinedBy <…/prov-o#>``), a
+            # web page -- and a prefix for it names no vocabulary.
+            for term in (s, p, o) if p == RDF.type else (s, p):
                 if not isinstance(term, URIRef):
                     continue
                 iri = str(term)

@@ -177,11 +177,13 @@ def describe_entity(iri: str, units: Sequence[ContentUnit]) -> str:
     """What the model sees of one entity: names, types, values, links, a sentence.
 
     Read from the graph of the unit that minted it, so each side of a pair is
-    shown as its own unit stated it.
+    shown as its own unit stated it. The IRI is never shown: a local name is
+    an artefact of minting, two units can mint the same one for unrelated
+    things, and the model would take it as evidence.
     """
     unit = _unit_of(iri, units)
     if unit is None or unit.graph is None:
-        return f"id: {_local(URIRef(iri))}"
+        return "(not described)"
     graph = unit.graph
     node = URIRef(iri)
     labels = sorted(str(o) for o in graph.objects(node, RDFS.label))
@@ -199,7 +201,7 @@ def describe_entity(iri: str, units: Sequence[ContentUnit]) -> str:
                 iter(sorted(str(o) for o in graph.objects(obj, RDFS.label))), ""
             )
             relations.append(f"{_local(predicate)} -> {name or _local(obj)}")
-    parts = [f"id: {_local(node)}"]
+    parts: list[str] = []
     if labels:
         parts.append("labels: " + "; ".join(f'"{label}"' for label in labels))
     if types:
@@ -211,7 +213,7 @@ def describe_entity(iri: str, units: Sequence[ContentUnit]) -> str:
     sentence = _source_sentence(unit.text, labels)
     if sentence:
         parts.append(f'source: "{sentence}"')
-    return "\n    ".join(parts)
+    return "\n    ".join(parts) or "(not described)"
 
 
 def _source_sentence(text: str, labels: Sequence[str]) -> str:

@@ -118,6 +118,11 @@ ontology clean:
 
 `cd:` is `https://growgraph.dev/facts/`. It is fixed, not a setting.
 
+The prompt names your ontology's namespaces as the ones its terms live in, under
+the prefixes its term sheet shows. A standard vocabulary you load as an
+ontology (PROV-O, SOSA) is one of them; the RDF languages (`rdf`, `rdfs`,
+`owl`, `xsd`) never are.
+
 The model is instructed to:
 
 - name every new entity in `cd:`, with a `lowercase_snake_case` local name and

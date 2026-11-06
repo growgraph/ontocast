@@ -11,7 +11,7 @@ instruction = """\
 
 For each numbered pair below, decide whether entity A and entity B denote the \
 same real-world thing. Each entity is shown as the part of the document that \
-named it stated it: its id, labels, types, values, relations, and a sentence \
+named it stated it: its labels, types, values, relations, and a sentence \
 from that part when one names it.
 
 - Answer "same" when both refer to one thing, even under different names: a \

@@ -15,7 +15,7 @@ from rdflib.term import Node
 
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.rdfgraph import RDFGraph, ox_triple_term
 from ontocast.onto.tenancy import (
     DEFAULT_PROJECT,
     DEFAULT_TENANT,
@@ -65,7 +65,8 @@ def _clear_named_graph(store: ox.Store, graph_ctx: ox.NamedNode) -> None:
 _OX_POSITION_TYPES: dict[str, tuple[type, ...]] = {
     "subject": (ox.NamedNode, ox.BlankNode),
     "predicate": (ox.NamedNode,),
-    "object": (ox.NamedNode, ox.BlankNode, ox.Literal),
+    # A triple term: the object of a reifier's ``rdf:reifies`` (RDF 1.2).
+    "object": (ox.NamedNode, ox.BlankNode, ox.Literal, ox.Triple),
 }
 
 
@@ -83,15 +84,15 @@ def _to_ox_term(
 
 @overload
 def _to_ox_term(
-    term: Node, position: Literal["object"], graph_ctx: ox.NamedNode
-) -> ox.NamedNode | ox.BlankNode | ox.Literal: ...
+    term: Node | tuple, position: Literal["object"], graph_ctx: ox.NamedNode
+) -> ox.NamedNode | ox.BlankNode | ox.Literal | ox.Triple: ...
 
 
 def _to_ox_term(
-    term: Node,
+    term: Node | tuple,
     position: Literal["subject", "predicate", "object"],
     graph_ctx: ox.NamedNode,
-) -> ox.NamedNode | ox.BlankNode | ox.Literal:
+) -> ox.NamedNode | ox.BlankNode | ox.Literal | ox.Triple:
     """Convert one rdflib term, naming the graph and position when it cannot be.
 
     Args:
@@ -106,17 +107,28 @@ def _to_ox_term(
     Raises:
         TypeError: The term does not convert to something valid in ``position``.
     """
-    try:
-        converted = to_ox(term)
-    except ValueError as exc:
-        raise TypeError(
-            f"cannot serialize {position} {term!r} "
-            f"(rdflib type {type(term).__name__}) of graph <{graph_ctx.value}>: {exc}"
-        ) from exc
+    if isinstance(term, tuple):
+        # An oxigraph-backed graph yields an RDF 1.2 triple term as a plain
+        # tuple; to_ox would read it as a quad.
+        converted = ox_triple_term(term)
+        if converted is None:
+            raise TypeError(
+                f"cannot serialize {position} {term!r} of graph "
+                f"<{graph_ctx.value}>: not a valid triple term"
+            )
+    else:
+        try:
+            converted = to_ox(term)
+        except ValueError as exc:
+            raise TypeError(
+                f"cannot serialize {position} {term!r} "
+                f"(rdflib type {type(term).__name__}) of graph "
+                f"<{graph_ctx.value}>: {exc}"
+            ) from exc
     # Two checks, not one: the first narrows the union for the type checker,
     # the second enforces what this particular position accepts.
     if not isinstance(
-        converted, (ox.NamedNode, ox.BlankNode, ox.Literal)
+        converted, (ox.NamedNode, ox.BlankNode, ox.Literal, ox.Triple)
     ) or not isinstance(converted, _OX_POSITION_TYPES[position]):
         raise TypeError(
             f"{position} {term!r} (rdflib type {type(term).__name__}) of graph "

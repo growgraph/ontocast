@@ -406,3 +406,41 @@ def test_a_prefix_shaped_namespace_never_becomes_the_working_ontology_iri() -> N
     only_junk = RDFGraph()
     only_junk.bind("fro", "fro:")
     assert _working_anchor_from_graph(only_junk) is None
+
+
+_PROV_LIKE_TTL = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+
+<http://www.w3.org/ns/prov-o> a owl:Ontology ; rdfs:label "PROV-O" .
+prov:Activity a owl:Class ; rdfs:label "Activity" ;
+    rdfs:isDefinedBy <http://www.w3.org/ns/prov-o#> .
+prov:Entity a owl:Class ; rdfs:label "Entity" ;
+    rdfs:isDefinedBy <http://www.w3.org/ns/prov-o#> .
+prov:used a owl:ObjectProperty ; rdfs:label "used" ;
+    rdfs:isDefinedBy <http://www.w3.org/ns/prov-o#> .
+owl:Thing a owl:Class .
+"""
+
+
+def test_the_domain_clause_names_where_a_standard_vocabularys_terms_live() -> None:
+    """PROV-O loaded as an ontology: its namespace is the domain vocabulary.
+
+    A namespace terms only point to (``rdfs:isDefinedBy``) is not one, and the
+    RDF languages are never listed even where the graph declares a term.
+    """
+    from ontocast.onto.ontology_header import adopt_ontology
+    from ontocast.prompt.ontology_context import extract_domain_prefix_pairs
+
+    graph = RDFGraph()
+    graph.parse(data=_PROV_LIKE_TTL, format="turtle")
+    ontology = adopt_ontology(graph)
+
+    pairs = extract_domain_prefix_pairs(ontology)
+    namespaces = [namespace for _, namespace in pairs]
+    assert namespaces[0] == "http://www.w3.org/ns/prov#"
+    assert "http://www.w3.org/ns/prov-o#" not in namespaces
+    assert "http://www.w3.org/2002/07/owl#" not in namespaces
+    bound = {str(namespace) for _, namespace in ontology.graph.namespaces()}
+    assert "http://www.w3.org/ns/prov-o#" not in bound

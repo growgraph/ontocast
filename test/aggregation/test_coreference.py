@@ -147,6 +147,18 @@ def test_an_entity_is_described_as_its_unit_stated_it() -> None:
     assert 'source: "The daily maximum temperature reached 46.6 °C."' in description
 
 
+def test_an_entity_is_never_shown_by_its_iri() -> None:
+    """Two units can mint one local name for unrelated things; never evidence."""
+    units = [
+        _unit(3, 'cd:weather_observations__u3 rdfs:label "weather observations" .'),
+    ]
+    description = describe_entity(CD + "weather_observations__u3", units)
+
+    assert description.startswith('labels: "weather observations"')
+    assert "weather_observations" not in description
+    assert describe_entity(CD + "unknown", units) == "(not described)"
+
+
 # --- the RESOLVE_COREFERENCE node --------------------------------------------
 
 

@@ -1,15 +1,15 @@
 """Helpers for deriving prompt-ready domain ontology namespace context."""
 
-from rdflib import OWL, RDF, RDFS, Graph, URIRef
+from rdflib import OWL, RDF, RDFS, XSD, Graph, URIRef
 
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.ontology import Ontology
-from ontocast.onto.util import non_domain_namespaces
 
-# Exclude every rdflib built-in binding (brick, csvw, xml, …) plus our COMMON
-# prefixes / DEFAULT_IRI so the prompt "domain ontologies" clause only lists
-# author-declared domain namespaces. Shared with the delta partitioner, which
-# asks the same question in stem form -- see ``non_domain_namespaces``.
-_STANDARD_NAMESPACES: frozenset[str] = non_domain_namespaces()
+#: The RDF languages and the facts namespace: never a domain vocabulary, even
+#: where a graph declares terms in them (``owl:Thing``).
+_NON_DOMAIN_NAMESPACES: frozenset[str] = frozenset(
+    {str(RDF), str(RDFS), str(OWL), str(XSD), DEFAULT_IRI}
+)
 
 
 def extract_domain_prefix_pairs_from_graph(
@@ -18,21 +18,38 @@ def extract_domain_prefix_pairs_from_graph(
     fallback_prefix: str | None = None,
     fallback_namespace: str | None = None,
 ) -> list[tuple[str, str]]:
-    """Return domain prefix/namespace pairs present in *graph* bindings."""
-    pairs: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for prefix, namespace_uri in graph.namespaces():
-        if not prefix:
-            continue
-        namespace = str(namespace_uri)
-        if namespace in _STANDARD_NAMESPACES:
-            continue
-        pair = (prefix, namespace)
-        if pair in seen:
-            continue
-        seen.add(pair)
-        pairs.append(pair)
+    """The prefix and namespace of each vocabulary *graph* defines terms in.
 
+    A namespace is listed when a subject of *graph* lives in it, under the
+    prefix the graph shows that subject with, so the prompt's clause and its
+    term sheet agree. A binding no term lives in is not listed -- a document IRI
+    that terms only point to (``rdfs:isDefinedBy <…/prov-o#>``), an rdflib
+    default -- and neither are the RDF languages and the facts namespace. A
+    standard vocabulary in the context as an ontology (PROV-O, SOSA) is listed:
+    its terms are the domain vocabulary. The vocabulary with the most terms
+    comes first, so an ontology's own namespace leads the ones it borrows from.
+    """
+    found: dict[str, str] = {}
+    terms: dict[str, int] = {}
+    subjects = sorted(
+        (s for s in set(graph.subjects()) if isinstance(s, URIRef)), key=str
+    )
+    for subject in subjects:
+        try:
+            prefix, namespace, _ = graph.namespace_manager.compute_qname(
+                str(subject), generate=False
+            )
+        except (KeyError, ValueError):
+            continue
+        namespace = str(namespace)
+        if not prefix or namespace in _NON_DOMAIN_NAMESPACES:
+            continue
+        found.setdefault(namespace, prefix)
+        terms[namespace] = terms.get(namespace, 0) + 1
+    pairs = [
+        (found[namespace], namespace)
+        for namespace in sorted(found, key=lambda ns: (-terms[ns], found[ns]))
+    ]
     if pairs:
         return pairs
 
