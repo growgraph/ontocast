@@ -30,6 +30,7 @@ __all__ = [
     "__version__",
     "build_agent_graph",
     "create_agent_graph",
+    "curate_catalog",
     "facts_loop",
     "make_ontocast_node",
     "ontocast_tool_diagnostics",
@@ -55,6 +56,7 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "ToolBox": ("ontocast.toolbox", "ToolBox"),
     "build_agent_graph": ("ontocast.stategraph.create", "build_agent_graph"),
     "create_agent_graph": ("ontocast.stategraph.create", "create_agent_graph"),
+    "curate_catalog": ("ontocast.tool.curation", "curate_catalog"),
     "facts_loop": ("ontocast.stategraph.atomic", "facts_loop"),
     "make_ontocast_node": ("ontocast.integrations.langgraph", "make_ontocast_node"),
     "ontocast_tool_diagnostics": (

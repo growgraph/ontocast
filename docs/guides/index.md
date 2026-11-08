@@ -12,6 +12,7 @@ setting it uses.
 | Tell OntoCast what to focus on in my documents | [Writing user instructions](user_instructions.md) |
 | Choose how each part of a document gets its ontology | [Choosing ontology context](ontology_context.md) |
 | Validate extracted facts against SHACL shapes | [Validation and SHACL](validation.md) |
+| Review the terms documents added to a catalog ontology | [Curating the catalog](curation.md) |
 | Keep graphs after the process exits | [Triple stores](triple_stores.md) |
 | Keep several users' or projects' data apart | [Tenancy](tenancy.md) |
 | Avoid paying twice for the same LLM call | [LLM caching](llm_caching.md) |

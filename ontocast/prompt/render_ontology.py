@@ -7,6 +7,8 @@ template_prompt = """
 
 {ontology_instruction}
 
+{plan_instruction}
+
 {user_instruction}
 
 {improvement_instruction}
@@ -56,16 +58,21 @@ Every new class and property lives under the namespace <{namespace}>, bound to t
 
 
 intro_instruction_update_single = """
-Complement the domain ontology {ontology_iri} provided below with abstract entities and relations that can be inferred from the document or known to hold in the domain the document pertains to.
+Complement the domain ontology {ontology_iri} provided below with reusable domain classes and relations that can be inferred from the document or known to hold in the domain the document pertains to.
 
 {ontology_desc}
 
-Emit ONLY new abstract entities/relations as GraphUpdate inserts. Do NOT restate triples already present in the provided ontology graph. Do not change the ontology IRI, prefix, or ontology_id.
+Emit ONLY new classes/relations as GraphUpdate inserts. Do NOT restate triples already present in the provided ontology graph. Do not change the ontology IRI, prefix, or ontology_id.
+"""
+
+
+home_namespace_clause = """
+Every new class and property of this document lives under the namespace <{namespace}>, bound to the prefix `{ontology_id}:`. Terms under any other namespace are used by their IRIs only: never declare a new term in another namespace, and never add an axiom whose subject is a term of another namespace.
 """
 
 
 intro_instruction_update_multi = """
-Complement the provided multi-source ontology context with abstract entities and relations inferred from the document.
+Complement the provided multi-source ontology context with reusable domain classes and relations inferred from the document.
 
 {ontology_desc}
 
@@ -74,7 +81,7 @@ The context may combine patches from multiple catalog ontologies:
 
 Rules:
 - Propose ONLY *new* schema (classes/properties/axioms). Do NOT restate triples already in the provided graph.
-- Place each new entity under the matching existing domain prefix from the domain-ontologies clause below.
+- Place each new entity under the document's home namespace when one is named below; otherwise under the matching existing domain prefix from the domain-ontologies clause below.
 - Never invent a new domain ontology id/IRI; never collapse distinct source namespaces.
 - Cross-links to other listed ontologies via existing IRIs are fine; do not mint terms under foreign namespaces you do not own.
 """
@@ -105,9 +112,9 @@ prefix_instruction = """Use {domain_ontologies_clause} for entities/properties p
 general_ontology_instruction = f"""
 ### GENERAL
 
-1. **Only model abstract concepts — no instances or facts from the document** (e.g., no specific case names, dates, or people).
+1. **Model the domain, not the document.** Mint a class only at the level a second document in the same domain would reuse. A particular case the document reports (a named case, a person, a date, a composition, a numbered sample) is an individual or a property value in the facts graph, not a class.
 
-2. **All abstract entities (classes/properties) must connect to:**
+2. **All new classes and properties must connect to:**
    - **Standard vocabularies (RDFS, OWL, schema.org, SKOS) via rdfs:subClassOf, rdf:type, rdfs:subPropertyOf, etc.**
    - **OR other entities within this ontology**
    - **Example: `legal:CourtDecision rdfs:subClassOf schema:Event .`**
@@ -123,6 +130,10 @@ general_ontology_instruction = f"""
    - **Language: Use same language for labels/comments as existing ontology**
    - **Naming: Follow existing PascalCase/camelCase patterns**
    - **Structure: Respect existing hierarchy depth and property usage patterns**
+
+5a. **Subclass or property value?** A distinction that varies from one instance to the next (a composition, a material, a method, a status, a category) is a property with values: an object property whose values are individuals or SKOS concepts, or a datatype property. It is never a family of sibling subclasses. Example: `ex:Vehicle` with `ex:hasFuelType` and individuals `ex:Diesel`, `ex:Petrol`, not `ex:DieselVehicle` and `ex:PetrolVehicle`. A subclass is justified only when it carries properties or restrictions of its own.
+
+5b. **Reuse before minting, and stay shallow.** When a term in the ontology context or a well-known vocabulary (schema.org, SKOS, SOSA/SSN, QUDT, PROV-O) names the concept, use it. Attach a new class at most two levels below an existing class, and do not build chains of single-child intermediate classes.
 
 6. {prefix_instruction}
 
@@ -146,6 +157,24 @@ general_ontology_instruction = f"""
 {{search_guidelines}}
 """
 
+
+#: The document plan, shown to every unit: the terms it may mint and the
+#: existing terms it must use instead of minting.
+plan_instruction_template = """
+### DOCUMENT PLAN
+
+The terms of this document were planned with the whole document in view. Mint new classes and properties ONLY from this list, with the local names, labels and parents given:
+
+{minted_lines}
+{reuse_block}
+Any other class or property you mint is held back and is written only if a later review keeps it. When a concept fits a planned or existing term, use that term.
+"""
+
+plan_reuse_block = """
+Use these existing terms instead of minting:
+
+{reuse_lines}
+"""
 
 improvement_instruction_template = """\n\n
 # IMPROVEMENT INSTRUCTION

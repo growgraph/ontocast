@@ -1,4 +1,4 @@
-"""Reduce-time reconciliation: full terminals are the authority, not snapshots.
+"""Reduce-time reconciliation: the whole catalog is the authority, not snapshots.
 
 Under vector-retrieval context the per-unit snapshot is a retrieved subset of
 the catalog, so a unit can re-mint a term that exists, unretrieved, in the
@@ -27,7 +27,9 @@ from ontocast.stategraph.helpers import (
 )
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.ontology_validation import (
+    CatalogSurfaceIndex,
     apply_minted_duplicate_rewrites,
+    build_catalog_surface_index,
     detect_minted_duplicates,
 )
 
@@ -42,6 +44,10 @@ def _graph(*triples) -> RDFGraph:
     for triple in triples:
         graph.add(triple)
     return graph
+
+
+def _index(*graphs: RDFGraph) -> CatalogSurfaceIndex:
+    return build_catalog_surface_index(graphs)
 
 
 def _terminal() -> RDFGraph:
@@ -61,17 +67,68 @@ def test_minted_class_matching_catalog_label_is_detected() -> None:
         (minted, RDF.type, OWL.Class),
         (minted, RDFS.label, Literal("Sample")),
     )
-    duplicates = detect_minted_duplicates(inserts, {ONTO: _terminal()})
+    duplicates = detect_minted_duplicates(inserts, _index(_terminal()))
     assert [(d.minted_iri, d.catalog_iri, d.role) for d in duplicates] == [
         (f"{ONTO}Sample2", f"{ONTO}Sample", "class")
     ]
+
+
+def test_label_match_is_case_insensitive() -> None:
+    minted = URIRef(f"{ONTO}SampleItem")
+    inserts = _graph(
+        (minted, RDF.type, OWL.Class),
+        (minted, RDFS.label, Literal("sample ")),
+    )
+    duplicates = detect_minted_duplicates(inserts, _index(_terminal()))
+    assert [(d.catalog_iri, d.key) for d in duplicates] == [(f"{ONTO}Sample", "label")]
+
+
+def test_local_name_matches_across_letter_case() -> None:
+    """A re-mint that only changes the case of its local name is the same term."""
+    catalog_term = URIRef(f"{ONTO}plRedShiftProperty")
+    catalog = _graph((catalog_term, RDF.type, OWL.ObjectProperty))
+    minted = URIRef(f"{ONTO}PLRedShiftProperty")
+    inserts = _graph(
+        (minted, RDF.type, OWL.ObjectProperty),
+        (minted, RDFS.label, Literal("photoluminescence red shift")),
+    )
+    duplicates = detect_minted_duplicates(inserts, _index(catalog))
+    assert [(d.catalog_iri, d.key, d.surface) for d in duplicates] == [
+        (str(catalog_term), "local_name", "PLRedShiftProperty")
+    ]
+
+
+def test_ambiguous_local_name_is_refused() -> None:
+    first = URIRef("https://example.com/a#Sample")
+    second = URIRef("https://example.com/b#Sample")
+    catalog = _graph((first, RDF.type, OWL.Class), (second, RDF.type, OWL.Class))
+    minted = URIRef(f"{ONTO}SAMPLE")
+    inserts = _graph((minted, RDF.type, OWL.Class))
+    assert detect_minted_duplicates(inserts, _index(catalog)) == []
+
+
+def test_a_duplicate_in_any_catalog_ontology_is_found() -> None:
+    """The index spans every catalog ontology, not only those a unit retrieved."""
+    retrieved = _terminal()
+    unretrieved_term = URIRef("https://example.com/other#Detector")
+    unretrieved = _graph(
+        (unretrieved_term, RDF.type, OWL.Class),
+        (unretrieved_term, RDFS.label, Literal("Detector")),
+    )
+    minted = URIRef(f"{ONTO}Detector")
+    inserts = _graph(
+        (minted, RDF.type, OWL.Class),
+        (minted, RDFS.label, Literal("Detector")),
+    )
+    duplicates = detect_minted_duplicates(inserts, _index(retrieved, unretrieved))
+    assert [d.catalog_iri for d in duplicates] == [str(unretrieved_term)]
 
 
 def test_term_already_in_terminal_is_not_minted() -> None:
     """Adding an axiom about an existing catalog term is not a re-mint."""
     existing = URIRef(f"{ONTO}Sample")
     inserts = _graph((existing, RDFS.comment, Literal("a material sample")))
-    assert detect_minted_duplicates(inserts, {ONTO: _terminal()}) == []
+    assert detect_minted_duplicates(inserts, _index(_terminal())) == []
 
 
 def test_ambiguous_surface_is_refused() -> None:
@@ -85,7 +142,7 @@ def test_ambiguous_surface_is_refused() -> None:
         (minted, RDF.type, OWL.Class),
         (minted, RDFS.label, Literal("Sample")),
     )
-    assert detect_minted_duplicates(inserts, {ONTO: terminal}) == []
+    assert detect_minted_duplicates(inserts, _index(terminal)) == []
 
 
 def test_role_mismatch_is_refused() -> None:
@@ -95,7 +152,7 @@ def test_role_mismatch_is_refused() -> None:
         (minted, RDF.type, OWL.ObjectProperty),
         (minted, RDFS.label, Literal("Sample")),  # collides with the CLASS label
     )
-    assert detect_minted_duplicates(inserts, {ONTO: _terminal()}) == []
+    assert detect_minted_duplicates(inserts, _index(_terminal())) == []
 
 
 def test_rewrite_substitutes_subject_and_object_positions() -> None:
@@ -108,7 +165,7 @@ def test_rewrite_substitutes_subject_and_object_positions() -> None:
         (other, RDFS.label, Literal("Detector")),
         (other, RDFS.subClassOf, minted),  # object position must follow
     )
-    duplicates = detect_minted_duplicates(inserts, {ONTO: _terminal()})
+    duplicates = detect_minted_duplicates(inserts, _index(_terminal()))
     rewritten = apply_minted_duplicate_rewrites(inserts, duplicates)
 
     catalog = URIRef(f"{ONTO}Sample")

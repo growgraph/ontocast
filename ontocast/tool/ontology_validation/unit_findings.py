@@ -43,6 +43,20 @@ from ontocast.tool.facts_validation.terms import (
     collect_declared_namespaces,
     superclass_closure,
 )
+from ontocast.tool.ontology_validation.reconcile import (
+    match_catalog_term,
+    minted_roles,
+    surfaces_of,
+)
+from ontocast.tool.ontology_validation.shape import (
+    CatalogSurfaceIndex,
+    first_label,
+    has_own_structure,
+    minted_class_iris,
+    named_class_depth,
+    specific_label_reason,
+    value_set_families,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +469,168 @@ def _foreign_delete_findings(
     return findings
 
 
+def _minted_classes(inserts: RDFGraph, snapshot_graph: RDFGraph | None) -> list[URIRef]:
+    """Classes the delta declares that the snapshot does not already hold."""
+    minted = []
+    for iri in sorted(minted_class_iris(inserts)):
+        subject = URIRef(iri)
+        if snapshot_graph is not None and (subject, None, None) in snapshot_graph:
+            continue
+        minted.append(subject)
+    return minted
+
+
+def _hierarchy_depth_findings(
+    inserts: RDFGraph,
+    snapshot_graph: RDFGraph | None,
+    merged_graph: RDFGraph,
+    max_class_depth: int,
+) -> list[OntologyUnitFinding]:
+    """Minted classes deeper below their root than the configured bound."""
+    findings: list[OntologyUnitFinding] = []
+    memo: dict = {}
+    for subject in _minted_classes(inserts, snapshot_graph):
+        depth, chain = named_class_depth(subject, merged_graph, memo)
+        if depth <= max_class_depth:
+            continue
+        rendered = " ⊂ ".join(f"<{node}>" for node in chain)
+        findings.append(
+            OntologyUnitFinding(
+                kind=OntologyUnitFindingKind.HIERARCHY_TOO_DEEP,
+                message=(
+                    f"<{subject}> sits {depth} named classes below its root "
+                    f"({rendered}); the bound is {max_class_depth}. Attach it "
+                    "to a higher class, or collapse the intermediate classes "
+                    "another document in the domain would not reuse."
+                ),
+                subject=str(subject),
+                value=str(depth),
+            )
+        )
+    return findings
+
+
+def _value_set_sibling_findings(
+    inserts: RDFGraph, snapshot_graph: RDFGraph | None, merged_graph: RDFGraph
+) -> list[OntologyUnitFinding]:
+    """Minted sibling classes one word apart that a property value would do."""
+    siblings: dict[str, list[tuple[str, str]]] = {}
+    for child in _minted_classes(inserts, snapshot_graph):
+        if has_own_structure(child, merged_graph):
+            continue
+        label = first_label(child, inserts, merged_graph)
+        if label is None:
+            continue
+        for parent in inserts.objects(child, RDFS.subClassOf):
+            if isinstance(parent, URIRef):
+                siblings.setdefault(str(parent), []).append((str(child), label))
+    findings: list[OntologyUnitFinding] = []
+    for family in value_set_families(siblings):
+        labels = ", ".join(f"“{label}”" for _, label in family.members)
+        findings.append(
+            OntologyUnitFinding(
+                kind=OntologyUnitFindingKind.VALUE_SET_SIBLINGS,
+                message=(
+                    f"{len(family.members)} new subclasses of <{family.parent}> "
+                    f"differ in one word only ({labels}) and add nothing of "
+                    "their own. That is a value set, not a hierarchy: declare "
+                    f"one property on <{family.parent}> whose values are "
+                    "individuals (or SKOS concepts), and drop the subclasses."
+                ),
+                subject=family.parent,
+                value=family.template,
+                suggestions=[iri for iri, _ in family.members],
+            )
+        )
+    return findings
+
+
+def _specific_label_leaf_findings(
+    inserts: RDFGraph, snapshot_graph: RDFGraph | None, merged_graph: RDFGraph
+) -> list[OntologyUnitFinding]:
+    """Minted leaves whose label names one document's case. Advisory."""
+    findings: list[OntologyUnitFinding] = []
+    for subject in _minted_classes(inserts, snapshot_graph):
+        if any(True for _ in merged_graph.subjects(RDFS.subClassOf, subject)):
+            continue
+        if any(
+            True
+            for predicate in (RDFS.domain, RDFS.range)
+            for _ in merged_graph.subjects(predicate, subject)
+        ):
+            continue
+        label = first_label(subject, inserts, merged_graph)
+        if label is None:
+            continue
+        reason = specific_label_reason(label)
+        if reason is None:
+            continue
+        findings.append(
+            OntologyUnitFinding(
+                kind=OntologyUnitFindingKind.SPECIFIC_LABEL_LEAF,
+                mandatory=False,
+                message=(
+                    f"<{subject}> (“{label}”) is a leaf no property uses, and "
+                    "its label names a particular case. Mint a class at the "
+                    "level another document in the domain would reuse; a "
+                    "particular case is an individual or a property value."
+                ),
+                subject=str(subject),
+                value=label,
+                facet=reason,
+            )
+        )
+    return findings
+
+
+def _catalog_duplicate_findings(
+    inserts: RDFGraph,
+    snapshot_graph: RDFGraph | None,
+    catalog_index: CatalogSurfaceIndex | None,
+) -> list[OntologyUnitFinding]:
+    """Minted terms that name a catalog term the unit's context did not show.
+
+    Matched against the whole catalog, case-insensitively, by label, preferred
+    label or notation, then by local name. An exact label match against the
+    snapshot is left to the label-collision rule, which already reports it.
+    """
+    if catalog_index is None or catalog_index.is_empty():
+        return []
+    exact_snapshot = build_surface_index(snapshot_graph) if snapshot_graph else {}
+    roles = minted_roles(inserts)
+    findings: list[OntologyUnitFinding] = []
+    for subject in _new_subjects(inserts):
+        if snapshot_graph is not None and (subject, None, None) in snapshot_graph:
+            continue
+        if any(
+            exact_snapshot.get(surface) for surface in surfaces_of(subject, inserts)
+        ):
+            continue
+        match = match_catalog_term(
+            subject, inserts, catalog_index, roles.get(subject, "unknown")
+        )
+        if match is None:
+            continue
+        name = "local name" if match.key == "local_name" else "name"
+        findings.append(
+            OntologyUnitFinding(
+                kind=OntologyUnitFindingKind.CATALOG_DUPLICATE,
+                message=(
+                    f"New term <{match.minted_iri}> has the same {name} "
+                    f"(“{match.surface}”) as the catalog term "
+                    f"<{match.catalog_iri}>, which the context did not show. "
+                    f"Reuse <{match.catalog_iri}>: state the new statements "
+                    f"on it and drop <{match.minted_iri}>."
+                ),
+                subject=match.minted_iri,
+                value=match.surface,
+                facet=match.key,
+                suggestions=[match.catalog_iri],
+            )
+        )
+    return findings
+
+
 def collect_ontology_unit_findings(
     *,
     inserts: RDFGraph,
@@ -463,6 +639,8 @@ def collect_ontology_unit_findings(
     merged_graph: RDFGraph | None = None,
     fact_namespaces: Sequence[str] = (),
     policy: ValidationPolicy | None = None,
+    max_class_depth: int = 6,
+    catalog_index: CatalogSurfaceIndex | None = None,
 ) -> list[OntologyUnitFinding]:
     """Assemble all deterministic findings for one unit's ontology delta.
 
@@ -478,6 +656,10 @@ def collect_ontology_unit_findings(
             there are mandatory findings.
         policy: Deployment namespace exemptions; ``None`` (tests) uses the
             built-in standard namespaces only.
+        max_class_depth: Deepest named-superclass chain a minted class may
+            sit on.
+        catalog_index: Names of every catalog term, for the duplicate check;
+            ``None`` skips it.
 
     Returns:
         Findings, mandatory first is *not* guaranteed — order follows the
@@ -504,6 +686,12 @@ def collect_ontology_unit_findings(
         *_cardinality_contradiction_findings(inserts, merged_graph),
         *_foreign_delete_findings(deletes, snapshot_graph, inserts),
         *_label_collision_findings(inserts, snapshot_graph),
+        *_hierarchy_depth_findings(
+            inserts, snapshot_graph, merged_graph, max_class_depth
+        ),
+        *_value_set_sibling_findings(inserts, snapshot_graph, merged_graph),
+        *_specific_label_leaf_findings(inserts, snapshot_graph, merged_graph),
+        *_catalog_duplicate_findings(inserts, snapshot_graph, catalog_index),
     ]
     return findings
 

@@ -14,9 +14,13 @@ the result of a run.
 | Gate | Once per document, after the parts are merged | Merged facts are checked for nodes that hold two values where one is expected, and against your SHACL shapes; what can be fixed without a model is fixed | None |
 
 Ontology changes get the same per-unit review, with checks suited to new terms
-(missing labels, subclass cycles, terms minted outside the ontology's
-namespace), plus a check for newly minted terms that duplicate one already in
-the catalog. The ontology critic is off by default
+(subclass cycles, terms minted outside the ontology's namespace, hierarchies
+deeper than
+[`ONTOLOGY_MAX_CLASS_DEPTH`](../reference/configuration/ontology-validation.md#ontology_max_class_depth),
+sibling subclasses that only enumerate values, terms that duplicate one
+already in the catalog). A missing label is derived from the term's name
+without a model call. The ontology critic runs one pass by default, and only
+on a part whose checks found a mandatory defect
 ([`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes)).
 
 Validation never withholds output. The gate repairs what it can and reports the

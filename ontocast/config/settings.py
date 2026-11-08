@@ -23,6 +23,7 @@ from ontocast.onto.constants import (
 from ontocast.onto.enum import (
     LLMGraphFormat,
     LLMOutputLayout,
+    LLMPhase,
     OntologyChapterFormat,
     OntologyContextMode,
     OntologyContextScope,
@@ -456,10 +457,35 @@ class LLMConfig(BaseSettings):
         ),
     )
 
+    model_by_phase: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Model per pipeline phase, as a JSON object from an LLM phase "
+            "(e.g. `ontology_plan`, `ontology_consolidation`) to a model name, "
+            'for example `{"ontology_plan": "gpt-5.5"}`. A call made in a '
+            "listed phase goes to that model, with every other setting "
+            "unchanged; other phases use LLM_MODEL_NAME. Use it to give the few "
+            "document-level decisions a stronger model than the per-unit calls."
+        ),
+    )
+
     model_config = SettingsConfigDict(
         env_prefix="LLM_",
         case_sensitive=False,
     )
+
+    @field_validator("model_by_phase")
+    @classmethod
+    def validate_model_by_phase(cls, value: dict[str, str]) -> dict[str, str]:
+        """Refuse a key that names no LLM phase."""
+        phases = {phase.value for phase in LLMPhase}
+        unknown = sorted(set(value) - phases)
+        if unknown:
+            raise ValueError(
+                f"LLM_MODEL_BY_PHASE names unknown phase(s) {unknown}; "
+                f"known: {sorted(phases)}"
+            )
+        return {phase: str(model).strip() for phase, model in value.items()}
 
     @field_validator("model_name")
     @classmethod
@@ -1210,10 +1236,6 @@ class ServerConfig(BaseSettings):
             "reasoning tokens count as output. None means unlimited."
         ),
     )
-    enable_ontology_consolidation: bool = Field(
-        default=False,
-        description="Run optional ontology consolidation pass after normalization",
-    )
     max_concurrent_processes: int | None = Field(
         default=None,
         ge=1,
@@ -1371,8 +1393,10 @@ class DomainConfig(BaseSettings):
         validation_alias=AliasChoices("current_domain", "CURRENT_DOMAIN"),
         description=(
             "IRI stem document and ontology IRIs are minted under: an absolute "
-            "http(s) IRI with no fragment, query or trailing slash. Used by "
-            "AgentState when no explicit value is supplied."
+            "http(s) IRI with no fragment, query or trailing slash. A catalog "
+            "ontology under it is owned and extended in place; any other is "
+            "external and gets an extension ontology. Used by AgentState when "
+            "no explicit value is supplied."
         ),
     )
 
@@ -3079,10 +3103,11 @@ class OntologyValidationConfig(BaseSettings):
     reconcile_minted_terms: Literal["off", "detect", "rewrite"] = Field(
         default="detect",
         description=(
-            "What to do when a newly minted term's label or notation exactly "
-            "matches an existing term of compatible role in the full catalog."
-            " Under vector retrieval the renderer sees only part of the "
-            "catalog, so it can mint a duplicate of a term it was not shown. "
+            "What to do when a newly minted term's label, notation or local "
+            "name matches, case-insensitively, an existing term of compatible "
+            "role in any catalog ontology. Under vector retrieval the renderer "
+            "sees only part of the catalog, so it can mint a duplicate of a "
+            "term it was not shown. "
             "'detect' logs each pair and changes nothing; 'rewrite' also "
             "replaces the minted IRI with the catalog IRI in the merged "
             "update (enable it once 'detect' shows the matches are true "
@@ -3100,13 +3125,86 @@ class OntologyValidationConfig(BaseSettings):
         ),
     )
     critic_passes: int = Field(
-        default=0,
+        default=1,
         ge=0,
         description=(
             "Review-and-patch passes per ontology unit, in LLM calls. 0 "
-            "(default) disables the ontology critic; each pass adds one call "
-            "per unit."
+            "disables the ontology critic. With 1 (default) the pass is spent "
+            "only on a unit whose deterministic findings include a mandatory "
+            "one, so a clean unit costs no critic call. With 2 or more every "
+            "pass runs on every unit."
         ),
+    )
+    max_class_depth: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "Deepest named-class chain a newly minted class may sit on, "
+            "counted from owl:Thing, a well-known vocabulary term, or a class "
+            "with no named superclass. A deeper minted class is a "
+            "`hierarchy_too_deep` finding: chains of single-use intermediates "
+            "are what a document-driven render builds and another document "
+            "does not reuse."
+        ),
+    )
+    plan_enabled: bool = Field(
+        default=True,
+        description=(
+            "Plan a document's ontology before its units render: one LLM call "
+            "over the whole document proposes the classes and properties it "
+            "adds to the domain, checked against the whole catalog without a "
+            "model. Every unit renders against the plan, and a term a unit "
+            "mints outside it is held back for consolidation. Off, units mint "
+            "freely, each from its own chunk."
+        ),
+    )
+    plan_max_chars: int = Field(
+        default=60000,
+        ge=1000,
+        description=(
+            "Characters of document text the plan call sees. Beyond it, every "
+            "unit is cut to the same share of its length."
+        ),
+    )
+    plan_max_terms: int = Field(
+        default=60,
+        ge=1,
+        description="Largest number of terms one document's plan accepts.",
+    )
+    plan_catalog_max_terms: int = Field(
+        default=400,
+        ge=0,
+        description=(
+            "Catalog terms listed to the plan call as reuse candidates: the "
+            "home ontology's first, then the rest of the catalog."
+        ),
+    )
+    plan_neighbours: int = Field(
+        default=3,
+        ge=0,
+        description=(
+            "Catalog terms the vector index finds nearest each planned term, "
+            "shown to the renderer and to consolidation as reuse candidates. "
+            "Needs an indexed catalog; 0 disables the lookup."
+        ),
+    )
+    consolidation: Literal["off", "on"] = Field(
+        default="on",
+        description=(
+            "Decide every term a document minted before it is written. Terms "
+            "that need a decision are found without a model (outside the "
+            "plan, one document's case, a value set, a catalog duplicate, a "
+            "name variant); only they go to one LLM call per batch, which "
+            "returns keep, merge into another term, generalise, demote to a "
+            "property value, or drop, compiled into the update without a "
+            "model. No such term, no call. Off, planned terms are kept and "
+            "terms outside the plan are dropped."
+        ),
+    )
+    consolidation_max_terms: int = Field(
+        default=80,
+        ge=1,
+        description="Terms per consolidation call; more terms take more calls.",
     )
     critic_max_delete_share: float = Field(
         default=0.10,
@@ -3130,10 +3228,12 @@ class OntologyValidationConfig(BaseSettings):
             "foreign_namespace",
             "subclass_cycle",
             "role_confusion",
+            "hierarchy_too_deep",
         ],
         description=(
             "Deterministic ontology findings that block acceptance. The default "
-            "is the destructive-or-lossy subset only. Blocking on every "
+            "is the destructive-or-lossy subset plus `hierarchy_too_deep`. "
+            "Blocking on every "
             "mandatory finding would put `missing_label` in the set, which "
             "fires whenever a render mints a term without a label -- routine, "
             "and a permanent per-unit tax rather than a defect signal."

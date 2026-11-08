@@ -58,6 +58,39 @@ def merge_unit_deltas(deltas: list[OntologyDelta]) -> OntologyDelta:
     return OntologyDelta(inserts=inserts, deletes=reconciled_deletes)
 
 
+def build_document_text(state: AgentState, max_chars: int) -> str:
+    """The document's content units, in order, within ``max_chars``.
+
+    Every unit keeps its opening: once the whole text exceeds the budget, each
+    unit is cut to the same share of its length. Units routed away from
+    extraction (a reference list, an author block) are left out unless no unit
+    is plain content.
+
+    Args:
+        state: The document state.
+        max_chars: Character budget for the joined text.
+
+    Returns:
+        The units' texts joined by blank lines, or the excerpt when no unit
+        has text.
+    """
+    units = [
+        unit
+        for unit in state.content_units
+        if not unit.is_citation_metadata and not unit.is_non_content
+    ] or list(state.content_units)
+    texts = [unit.text.strip() for unit in units if unit.text.strip()]
+    if not texts:
+        return build_document_excerpt(state)
+    total = sum(len(text) for text in texts)
+    if total > max_chars > 0:
+        share = max_chars / total
+        texts = [
+            text[: max(1, int(len(text) * share))].rstrip() + " [...]" for text in texts
+        ]
+    return "\n\n".join(texts)
+
+
 def build_document_excerpt(state: AgentState) -> str:
     """Create a representative excerpt from sampled source units.
 

@@ -161,7 +161,8 @@ def partition_triples_by_namespace(
     """Partition delta triples onto writable catalog IRIs by namespace ownership.
 
     Works for both insert and delete deltas. Ownership prefers the subject URI
-    namespace, then the predicate namespace.
+    namespace, then the predicate namespace; a blank subject falls back to the
+    object's.
     Returns ``(iri → graph, unattributed_triple_count)``.
     """
     owners = build_namespace_owner_map(
@@ -182,10 +183,16 @@ def partition_triples_by_namespace(
             owner = _owner_for_uri(str(s), owners)
         if owner is None and isinstance(p, URIRef):
             owner = _owner_for_uri(str(p), owners)
-        if owner is None and isinstance(o, URIRef) and not isinstance(o, Literal):
-            # Object-only domain IRIs (e.g. typing to a new class under a domain NS)
-            # still need a home when subject is a blank/cd node — rare for ontology
-            # schema inserts; prefer subject/predicate first.
+        if (
+            owner is None
+            and not isinstance(s, URIRef)
+            and isinstance(o, URIRef)
+            and not isinstance(o, Literal)
+        ):
+            # Only a blank subject (an OWL restriction, a list cell) is filed
+            # by its object. A named subject no writable ontology owns stays
+            # unattributed: filing it by its object wrote axioms about a term
+            # whose declaration went nowhere.
             candidate = _owner_for_uri(str(o), owners)
             if candidate is not None:
                 owner = candidate

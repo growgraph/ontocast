@@ -780,6 +780,109 @@ def process(
         )
 
 
+@cli.command("curate")
+@click.option(
+    "--ontology",
+    "ontology_ref",
+    type=str,
+    default=None,
+    help="Ontology id, alias or IRI to curate (default: every catalog ontology).",
+)
+@click.option(
+    "--apply/--dry-run",
+    default=False,
+    help=(
+        "Write each changed ontology as a new version. The default only "
+        "reports what curation would do; LLM calls are made either way."
+    ),
+)
+@click.option(
+    "--json",
+    "json_path",
+    type=click.Path(dir_okay=False, path_type=pathlib.Path),
+    default=None,
+    help="Also write the full report as JSON to this file.",
+)
+@click.option(
+    "--batch-size",
+    type=click.IntRange(min=1),
+    default=40,
+    show_default=True,
+    help="Flagged terms per model call.",
+)
+@click.option(
+    "--facts-usage/--no-facts-usage",
+    default=True,
+    help="Count, per term, the documents whose facts use it (needs SPARQL).",
+)
+@click.option("--tenant", type=str, default=None, help="Tenant id.")
+@click.option("--project", type=str, default=None, help="Project id.")
+@click.option(
+    "--ontology-dir",
+    type=str,
+    default=None,
+    help="Seed ontology directory, overriding ONTOCAST_ONTOLOGY_DIRECTORY.",
+)
+def curate(
+    ontology_ref: str | None,
+    apply: bool,
+    json_path: pathlib.Path | None,
+    batch_size: int,
+    facts_usage: bool,
+    tenant: str | None,
+    project: str | None,
+    ontology_dir: str | None,
+) -> None:
+    """Review the terms documents added to the catalog, and optionally fix them.
+
+    Terms used by at most one document, unused terms, name variants, value-set
+    families and duplicates of authored terms are put to the model, which
+    keeps, merges, generalises, demotes or drops each one. Authored terms are
+    never changed.
+    """
+    import json
+
+    from ontocast.tool.curation import curate_catalog
+
+    runtime = _bootstrap_tools(
+        tenant=tenant,
+        project=project,
+        wipe_vector_store=None,
+        ontology_dir=ontology_dir,
+    )
+    try:
+        reports = asyncio.run(
+            curate_catalog(
+                runtime.tools,
+                ontology=ontology_ref,
+                apply=apply,
+                batch_size=batch_size,
+                use_facts=facts_usage,
+            )
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    for report in reports:
+        flagged = [term for term in report.terms if term.flags]
+        click.echo(
+            f"{report.ontology_iri}: {len(report.terms)} added term(s), "
+            f"{report.authored_terms} authored, {len(flagged)} flagged, "
+            f"{report.calls} call(s)"
+        )
+        for iri, action in sorted(report.actions.items()):
+            click.echo(f"  {action:<40} {iri}")
+        if report.triples_deleted or report.triples_inserted:
+            click.echo(
+                f"  change: -{report.triples_deleted} +{report.triples_inserted} "
+                f"triples -> {report.predicted_version}"
+                + (f", written {report.written_version_iri}" if apply else " (dry run)")
+            )
+    if json_path is not None:
+        json_path.write_text(
+            json.dumps([report.model_dump() for report in reports], indent=2)
+        )
+
+
 # Backward-compatible alias for tests / direct imports of the old entry name.
 run = cli
 

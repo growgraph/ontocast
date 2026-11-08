@@ -437,6 +437,8 @@ def dump_run_manifest(
             shacl_inference=str(facts_validation.shacl_inference),
             numeric_coverage_mandatory=facts_validation.numeric_coverage_mandatory,
             facts_user_instruction_chars=len(state.facts_user_instruction or ""),
+            ontology_plan_enabled=tool_config.ontology_validation.plan_enabled,
+            ontology_consolidation=tool_config.ontology_validation.consolidation,
         ),
         graph_metrics=(
             facts_graph_shape_metrics(
@@ -461,6 +463,7 @@ def dump_run_manifest(
             thinking_budget=llm_config.thinking_budget,
             requests_per_second=llm_config.requests_per_second,
             max_retries=llm_config.max_retries,
+            model_by_phase=dict(llm_config.model_by_phase) or None,
             prompt_cache_key=llm_config.prompt_cache_key,
             max_inflight=llm_config.llm_max_inflight,
         ),

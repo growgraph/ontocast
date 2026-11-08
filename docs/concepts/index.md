@@ -73,33 +73,55 @@ when [`RENDER_MODE`](../reference/configuration/pipeline.md#render_mode) is
 
 1. **Resolve the home ontology.** One LLM call per document names where its
    new vocabulary goes: an existing catalog ontology the document extends, or
-   a new one, whose IRI OntoCast mints under `CURRENT_DOMAIN`. See [The home
+   a new one, whose IRI OntoCast mints under `CURRENT_DOMAIN`. An ontology
+   outside `CURRENT_DOMAIN` is never written to; its new terms go to an
+   extension ontology that imports it. See [The home
    ontology](ontologies_and_facts.md#the-home-ontology).
-2. **Choose the ontology context.** Each unit is shown the slice of the catalog
+2. **Plan.** One LLM call reads the whole document, within
+   [`ONTOLOGY_PLAN_MAX_CHARS`](../reference/configuration/ontology-validation.md#ontology_plan_max_chars),
+   and the catalog's terms, and lists the classes and properties the document
+   adds to its domain, each with a parent and a definition, or the existing
+   term to reuse instead. Every proposal is checked against the whole catalog
+   without a model: one that names an existing term becomes a reuse, and a
+   parent must exist. Turned off by
+   [`ONTOLOGY_PLAN_ENABLED`](../reference/configuration/ontology-validation.md#ontology_plan_enabled).
+3. **Choose the ontology context.** Each unit is shown the slice of the catalog
    it needs: one ontology the model picks, the terms vector retrieval finds, or
    one fixed ontology, depending on
    [`ONTOLOGY_CONTEXT_MODE`](../reference/configuration/pipeline.md#ontology_context_mode).
    See [Choosing ontology context](../guides/ontology_context.md).
-3. **Render.** The model reads the unit and its ontology context and proposes
-   new classes and properties as a patch: triples to insert and triples to
-   delete. With an empty context it renders the terms of a new ontology under
-   the home ontology.
-4. **Review.** An optional critic reviews the patch; see [the per-unit
+4. **Render.** The model reads the unit, its ontology context and the plan, and
+   proposes new classes and properties as a patch: triples to insert and
+   triples to delete. It mints from the plan; a term it mints outside the plan
+   is a *candidate*, held back for the next step. With an empty context it
+   renders the terms of a new ontology under the home ontology.
+5. **Review.** An optional critic reviews the patch; see [the per-unit
    loop](#the-per-unit-loop) below.
-5. **Merge and save.** When every unit is done, their patches are merged into
-   one change per ontology. A triple one unit inserts wins over another unit's
-   delete of it. Each new term goes to the ontology that owns its namespace,
-   and every ontology that changed becomes a new version; one that did not
-   change gets none. What each unit contributed is kept apart from the
-   ontology itself, as provenance.
-6. **Consolidate (optional).** With
-   [`ENABLE_ONTOLOGY_CONSOLIDATION`](../reference/configuration/pipeline.md#enable_ontology_consolidation),
-   one more LLM call refines the ontology against an excerpt of the whole
-   document. It runs only when the document produced exactly one ontology.
-7. **Structural check.** OntoCast checks the ontology for disconnected parts and
+6. **Merge.** When every unit is done, their patches are merged into one
+   change. A triple one unit inserts wins over another unit's delete of it.
+7. **Consolidate.** Every term the document minted is decided before it is
+   written. Checks without a model pick the terms that need a decision:
+   candidates, and terms that look like one document's case, a value
+   modelled as a class, an existing catalog term or a variant of another
+   term's name. When there are none, no call is made. Otherwise one LLM call
+   per batch of
+   [`ONTOLOGY_CONSOLIDATION_MAX_TERMS`](../reference/configuration/ontology-validation.md#ontology_consolidation_max_terms)
+   such terms sees each with its definition, its parents, the nearest catalog
+   terms, the checks that flagged it and where the document uses it, and
+   answers `keep`, `merge_into` another term, `generalise_to` a broader
+   parent, `demote_to_property_value` (a class that is really a value becomes
+   a SKOS concept) or `drop`. OntoCast turns the answers into the change
+   itself, without a model, and never edits a catalog term's own axioms. A
+   planned term with no answer is kept; a candidate with no answer is dropped.
+   With [`ONTOLOGY_CONSOLIDATION`](../reference/configuration/ontology-validation.md#ontology_consolidation)
+   `off`, no call is made and those defaults apply.
+8. **Save.** Each new term goes to the ontology that owns its namespace, and
+   every ontology that changed becomes a new version; one that did not change
+   gets none.
+9. **Structural check.** OntoCast checks the ontology for disconnected parts and
    properties without labels. It changes nothing; problems are reported in
    `improvement_suggestions`.
-8. **Consistency check.** In `selected_vector_search_ontology` mode, the new
+10. **Consistency check.** In `selected_vector_search_ontology` mode, the new
    terms are searched against the whole catalog to find near-duplicates in
    ontologies the document did not touch. This is a retrieval, not an LLM call,
    and its findings are also reported in `improvement_suggestions`. In the other
@@ -180,15 +202,15 @@ Inside each block, every unit runs the same short loop:
   [`FACTS_CRITIC_PASSES`](../reference/configuration/facts-validation.md#facts_critic_passes)
   (on by default) and
   [`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes)
-  (off by default).
+  (one pass by default, spent only on a part with a mandatory finding).
 - **Completion passes** (facts only, off by default) ask the model for
   measurements the render missed, adding facts and never removing any; see
   [`FACTS_COMPLETION_PASSES`](../reference/configuration/facts-validation.md#facts_completion_passes).
 
 So at the defaults, an ontology unit costs one call and a facts unit usually
 two, plus, in `selected_single_ontology` mode, one call per unit for choosing
-the ontology. The document-level calls (the home ontology, coreference, and the
-optional consolidation) come on top.
+the ontology. The document-level calls (the home ontology, the ontology plan,
+consolidation and coreference) come on top.
 [Validation layers](../internals/validation_layers.md) describes the checks, the
 fixes and their limits in detail.
 

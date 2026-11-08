@@ -36,6 +36,7 @@ from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy, ValidationPolicy
+from ontocast.tool.ontology_validation import CatalogSurfaceIndex
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import empty_snapshot
 
@@ -356,6 +357,8 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
                 AtomicToolBox,
                 SimpleNamespace(
                     ontology_critic_passes=0,
+                    ontology_max_class_depth=6,
+                    catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
                     additional_standard_namespaces=(),
                     validation_policy=None,

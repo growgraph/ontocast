@@ -20,7 +20,13 @@ from ontocast.config import (
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import LLMGraphFormat, RenderMode, Status, WorkflowNode
 from ontocast.onto.identity import OntologyIdentity
-from ontocast.onto.model import FreshOntologyRenderReport, OntologyIdentityProposal
+from ontocast.onto.model import (
+    FreshOntologyRenderReport,
+    OntologyConsolidationReport,
+    OntologyIdentityProposal,
+    OntologyPlan,
+    OntologyPlanReport,
+)
 from ontocast.onto.ontology_header import DivergedOntologyError, mint_ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState, InputDocument
@@ -43,6 +49,10 @@ resolve_home_ontology_module = importlib.import_module(
 )
 render_ontology_module = importlib.import_module("ontocast.agent.render_ontology")
 create_module = importlib.import_module("ontocast.stategraph.create")
+plan_ontology_module = importlib.import_module("ontocast.agent.plan_ontology")
+consolidate_ontology_module = importlib.import_module(
+    "ontocast.agent.consolidate_ontology"
+)
 unit_loops = importlib.import_module("ontocast.stategraph.atomic")
 
 OWL_CLASS = URIRef("http://www.w3.org/2002/07/owl#Class")
@@ -291,11 +301,21 @@ def _fake_fanout_graph(monkeypatch, proposals: dict[str, str]) -> tuple[Any, lis
     monkeypatch.setattr(create_module, "serialize", passthrough_serialize)
     for factory in (
         "make_normalize_ontology_node",
-        "make_consolidate_ontology_node",
         "make_structural_check_node",
         "make_consistency_critic_node",
     ):
         monkeypatch.setattr(create_module, factory, passthrough_factory)
+
+    async def empty_plan(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport()
+
+    async def keep_everything(**_kwargs) -> OntologyConsolidationReport:
+        return OntologyConsolidationReport()
+
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", empty_plan)
+    monkeypatch.setattr(
+        consolidate_ontology_module, "call_llm_with_retry", keep_everything
+    )
     monkeypatch.setattr(unit_loops, "render_ontology", fake_render)
     monkeypatch.setattr(unit_loops, "criticise_ontology", fake_critic)
     monkeypatch.setattr(unit_loops, "resolve_unit_ontology_context", fake_resolve)
@@ -348,6 +368,142 @@ def test_concurrent_documents_never_share_a_home_ontology(monkeypatch) -> None:
         assert [artifact.iri for artifact in final["ontology_artifacts"]] == [
             final["home_ontology"].iri
         ]
+
+
+def _render_minting(names: list[str]):
+    """A fresh-path render whose unit ``i`` mints the class ``names[i]``."""
+
+    async def render(
+        state: UnitOntologyState, tools: AtomicToolBox, **kwargs
+    ) -> UnitOntologyState:
+        home = state.home_ontology
+        assert home is not None
+        ontology = mint_ontology(
+            home, _terms(home.namespace, names[state.content_unit.index])
+        )
+        state.fresh_ontology = ontology
+        state.working_graph = ontology.graph.copy()
+        state.writable_iris = [ontology.iri]
+        state.assembly_anchor_iri = ontology.iri
+        state.status = Status.SUCCESS
+        return state
+
+    return render
+
+
+def test_the_plan_reaches_every_unit_and_decides_what_is_written(monkeypatch) -> None:
+    """Plan before the fan-out, candidates held back, actions compiled.
+
+    Three units mint Film, Layer and Device. The plan names Film, so Layer and
+    Device are candidates, the only terms put to consolidation. It merges Layer
+    into Film and keeps Device; the written ontology holds Film and Device.
+    """
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+    seen_plans: list[OntologyPlan | None] = []
+    real_render = _render_minting(["Film", "Layer", "Device"])
+
+    async def recording_render(state: UnitOntologyState, tools, **kwargs):
+        seen_plans.append(state.ontology_plan)
+        return await real_render(state, tools, **kwargs)
+
+    async def plan_call(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport.model_validate(
+            {
+                "proposals": [
+                    {"kind": "class", "label": "Film", "local_name": "Film"},
+                    {"kind": "class", "label": "Planned", "local_name": "Planned"},
+                ]
+            }
+        )
+
+    consolidation_prompts: list[str] = []
+
+    async def consolidation_call(**kwargs) -> OntologyConsolidationReport:
+        consolidation_prompts.append(str(kwargs["prompt_kwargs"]["terms"]))
+        return OntologyConsolidationReport.model_validate(
+            {
+                "actions": [
+                    {"term": "alpha:Layer", "action": "merge_into", "target": "Film"},
+                    {"term": "alpha:Device", "action": "keep"},
+                ]
+            }
+        )
+
+    monkeypatch.setattr(unit_loops, "render_ontology", recording_render)
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", plan_call)
+    monkeypatch.setattr(
+        consolidate_ontology_module, "call_llm_with_retry", consolidation_call
+    )
+
+    final = asyncio.run(app.ainvoke(_document("alpha one\n\nalpha two\n\nalpha three")))
+
+    home = final["home_ontology"]
+    assert len(seen_plans) == 3
+    assert all(plan is not None and len(plan.terms) == 2 for plan in seen_plans)
+    metrics = final["ontology_reduce_metrics"]
+    assert metrics["plan_minted"] == 2
+    assert metrics["plan_candidates"] == 2
+    assert metrics["consolidation_flagged"] == 2
+    assert metrics["consolidation_merge_into"] == 1
+    # Full blocks for the two candidates only; Film is a one-line target.
+    (prompt,) = consolidation_prompts
+    assert prompt.count("(class, candidate)") == 2
+    assert "alpha:Film` (" not in prompt
+
+    (artifact,) = final["ontology_artifacts"]
+    terms = {str(s) for s, _, _ in artifact.graph.triples((None, RDF.type, OWL_CLASS))}
+    assert terms == {f"{home.namespace}Film", f"{home.namespace}Device"}
+
+
+def test_a_document_with_nothing_flagged_makes_no_consolidation_call(
+    monkeypatch,
+) -> None:
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+
+    async def plan_call(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport.model_validate(
+            {
+                "proposals": [
+                    {"kind": "class", "label": name, "local_name": name}
+                    for name in ("Film", "Device")
+                ]
+            }
+        )
+
+    async def no_call(**_kwargs) -> OntologyConsolidationReport:
+        raise AssertionError("consolidation was called with nothing to decide")
+
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", plan_call)
+    monkeypatch.setattr(consolidate_ontology_module, "call_llm_with_retry", no_call)
+    monkeypatch.setattr(
+        unit_loops, "render_ontology", _render_minting(["Film", "Device"])
+    )
+
+    final = asyncio.run(app.ainvoke(_document("alpha one\n\nalpha two")))
+
+    metrics = final["ontology_reduce_metrics"]
+    assert metrics["consolidation_skipped"] == 1
+    assert metrics["consolidation_keep"] == 2
+
+
+def test_without_consolidation_candidates_are_dropped(monkeypatch) -> None:
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+    monkeypatch.setenv("ONTOLOGY_CONSOLIDATION", "off")
+
+    async def plan_call(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport.model_validate(
+            {"proposals": [{"kind": "class", "label": "Term0", "local_name": "Term0"}]}
+        )
+
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", plan_call)
+    app = create_agent_graph(ToolBox(_config()))
+
+    final = asyncio.run(app.ainvoke(_document("alpha one\n\nalpha two")))
+
+    (artifact,) = final["ontology_artifacts"]
+    terms = {str(s) for s, _, _ in artifact.graph.triples((None, RDF.type, OWL_CLASS))}
+    assert terms == {f"{final['home_ontology'].namespace}Term0"}
+    assert final["ontology_reduce_metrics"]["plan_candidates_dropped"] == 1
 
 
 # --- render_ontology_fresh -------------------------------------------------------
@@ -470,6 +626,10 @@ def test_agent_graph_resolves_the_home_ontology_before_the_fan_out() -> None:
     assert WorkflowNode.RESOLVE_HOME_ONTOLOGY in workflow.nodes
     assert (
         WorkflowNode.RESOLVE_HOME_ONTOLOGY,
+        WorkflowNode.ONTOLOGY_PLAN,
+    ) in workflow.edges
+    assert (
+        WorkflowNode.ONTOLOGY_PLAN,
         WorkflowNode.RENDER_ONTOLOGY_UPDATE,
     ) in workflow.edges
 

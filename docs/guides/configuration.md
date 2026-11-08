@@ -82,6 +82,7 @@ see [Embedding OntoCast in your agent](embedding.md).
 | [`LLM_MODEL_NAME`](../reference/configuration/llm.md#llm_model_name) | Any model name the provider accepts. Names OntoCast does not know are passed through with a warning |
 | [`LLM_API_KEY`](../reference/configuration/llm.md#llm_api_key) | The key for OpenAI, Anthropic or Google. OntoCast reads only this variable, not the providers' own ones |
 | [`LLM_BASE_URL`](../reference/configuration/llm.md#llm_base_url) | The Ollama server, or the endpoint of any OpenAI-compatible service (with `LLM_PROVIDER=openai`) |
+| [`LLM_MODEL_BY_PHASE`](../reference/configuration/llm.md#llm_model_by_phase) | Another model for named phases, as JSON: `{"ontology_plan": "...", "ontology_consolidation": "..."}` gives the two document-level ontology decisions a stronger model than the per-part calls |
 
 Leave [`LLM_TEMPERATURE`](../reference/configuration/llm.md#llm_temperature) at
 `0`: extraction should be repeatable. Reasoning models may refuse it, and then
@@ -146,7 +147,7 @@ context](ontology_context.md) explains the trade-offs.
 |---|---|
 | [`ONTOCAST_ONTOLOGY_DIRECTORY`](../reference/configuration/storage.md#ontocast_ontology_directory) | Turtle files loaded into the catalog at startup. Same as `--ontology-dir` |
 | [`FACTS_SHAPES_DIR`](../reference/configuration/facts-validation.md#facts_shapes_dir) | SHACL shapes that extracted facts are validated against (`shacl` extra). Same as `--shapes-dir` |
-| [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain) | The base of the document IRIs (`<domain>/doc/<hash>`) and of the ontologies OntoCast creates (`<domain>/<ontology_id>`). Set it once per project: it ends up in every graph you write. Extracted entities always use the fixed facts namespace `cd:`; see [Ontologies and facts](../concepts/ontologies_and_facts.md) |
+| [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain) | The base of the document IRIs (`<domain>/doc/<hash>`) and of the ontologies OntoCast creates (`<domain>/<ontology_id>`). It also decides ownership: a catalog ontology under it is extended in place, any other gets an extension ontology (see [Ontologies and facts](../concepts/ontologies_and_facts.md#owned-and-external-ontologies)). Set it once per project: it ends up in every graph you write. Extracted entities always use the fixed facts namespace `cd:`; see [Ontologies and facts](../concepts/ontologies_and_facts.md) |
 
 Ontologies and shapes can also be uploaded to a running server; see the [HTTP
 API](../reference/http_api.md).
@@ -172,7 +173,9 @@ in exchange for quality:
 | Setting | What one more costs and buys |
 |---|---|
 | [`FACTS_CRITIC_PASSES`](../reference/configuration/facts-validation.md#facts_critic_passes) | One call per part: a review of the extracted facts, with fixes applied as a patch |
-| [`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes) | The same for ontology changes; off by default. [`ONTOLOGY_UPDATE_MODE=insert_only`](../reference/configuration/ontology-validation.md#ontology_update_mode) keeps ontology changes additive: deletes from the model, consolidation and the critic are dropped and counted |
+| [`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes) | The same for ontology changes; one pass by default, spent only on a part with a mandatory finding. [`ONTOLOGY_UPDATE_MODE=insert_only`](../reference/configuration/ontology-validation.md#ontology_update_mode) keeps ontology changes additive: deletes from the model, consolidation and the critic are dropped and counted |
+| [`ONTOLOGY_PLAN_ENABLED`](../reference/configuration/ontology-validation.md#ontology_plan_enabled) | One call per document, on by default: the terms the document adds to its domain, planned with the whole document in view, so parts mint shared, reusable terms instead of one each |
+| [`ONTOLOGY_CONSOLIDATION`](../reference/configuration/ontology-validation.md#ontology_consolidation) | One call per batch of minted terms, on by default: each term is kept, merged, generalised, demoted to a property value or dropped before it is written |
 | [`FACTS_COMPLETION_PASSES`](../reference/configuration/facts-validation.md#facts_completion_passes) | One call per part that still misses measurements stated in the text; off by default |
 | [`AGG_LLM_COREFERENCE`](../reference/configuration/aggregation.md#agg_llm_coreference) | One call per document of two parts or more: the model decides the entity pairs merging cannot settle; on by default, bounded by `AGG_LLM_COREFERENCE_MAX_PAIRS` |
 | [`MAX_VISITS_PER_NODE`](../reference/configuration/pipeline.md#max_visits_per_node) | Retries of an extraction that failed outright. A successful extraction is never repeated |

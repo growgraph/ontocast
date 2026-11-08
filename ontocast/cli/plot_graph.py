@@ -188,11 +188,13 @@ def unit_loop_flow(
 ) -> FlowGraph:
     """The per-unit loop: one core shared by both phases, plus facts-only exits.
 
-    The facts phase adds three things the ontology phase does not have. A skip
-    gate spends no critic call on a citation-metadata unit or an empty render.
-    A critic that returns no critique leaves the loop unpatched and unreviewed.
-    And an optional insert-only completion stage runs after the critic loop,
-    however that loop ended -- except when every render failed.
+    Both phases put a skip gate in front of the critic. The facts gate spends
+    no critic call on a citation-metadata unit or an empty render; the ontology
+    gate, at one pass, spends none on a unit with no mandatory finding. The
+    facts phase adds two things the ontology phase does not have. A critic that
+    returns no critique leaves the loop unpatched and unreviewed. And an
+    optional insert-only completion stage runs after the critic loop, however
+    that loop ended -- except when every render failed.
 
     Args:
         phase: ``"facts"`` or ``"ontology"``.
@@ -204,7 +206,7 @@ def unit_loop_flow(
     critic_node = f"criticise_{phase}"
     noun = "facts" if phase == "facts" else "ontology"
     is_facts = phase == "facts"
-    review_entry = "skip_critic" if is_facts else critic_node
+    review_entry = "skip_critic"
     # Where the critic loop hands over once it stops.
     loop_exit = "completion" if is_facts else "done"
     common = (
@@ -224,20 +226,24 @@ def unit_loop_flow(
         FlowNode("done", "Return unit state", "terminal"),
         FlowNode("exhausted", "Return (retries exhausted)", "terminal"),
     )
+    skip_question = (
+        "citation metadata, or fewer than<br/>FACTS_CRITIC_MIN_TRIPLES triples?"
+        if is_facts
+        else f"{passes_var} = 1 and<br/>no mandatory finding?"
+    )
+    skip_node = FlowNode("skip_critic", skip_question, "decision")
+    skip_edges = (
+        FlowEdge("skip_critic", critic_node, "no", conditional=True),
+        FlowEdge("skip_critic", loop_exit, "yes (no critic call)", conditional=True),
+    )
     facts_nodes = (
-        FlowNode(
-            "skip_critic",
-            "citation metadata, or fewer than<br/>FACTS_CRITIC_MIN_TRIPLES triples?",
-            "decision",
-        ),
         FlowNode(
             "completion",
             "Completion passes<br/>0 … FACTS_COMPLETION_PASSES<br/>(insert-only)",
         ),
     )
     facts_edges = (
-        FlowEdge("skip_critic", critic_node, "no", conditional=True),
-        FlowEdge("skip_critic", "completion", "yes (no critic call)", conditional=True),
+        *skip_edges,
         FlowEdge(critic_node, "completion", "unavailable (no patch)", conditional=True),
         FlowEdge("completion", "done"),
     )
@@ -273,8 +279,7 @@ def unit_loop_flow(
             critic_node=critic_node,
             review_entry=review_entry,
         )
-    if is_facts:
-        nodes = (*nodes, *facts_nodes)
+    nodes = (*nodes, skip_node, *(facts_nodes if is_facts else ()))
     edges = (
         FlowEdge("start", "ctx"),
         FlowEdge("ctx", "render_loop"),
@@ -283,7 +288,7 @@ def unit_loop_flow(
         FlowEdge("converged", loop_exit, "yes", conditional=True),
         FlowEdge("converged", "pass_loop", "no", conditional=True),
         FlowEdge("pass_loop", loop_exit, "budget spent", conditional=True),
-        *(facts_edges if is_facts else ()),
+        *(facts_edges if is_facts else skip_edges),
     )
     return FlowGraph(
         nodes=nodes,

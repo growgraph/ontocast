@@ -601,6 +601,14 @@ class LLMTool(Tool):
     budget_tracker: Any = Field(default=None, exclude=True)
     _cache_hits: int = PrivateAttr(default=0)
     _cache_misses: int = PrivateAttr(default=0)
+    #: One tool per ``LLM_MODEL_BY_PHASE`` entry, keyed by phase; a call made
+    #: while that phase is bound goes to it (see :meth:`_invoke_cached`).
+    _phase_overrides: dict[str, "LLMTool"] = PrivateAttr(default_factory=dict)
+    #: Any object with ``ainvoke``; tests substitute fakes.
+    _llm: Any = PrivateAttr(default=None)
+    #: The model :meth:`setup` built and the loop it was built for; see :attr:`llm`.
+    _built_llm: Any = PrivateAttr(default=None)
+    _llm_loop: Any = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -680,13 +688,68 @@ class LLMTool(Tool):
         # Create and initialize the instance with the config
         self = cls(config=config, cache=cache, budget_tracker=budget_tracker, **kwargs)
         await self.setup()
+        for phase, model_name in config.model_by_phase.items():
+            if not model_name or model_name == str(config.model_name):
+                continue
+            override = cls(
+                config=config.model_copy(
+                    update={"model_name": model_name, "model_by_phase": {}}
+                ),
+                cache=cache,
+                budget_tracker=budget_tracker,
+                **kwargs,
+            )
+            # The override shares this tool's cache store, so the two keep one
+            # prune counter.
+            override.cache = self.cache
+            await override.setup()
+            self._phase_overrides[phase] = override
         return self
+
+    def phase_override(self, phase: str | None) -> "LLMTool | None":
+        """The tool ``LLM_MODEL_BY_PHASE`` routes ``phase`` to, if any."""
+        if phase is None:
+            return None
+        return self._phase_overrides.get(str(phase))
 
     async def setup(self):
         """Set up the language model based on the configured provider.
 
         Raises:
             ValueError: If the provider is not supported.
+        """
+        self._warn_ignored_reasoning_knobs()
+        if self.config.provider == LLMProvider.OPENAI and (
+            _TEMPERATURE_PINNED_TO_ONE.match(str(self.config.model_name))
+        ):
+            self.config.temperature = 1.0
+            logger.warning(
+                f"Setting temperature to {self.config.temperature} for gpt-5 class "
+                f"model {self.config.model_name}"
+            )
+        if _rejects_temperature(
+            self.config.provider,
+            self.config.model_name,
+            self.config.reasoning_effort,
+        ):
+            logger.info(
+                "Not sending temperature to %s: the provider rejects it for this "
+                "model at this reasoning effort, so it samples at its own default",
+                self.config.model_name,
+            )
+        self._bind(self._build_model(), asyncio.get_running_loop())
+
+    def _bind(self, model: BaseChatModel, loop: asyncio.AbstractEventLoop) -> None:
+        self._llm = model
+        self._built_llm = model
+        self._llm_loop = loop
+
+    def _build_model(self) -> BaseChatModel:
+        """A chat model for the configured provider, with fresh async clients.
+
+        Built once per event loop (see :attr:`llm`): a provider client's pooled
+        connections belong to the loop that opened them, and reusing them from
+        a later ``asyncio.run`` fails with "Event loop is closed".
         """
         # Cross-provider pacing and retry kwargs. The rate limiter is a
         # per-process token bucket on request *starts* (langchain-core
@@ -708,15 +771,6 @@ class LLMTool(Tool):
         retry_kwargs: dict[str, Any] = {}
         if self.config.max_retries is not None:
             retry_kwargs["max_retries"] = self.config.max_retries
-        self._warn_ignored_reasoning_knobs()
-        if self.config.provider == LLMProvider.OPENAI and (
-            _TEMPERATURE_PINNED_TO_ONE.match(str(self.config.model_name))
-        ):
-            self.config.temperature = 1.0
-            logger.warning(
-                f"Setting temperature to {self.config.temperature} for gpt-5 class "
-                f"model {self.config.model_name}"
-            )
         temperature: float | None = self.config.temperature
         if _rejects_temperature(
             self.config.provider,
@@ -724,16 +778,13 @@ class LLMTool(Tool):
             self.config.reasoning_effort,
         ):
             temperature = None
-            logger.info(
-                "Not sending temperature to %s: the provider rejects it for this "
-                "model at this reasoning effort, so it samples at its own default",
-                self.config.model_name,
-            )
 
         if self.config.provider == LLMProvider.OPENAI:
             ChatOpenAI = require(
                 "langchain_openai", feature="The OpenAI LLM provider"
             ).ChatOpenAI
+            import openai
+
             openai_kwargs: dict[str, Any] = {}
             if self.config.json_mode:
                 # Constrains decoding to valid JSON at the provider, so a
@@ -754,13 +805,16 @@ class LLMTool(Tool):
                 # A client field rather than a model_kwargs entry: the client
                 # routes it to whichever API parameter the model expects.
                 reasoning_kwargs["reasoning_effort"] = self.config.reasoning_effort
-            self._llm = ChatOpenAI(
+            return ChatOpenAI(
                 model=self.config.model_name,
                 temperature=temperature,
                 base_url=self.config.base_url,
                 api_key=(
                     SecretStr(self.config.api_key) if self.config.api_key else None
                 ),
+                # Its own client: the default one is shared process-wide, so a
+                # rebuilt model would inherit the stale pool.
+                http_async_client=openai.DefaultAsyncHttpxClient(),
                 model_kwargs=openai_kwargs,
                 **reasoning_kwargs,
                 **pacing_kwargs,
@@ -781,7 +835,7 @@ class LLMTool(Tool):
             ChatOllama = require(
                 "langchain_ollama", feature="The Ollama LLM provider"
             ).ChatOllama
-            self._llm = ChatOllama(**ollama_kwargs, **pacing_kwargs)
+            return ChatOllama(**ollama_kwargs, **pacing_kwargs)
         elif self.config.provider == LLMProvider.ANTHROPIC:
             anthropic_kwargs: dict[str, Any] = {
                 "model": self.config.model_name,
@@ -794,9 +848,7 @@ class LLMTool(Tool):
             ChatAnthropic = require(
                 "langchain_anthropic", feature="The Anthropic LLM provider"
             ).ChatAnthropic
-            self._llm = ChatAnthropic(
-                **anthropic_kwargs, **pacing_kwargs, **retry_kwargs
-            )
+            return ChatAnthropic(**anthropic_kwargs, **pacing_kwargs, **retry_kwargs)
         elif self.config.provider == LLMProvider.GOOGLE:
             ChatGoogleGenerativeAI = require(
                 "langchain_google_genai", feature="The Google LLM provider"
@@ -817,7 +869,7 @@ class LLMTool(Tool):
                 # already said so. Sending it anyway would make that warning a
                 # lie and hand the API a parameter of the wrong generation.
                 google_kwargs["thinking_budget"] = self.config.thinking_budget
-            self._llm = ChatGoogleGenerativeAI(
+            return ChatGoogleGenerativeAI(
                 model=self.config.model_name,
                 temperature=self.config.temperature,
                 google_api_key=self.config.api_key,
@@ -1020,6 +1072,13 @@ class LLMTool(Tool):
         Returns:
             AIMessage: Response with content normalised to a plain string.
         """
+        # A phase routed to another model is served by that model's tool, whose
+        # own config keys the cache and labels the usage.
+        override = self.phase_override(current_llm_phase())
+        if override is not None:
+            return await override._invoke_cached(
+                *args, cache_config_extra=cache_config_extra, **kwds
+            )
         prompt_key = self._cache_key_content(*args)
         prompt_str = self._prompt_to_string(args[0]) if args else ""
         config_dict = self._cache_config_dict(**(cache_config_extra or {}))
@@ -1177,6 +1236,10 @@ class LLMTool(Tool):
     def llm(self) -> BaseChatModel:
         """Get the underlying language model instance.
 
+        The model :meth:`setup` built is rebuilt when called from a different
+        event loop, so callers may drive the tool through several
+        ``asyncio.run`` calls. A model assigned from outside is returned as is.
+
         Returns:
             BaseChatModel: The configured language model.
 
@@ -1187,6 +1250,13 @@ class LLMTool(Tool):
             raise RuntimeError(
                 "LLM resource not properly initialized. Call setup() first."
             )
+        if self._llm is self._built_llm:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None and loop is not self._llm_loop:
+                self._bind(self._build_model(), loop)
         return self._llm
 
     def _prompt_to_string(self, prompt) -> str:

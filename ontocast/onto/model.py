@@ -362,21 +362,24 @@ class TripleFix(BaseModel):
     )
 
     explanation: str = Field(
+        default="",
         description=(
             "Why this fix is needed. Examples:\n"
             "- 'Missing xsd:date datatype for temporal literal'\n"
             "- 'Namespace prefix fca: not declared'\n"
             "- 'Property onto:decidedBy is canonical, not cd:judgedBy'"
-        )
+        ),
     )
 
     @field_validator("text_fragment", "explanation", mode="before")
     @classmethod
     def coerce_free_text(cls, v: object) -> str:
-        """Coerce the two required free-text fields.
+        """Coerce the two free-text fields.
 
-        Both are required with no default, so a provider answering either with a
-        bulleted list raised and discarded the whole critique report. Deliberately
+        A provider answering either with a bulleted list would otherwise raise
+        and discard the whole critique report. ``explanation`` defaults to empty:
+        a fix is actionable without it, and a report missing it is not worth a
+        second call. Deliberately
         not applied to ``incorrect_value``/``correct_value``: those carry graph
         syntax, where joining a list would corrupt the payload rather than
         recover it.
@@ -687,6 +690,219 @@ class OntologyIdentityProposal(BaseModel):
     )
 
 
+TermKind = Literal["class", "object_property", "datatype_property"]
+
+_TERM_KIND_ALIASES: dict[str, str] = {
+    "class": "class",
+    "owl_class": "class",
+    "object_property": "object_property",
+    "objectproperty": "object_property",
+    "owl_objectproperty": "object_property",
+    "property": "object_property",
+    "relation": "object_property",
+    "datatype_property": "datatype_property",
+    "datatypeproperty": "datatype_property",
+    "owl_datatypeproperty": "datatype_property",
+    "data_property": "datatype_property",
+    "attribute": "datatype_property",
+}
+
+_LOCAL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _coerce_term_kind(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    key = re.sub(r"[\s\-:]+", "_", value.strip().casefold())
+    return _TERM_KIND_ALIASES.get(key, key)
+
+
+def _coerce_local_name(value: object) -> object:
+    """CamelCase a local name the model wrote with spaces or punctuation."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if _LOCAL_NAME_RE.match(text):
+        return text
+    parts = [part for part in re.split(r"[^A-Za-z0-9]+", text) if part]
+    if not parts:
+        return text
+    joined = parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
+    return joined.lstrip("0123456789") or joined
+
+
+def _blank_to_none(value: object) -> object:
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+class OntologyTermProposal(BaseModel):
+    """One term the model proposes a document adds to its domain."""
+
+    kind: TermKind = Field(
+        description="'class', 'object_property' or 'datatype_property'."
+    )
+    label: str = Field(min_length=1, max_length=120, description="rdfs:label.")
+    local_name: str = Field(
+        description=(
+            "Local name in the home namespace: PascalCase for a class, "
+            "camelCase for a property, letters and digits only."
+        )
+    )
+    parent: str | None = Field(
+        default=None,
+        description=(
+            "Superclass (class) or superproperty (property): a term listed in "
+            "the catalog, a well-known vocabulary term, or another proposal's "
+            "local name. Empty for none."
+        ),
+    )
+    definition: str = Field(
+        default="",
+        max_length=600,
+        description="One sentence: what any instance of the term is, domain-wide.",
+    )
+    reuse: str | None = Field(
+        default=None,
+        description=(
+            "A listed catalog term or well-known term that already names this "
+            "concept. Set it instead of minting; leave empty for a new term."
+        ),
+    )
+    justification: str = Field(
+        default="",
+        max_length=400,
+        description=(
+            "Why a second document in the domain would use this term: not "
+            "why this document mentions it."
+        ),
+    )
+
+    _kind = field_validator("kind", mode="before")(_coerce_term_kind)
+    _local = field_validator("local_name", mode="before")(_coerce_local_name)
+    _parent = field_validator("parent", "reuse", mode="before")(_blank_to_none)
+    _free = field_validator("definition", "justification", mode="before")(
+        _coerce_free_text
+    )
+
+    @field_validator("local_name")
+    @classmethod
+    def _valid_local_name(cls, value: str) -> str:
+        if not _LOCAL_NAME_RE.match(value):
+            raise ValueError(f"local_name {value!r} is not a letter-led identifier")
+        return value
+
+
+class OntologyPlanReport(BaseModel):
+    """The model's proposal list for one document: the plan's wire form."""
+
+    proposals: list[OntologyTermProposal] = Field(default_factory=list)
+
+
+class OntologyPlanTerm(BaseModel):
+    """One accepted plan entry, after the model-free catalog check."""
+
+    kind: TermKind
+    label: str
+    local_name: str
+    #: The term's IRI: the home namespace plus the local name for a minted
+    #: term, the catalog or well-known IRI for a reused one.
+    iri: str
+    decision: Literal["mint", "reuse"]
+    parent_iri: str | None = None
+    definition: str = ""
+    #: Catalog terms near this one by the vector index, ``(iri, label)``; shown
+    #: to the renderer and to consolidation as reuse candidates.
+    nearest: list[tuple[str, str]] = Field(default_factory=list)
+
+
+class OntologyPlan(BaseModel):
+    """A document's accepted plan: the terms its units may mint or must reuse."""
+
+    terms: list[OntologyPlanTerm] = Field(default_factory=list)
+    #: Proposals refused by the check, with the reason, for telemetry.
+    rejected: list[tuple[str, str]] = Field(default_factory=list)
+    #: Proposals turned into a reuse because their name matched a catalog term.
+    resolved_to_catalog: int = 0
+    #: The CURIE prefixes the plan was made under, prefix to namespace; the
+    #: prompts that show the plan use them.
+    prefixes: dict[str, str] = Field(default_factory=dict)
+
+    def minted(self) -> list[OntologyPlanTerm]:
+        """Terms the document may mint."""
+        return [term for term in self.terms if term.decision == "mint"]
+
+    def reused(self) -> list[OntologyPlanTerm]:
+        """Terms the document must reuse instead of minting."""
+        return [term for term in self.terms if term.decision == "reuse"]
+
+
+TermActionKind = Literal[
+    "keep", "merge_into", "generalise_to", "demote_to_property_value", "drop"
+]
+
+_TERM_ACTION_ALIASES: dict[str, str] = {
+    "keep": "keep",
+    "merge": "merge_into",
+    "merge_into": "merge_into",
+    "reuse": "merge_into",
+    "generalise": "generalise_to",
+    "generalize": "generalise_to",
+    "generalise_to": "generalise_to",
+    "generalize_to": "generalise_to",
+    "demote": "demote_to_property_value",
+    "demote_to_value": "demote_to_property_value",
+    "demote_to_property_value": "demote_to_property_value",
+    "drop": "drop",
+    "remove": "drop",
+    "delete": "drop",
+}
+
+
+def _coerce_term_action(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    key = re.sub(r"[\s\-]+", "_", value.strip().casefold())
+    return _TERM_ACTION_ALIASES.get(key, key)
+
+
+class OntologyTermAction(BaseModel):
+    """One decision about a minted term.
+
+    ``keep`` leaves it; ``merge_into`` replaces it by ``target`` everywhere;
+    ``generalise_to`` makes ``target`` its only parent; ``demote_to_property_value``
+    turns a class into a SKOS concept (a value of some property); ``drop``
+    removes it and every triple naming it.
+    """
+
+    term: str = Field(description="The term's IRI or CURIE, as listed.")
+    action: TermActionKind = Field(
+        description=(
+            "'keep', 'merge_into', 'generalise_to', "
+            "'demote_to_property_value' or 'drop'."
+        )
+    )
+    target: str | None = Field(
+        default=None,
+        description=(
+            "For merge_into and generalise_to: a listed term, catalog term or "
+            "well-known term. Empty otherwise."
+        ),
+    )
+    rationale: str = Field(default="", max_length=300)
+
+    _action = field_validator("action", mode="before")(_coerce_term_action)
+    _target = field_validator("target", mode="before")(_blank_to_none)
+    _rationale = field_validator("rationale", mode="before")(_coerce_free_text)
+
+
+class OntologyConsolidationReport(BaseModel):
+    """Term actions for one batch of minted terms."""
+
+    actions: list[OntologyTermAction] = Field(default_factory=list)
+
+
 class FreshOntologyRenderReport(BaseModel):
     """A fresh ontology's terms, rendered under the document's home ontology."""
 
@@ -805,6 +1021,20 @@ class OntologyUnitFindingKind(StrEnum):
     #: ontology deletes propagate onto shared, versioned catalog terminals
     #: cross-document, so an unowned delete is destructive beyond this unit.
     FOREIGN_DELETE = "foreign_delete"
+    #: A minted class sits more named-superclass steps below its root than
+    #: ``ONTOLOGY_MAX_CLASS_DEPTH`` allows.
+    HIERARCHY_TOO_DEEP = "hierarchy_too_deep"
+    #: Three or more minted sibling classes whose labels differ in one word
+    #: and that carry no structure of their own: a value set modelled as
+    #: subclasses.
+    VALUE_SET_SIBLINGS = "value_set_siblings"
+    #: A minted leaf class, used by no property, whose label carries a
+    #: number, a chemical formula or four or more words: likely one
+    #: document's case rather than a reusable kind. Advisory.
+    SPECIFIC_LABEL_LEAF = "specific_label_leaf"
+    #: A minted term whose label or local name names a term elsewhere in the
+    #: catalog -- one the unit's context did not show.
+    CATALOG_DUPLICATE = "catalog_duplicate"
 
 
 class OntologyUnitFinding(UnitFinding[OntologyUnitFindingKind]):
@@ -871,16 +1101,18 @@ class FactsGateRepairKind(StrEnum):
 
 
 class GraphRepairRecord(BaseModel):
-    """One machine-applied deterministic rewrite on a facts graph.
+    """One machine-applied deterministic rewrite on a rendered graph.
 
     LLM-free by construction: every repair either rewrites a term the catalog
-    already declares or removes a node that asserts nothing. Records what the
-    repair passes changed (near-miss predicate rewrites, literal ``rdf:type``
-    coercions, shape-driven retyping/pruning) so downstream consumers can
-    distinguish machine-altered triples from what the LLM asserted.
+    already declares, removes a node that asserts nothing, or states what a
+    term's own name already says (a label derived from its local name).
+    Records what the repair passes changed (near-miss predicate rewrites,
+    literal ``rdf:type`` coercions, shape-driven retyping/pruning, derived
+    labels) so downstream consumers can distinguish machine-altered triples
+    from what the LLM asserted. ``kind`` is the finding the repair resolves.
     """
 
-    kind: FactsUnitFindingKind | FactsGateRepairKind
+    kind: FactsUnitFindingKind | FactsGateRepairKind | OntologyUnitFindingKind
     source: str
     target: str
     triple_count: int = 1

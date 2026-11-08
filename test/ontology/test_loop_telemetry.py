@@ -35,6 +35,7 @@ from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy, FactsAcceptancePolicy
 from ontocast.tool.ontology_manager import OntologyManager
+from ontocast.tool.ontology_validation import CatalogSurfaceIndex
 from ontocast.toolbox import ToolBox
 
 criticise_ontology_module = importlib.import_module("ontocast.agent.criticise_ontology")
@@ -267,6 +268,8 @@ async def test_loop_collects_findings_even_when_no_critic_runs(
                 SimpleNamespace(
                     validation_policy=None,
                     ontology_critic_passes=ontology_critic_passes,
+                    ontology_max_class_depth=6,
+                    catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
                     ontology_acceptance_policy=None,
                 ),
@@ -285,7 +288,15 @@ async def test_loop_collects_findings_even_when_no_critic_runs(
     assert result.status == Status.SUCCESS
     kinds = {finding.kind for finding in result.deterministic_findings}
     assert OntologyUnitFindingKind.FOREIGN_NAMESPACE in kinds
-    assert OntologyUnitFindingKind.MISSING_LABEL in kinds
+    # The unlabelled term's local name has a word, so the label is derived
+    # instead of reported.
+    assert OntologyUnitFindingKind.MISSING_LABEL not in kinds
+    assert (foreign, RDFS.label, Literal("Widget", lang="en")) in (
+        result.build_delta().inserts
+    )
+    assert [r.kind for r in result.applied_repairs] == [
+        OntologyUnitFindingKind.MISSING_LABEL
+    ]
     assert not any(a.kind == "critic" for a in result.attempt_log)
 
 
@@ -316,3 +327,104 @@ async def test_critic_criteria_stay_unqualified_for_full_copy_context(
     await criticise_ontology_module.criticise_ontology(_unit_state(), _tools())
 
     assert "PARTIAL CONTEXT" not in captured["ontology_criteria"]
+
+
+async def _run_ontology_loop(
+    monkeypatch: pytest.MonkeyPatch, insert: RDFGraph, critic_passes: int
+) -> tuple[UnitOntologyState, list[int]]:
+    """Run the real loop with a fixed render and a critic that only counts."""
+    calls: list[int] = []
+
+    async def fake_render(state: UnitOntologyState, tools, **kwargs):
+        state.ontology_updates = [
+            GraphUpdate(triple_operations=[TripleOp(type="insert", graph=insert)])
+        ]
+        state.update_ontology()
+        state.status = Status.SUCCESS
+        return state
+
+    async def fake_critic(state: UnitOntologyState, tools):
+        calls.append(1)
+        state.status = Status.SUCCESS
+        return state
+
+    async def fake_resolve(_state, _tools, _unit, **_kwargs):
+        return UnitOntologyContext(
+            snapshot=OntologySnapshot(
+                graph=_snapshot_graph(), source_iris=["https://example.com/onto"]
+            ),
+            writable_iris=["https://example.com/onto"],
+            confidence=1.0,
+        )
+
+    monkeypatch.setattr(unit_loops, "render_ontology", fake_render)
+    monkeypatch.setattr(unit_loops, "criticise_ontology", fake_critic)
+    monkeypatch.setattr(unit_loops, "resolve_unit_ontology_context", fake_resolve)
+    toolbox = cast(
+        ToolBox,
+        SimpleNamespace(
+            get_atomic_tools=lambda: cast(
+                AtomicToolBox,
+                SimpleNamespace(
+                    validation_policy=None,
+                    ontology_critic_passes=critic_passes,
+                    ontology_max_class_depth=6,
+                    catalog_surface_index=CatalogSurfaceIndex,
+                    ontology_patch_policy=CriticPatchPolicy(),
+                    ontology_acceptance_policy=None,
+                ),
+            ),
+            ontology_manager=OntologyManager(),
+        ),
+    )
+    document_state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
+    )
+    result = await unit_loops.ontology_loop(
+        _unit_state(), toolbox, UnitLoopContext.from_agent_state(document_state)
+    )
+    return result, calls
+
+
+def _clean_insert() -> RDFGraph:
+    term = URIRef("https://example.com/onto#Detector")
+    insert = RDFGraph()
+    insert.add((term, RDF.type, OWL.Class))
+    insert.add((term, RDFS.label, Literal("Detector")))
+    return insert
+
+
+def _faulted_insert() -> RDFGraph:
+    insert = RDFGraph()
+    insert.add((URIRef("https://elsewhere.example/vocab#Widget"), RDF.type, OWL.Class))
+    return insert
+
+
+@pytest.mark.anyio
+async def test_one_pass_skips_the_critic_on_a_unit_with_no_mandatory_finding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, calls = await _run_ontology_loop(monkeypatch, _clean_insert(), 1)
+
+    assert calls == []
+    skipped = [a for a in result.attempt_log if a.kind == "critic_skipped"]
+    assert [a.accept_reason for a in skipped] == ["no_mandatory_findings"]
+    assert result.status == Status.SUCCESS
+
+
+@pytest.mark.anyio
+async def test_one_pass_runs_the_critic_on_a_mandatory_finding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, calls = await _run_ontology_loop(monkeypatch, _faulted_insert(), 1)
+
+    assert calls == [1]
+
+
+@pytest.mark.anyio
+async def test_two_passes_run_the_critic_on_a_clean_unit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, calls = await _run_ontology_loop(monkeypatch, _clean_insert(), 2)
+
+    assert len(calls) >= 1

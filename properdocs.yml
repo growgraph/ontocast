@@ -90,6 +90,7 @@ nav:
     -   Choosing ontology context: guides/ontology_context.md
     -   Writing user instructions: guides/user_instructions.md
     -   Validation and SHACL: guides/validation.md
+    -   Curating the catalog: guides/curation.md
     -   Embedding OntoCast in your agent: guides/embedding.md
     -   Triple stores: guides/triple_stores.md
     -   Tenancy: guides/tenancy.md

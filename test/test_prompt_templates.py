@@ -351,3 +351,14 @@ def test_critic_completeness_guideline_routes_misses_to_the_completion_pass() ->
     assert "systemic_critique_summary" in text
     assert "completion pass" in text
     assert "NEVER mint an entity or placeholder node" in text
+
+
+def test_ontology_prompts_ask_for_the_reuse_level() -> None:
+    """Render and critic share one rule: mint what another document would reuse."""
+    from ontocast.prompt.criticise_ontology import ontology_criteria
+    from ontocast.prompt.render_ontology import general_ontology_instruction
+
+    for text in (general_ontology_instruction, ontology_criteria):
+        assert "second document" in text
+        assert "property with values" in text
+        assert "no instances" not in text

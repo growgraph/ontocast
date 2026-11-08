@@ -13,6 +13,7 @@ from rdflib import OWL, RDF, RDFS, BNode, Literal, URIRef
 from ontocast.onto.model import OntologyUnitFindingKind, TripleFix
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.ontology_validation import (
+    build_catalog_surface_index,
     collect_ontology_unit_findings,
     count_fixes_targeting_snapshot,
 )
@@ -265,3 +266,163 @@ def test_count_fixes_targeting_snapshot_without_snapshot_is_zero() -> None:
         count_fixes_targeting_snapshot([_fix("onto:Sample a owl:Class .")], None, set())
         == 0
     )
+
+
+def _of_kind(findings, kind: OntologyUnitFindingKind) -> list:
+    return [finding for finding in findings if finding.kind == kind]
+
+
+def _class(name: str, label: str, parent: URIRef) -> list[tuple]:
+    term = URIRef(f"{ONTO}{name}")
+    return [
+        (term, RDF.type, OWL.Class),
+        (term, RDFS.label, Literal(label)),
+        (term, RDFS.subClassOf, parent),
+    ]
+
+
+def _deep_chain(length: int) -> RDFGraph:
+    """``L{length} ⊂ … ⊂ L1 ⊂ Sample``; Sample is one below Device, a root."""
+    triples: list[tuple] = []
+    parent = URIRef(f"{ONTO}Sample")
+    for level in range(1, length + 1):
+        triples += _class(f"L{level}", f"Level {chr(64 + level)}", parent)
+        parent = URIRef(f"{ONTO}L{level}")
+    return _graph(*triples)
+
+
+def test_minted_class_beyond_the_depth_bound_is_mandatory() -> None:
+    # L6 sits 7 steps below Device: L6 ⊂ … ⊂ L1 ⊂ Sample ⊂ Device.
+    findings = _of_kind(
+        _collect(_deep_chain(6), max_class_depth=6),
+        OntologyUnitFindingKind.HIERARCHY_TOO_DEEP,
+    )
+    assert [finding.subject for finding in findings] == [f"{ONTO}L6"]
+    assert findings[0].mandatory
+    assert findings[0].value == "7"
+    assert f"<{ONTO}Device>" in findings[0].message
+
+
+def test_a_class_within_the_depth_bound_is_clean() -> None:
+    findings = _collect(_deep_chain(6), max_class_depth=7)
+    assert not _of_kind(findings, OntologyUnitFindingKind.HIERARCHY_TOO_DEEP)
+
+
+def test_three_bare_siblings_one_word_apart_are_a_value_set() -> None:
+    parent = URIRef(f"{ONTO}Sample")
+    inserts = _graph(
+        *_class("CesiumSample", "Cesium sample", parent),
+        *_class("FormamidiniumSample", "Formamidinium sample", parent),
+        *_class("MethylammoniumSample", "Methylammonium sample", parent),
+    )
+    findings = _of_kind(_collect(inserts), OntologyUnitFindingKind.VALUE_SET_SIBLINGS)
+    assert len(findings) == 1
+    assert findings[0].mandatory
+    assert findings[0].subject == str(parent)
+    assert findings[0].value == "* sample"
+    assert findings[0].suggestions == [
+        f"{ONTO}CesiumSample",
+        f"{ONTO}FormamidiniumSample",
+        f"{ONTO}MethylammoniumSample",
+    ]
+
+
+def test_siblings_with_structure_of_their_own_are_not_a_value_set() -> None:
+    parent = URIRef(f"{ONTO}Sample")
+    inserts = _graph(
+        *_class("CesiumSample", "Cesium sample", parent),
+        *_class("FormamidiniumSample", "Formamidinium sample", parent),
+        *_class("MethylammoniumSample", "Methylammonium sample", parent),
+        (URIRef(f"{ONTO}hasCation"), RDFS.domain, URIRef(f"{ONTO}CesiumSample")),
+    )
+    findings = _collect(inserts)
+    assert not _of_kind(findings, OntologyUnitFindingKind.VALUE_SET_SIBLINGS)
+
+
+def test_two_siblings_are_not_a_value_set() -> None:
+    parent = URIRef(f"{ONTO}Sample")
+    inserts = _graph(
+        *_class("CesiumSample", "Cesium sample", parent),
+        *_class("FormamidiniumSample", "Formamidinium sample", parent),
+    )
+    findings = _collect(inserts)
+    assert not _of_kind(findings, OntologyUnitFindingKind.VALUE_SET_SIBLINGS)
+
+
+def test_a_leaf_with_a_specific_label_is_advisory() -> None:
+    inserts = _graph(*_class("Sample3", "Sample 3", URIRef(f"{ONTO}Sample")))
+    findings = _of_kind(_collect(inserts), OntologyUnitFindingKind.SPECIFIC_LABEL_LEAF)
+    assert len(findings) == 1
+    assert not findings[0].mandatory
+    assert findings[0].facet == "digit"
+
+
+def test_a_specific_label_on_a_used_class_is_silent() -> None:
+    term = URIRef(f"{ONTO}Sample3")
+    inserts = _graph(
+        *_class("Sample3", "Sample 3", URIRef(f"{ONTO}Sample")),
+        (URIRef(f"{ONTO}hasPart"), RDFS.range, term),
+    )
+    findings = _collect(inserts)
+    assert not _of_kind(findings, OntologyUnitFindingKind.SPECIFIC_LABEL_LEAF)
+
+
+def _catalog_index():
+    other = URIRef("https://example.com/other#plRedShiftProperty")
+    holder = URIRef("https://example.com/other#SampleHolder")
+    return build_catalog_surface_index(
+        [
+            _snapshot(),
+            _graph(
+                (other, RDF.type, OWL.ObjectProperty),
+                (holder, RDF.type, OWL.Class),
+                (holder, RDFS.label, Literal("Sample holder")),
+            ),
+        ]
+    )
+
+
+def test_a_term_named_like_an_unshown_catalog_term_is_a_duplicate() -> None:
+    minted = URIRef(f"{ONTO}PLRedShiftProperty")
+    holder = URIRef(f"{ONTO}Holder")
+    inserts = _graph(
+        (minted, RDF.type, OWL.ObjectProperty),
+        (minted, RDFS.label, Literal("photoluminescence red shift")),
+        (holder, RDF.type, OWL.Class),
+        (holder, RDFS.label, Literal("sample HOLDER")),
+        (holder, RDFS.subClassOf, URIRef(f"{ONTO}Device")),
+    )
+    findings = _of_kind(
+        _collect(inserts, catalog_index=_catalog_index()),
+        OntologyUnitFindingKind.CATALOG_DUPLICATE,
+    )
+    assert {(f.subject, f.facet, tuple(f.suggestions)) for f in findings} == {
+        (
+            str(minted),
+            "local_name",
+            ("https://example.com/other#plRedShiftProperty",),
+        ),
+        (str(holder), "label", ("https://example.com/other#SampleHolder",)),
+    }
+    assert all(finding.mandatory for finding in findings)
+
+
+def test_an_exact_snapshot_label_is_left_to_label_collision() -> None:
+    duplicate = URIRef(f"{ONTO}Sample2")
+    inserts = _graph(
+        (duplicate, RDF.type, OWL.Class),
+        (duplicate, RDFS.label, Literal("Sample")),
+    )
+    kinds = _kinds(_collect(inserts, catalog_index=_catalog_index()))
+    assert OntologyUnitFindingKind.LABEL_COLLISION in kinds
+    assert OntologyUnitFindingKind.CATALOG_DUPLICATE not in kinds
+
+
+def test_a_role_crossed_name_is_not_a_duplicate() -> None:
+    minted = URIRef(f"{ONTO}SampleHolder")
+    inserts = _graph(
+        (minted, RDF.type, OWL.ObjectProperty),
+        (minted, RDFS.label, Literal("holds sample")),
+    )
+    findings = _collect(inserts, catalog_index=_catalog_index())
+    assert not _of_kind(findings, OntologyUnitFindingKind.CATALOG_DUPLICATE)

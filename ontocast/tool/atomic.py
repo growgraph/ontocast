@@ -17,6 +17,7 @@ from ontocast.tool.facts_validation import (
     ValidationPolicy,
 )
 from ontocast.tool.llm import LLMTool
+from ontocast.tool.ontology_validation.shape import CatalogSurfaceIndex
 
 
 class SearchHit(BaseModel):
@@ -53,6 +54,10 @@ class AtomicOntologyCatalog(Protocol):
 
     def catalog_terms(self) -> set[str]:
         """Every IRI any served ontology declares or references."""
+        ...
+
+    def catalog_surface_index(self) -> CatalogSurfaceIndex:
+        """Labels and local names of every catalog term, case-insensitive."""
         ...
 
 
@@ -119,6 +124,7 @@ class AtomicToolBox:
         # Review-and-patch passes: each one is a provider call.
         self.facts_critic_passes = facts_validation.critic_passes
         self.ontology_critic_passes = ontology_validation.critic_passes
+        self.ontology_max_class_depth = ontology_validation.max_class_depth
         # Below this many rendered triples the facts critic is skipped: a
         # review of an empty graph is a call that changes nothing.
         self.facts_critic_min_triples = facts_validation.critic_min_triples
@@ -238,6 +244,17 @@ class AtomicToolBox:
         if self.ontology_catalog is None:
             return set()
         return self.ontology_catalog.catalog_terms()
+
+    def catalog_surface_index(self) -> CatalogSurfaceIndex:
+        """Labels and local names of every term of the bound catalog.
+
+        Read by the per-unit duplicate check: a term the unit's snapshot did
+        not retrieve is still a term a render must not re-mint. Empty when no
+        catalog is bound; memoised by the catalog, so treat it as read-only.
+        """
+        if self.ontology_catalog is None:
+            return CatalogSurfaceIndex()
+        return self.ontology_catalog.catalog_surface_index()
 
     async def get_llm_tool(self, budget_tracker) -> LLMTool:
         """Return a budget-aware LLM tool instance."""

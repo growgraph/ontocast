@@ -29,6 +29,7 @@ from ontocast.agent.external_evidence import (
 )
 from ontocast.agent.render_facts import render_facts
 from ontocast.agent.render_ontology import render_ontology
+from ontocast.config import OntologyValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import (
@@ -39,6 +40,7 @@ from ontocast.onto.model import (
     GraphRepairRecord,
     LoopAttempt,
     OntologyUnitFinding,
+    OntologyUnitFindingKind,
     RolledBackFix,
     Suggestions,
 )
@@ -49,6 +51,7 @@ from ontocast.onto.ontology_access import (
 )
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
+from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.triple_index import Triple
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
@@ -74,6 +77,7 @@ from ontocast.tool.facts_validation.critic_patch import (
 )
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.ontology_validation import collect_ontology_unit_findings
+from ontocast.tool.ontology_validation.label_repair import derive_missing_labels
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -159,11 +163,39 @@ def _repair_facts_patch(
     return [*records, *entailed]
 
 
+def _derive_ontology_labels(unit_state: UnitOntologyState) -> list[GraphRepairRecord]:
+    """Label the unit's unlabelled minted terms from their local names.
+
+    Applied as an insert update, so the labels reach the delta and the reduce
+    step like any rendered triple. Counted in ``ontology/labels_derived``.
+    """
+    snapshot_graph = (
+        None
+        if unit_state.ontology_snapshot.is_empty()
+        else unit_state.ontology_snapshot.graph
+    )
+    labels = derive_missing_labels(unit_state.build_delta().inserts, snapshot_graph)
+    if len(labels) == 0:
+        return []
+    update = GraphUpdate(triple_operations=[TripleOp(type="insert", graph=labels)])
+    if not unit_state.apply_patch(update):
+        return []
+    unit_state.budget_tracker.incr("ontology/labels_derived", len(labels))
+    return [
+        GraphRepairRecord(
+            kind=OntologyUnitFindingKind.MISSING_LABEL,
+            source=str(subject),
+            target=str(label),
+        )
+        for subject, _, label in sorted(labels, key=str)
+    ]
+
+
 def _repair_ontology_patch(
     unit_state: UnitOntologyState, atomic: AtomicToolBox
 ) -> list[GraphRepairRecord]:
-    """The ontology loop applies patches as updates; nothing to repair here."""
-    return []
+    """Label what a critic patch minted without a label, before it is judged."""
+    return _derive_ontology_labels(unit_state)
 
 
 def _collect_facts_findings(
@@ -241,6 +273,12 @@ def _collect_ontology_findings(
         merged_graph=unit_state.working_graph,
         fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
         policy=atomic.validation_policy if atomic is not None else None,
+        max_class_depth=(
+            atomic.ontology_max_class_depth
+            if atomic is not None
+            else OntologyValidationConfig().max_class_depth
+        ),
+        catalog_index=atomic.catalog_surface_index() if atomic is not None else None,
     )
     unit_state.budget_tracker.add_duration(
         "ontology_validation/unit_findings", time.perf_counter() - started
@@ -863,6 +901,8 @@ async def _render_ontology_phase(state, atomic, supplemental) -> None:
         await render_ontology(state, atomic, supplemental_ontologies=supplemental),
         state,
     )
+    if state.status == Status.SUCCESS:
+        state.applied_repairs.extend(_derive_ontology_labels(state))
 
 
 async def _criticise_facts_phase(state, atomic) -> None:
@@ -897,7 +937,16 @@ def _facts_critic_skip_reason(
 def _ontology_critic_skip_reason(
     unit_state: UnitOntologyState, atomic: AtomicToolBox
 ) -> str | None:
-    """The ontology critic has no skip rule; its budget alone decides."""
+    """Why the ontology critic should not be spent on this unit, or ``None``.
+
+    One pass is a repair budget: it is spent only on a unit the deterministic
+    validator faulted with a mandatory finding. Two or more passes make the
+    critic a judge, and every pass runs.
+    """
+    if atomic.ontology_critic_passes == 1 and not any(
+        finding.mandatory for finding in unit_state.deterministic_findings
+    ):
+        return "no_mandatory_findings"
     return None
 
 

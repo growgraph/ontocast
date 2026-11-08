@@ -19,6 +19,24 @@ def strip_iri_brackets(value: str) -> str:
     return text
 
 
+def is_opaque_local_name(local: str) -> bool:
+    """Return True when a local IRI name carries no human-readable semantics.
+
+    Heuristic: opaque if the local name is a Q/P-number (Wikidata style),
+    a pure numeric string, or a hex/hash string of length >= 8.
+    """
+    if not local:
+        return False
+    if local[0] in ("Q", "P") and local[1:].isdigit():
+        return True
+    if local.isdigit():
+        return True
+    hex_chars = set("0123456789abcdefABCDEF")
+    if len(local) >= 8 and all(c in hex_chars for c in local):
+        return True
+    return False
+
+
 # Codepoints the SPARQL ``IRIREF`` production forbids inside ``<...>``.
 _IRIREF_FORBIDDEN = frozenset('<>"{}|^`\\')
 

@@ -41,9 +41,37 @@ call: the model proposes an `ontology_id`, a title and a description. An id
 already in the catalog means the document extends that ontology; any other id
 names a new one, whose IRI is
 [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain)`/<ontology_id>`.
+A new id is overridden when the document's text names at least five terms of
+one catalog ontology (by label or local name, plurals included): the document
+then extends that ontology, so documents of one domain share a home
+(`home_new_overridden`).
 Every unit of the document mints its new terms under that one ontology. The
 model never writes an `owl:Ontology` header; one it writes anyway is dropped
 and counted (`ontology/model_header_triples_dropped`).
+
+#### Owned and external ontologies
+
+An ontology whose IRI lies under `CURRENT_DOMAIN` is **owned** and is extended
+in place. Any other, such as a published vocabulary loaded as a seed, is
+**external**: OntoCast never writes to it. When a document's home would be an
+external ontology `<id>`, its terms go to the **extension ontology**
+`CURRENT_DOMAIN/<id>-ext`, created on first use, which `owl:imports` the
+external one; every document and every run that extends it shares the
+extension (`home_extension`). A triple whose subject is a term of an external
+ontology is refused at the end of the document and counted
+(`external_subject_refused`): the external terms are used by IRI, never
+redeclared or given new axioms. To extend a seed ontology in place, serve it
+under `CURRENT_DOMAIN`.
+
+A unit mints a class only at the level a second document in the same domain
+would reuse. A case the document reports, such as a numbered sample or a
+composition, is an individual or a property value in the facts. A distinction
+that varies from one instance to the next is a property with values, not a
+family of sibling subclasses, and an existing or well-known term is reused
+before a new one is minted. The per-unit checks enforce the parts of this a
+machine can see: hierarchy depth, value-set siblings, case-specific leaves and
+duplicates of catalog terms (see
+[Validation layers](../internals/validation_layers.md#ontology-findings)).
 
 An ontology you load from a file or upload to `/ontologies` keeps its own IRI.
 The file declares exactly one named `owl:Ontology` that describes itself; a

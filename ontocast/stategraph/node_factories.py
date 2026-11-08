@@ -5,15 +5,13 @@ from collections.abc import AsyncGenerator, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, TypeVar
 
-from rdflib import RDFS, Literal, URIRef
+from rdflib import RDF, RDFS, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
-from ontocast.agent.render_ontology import render_ontology_update
 from ontocast.agent.resolve_coreference import judge_coreference
 from ontocast.agent.summarize_chunks import ensure_unit_summary
-from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
+from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.enum import (
-    LLMPhase,
     OntologyAssemblyMode,
     OntologyContextMode,
     OntologyContextScope,
@@ -21,8 +19,10 @@ from ontocast.onto.enum import (
     Status,
     WorkflowNode,
 )
-from ontocast.onto.iri_policy import split_namespace_local
+from ontocast.onto.identity import is_owned_ontology
+from ontocast.onto.iri_policy import normalize_namespace_iri, split_namespace_local
 from ontocast.onto.model import (
+    OntologyUnitFinding,
     UnitFailure,
 )
 from ontocast.onto.ontology import Ontology
@@ -32,6 +32,7 @@ from ontocast.onto.ontology_apply import (
     apply_partitioned_updates,
     partition_triples_by_namespace,
 )
+from ontocast.onto.ontology_header import mint_ontology
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
@@ -46,20 +47,30 @@ from ontocast.stategraph.context_resolver import (
 from ontocast.stategraph.facts_gate import run_facts_gate, stored_pairs
 from ontocast.stategraph.helpers import (
     all_unit_patch_source_iris,
-    build_document_excerpt,
     drop_all_deletes,
     enforce_redeclared_deletes,
     merge_unit_deltas,
     reconcile_fresh_ontologies,
 )
+from ontocast.stategraph.term_decisions import (
+    decide_minted_terms,
+)
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.agg.aggregate import AggregationResult
 from ontocast.tool.agg.coreference import coreference_candidates, verdict_pairs
-from ontocast.tool.llm import RUN_STOPPING_ERRORS, use_llm_phase
+from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.ontology_validation import (
     apply_minted_duplicate_rewrites,
     detect_minted_duplicates,
 )
+from ontocast.tool.ontology_validation.axiom_hygiene import (
+    drop_example_namespace_triples,
+    drop_external_subjects,
+    drop_vacuous_upper_terms,
+    normalize_datatype_ranges,
+)
+from ontocast.tool.ontology_validation.reconcile import MintedDuplicate
+from ontocast.tool.ontology_validation.shape import minted_class_iris
 from ontocast.tool.validate import RDFGraphConnectivityValidator
 from ontocast.toolbox import ToolBox
 from ontocast.util.loop_lag import loop_lag
@@ -85,6 +96,67 @@ def _insert_only(tools: ToolBox) -> bool:
 def _count_insert_only_drops(state: AgentState, dropped: int) -> None:
     if dropped:
         state.budget_tracker.incr("ontology/deletes_dropped_insert_only", dropped)
+
+
+def external_namespaces(tools: ToolBox, current_domain: str) -> list[str]:
+    """Namespace stems of the catalog ontologies outside ``current_domain``.
+
+    Each external ontology contributes its IRI and its namespace, without a
+    trailing ``/`` or ``#``; prefixes merely bound in its graph do not count.
+    """
+    stems: set[str] = set()
+    for head in tools.ontology_manager.ontologies:
+        if head.is_null() or not head.iri:
+            continue
+        if is_owned_ontology(head.iri, current_domain):
+            continue
+        stems.add(head.iri.rstrip("/#"))
+        stems.add(normalize_namespace_iri(head.iri, context="ontology").rstrip("/#"))
+        if head.namespace:
+            stems.add(head.namespace.rstrip("/#"))
+    return sorted(stems)
+
+
+def clean_ontology_delta(
+    graphs: Sequence[RDFGraph], external: Sequence[str], current_domain: str
+) -> dict[str, int]:
+    """Apply the deterministic clean-up rules to each graph; the counts removed."""
+    counts = {
+        "external_subject_refused": 0,
+        "example_namespace_dropped": 0,
+        "datatype_ranges_normalized": 0,
+        "vacuous_upper_terms_dropped": 0,
+    }
+    for graph in graphs:
+        counts["external_subject_refused"] += drop_external_subjects(graph, external)
+        counts["example_namespace_dropped"] += drop_example_namespace_triples(
+            graph, current_domain
+        )
+        counts["datatype_ranges_normalized"] += normalize_datatype_ranges(graph)
+        counts["vacuous_upper_terms_dropped"] += drop_vacuous_upper_terms(graph)
+    return counts
+
+
+def home_base_overrides(
+    state: AgentState, tools: ToolBox, fresh_ontologies: Sequence[Ontology]
+) -> dict[str, Ontology]:
+    """A base to apply the home ontology's delta onto when it is not stored yet.
+
+    Under vector retrieval a unit renders an update against catalog patches
+    even when the document's home ontology is new; without a base its terms
+    would have no ontology to land in. A fresh render of the home is that
+    base; otherwise an empty root under the home identity is.
+    """
+    home = state.home_ontology
+    if home is None:
+        return {}
+    for fresh in fresh_ontologies:
+        if fresh.iri == home.iri:
+            return {home.iri: fresh}
+    head = tools.ontology_manager.get_head_by_iri(home.iri)
+    if head is not None and not head.is_null():
+        return {}
+    return {home.iri: mint_ontology(home, RDFGraph())}
 
 
 @asynccontextmanager
@@ -233,6 +305,7 @@ def make_render_ontology_node(tools: ToolBox):
                     max_visits_per_node=state.max_visits,
                     current_domain=state.current_domain,
                     home_ontology=state.home_ontology,
+                    ontology_plan=state.ontology_plan,
                     ontology_max_triples=tools.config.server.ontology_max_triples,
                     llm_graph_format=state.llm_graph_format,
                     llm_output_layout=tools.config.server.llm_output_layout,
@@ -277,6 +350,10 @@ def make_render_ontology_node(tools: ToolBox):
         # residual's denominator is "units", not "units that ran a critic".
         ontology_findings_residual = 0
         ontology_mandatory_residual = 0
+        # For consolidation: the findings left on each unit, and which units
+        # minted each term (their text is the term's evidence).
+        residual_findings: list[OntologyUnitFinding] = []
+        term_units: dict[str, set[int]] = {}
         for (
             unit_index,
             result,
@@ -289,6 +366,7 @@ def make_render_ontology_node(tools: ToolBox):
             ontology_mandatory_residual += sum(
                 1 for finding in result.deterministic_findings if finding.mandatory
             )
+            residual_findings.extend(result.deterministic_findings)
             if result.attempt_log:
                 state.ontology_loop_telemetry[unit_index] = list(result.attempt_log)
             unit_contexts[unit_index] = (
@@ -327,6 +405,13 @@ def make_render_ontology_node(tools: ToolBox):
 
             content_unit = result.content_unit
             delta = result.build_delta()
+            unit_graphs = [delta.inserts]
+            if result.fresh_ontology is not None:
+                unit_graphs.append(result.fresh_ontology.graph)
+            for graph in unit_graphs:
+                for subject in set(graph.subjects()):
+                    if isinstance(subject, URIRef):
+                        term_units.setdefault(str(subject), set()).add(unit_index)
             if not delta.is_empty():
                 unit_deltas.append(delta)
             if len(delta.inserts) > 0:
@@ -387,6 +472,11 @@ def make_render_ontology_node(tools: ToolBox):
         state.retrieval_metrics[RetrievalMetric.ONTOLOGY_CRITIC_ACCEPTED] = sum(
             1 for attempt in ontology_critic_attempts if attempt.success
         )
+        state.retrieval_metrics[RetrievalMetric.ONTOLOGY_CRITIC_UNITS_SKIPPED] = sum(
+            1
+            for attempts in state.ontology_loop_telemetry.values()
+            if any(attempt.kind == "critic_skipped" for attempt in attempts)
+        )
         ontology_patch_attempts = [
             attempt
             for attempts in state.ontology_loop_telemetry.values()
@@ -419,24 +509,19 @@ def make_render_ontology_node(tools: ToolBox):
                 enforce_redeclared_deletes(merged_delta)
             )
 
-        # Minted-duplicate reconciliation against the FULL terminals. The
-        # per-unit label-collision check indexes the snapshot — under
-        # vector retrieval that is exactly the part of the catalog where the
-        # duplicate is not, so a term the retrieval failed to surface gets
-        # re-minted under a fresh IRI and nothing else on the write path would
-        # ever notice. 'detect' (default) only measures; 'rewrite' substitutes
-        # after a sampling run has shown the matches are true duplicates.
+        # Minted-duplicate reconciliation against the whole catalog, not the
+        # units' snapshots: under vector retrieval a term the retrieval failed
+        # to surface gets re-minted under a fresh IRI. 'detect' (default) only
+        # measures; 'rewrite' substitutes once the matches are shown to be
+        # true duplicates.
         reconcile_mode = (
             tools.config.get_tool_config().ontology_validation.reconcile_minted_terms
         )
-        if reconcile_mode != "off" and len(merged_delta.inserts) > 0 and all_writable:
-            terminal_graphs = {
-                iri: terminal.graph
-                for iri in all_writable
-                if (terminal := tools.ontology_manager.get_head_by_iri(iri)) is not None
-                and not terminal.is_null()
-            }
-            duplicates = detect_minted_duplicates(merged_delta.inserts, terminal_graphs)
+        duplicates: list[MintedDuplicate] = []
+        if reconcile_mode != "off" and len(merged_delta.inserts) > 0:
+            duplicates = detect_minted_duplicates(
+                merged_delta.inserts, tools.ontology_manager.catalog_surface_index()
+            )
             state.ontology_reduce_metrics["minted_duplicates"] = len(duplicates)
             if duplicates:
                 state.ontology_reduce_metrics["minted_duplicate_pairs"] = [
@@ -462,18 +547,65 @@ def make_render_ontology_node(tools: ToolBox):
         fresh_ontologies, fresh_metrics = reconcile_fresh_ontologies(fresh_ontologies)
         state.ontology_reduce_metrics.update(fresh_metrics)
 
+        # The document-level decision on every minted term: candidates the
+        # plan did not name are held back, consolidation (when on) decides
+        # each term, and the decisions are compiled into both carriers.
+        await decide_minted_terms(
+            state,
+            tools,
+            merged_inserts=merged_delta.inserts,
+            fresh_ontologies=fresh_ontologies,
+            findings=residual_findings,
+            term_units=term_units,
+            duplicates=duplicates,
+        )
+        fresh_ontologies = [o for o in fresh_ontologies if len(o.graph) > 0]
+
+        hygiene = clean_ontology_delta(
+            [
+                merged_delta.inserts,
+                merged_delta.deletes,
+                *(o.graph for o in fresh_ontologies),
+            ],
+            external_namespaces(tools, state.current_domain),
+            state.current_domain,
+        )
+        state.ontology_reduce_metrics.update(
+            {key: value for key, value in hygiene.items() if value}
+        )
+        base_overrides = home_base_overrides(state, tools, fresh_ontologies)
+        if state.home_ontology is not None and state.home_ontology.iri not in (
+            seen_writable
+        ):
+            seen_writable.add(state.home_ontology.iri)
+            all_writable.append(state.home_ontology.iri)
+
+        catalog_index = tools.ontology_manager.catalog_surface_index()
+        catalog_subjects = catalog_index.terms
+        state.ontology_minted_classes = sorted(
+            minted_class_iris(
+                merged_delta.inserts, *(o.graph for o in fresh_ontologies)
+            )
+            - catalog_subjects
+        )
+        state.ontology_reduce_metrics["minted_classes"] = len(
+            state.ontology_minted_classes
+        )
+
         artifacts: list[Ontology] = list(fresh_ontologies)
         if not merged_delta.is_empty() and all_writable:
             partitioned_inserts, unattributed = partition_triples_by_namespace(
                 merged_delta.inserts,
                 writable_iris=all_writable,
                 ontology_manager=tools.ontology_manager,
+                base_overrides=base_overrides,
             )
             state.ontology_reduce_metrics["unattributed_insert_triples"] = unattributed
             partitioned_deletes, unattributed_deletes = partition_triples_by_namespace(
                 merged_delta.deletes,
                 writable_iris=all_writable,
                 ontology_manager=tools.ontology_manager,
+                base_overrides=base_overrides,
             )
             state.ontology_reduce_metrics["unattributed_delete_triples"] = (
                 unattributed_deletes
@@ -484,7 +616,11 @@ def make_render_ontology_node(tools: ToolBox):
                 normalize_units_fn=normalize_ontology_units,
                 tools=tools,
                 partitioned_deletes=partitioned_deletes,
+                base_overrides=base_overrides,
             )
+            # A fresh home the delta was applied onto is superseded by the result.
+            applied_iris = {artifact.iri for artifact in applied}
+            artifacts = [a for a in artifacts if a.iri not in applied_iris]
             artifacts.extend(applied)
             for iri, updates in applied_updates.items():
                 state.ontology_updates_by_iri.setdefault(iri, []).extend(updates)
@@ -537,137 +673,6 @@ def make_normalize_ontology_node(tools: ToolBox):
         return state
 
     return normalize_ontology_updates
-
-
-def make_consolidate_ontology_node(tools: ToolBox):
-    atomic_tools = tools.get_atomic_tools()
-
-    async def consolidate_ontology(state: AgentState) -> AgentState:
-        """Optional post-normalization ontology consolidation pass."""
-        if not tools.config.server.enable_ontology_consolidation:
-            logger.info(
-                "Skipping ontology consolidation: enable_ontology_consolidation is false"
-            )
-            state.status = Status.SUCCESS
-            return state
-        doc_onto = document_ontology_access(state)
-        artifacts = doc_onto.reduced_artifacts()
-        if not state.render_ontology or len(artifacts) != 1 or artifacts[0].is_null():
-            logger.info(
-                "Skipping ontology consolidation: requires exactly one rendered ontology artifact"
-            )
-            state.status = Status.SUCCESS
-            return state
-
-        excerpt = build_document_excerpt(state).strip()
-        if not excerpt:
-            logger.info(
-                "Skipping ontology consolidation: no usable document excerpt was produced"
-            )
-            state.status = Status.SUCCESS
-            return state
-
-        consolidation_unit = SourceUnit(
-            text=excerpt,
-            index=0,
-            doc_iri=state.doc_iri,
-            type=OutputType.ONTOLOGIES,
-        )
-        consolidation_instruction = (
-            "Consolidation pass: keep ontology IRI, ontology_id, and prefix unchanged. "
-            "Harmonize duplicated or semantically overlapping classes/properties, "
-            "normalize naming consistency, and improve hierarchy coherence."
-        )
-        ontology_user_instruction = (
-            f"{state.ontology_user_instruction}\n\n{consolidation_instruction}".strip()
-        )
-        primary = artifacts[0]
-        snap = OntologySnapshot.from_ontology(
-            primary,
-            assembly_mode=OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY,
-            title="Consolidation snapshot",
-        )
-        consolidation_state = UnitOntologyState(
-            content_unit=consolidation_unit,
-            ontology_snapshot=snap,
-            ontology_patch_sources=all_unit_patch_source_iris(state),
-            writable_iris=[primary.iri] if primary.iri else [],
-            ontology_user_instruction=ontology_user_instruction,
-            budget_tracker=state.budget_tracker,
-            max_visits_per_node=1,
-            current_domain=state.current_domain,
-            home_ontology=state.home_ontology,
-            ontology_max_triples=tools.config.server.ontology_max_triples,
-            llm_graph_format=state.llm_graph_format,
-            llm_output_layout=tools.config.server.llm_output_layout,
-            ontology_context_max_triples=tools.config.server.ontology_context_max_triples,
-            working_graph=snap.graph.copy(),
-            assembly_anchor_iri=primary.iri or "",
-        )
-        with use_llm_phase(LLMPhase.ONTOLOGY_CONSOLIDATION):
-            result = await render_ontology_update(consolidation_state, atomic_tools)
-        if result.status == Status.SUCCESS and result.working_graph_changed():
-            delta = result.build_delta()
-            if _insert_only(tools):
-                _count_insert_only_drops(state, drop_all_deletes(delta))
-            if not delta.is_empty() and primary.iri:
-                # The consolidation delta is a complement of `primary` (the
-                # map-stage artifact), so it must be applied on top of exactly
-                # that artifact — not the pre-run catalog terminal, which would
-                # silently drop the map-stage additions.
-                base_overrides = {primary.iri: primary}
-                partitioned_inserts, _unattr = partition_triples_by_namespace(
-                    delta.inserts,
-                    writable_iris=[primary.iri],
-                    ontology_manager=tools.ontology_manager,
-                    base_overrides=base_overrides,
-                )
-                partitioned_deletes, _unattr_del = partition_triples_by_namespace(
-                    delta.deletes,
-                    writable_iris=[primary.iri],
-                    ontology_manager=tools.ontology_manager,
-                    base_overrides=base_overrides,
-                )
-                applied, _metrics, applied_updates = apply_partitioned_updates(
-                    partitioned_inserts,
-                    ontology_manager=tools.ontology_manager,
-                    normalize_units_fn=normalize_ontology_units,
-                    tools=tools,
-                    partitioned_deletes=partitioned_deletes,
-                    base_overrides=base_overrides,
-                )
-                if applied:
-                    state.reduced_ontology_artifacts = applied
-                    state.reduced_ontology_by_anchor = _index_ontologies_by_anchor(
-                        applied
-                    )
-                    state.ontology_artifacts = applied
-                    for iri, updates in applied_updates.items():
-                        state.ontology_updates_by_iri.setdefault(iri, []).extend(
-                            updates
-                        )
-                    logger.info(
-                        "Ontology consolidation applied %s update operation(s).",
-                        sum(len(updates) for updates in applied_updates.values()),
-                    )
-                else:
-                    logger.warning(
-                        "Ontology consolidation produced deltas but catalog apply "
-                        "returned no artifacts; keeping the map-stage artifact."
-                    )
-            else:
-                logger.warning(
-                    "Ontology consolidation was enabled but no complement triples "
-                    "were produced."
-                )
-        else:
-            logger.warning(
-                "Ontology consolidation was enabled but no update was applied."
-            )
-        state.status = Status.SUCCESS
-        return state
-
-    return consolidate_ontology
 
 
 def make_render_facts_node(tools: ToolBox):
@@ -1163,6 +1168,7 @@ def make_validate_facts_node(tools: ToolBox):
         un-merge repair: it has many units to re-aggregate against each other.
         """
         if not state.facts_units or len(state.aggregated_facts) == 0:
+            record_unused_minted_classes(state)
             if state.status != Status.FAILED:
                 state.status = Status.SUCCESS
             return state
@@ -1175,10 +1181,32 @@ def make_validate_facts_node(tools: ToolBox):
             merge_repair=True,
             document_metadata=document_metadata,
         )
+        record_unused_minted_classes(state)
         state.status = Status.SUCCESS
         return state
 
     return validate_facts
+
+
+def record_unused_minted_classes(state: AgentState) -> None:
+    """Count the classes this document minted that none of its facts types.
+
+    Recorded only when the run rendered both lanes, so a class can have been
+    instantiated. A minted class no fact of its own document uses is the
+    clearest sign the class names that document rather than its domain.
+    """
+    if not (state.render_ontology and state.render_facts):
+        return
+    if not state.ontology_minted_classes:
+        return
+    used = {
+        str(obj)
+        for obj in state.aggregated_facts.objects(None, RDF.type)
+        if isinstance(obj, URIRef)
+    }
+    unused = [iri for iri in state.ontology_minted_classes if iri not in used]
+    state.ontology_reduce_metrics["unused_minted_classes"] = len(unused)
+    state.ontology_reduce_metrics["unused_minted_class_iris"] = unused
 
 
 def make_structural_check_node(tools: ToolBox):

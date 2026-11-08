@@ -30,6 +30,7 @@ from ontocast.onto.model import (
     FactsValidationFinding,
     GraphRepairRecord,
     LoopAttempt,
+    OntologyPlan,
     UnitFailure,
 )
 from ontocast.onto.ontology import Ontology
@@ -670,15 +671,23 @@ class AgentState(BasePydanticModel):
         default_factory=dict,
         description="Reduced ontology artifacts indexed by anchor IRI.",
     )
-    ontology_reduce_metrics: dict[str, int | float | str | list[dict[str, str]]] = (
-        Field(
-            default_factory=dict,
-            description=(
-                "Metrics emitted by ontology reduce stage. The list-valued "
-                "entry is minted_duplicate_pairs: the (minted IRI, catalog "
-                "IRI, surface, role) records the reconciliation scan found."
-            ),
-        )
+    ontology_minted_classes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Classes this document's ontology lane minted, sorted. Read after "
+            "the facts merge to count the ones no fact instantiates."
+        ),
+    )
+    ontology_reduce_metrics: dict[
+        str, int | float | str | list[str] | list[dict[str, str]]
+    ] = Field(
+        default_factory=dict,
+        description=(
+            "Metrics emitted by ontology reduce stage. The list-valued "
+            "entries are minted_duplicate_pairs (the minted IRI, catalog "
+            "IRI, surface, role and key records the reconciliation scan "
+            "found) and unused_minted_class_iris."
+        ),
     )
     unit_patch_sources: dict[int, list[str]] = Field(
         default_factory=dict,
@@ -772,6 +781,14 @@ class AgentState(BasePydanticModel):
             "Where this document mints new vocabulary: an existing catalog "
             "ontology it extends, or a new one minted for it. Resolved once per "
             "document before the ontology fan-out; None for facts-only runs."
+        ),
+    )
+    ontology_plan: OntologyPlan | None = Field(
+        default=None,
+        description=(
+            "The terms this document may mint or must reuse, planned over the "
+            "whole document before the ontology fan-out. None when planning "
+            "is off or did not run."
         ),
     )
     ontology_versions_written: list[OntologyVersionRecord] = Field(

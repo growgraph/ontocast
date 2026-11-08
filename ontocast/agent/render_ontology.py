@@ -23,6 +23,7 @@ from ontocast.onto.enum import (
 from ontocast.onto.model import (
     FreshOntologyRenderReport,
     GraphUpdateRenderReport,
+    OntologyPlan,
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
@@ -40,15 +41,19 @@ from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.ontology_context import format_ontologies_clause
 from ontocast.prompt.render_ontology import (
     general_ontology_instruction,
+    home_namespace_clause,
     intro_instruction_fresh,
     intro_instruction_update_multi,
     intro_instruction_update_single,
     partial_context_notice,
+    plan_instruction_template,
+    plan_reuse_block,
     template_prompt,
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
+from ontocast.tool.ontology_validation.plan import compact_iri
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +65,7 @@ def _create_ontology_render_prompt_template() -> PromptTemplate:
             "preamble",
             "intro_instruction",
             "ontology_instruction",
+            "plan_instruction",
             "output_instruction",
             "user_instruction",
             "improvement_instruction",
@@ -68,6 +74,39 @@ def _create_ontology_render_prompt_template() -> PromptTemplate:
             "external_evidence",
             "format_instructions",
         ],
+    )
+
+
+def format_plan_instruction(plan: OntologyPlan | None) -> str:
+    """The plan block of a unit's render prompt; empty without a plan."""
+    if plan is None or not plan.terms:
+        return ""
+    prefixes = plan.prefixes
+
+    def curie(iri: str) -> str:
+        return compact_iri(iri, prefixes)
+
+    minted_lines = []
+    for term in plan.minted():
+        parts = [f"- `{curie(term.iri)}` | {term.kind} | {term.label}"]
+        if term.parent_iri:
+            parts.append(f"parent `{curie(term.parent_iri)}`")
+        if term.definition:
+            parts.append(term.definition)
+        if term.nearest:
+            near = ", ".join(f"`{curie(iri)}`" for iri, _ in term.nearest)
+            parts.append(f"near existing {near}")
+        minted_lines.append(" | ".join(parts))
+    reuse_lines = [
+        f'- `{curie(term.iri)}` for "{term.label}"' for term in plan.reused()
+    ]
+    return plan_instruction_template.format(
+        minted_lines="\n".join(minted_lines) or "- (none: reuse only)",
+        reuse_block=(
+            plan_reuse_block.format(reuse_lines="\n".join(reuse_lines))
+            if reuse_lines
+            else ""
+        ),
     )
 
 
@@ -108,17 +147,33 @@ def _build_update_intro(state: UnitOntologyState, access: UnitOntologyAccess) ->
         == OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
     )
     notice = partial_context_notice if is_partial_view else ""
+    home = state.home_ontology
+    home_clause = (
+        home_namespace_clause.format(
+            namespace=home.namespace, ontology_id=home.ontology_id
+        )
+        if home is not None
+        else ""
+    )
     if len(writable) <= 1:
         ontology_iri = writable[0] if writable else "(unspecified)"
-        return notice + intro_instruction_update_single.format(
-            ontology_iri=ontology_iri,
-            ontology_desc=ontology_desc,
+        return (
+            notice
+            + intro_instruction_update_single.format(
+                ontology_iri=ontology_iri,
+                ontology_desc=ontology_desc,
+            )
+            + home_clause
         )
     sources = state.ontology_patch_sources or writable
     source_list = "\n".join(f"- <{iri}>" for iri in sources[:20])
-    return notice + intro_instruction_update_multi.format(
-        ontology_desc=ontology_desc,
-        source_list=source_list or "- (none listed)",
+    return (
+        notice
+        + intro_instruction_update_multi.format(
+            ontology_desc=ontology_desc,
+            source_list=source_list or "- (none listed)",
+        )
+        + home_clause
     )
 
 
@@ -211,6 +266,7 @@ async def render_ontology_fresh(
                 "preamble": system_preamble,
                 "intro_instruction": intro_instruction,
                 "ontology_instruction": general_ontology_instruction_str,
+                "plan_instruction": format_plan_instruction(state.ontology_plan),
                 "output_instruction": output_instruction,
                 "ontology_ttl": ontology_ttl,
                 "user_instruction": state.ontology_user_instruction,
@@ -315,6 +371,10 @@ async def render_ontology_update(
         access.ontology_graph_for_prefixes(),
         supplemental_ontologies or (),
     )
+    if state.home_ontology is not None:
+        # The plan block and the intro name home terms by this prefix; unbound,
+        # the model guesses a namespace for it.
+        known_prefixes[state.home_ontology.ontology_id] = state.home_ontology.namespace
 
     previous_prefixes = RDFGraph.get_known_prefixes()
     try:
@@ -330,6 +390,7 @@ async def render_ontology_update(
                 "preamble": system_preamble,
                 "intro_instruction": intro_instruction,
                 "ontology_instruction": general_ontology_instruction_str,
+                "plan_instruction": format_plan_instruction(state.ontology_plan),
                 "output_instruction": output_instruction,
                 "improvement_instruction": improvement_instruction_str,
                 "ontology_ttl": ontology_chapter,

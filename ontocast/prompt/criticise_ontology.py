@@ -32,10 +32,10 @@ Provide a constructive, actionable critique following these priorities:
 
 ## PRIMARY EVALUATION CRITERIA (in order of importance):
 1. **Consistency**: No logical contradictions, proper use of OWL semantics
-2. **Completeness**: All key domain concepts from text are represented
+2. **Completeness**: The domain concepts the text needs are represented (not every phrase of it)
 3. **Correctness**: Accurate relationships, proper datatypes, valid syntax
 4. **Structure**: Appropriate class hierarchies and property definitions
-5. **Abstraction**: Uses abstract classes/properties (no instances)
+5. **Reuse level**: Classes are minted at the level a second document in the domain would reuse. A distinction that varies per instance is a property with values, not a family of sibling subclasses. Existing and well-known terms are reused rather than re-minted. Hierarchies stay shallow, without chains of single-child classes.
 6. **Domain Coverage**: Includes implicit domain knowledge beyond literal text
 
 ## SCORING:
@@ -59,6 +59,9 @@ Provide a constructive, actionable critique following these priorities:
 - For missing concepts: specify WHERE in the hierarchy they belong
 - For relationship errors: explain the correct domain/range constraints
 - For redundancies: suggest consolidation strategy
+- For a one-off class (a particular case of the document): propose removing it; the case belongs in the facts graph
+- For a family of sibling subclasses that only enumerate values: propose one property with values in their place
+- For a `catalog_duplicate` finding: the fix reuses the catalog IRI named as its candidate
 - Prioritize fixes that have cascading impact
 - Enforce namespace hygiene: ontology classes/properties MUST NOT be modeled in `cd:` (`{DEFAULT_IRI}`), since `cd:` is reserved for facts/instances
 - Flag restated context triples: GraphUpdate inserts that merely repeat triples already in the provided ontology context are errors — complements only

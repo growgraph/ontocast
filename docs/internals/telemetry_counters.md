@@ -44,8 +44,8 @@ not what this run paid for.
 
 `node_durations` holds seconds. A plain pipeline node name is that node's wall
 clock, recorded by the `_timed` wrapper in `ontocast/stategraph/create.py`:
-`Convert to Text`, `Chunk Text`, `Resolve Home Ontology`, `Update Ontology`,
-`Normalize Ontology Updates`, `Consolidate Ontology`, `Structural Check`,
+`Convert to Text`, `Chunk Text`, `Resolve Home Ontology`, `Plan Ontology`,
+`Update Ontology`, `Normalize Ontology Updates`, `Structural Check`,
 `Consistency Critic`, `Render Facts`, `Merge Facts`, `Resolve Coreference`,
 `Validate Facts`, `Serialize`.
 
@@ -116,6 +116,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `ontology/update_rejected_over_budget` | `ontocast/agent/render_ontology.py` | Ontology updates discarded for exceeding `ONTOLOGY_MAX_TRIPLES` |
 | `ontology/deletes_dropped_insert_only` | `ontocast/agent/render_ontology.py`, `ontocast/stategraph/node_factories.py` | Ontology delete triples dropped under `ONTOLOGY_UPDATE_MODE=insert_only` |
 | `ontology/model_header_triples_dropped` | `ontocast/agent/render_ontology.py` | `owl:Ontology` header triples a fresh render wrote and that were dropped: identity and the version header are written by code |
+| `ontology/labels_derived` | `ontocast/stategraph/atomic.py` | `rdfs:label` triples derived from local names for minted terms left unlabelled |
 | `llm/ontology_identity` | `ontocast/agent/resolve_home_ontology.py` | Home-ontology calls, one per document that can create vocabulary |
 | `chunk/outline_windows_failed` | `ontocast/tool/chunk/section_llm.py` | Outline windows of the model section tier whose call raised; those regions got no model vote |
 | `serialize/ontology_identity_conflict` | `ontocast/toolbox.py` | Ontology versions not written because their identity collides with the catalog or another version of the document; the facts are still written |
@@ -153,6 +154,7 @@ Ontology fan-out, written in `ontocast/stategraph/node_factories.py`:
 | `ontology_critic_calls`, `ontology_critic_accepted` | Ontology critic calls, and those whose verdict let the unit leave the loop |
 | `ontology_critic_fixes_applied`, `ontology_critic_fixes_noop` | Critic fixes that reached the graph, and fixes that removed exactly what they added |
 | `ontology_critic_patches_rolled_back` | Critic patch passes in which a fix was undone |
+| `ontology_critic_units_skipped` | Units not sent to the critic: at one pass, units with no mandatory finding |
 
 Facts fan-out, written in `ontocast/stategraph/node_factories.py`:
 

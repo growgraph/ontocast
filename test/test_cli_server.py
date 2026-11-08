@@ -1566,3 +1566,58 @@ def test_process_cli_offers_the_validation_dumps() -> None:
 
     assert "--dump-catalog" in result.output
     assert "--keep-provenance" in result.output
+
+
+def test_curate_passes_its_options_and_prints_the_decisions(
+    monkeypatch, tmp_path
+) -> None:
+    import json as _json
+
+    from click.testing import CliRunner
+
+    from ontocast.cli import server as server_module
+    from ontocast.tool import curation as curation_module
+    from ontocast.tool.curation import CurationReport
+
+    seen: dict[str, object] = {}
+
+    def fake_bootstrap(**kwargs):
+        seen["bootstrap"] = kwargs
+        return SimpleNamespace(tools="tools")
+
+    async def fake_curate(tools, **kwargs):
+        seen["curate"] = (tools, kwargs)
+        return [
+            CurationReport(
+                ontology_iri="https://example.org/cat",
+                actions={"https://example.org/cat#TinFilm": "drop"},
+                triples_deleted=3,
+                predicted_version="1.0.2",
+            )
+        ]
+
+    monkeypatch.setattr(server_module, "_bootstrap_tools", fake_bootstrap)
+    monkeypatch.setattr(curation_module, "curate_catalog", fake_curate)
+    out = tmp_path / "report.json"
+
+    result = CliRunner().invoke(
+        server_module.cli,
+        [
+            "curate",
+            "--ontology",
+            "cat",
+            "--batch-size",
+            "5",
+            "--no-facts-usage",
+            "--json",
+            str(out),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["curate"] == (
+        "tools",
+        {"ontology": "cat", "apply": False, "batch_size": 5, "use_facts": False},
+    )
+    assert "drop" in result.output and "(dry run)" in result.output
+    assert _json.loads(out.read_text())[0]["predicted_version"] == "1.0.2"

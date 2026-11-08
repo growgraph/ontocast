@@ -131,6 +131,9 @@ class RetrievalMetric(StrEnum):
     ONTOLOGY_CRITIC_FIXES_RESIDUAL = "ontology_critic_fixes_residual"
     ONTOLOGY_CRITIC_FIXES_NOOP = "ontology_critic_fixes_noop"
     ONTOLOGY_CRITIC_PATCHES_ROLLED_BACK = "ontology_critic_patches_rolled_back"
+    #: Units the ontology loop did not send to the critic: at one pass, a unit
+    #: with no mandatory deterministic finding.
+    ONTOLOGY_CRITIC_UNITS_SKIPPED = "ontology_critic_units_skipped"
     FACTS_CRITIC_ACCEPTED = "facts_critic_accepted"
     #: Units whose critic call failed (timeout, unparseable response) and
     #: left the loop unreviewed, and units the loop did not send to the
@@ -322,6 +325,7 @@ class WorkflowNode(StrEnum):
     CONVERT_TO_TEXT = "Convert to Text"
     CHUNK = "Chunk Text"
     RESOLVE_HOME_ONTOLOGY = "Resolve Home Ontology"
+    ONTOLOGY_PLAN = "Plan Ontology"
     TEXT_TO_ONTOLOGY = "Text to Ontology"
     TEXT_TO_FACTS = "Text to Facts"
     CRITICISE_ONTOLOGY = "Criticise Ontology"
@@ -330,7 +334,6 @@ class WorkflowNode(StrEnum):
     RENDER_ONTOLOGY_UPDATE = "Update Ontology"
     RENDER_FACTS = "Render Facts"
     NORMALIZE_ONTOLOGY_UPDATES = "Normalize Ontology Updates"
-    CONSOLIDATE_ONTOLOGY = "Consolidate Ontology"
     MERGE_FACTS = "Merge Facts"
     RESOLVE_COREFERENCE = "Resolve Coreference"
     VALIDATE_FACTS = "Validate Facts"
@@ -353,9 +356,11 @@ class LLMPhase(StrEnum):
     FACTS_COMPLETION = "facts_completion"
     FACTS_COREFERENCE = "facts_coreference"
     ONTOLOGY_IDENTITY = "ontology_identity"
+    ONTOLOGY_PLAN = "ontology_plan"
     ONTOLOGY_RENDER = "ontology_render"
     ONTOLOGY_CRITIC = "ontology_critic"
     ONTOLOGY_CONSOLIDATION = "ontology_consolidation"
+    ONTOLOGY_CURATION = "ontology_curation"
     ONTOLOGY_SELECTION = "ontology_selection"
     EVIDENCE_PLANNING = "evidence_planning"
     UNIT_SUMMARY = "unit_summary"

@@ -2,6 +2,11 @@
 
 The terms these pages use, each with the page that explains it.
 
+**Candidate term**
+:   A class or property a unit minted that the document's ontology plan did
+    not list. Consolidation decides it; without a decision it is dropped. See
+    [How OntoCast works](index.md#the-ontology-block).
+
 **Catalog**
 :   The set of ontologies OntoCast knows: those loaded at startup, uploaded to
     `/ontologies`, or created by earlier runs. Every ontology context is taken
@@ -13,9 +18,9 @@ The terms these pages use, each with the page that explains it.
     works](index.md#the-per-unit-loop).
 
 **Consolidation**
-:   An optional LLM call that refines a document's ontology against an excerpt
-    of the whole document, after the units' changes are merged
-    (`ENABLE_ONTOLOGY_CONSOLIDATION`). See [How OntoCast
+:   The step that decides every term a document minted before it is written:
+    keep, merge into another term, generalise, demote to a property value, or
+    drop (`ONTOLOGY_CONSOLIDATION`). See [How OntoCast
     works](index.md#the-ontology-block).
 
 **Content unit**
@@ -32,6 +37,12 @@ The terms these pages use, each with the page that explains it.
 :   The LLM call that reviews a render and names the statements to fix.
     OntoCast applies the fixes as a patch without another call. See [Validation
     layers](../internals/validation_layers.md).
+
+**Curation**
+:   A pass over a catalog ontology, across every document processed so far,
+    that keeps, merges, generalises, demotes or drops the terms documents
+    added (`ontocast curate`). See [Curating the
+    catalog](../guides/curation.md).
 
 **Entity disambiguation**
 :   Deciding which entities from different content units are the same thing,
@@ -58,6 +69,15 @@ The terms these pages use, each with the page that explains it.
     cannot extend it until an upload (`PUT`) merges it. See [Ontologies and
     facts](ontologies_and_facts.md#versions).
 
+**Extension ontology**
+:   The ontology `CURRENT_DOMAIN/<id>-ext` that holds the terms OntoCast adds
+    to the external ontology `<id>`, which it imports. See [Ontologies and
+    facts](ontologies_and_facts.md#owned-and-external-ontologies).
+
+**External ontology**
+:   A catalog ontology whose IRI is not under `CURRENT_DOMAIN`, such as a
+    published vocabulary. OntoCast reads it and never writes to it.
+
 **Home ontology**
 :   Where a document's new vocabulary goes: an existing catalog ontology it
     extends, or a new one minted under `CURRENT_DOMAIN`, resolved once per
@@ -83,6 +103,12 @@ The terms these pages use, each with the page that explains it.
     terms vector retrieval finds, or one fixed ontology
     (`ONTOLOGY_CONTEXT_MODE`). See [Choosing ontology
     context](../guides/ontology_context.md).
+
+**Ontology plan**
+:   The classes and properties a document adds to its domain, listed by one
+    LLM call over the whole document before its units render and checked
+    against the catalog without a model (`ONTOLOGY_PLAN_ENABLED`). Units mint
+    from it. See [How OntoCast works](index.md#the-ontology-block).
 
 **Prefix**
 :   A short alias for the start of an IRI, so `ex:Device` can stand for

@@ -45,8 +45,9 @@ not money.
 
 `budget.tokens_by_phase` splits the same counts by what each call was for:
 `facts_render`, `facts_critic`, `facts_completion`, `facts_coreference`,
-`ontology_identity`,
+`ontology_identity`, `ontology_plan`,
 `ontology_render`, `ontology_critic`, `ontology_consolidation`,
+`ontology_curation`,
 `ontology_selection`, `evidence_planning`, `unit_summary` and
 `section_classification`. Each entry
 holds `calls`, `replays`, `input`, `output`, `reasoning`, `cache_read`,

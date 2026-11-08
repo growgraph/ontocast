@@ -22,6 +22,10 @@ from ..onto.rdfgraph import RDFGraph
 from ..onto.util import normalize_ontology_iri
 from .facts_validation.terms import collect_catalog_terms
 from .onto import Tool
+from .ontology_validation.shape import (
+    CatalogSurfaceIndex,
+    build_catalog_surface_index,
+)
 from .triple_manager.core import TripleStoreManager
 from .triple_manager.util import head_headers
 
@@ -95,6 +99,9 @@ class OntologyManager(Tool):
         # set so it is rebuilt exactly when the catalog changes. Read per unit
         # by the deterministic repairs; see :meth:`catalog_terms`.
         self._catalog_terms_memo: tuple[frozenset[str], set[str]] | None = None
+        self._surface_index_memo: tuple[frozenset[str], CatalogSurfaceIndex] | None = (
+            None
+        )
 
     @staticmethod
     def _primary_ontology_id(ontology: Ontology) -> str:
@@ -549,12 +556,7 @@ class OntologyManager(Tool):
         Returns:
             set[str]: Shared across units -- treat as read-only.
         """
-        held: dict[str, Ontology] = {
-            ontology.version_iri or ontology.iri: ontology
-            for ontology in self.get_heads_by_iri(None)
-        }
-        for graph_uri, ontology in self._graph_cache.items():
-            held.setdefault(graph_uri, ontology)
+        held = self._held_ontologies()
         key = frozenset(held)
         memo = self._catalog_terms_memo
         if memo is not None and memo[0] == key:
@@ -564,6 +566,36 @@ class OntologyManager(Tool):
             terms |= collect_catalog_terms(ontology.graph)
         self._catalog_terms_memo = (key, terms)
         return terms
+
+    def _held_ontologies(self) -> dict[str, Ontology]:
+        """Every held ontology, by version IRI: the heads and the graph cache."""
+        held: dict[str, Ontology] = {
+            ontology.version_iri or ontology.iri: ontology
+            for ontology in self.get_heads_by_iri(None)
+        }
+        for graph_uri, ontology in self._graph_cache.items():
+            held.setdefault(graph_uri, ontology)
+        return held
+
+    def catalog_surface_index(self) -> CatalogSurfaceIndex:
+        """Labels, notations and local names of every held term, case-insensitive.
+
+        Built over the same set as :meth:`catalog_terms` and memoised the same
+        way. Read by the duplicate checks, which must see the whole catalog:
+        under vector retrieval a re-minted term duplicates one the unit's
+        snapshot did not contain.
+
+        Returns:
+            CatalogSurfaceIndex: Shared across units -- treat as read-only.
+        """
+        held = self._held_ontologies()
+        key = frozenset(held)
+        memo = self._surface_index_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
+        index = build_catalog_surface_index(o.graph for o in held.values())
+        self._surface_index_memo = (key, index)
+        return index
 
     def _cache_graph(self, ontology: Ontology, graph_uri: str | None = None) -> None:
         """Register a store-read ``ontology`` under the graph URI it was read from.

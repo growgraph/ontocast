@@ -11,8 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `FACTS_VOCABULARY=strict|open`. Both modes use the catalog first, then the built-in well-known vocabularies (RDF, RDFS, OWL, XSD, SKOS, Dublin Core, PROV-O, SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF, schema.org and QUDT) and `FACTS_ADDITIONAL_STANDARD_NAMESPACES`, all named in the prompt. `strict` (the default) stops there: a thing these cannot type or relate is not minted, a term of any other vocabulary is `unknown_term`, and `non_catalog_vocabulary` is an error. `open` also admits any other established vocabulary, as warnings. `FACTS_QUANTITY_FALLBACK_VOCABULARY` takes an optional `carrier` role.
 - A term of a well-known vocabulary must exist in it: one it does not have is `unknown_term` with near-miss suggestions, an error at the gate under `strict`, and `foreign_namespace` when an ontology render mints it. vCard and QUDT are admitted by namespace.
+- Ontology findings `hierarchy_too_deep` (blocking; bound `ONTOLOGY_MAX_CLASS_DEPTH`, default 6), `value_set_siblings`, `catalog_duplicate` (against the whole catalog, with the catalog IRI as candidate) and the advisory `specific_label_leaf`.
+- A minted ontology term left unlabelled gets an `rdfs:label` derived from its local name, without a model call (`ontology/labels_derived`).
+- Ontology plan (`ONTOLOGY_PLAN_ENABLED`, on by default): one call per document, before units render, lists the terms the document adds to its domain; proposals are checked against the whole catalog, and every unit renders against the plan. New node `Plan Ontology` and LLM phase `ontology_plan`.
+- Each term a document minted is decided before it is written: terms flagged without a model (outside the plan, one document's case, a value set, a catalog duplicate, a name variant) go to one consolidation call per batch, which returns `keep`, `merge_into`, `generalise_to`, `demote_to_property_value` or `drop`, compiled without a model. No flagged term, no call. A term outside the plan is dropped unless kept (`ONTOLOGY_CONSOLIDATION`, `ONTOLOGY_CONSOLIDATION_MAX_TERMS`).
+- `LLM_MODEL_BY_PHASE`: a model per LLM phase, recorded in the run manifest.
+- `ontocast curate` and `ontocast.curate_catalog`: review the terms documents added to a catalog ontology (used by one document or none, name variants, value sets, duplicates of authored terms) and keep, merge, generalise, demote or drop them; `--apply` writes a new version. Authored terms are never changed. LLM phase `ontology_curation`.
+- `minted_classes` and, when both lanes run, `unused_minted_classes` / `unused_minted_class_iris` in the run manifest's `ontology_reduce_metrics`; `ontology_critic_units_skipped` in `retrieval_metrics`.
+- Owned and external ontologies: a catalog ontology outside `CURRENT_DOMAIN` is never written to. A document whose home is one gets its terms in the extension ontology `CURRENT_DOMAIN/<id>-ext`, which imports it; triples about external terms are refused (`external_subject_refused`).
+- End-of-document clean-up of the ontology delta: IRIs under `example.org`/`.com`/`.net` outside `CURRENT_DOMAIN` (`example_namespace_dropped`), one datatype range per property (`datatype_ranges_normalized`), `Thing` as range, domain or second parent (`vacuous_upper_terms_dropped`).
 
 ### Changed
+
+- A proposed new home ontology is overridden by the catalog ontology whose terms the text names at least five times (`home_new_overridden`).
+- `ONTOLOGY_CRITIC_PASSES` defaults to 1, and at 1 the critic is called only for a unit with a mandatory deterministic finding. A default run now pays one extra call per faulted ontology unit; set 0 to restore no critic, 2 or more to review every unit.
+- The ontology render and critic prompts ask for classes at the level another document in the domain would reuse: a distinction that varies per instance is a property with values, not sibling subclasses, and existing terms are reused before minting.
+- A critic fix's `explanation` is optional: a report with a fix that omits it is kept instead of re-requested.
+- Minted-term reconciliation (`ONTOLOGY_RECONCILE_MINTED_TERMS`) checks every catalog ontology, not only the retrieved ones, and matches labels case-insensitively and local names as a second key.
 
 - `FACTS_ADDITIONAL_STANDARD_NAMESPACES` defaults to empty and only adds to the well-known vocabularies; schema.org is built in.
 - The facts prompt asks for statements: an entity is minted only when a statement is about it, and a structured value is a blank node under the property that carries it, never an entity of its own.
@@ -22,12 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Under vector retrieval, the terms a document mints under a new home ontology are written; they were dropped when no unit rendered the ontology fresh. The update prompt now names the home namespace, and a triple whose named subject no ontology owns is no longer filed under its object's ontology.
+- `ontocast process`, `serve` and `curate` no longer fail with "Event loop is closed" when start-up already called the model (a seed ontology without a description): the LLM tool rebuilds its provider client for each event loop. The Anthropic provider still shares one HTTP client per process.
+- A critic patch on an ontology unit that creates a new ontology no longer drops the render: the unit's delta and written ontology held the patch alone.
+- An applied ontology critic patch no longer raises on the missing repair log.
 - Provenance survives copying, merging and a JSON round trip of a facts graph; it used to be dropped silently, and loading a dumped graph raised.
 - N-Triples, N-Quads and TriG output carry provenance; JSON-LD and RDF/XML refuse a graph with provenance (`ProvenanceFormatError`) instead of failing obscurely.
 
 ### Removed
 
 - The `oxrdflib` dependency.
+- `ENABLE_ONTOLOGY_CONSOLIDATION` and the `Consolidate Ontology` node; consolidation now runs at reduce, on by default (`ONTOLOGY_CONSOLIDATION`).
 
 ## [0.9.0]
 

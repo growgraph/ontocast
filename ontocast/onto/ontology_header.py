@@ -299,11 +299,15 @@ def mint_ontology(identity: OntologyIdentity, graph: RDFGraph) -> Ontology:
     """A root artifact for the terms in ``graph`` under ``identity``.
 
     Any ``owl:Ontology`` subject the graph carries is dropped: the header is
-    written when the artifact is stamped.
+    written when the artifact is stamped. An extension ontology imports the
+    ontology it extends.
     """
     terms = graph.copy()
     Ontology.strip_ontology_header_triples(terms)
     terms.bind(identity.ontology_id, identity.namespace, override=True)
+    if identity.extends:
+        # Kept by ``write_header`` as an author extra on every later version.
+        terms.add((URIRef(identity.iri), OWL.imports, URIRef(identity.extends)))
     artifact = Ontology(
         ontology_id=identity.ontology_id,
         iri=identity.iri,

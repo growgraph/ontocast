@@ -60,6 +60,13 @@ class RunManifestLLM(BaseModel):
         ),
     )
     max_retries: int | None = None
+    model_by_phase: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Phases served by another model than model_name (LLM_MODEL_BY_PHASE); "
+            "their usage is in budget.tokens_by_phase under the same keys."
+        ),
+    )
     prompt_cache_key: str | None = Field(
         default=None,
         description=(
@@ -217,6 +224,14 @@ class RunManifestValidationConfig(BaseModel):
             "blocked acceptance. Older manifests carry the boolean this used "
             "to be."
         ),
+    )
+    ontology_plan_enabled: bool | None = Field(
+        default=None,
+        description="Whether units rendered against a document ontology plan.",
+    )
+    ontology_consolidation: str | None = Field(
+        default=None,
+        description="'on' | 'off': whether minted terms were decided by a model call.",
     )
     facts_user_instruction_chars: int | None = Field(
         default=None,
@@ -589,7 +604,8 @@ class RunManifest(BaseModel):
             "``AgentState.ontology_reduce_metrics``: apply/partition counters "
             "plus the reduce policies' evidence -- minted_duplicates and "
             "their pairs, deletes_dropped_unredeclared, apply_deletes_no_match, "
-            "fresh_ontologies_merged."
+            "fresh_ontologies_merged, minted_classes, and (when both lanes ran) "
+            "unused_minted_classes with their IRIs."
         ),
     )
     selection: RunManifestSelection | None = None

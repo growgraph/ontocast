@@ -117,3 +117,49 @@ def test_the_patch_target_is_the_scratchpad_graph() -> None:
     """Ids are resolved against what the critic was shown."""
     state = _state()
     assert state.patch_target_graph() is state.working_graph
+
+
+def _fresh_state() -> UnitOntologyState:
+    """A create-path unit: empty snapshot, the render minted as the root."""
+    from ontocast.onto.content_unit import ContentUnit
+    from ontocast.onto.ontology import Ontology
+
+    rendered = _snapshot_graph()
+    state = UnitOntologyState(
+        content_unit=ContentUnit(
+            text="demo", index=0, doc_iri=URIRef("https://example.org/doc")
+        ),
+    )
+    state.fresh_ontology = Ontology(
+        graph=rendered.copy(), iri="https://growgraph.dev/ontologies/demo"
+    )
+    state.working_graph = rendered.copy()
+    return state
+
+
+def test_a_patch_on_a_fresh_unit_keeps_the_render_in_the_product() -> None:
+    """With no catalog context the product is the render plus the patch."""
+    state = _fresh_state()
+    assert state.apply_patch(_insert((ONTO.Alloy, RDF.type, RDFS.Class)))
+
+    inserts = state.build_delta().inserts
+    assert (ONTO.Material, RDFS.label, Literal("Material")) in inserts
+    assert (ONTO.Alloy, RDF.type, RDFS.Class) in inserts
+    assert state.fresh_ontology is not None
+    assert (ONTO.Alloy, RDF.type, RDFS.Class) in state.fresh_ontology.graph
+
+
+def test_a_rolled_back_patch_leaves_the_fresh_root_as_rendered() -> None:
+    state = _fresh_state()
+    token = state.snapshot_for_rollback()
+    state.apply_patch(_insert((ONTO.Alloy, RDF.type, RDFS.Class)))
+    state.restore(token)
+
+    assert state.fresh_ontology is not None
+    assert (ONTO.Alloy, RDF.type, RDFS.Class) not in state.fresh_ontology.graph
+    assert (ONTO.Alloy, RDF.type, RDFS.Class) not in state.build_delta().inserts
+
+
+def test_an_ontology_unit_records_its_repairs() -> None:
+    """The patch loop extends ``applied_repairs`` on both phases."""
+    assert _state().applied_repairs == []

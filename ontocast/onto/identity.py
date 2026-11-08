@@ -157,6 +157,30 @@ def mint_ontology_iri(current_domain: str, ontology_id: str) -> str:
     )
 
 
+def is_owned_ontology(iri: str, current_domain: str) -> bool:
+    """Whether the ontology ``iri`` is this deployment's, i.e. under ``current_domain``.
+
+    An owned ontology is extended in place. Any other is external: its
+    namespace is never written to, and new terms go to its extension ontology.
+    """
+    domain = validate_current_domain(current_domain)
+    return iri == domain or iri.startswith(f"{domain}/")
+
+
+#: Suffix of an extension ontology's id: ``<external id>-ext``.
+EXTENSION_SUFFIX = "-ext"
+
+
+def extension_ontology_id(external_id: str) -> str:
+    """The id of the extension ontology of the external ontology ``external_id``.
+
+    The id is fixed by the external id, so every document and every run that
+    extends one external ontology writes to the same extension.
+    """
+    stem = external_id[: 32 - len(EXTENSION_SUFFIX)].rstrip("_-")
+    return validate_minted_ontology_id(f"{stem}{EXTENSION_SUFFIX}")
+
+
 def version_iri_for(iri: str, key: str) -> str:
     """The named graph holding version ``key`` of the ontology ``iri``."""
     return f"{iri}#{key}"
@@ -180,7 +204,8 @@ class OntologyIdentity(BaseModel):
     """What names an ontology: its id, its IRI, and how it describes itself.
 
     ``namespace`` is where its terms live: an existing ontology's own, else
-    ``<iri>#``, where a new ontology's terms are minted.
+    ``<iri>#``, where a new ontology's terms are minted. ``extends`` names the
+    external ontology an extension ontology adds terms to.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -190,6 +215,8 @@ class OntologyIdentity(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=2000)
     namespace: str = Field(default="")
+    #: The external ontology this one extends; minted with ``owl:imports`` of it.
+    extends: str | None = None
 
     @model_validator(mode="before")
     @classmethod

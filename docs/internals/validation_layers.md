@@ -89,7 +89,7 @@ references.
 ### The ontology loop
 
 <figure class="oc-figure oc-figure--tall" markdown>
-![The ontology unit loop: the same render, findings, critic and patch steps as the facts loop, bounded by ONTOLOGY_CRITIC_PASSES, without the skip rule or completion passes](../assets/ontology_loop.svg)
+![The ontology unit loop: the same render, findings, critic and patch steps as the facts loop, bounded by ONTOLOGY_CRITIC_PASSES, with a skip gate in front of the critic and without completion passes](../assets/ontology_loop.svg)
 <figcaption>The ontology loop for one content unit.</figcaption>
 </figure>
 
@@ -98,7 +98,15 @@ The ontology loop is the same loop with these differences:
 - It renders against a copy of the unit's ontology snapshot and validates the
   unit's net insert/delete **delta**, never snapshot plus delta: that would
   attribute every existing catalog defect to the unit.
-- It has no skip rule and no completion pass.
+- At the default `ONTOLOGY_CRITIC_PASSES=1` the critic pass is spent only on a
+  unit with a mandatory finding; a clean unit records a `critic_skipped`
+  attempt with reason `no_mandatory_findings`. With 2 or more passes every pass
+  runs. There is no completion pass.
+- After the render and after each critic patch, a minted class or property
+  without a label gets an `rdfs:label` derived from its local name
+  (`PerovskiteSample` gives "Perovskite sample"), recorded as a `missing_label`
+  repair and counted in `ontology/labels_derived`. An opaque local name
+  (`Q42`, a hash) is left to the `missing_label` finding.
 - Patches go through the unit's update channel, so the delta built at reduce
   time includes them; an update the channel refuses leaves the graph unchanged.
 - The critic sees the retrieved catalog for judging term choices, but only the
@@ -197,7 +205,7 @@ per document, because no data can satisfy both.
 ### Ontology findings
 
 `collect_ontology_unit_findings` runs on the delta. Every kind is mandatory
-except `label_collision`:
+except `label_collision` and `specific_label_leaf`:
 
 | Finding | What it catches |
 |---|---|
@@ -209,6 +217,10 @@ except `label_collision`:
 | `cardinality_contradiction` | A functional or max-1 declaration contradicted by a minimum cardinality of 2 or more |
 | `missing_label` | A new class or property without `rdfs:label` or `skos:prefLabel` |
 | `label_collision` (advisory) | A new term whose label equals an existing term's in the snapshot |
+| `hierarchy_too_deep` | A minted class more than `ONTOLOGY_MAX_CLASS_DEPTH` named-superclass steps below its root. A root is `owl:Thing`, a well-known vocabulary term, or a class with no named superclass; restrictions are not steps |
+| `value_set_siblings` | Three or more minted subclasses of one parent whose labels differ in one word and that carry no subclass, property domain, restriction or definition of their own: a value set modelled as subclasses. The suggestions list the siblings |
+| `specific_label_leaf` (advisory) | A minted leaf no property uses whose label carries a number, a chemical formula or four or more words |
+| `catalog_duplicate` | A minted term whose label, preferred label, notation or local name equals, case-insensitively, that of exactly one catalog term of compatible role, anywhere in the catalog. The suggestion is the catalog IRI. An exact label match in the snapshot is left to `label_collision` |
 
 `unknown_term` has no ontology counterpart, since minting terms is the ontology
 render's job, and connectivity is left to `STRUCTURAL_CHECK`.
@@ -261,7 +273,7 @@ Acceptance is `material_defects()` over evidence that can be pointed at:
 | Signal | Blocks? |
 |---|---|
 | Mandatory deterministic finding (facts) | Always |
-| Ontology finding in `ONTOLOGY_ACCEPT_BLOCKING_FINDING_KINDS` | Yes; the default set is `foreign_delete`, `foreign_namespace`, `subclass_cycle`, `role_confusion` |
+| Ontology finding in `ONTOLOGY_ACCEPT_BLOCKING_FINDING_KINDS` | Yes; the default set is `foreign_delete`, `foreign_namespace`, `subclass_cycle`, `role_confusion`, `hierarchy_too_deep` |
 | Critic fix at or above `FACTS_ACCEPT_BLOCKING_SEVERITY` (default `critical`; applies to both phases) | Yes |
 | Critic fix with action `REMOVE` | Never: a deletion is never worth holding a unit back for |
 | Advisory findings | No |
@@ -384,9 +396,70 @@ reduce step, where the catalog heads are loaded:
 
 | Policy | Behavior | Counter |
 |---|---|---|
-| Minted-term reconciliation (`ONTOLOGY_RECONCILE_MINTED_TERMS`, default `detect`) | A new term whose label, preferred label or notation exactly matches a catalog term of compatible role is a re-mint of a term retrieval did not surface. `detect` logs the pairs, `rewrite` substitutes the catalog IRI in the merged update, `off` skips the check | `minted_duplicates`, `minted_duplicate_pairs`, `minted_duplicates_rewritten` |
+| Minted-term reconciliation (`ONTOLOGY_RECONCILE_MINTED_TERMS`, default `detect`) | A new term whose label, preferred label or notation, or else local name, equals case-insensitively that of exactly one catalog term of compatible role, in any catalog ontology, is a re-mint of a term retrieval did not surface. `detect` logs the pairs, `rewrite` substitutes the catalog IRI in the merged update, `off` skips the check | `minted_duplicates`, `minted_duplicate_pairs`, `minted_duplicates_rewritten` |
 | Delete policy (vector mode only) | A merged delete whose subject the merged inserts do not redeclare is dropped: it was judged on partial evidence and would change shared catalog terms | `deletes_dropped_unredeclared` |
 | Fresh-ontology reconciliation | Units that rendered fresh each produced terms under the document's one home ontology; their graphs are unioned into one root. A fresh unit under any other IRI is a fault and stops the run | `fresh_ontologies_merged` |
+| External subjects | A triple whose subject lies in the namespace of an external ontology (one not under `CURRENT_DOMAIN`), or under a path of it, is removed: external terms are used, never changed | `external_subject_refused` |
+| Example namespaces | A triple naming an IRI under `example.org`, `example.com` or `example.net` outside `CURRENT_DOMAIN` is removed: the model took a placeholder namespace from a prompt example | `example_namespace_dropped` |
+| Datatype ranges | A property with several datatype ranges keeps one: `rdfs:Literal` goes beside a concrete datatype, and of several concrete ones the first of `rdf:langString`, `xsd:string`, then numbers from wide to narrow, then time, stays. Several ranges mean their intersection, empty for two datatypes | `datatype_ranges_normalized` |
+| `Thing` | `owl:Thing` or `schema:Thing` as a range or domain, or as a parent beside another parent, is removed: it constrains nothing | `vacuous_upper_terms_dropped` |
+| Home target | The home ontology is always a write target. When it is not stored yet and no unit rendered it fresh, an empty root under its identity receives its terms; under vector retrieval units render updates against catalog patches even for a new home | — |
+| Attribution | A triple goes to the writable ontology that owns its subject's namespace, else its predicate's. Only a blank subject (a restriction, a list cell) falls back to its object's owner; a named subject no writable ontology owns is dropped | `unattributed_insert_triples` |
+
+## The ontology plan and term decisions
+
+Before the units render, the document plan's proposals are checked against the
+whole catalog, without a model:
+
+- a proposal whose `reuse` names a catalog or well-known term of compatible
+  role (a class never reuses a property) is a reuse of that term;
+- a proposal whose label or local name names exactly one catalog term of
+  compatible role becomes a reuse of it;
+- a second proposal with the same local name or label is refused, and so is
+  every proposal past `ONTOLOGY_PLAN_MAX_TERMS`;
+- a parent must be a catalog term, a well-known term or another accepted
+  proposal; an unknown parent is dropped and the term kept;
+- a plan with no term counts as no plan, so units render without one.
+
+Counters: `plan_proposed`, `plan_minted`, `plan_reused`,
+`plan_resolved_to_catalog`, `plan_rejected`, and `plan_failed` / `plan_empty`
+when no plan reached the units.
+
+At reduce, after the merge and the reconciliation above, every minted term
+(a class or property neither the catalog nor a well-known vocabulary holds)
+gets one action. A minted term is planned when its IRI, its local name
+(case-insensitive) or one of its labels matches a plan entry; any other is a
+candidate.
+
+The model is asked only about terms that need a decision: candidates, and
+minted terms that carry a term-level finding (`specific_label_leaf`,
+`value_set_siblings`, `catalog_duplicate`, `label_collision`,
+`hierarchy_too_deep`), name an existing catalog term, sit in a value-set
+family, or vary another term's name by one modifier (`hasOpticalCavity` and
+`hasOpticalMicrocavity`). Each of those gets a full entry; the document's other
+minted terms are listed one line each, as possible merge targets. When no term
+needs a decision, no call is made and the defaults apply. The actions are
+validated before they are compiled:
+
+| Action | Valid when | Effect on the document's update |
+|---|---|---|
+| `keep` | always; the default for a planned term | none |
+| `merge_into T` | `T` is a minted, catalog or well-known term of the same role, and the merge chain ends at a term that survives | the term's own triples go; every other triple naming it names `T` |
+| `generalise_to T` | as for a merge | its named parents are replaced by `T` |
+| `demote_to_property_value` | the term is a class | its class typing and named superclasses go; it becomes an `owl:NamedIndividual` and `skos:Concept` with its former parents as `skos:broader`; subclasses and domain/range uses move to its former parent |
+| `drop` | always; the default for a candidate | every triple naming it goes |
+
+An action on a term the document did not mint or the model was not asked
+about, a second action on one term, or an invalid target is ignored and the
+default applies, so a catalog term's own
+axioms are never edited. Counters: `minted_terms_before_decisions`,
+`plan_candidates` (and `plan_candidate_iris`), `plan_candidates_dropped`,
+`consolidation_flagged`, `consolidation_skipped`,
+`consolidation_keep` / `_merge_into` / `_generalise_to` /
+`_demote_to_property_value` / `_drop`, `consolidation_actions_ignored`,
+`consolidation_changed_triples` and `consolidation_calls_failed`.
+
+## Applying the merged update
 
 Applying the merged delta also counts where the unit's view and the catalog
 diverged: `apply_deletes_no_match` (delete triples absent from the catalog at
@@ -395,6 +468,11 @@ apply time, typically a stale vector index),
 writable ontology claims, the loss `foreign_namespace` predicts) and
 `apply_header_triples_dropped` (triples on the ontology IRI itself, dropped
 because the version header is written by code, never by a render).
+
+`minted_classes` counts the classes the document minted. When the run renders
+both lanes, the facts gate adds `unused_minted_classes` and
+`unused_minted_class_iris`: minted classes that no fact of the same document
+instantiates.
 
 These counters are kept in `AgentState.ontology_reduce_metrics` and written to
 the run manifest of `ontocast process` under `ontology_reduce_metrics`. The

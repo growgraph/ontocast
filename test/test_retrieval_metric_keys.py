@@ -47,6 +47,7 @@ EXPECTED_WIRE_NAMES = {
     "ONTOLOGY_CRITIC_FIXES_RESIDUAL": "ontology_critic_fixes_residual",
     "ONTOLOGY_CRITIC_FIXES_NOOP": "ontology_critic_fixes_noop",
     "ONTOLOGY_CRITIC_PATCHES_ROLLED_BACK": "ontology_critic_patches_rolled_back",
+    "ONTOLOGY_CRITIC_UNITS_SKIPPED": "ontology_critic_units_skipped",
     "FACTS_CRITIC_UNITS_UNREVIEWED": "facts_critic_units_unreviewed",
     "FACTS_CRITIC_UNITS_SKIPPED": "facts_critic_units_skipped",
     "FACTS_CRITIC_FIXES_ROLLED_BACK": "facts_critic_fixes_rolled_back",

@@ -16,6 +16,7 @@ from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.ontology_header import SeedOntologyLoadError
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState, BudgetTracker
 from ontocast.onto.tenancy import TenancyScope
 from ontocast.runtime import ToolBoxRuntime
@@ -1647,6 +1648,48 @@ class ToolBox:
         await self._materialize_ontology(stamped)
         self.ontology_manager.add_ontology(stamped, skip_vector_index=True)
         return stamped
+
+    async def acommit_ontology_update(
+        self, iri: str, update: GraphUpdate, *, source: str
+    ) -> Ontology | None:
+        """Write ``update`` onto the head of ``iri`` as its next version.
+
+        The version records ``source`` as what it was derived from. It is
+        written to the store, then registered and indexed, as a document's
+        versions are.
+
+        Returns:
+            The new version, or None when the update changes nothing.
+
+        Raises:
+            ValueError: no head is held for ``iri``, or the version's identity
+                collides with the catalog.
+            DivergedOntologyError: the ontology has several heads.
+        """
+        from ontocast.onto.ontology_header import stamp_version
+
+        head = self.ontology_manager.get_head_by_iri(iri)
+        if head is None or head.is_null():
+            raise ValueError(f"no head is held for {iri}")
+        graph = head.graph.copy()
+        for operation in update.triple_operations:
+            for triple in operation.graph:
+                if operation.type == "delete":
+                    graph.remove(triple)
+                else:
+                    graph.add(triple)
+        version = stamp_version(
+            head.derive_updated_version(graph), updates=[update], source_doc=source
+        )
+        if version is None:
+            return None
+        conflicts = self.ontology_manager.identity_conflicts([version])
+        if conflicts:
+            raise ValueError(f"version of {iri} not written: {conflicts[iri]}")
+        if self.triple_store_manager is not None:
+            await self.triple_store_manager.aserialize(version)
+        await self.ontology_manager.aadd_ontology(version)
+        return version
 
     async def aget_version_graph(self, version_iri: str) -> RDFGraph | None:
         """The named graph of one version, or None when it is not stored."""

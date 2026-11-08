@@ -1,41 +1,37 @@
-"""Reduce-time reconciliation of minted terms against full catalog terminals.
+"""Reduce-time reconciliation of minted terms against the whole catalog.
 
-The per-unit lane cannot do this job: under vector-retrieval context the
-snapshot is a retrieved subset, so a unit that re-mints a concept the catalog
-already defines is — from inside the unit — inventing a genuinely new term.
-The duplicate lives precisely in the part of the catalog the snapshot does not
-contain, which is why ``_label_collision_findings`` (indexed on the snapshot)
-is structurally blind to it. The reduce step is the first place the full
-terminals are in hand — they are already fetched there for the namespace owner
-map — so that is where minted terms are checked.
+The per-unit lane sees a snapshot; under vector-retrieval context that is a
+retrieved subset, so a unit that re-mints a concept the catalog already
+defines is -- from inside the unit -- inventing a new term. The reduce step
+checks the merged document delta against every catalog ontology, through the
+manager's :class:`~ontocast.tool.ontology_validation.shape.CatalogSurfaceIndex`.
 
-Matching is deliberately the strictest rule that exists in this codebase:
-exact surface form (``build_surface_index`` — case-sensitive labels,
-prefLabels, notations), resolving to exactly **one** catalog IRI
-(``resolve_unique_surface`` refuses ambiguous surfaces), with a compatible
-role (a minted property never reconciles onto a catalog class or vice versa).
-Everything looser is a judgment call and stays out of the deterministic lane.
+A minted term matches a catalog term when one of its labels, preferred labels
+or notations equals a catalog one case-insensitively, or else when its local
+name does (``plRedShiftProperty`` and ``PLRedShiftProperty``). The match must
+resolve to exactly **one** catalog IRI -- an ambiguous name is refused -- and
+the roles must be compatible: a minted property never reconciles onto a
+catalog class, nor the reverse.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Literal as TypingLiteral
 
 from pydantic import BaseModel
-from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.facts_validation.terms import (
-    _PROPERTY_TYPES,
-    _catalog_term_roles,
-    build_surface_index,
-    resolve_unique_surface,
+from ontocast.tool.facts_validation.terms import _PROPERTY_TYPES, _local_name
+from ontocast.tool.ontology_validation.shape import (
+    SURFACE_PREDICATES,
+    CatalogSurfaceIndex,
+    resolve_unique,
+    role_compatible,
 )
 
 logger = logging.getLogger(__name__)
-
-#: Predicates whose literal object names a term for reconciliation purposes.
-_SURFACE_PREDICATES = (RDFS.label, SKOS.prefLabel, SKOS.notation)
 
 #: Delta evidence that a minted term acts as a property / as a class.
 _PROPERTY_EVIDENCE_PREDICATES = (RDFS.domain, RDFS.range, RDFS.subPropertyOf)
@@ -43,18 +39,21 @@ _CLASS_EVIDENCE_PREDICATES = (RDFS.subClassOf,)
 
 
 class MintedDuplicate(BaseModel):
-    """One minted term that exactly matches an existing catalog term."""
+    """One minted term that names an existing catalog term."""
 
     minted_iri: str
     catalog_iri: str
-    #: The exact surface form (label/prefLabel/notation) both terms share.
+    #: The name both terms share: a label, preferred label or notation, or
+    #: the local name.
     surface: str
     #: ``"property"`` / ``"class"`` / ``"unknown"`` — the minted term's role
     #: as evidenced by the delta itself.
     role: str
+    #: Which name matched.
+    key: TypingLiteral["label", "local_name"] = "label"
 
 
-def _minted_roles(inserts: RDFGraph) -> dict[URIRef, str]:
+def minted_roles(inserts: RDFGraph) -> dict[URIRef, str]:
     """Role of each minted subject, from the delta's own declarations."""
     roles: dict[URIRef, str] = {}
 
@@ -84,79 +83,81 @@ def _minted_roles(inserts: RDFGraph) -> dict[URIRef, str]:
     return roles
 
 
-def _role_compatible(minted_role: str, catalog_iri: str, terminal: RDFGraph) -> bool:
-    """True when reconciling would not cross the class/property divide."""
-    properties, classes = _catalog_term_roles(terminal)
-    catalog = str(catalog_iri)
-    if minted_role == "property":
-        return catalog in properties or catalog not in classes
-    if minted_role == "class":
-        return catalog in classes or catalog not in properties
-    # Unknown minted role: only reconcile onto a term the catalog itself
-    # leaves role-free — anything stronger is a guess.
-    return catalog not in properties and catalog not in classes
+def surfaces_of(subject: URIRef, graph: RDFGraph) -> list[str]:
+    """The labels, preferred labels and notations ``graph`` gives ``subject``."""
+    return sorted(
+        {
+            str(value).strip()
+            for predicate in SURFACE_PREDICATES
+            for value in graph.objects(subject, predicate)
+            if isinstance(value, Literal) and str(value).strip()
+        }
+    )
+
+
+def match_catalog_term(
+    subject: URIRef,
+    inserts: RDFGraph,
+    catalog_index: CatalogSurfaceIndex,
+    role: str,
+) -> MintedDuplicate | None:
+    """The catalog term a minted ``subject`` names, if exactly one does.
+
+    Labels are tried before the local name; the role must be compatible. A
+    subject the catalog already holds is not minted and never matches.
+    """
+    text = str(subject)
+    if text in catalog_index.terms:
+        return None
+    candidates: list[tuple[str, str, TypingLiteral["label", "local_name"]]] = []
+    for surface in surfaces_of(subject, inserts):
+        match = resolve_unique(catalog_index, label=surface)
+        if match is not None:
+            candidates.append((match[0], surface, match[1]))
+            break
+    local = _local_name(text)
+    if not candidates:
+        match = resolve_unique(catalog_index, local=local)
+        if match is not None:
+            candidates.append((match[0], local, match[1]))
+    for catalog_iri, surface, key in candidates:
+        if catalog_iri == text or not role_compatible(role, catalog_iri, catalog_index):
+            continue
+        return MintedDuplicate(
+            minted_iri=text,
+            catalog_iri=catalog_iri,
+            surface=surface,
+            role=role,
+            key=key,
+        )
+    return None
 
 
 def detect_minted_duplicates(
     merged_inserts: RDFGraph,
-    terminal_graphs: dict[str, RDFGraph],
+    catalog_index: CatalogSurfaceIndex,
 ) -> list[MintedDuplicate]:
-    """Find minted terms whose surface form the full catalog already declares.
+    """Find minted terms that name an existing catalog term.
 
     Args:
         merged_inserts: Document-level merged insert delta.
-        terminal_graphs: Writable IRI -> the freshest full terminal graph
-            (the same graphs the apply step writes onto).
+        catalog_index: Names of every catalog term.
 
     Returns:
-        One record per (minted term, catalog term) unique-surface match with a
-        compatible role, ordered by minted IRI. Detection only — the caller
-        decides whether to rewrite.
+        One record per minted term with a unique, role-compatible match,
+        ordered by minted IRI. Detection only — the caller decides whether to
+        rewrite.
     """
-    if not terminal_graphs or len(merged_inserts) == 0:
+    if catalog_index.is_empty() or len(merged_inserts) == 0:
         return []
-
-    terminal_subjects: set[str] = set()
-    for terminal in terminal_graphs.values():
-        for subject in terminal.subjects():
-            if isinstance(subject, URIRef):
-                terminal_subjects.add(str(subject))
-
-    roles = _minted_roles(merged_inserts)
-    indexed_terminals = [
-        (terminal, build_surface_index(terminal))
-        for terminal in terminal_graphs.values()
-    ]
-
-    def first_match(subject: URIRef, role: str) -> MintedDuplicate | None:
-        for predicate in _SURFACE_PREDICATES:
-            for value in merged_inserts.objects(subject, predicate):
-                if not isinstance(value, Literal):
-                    continue
-                surface = str(value).strip()
-                if not surface:
-                    continue
-                for terminal, index in indexed_terminals:
-                    catalog_iri = resolve_unique_surface(index, surface)
-                    if catalog_iri is None or str(catalog_iri) == str(subject):
-                        continue
-                    if not _role_compatible(role, str(catalog_iri), terminal):
-                        continue
-                    return MintedDuplicate(
-                        minted_iri=str(subject),
-                        catalog_iri=str(catalog_iri),
-                        surface=surface,
-                        role=role,
-                    )
-        return None
-
+    roles = minted_roles(merged_inserts)
     duplicates: list[MintedDuplicate] = []
     for subject in sorted(
         {s for s in merged_inserts.subjects() if isinstance(s, URIRef)}, key=str
     ):
-        if str(subject) in terminal_subjects:
-            continue
-        match = first_match(subject, roles.get(subject, "unknown"))
+        match = match_catalog_term(
+            subject, merged_inserts, catalog_index, roles.get(subject, "unknown")
+        )
         if match is not None:
             duplicates.append(match)
     return duplicates
