@@ -202,7 +202,7 @@ Inside each block, every unit runs the same short loop:
   [`FACTS_CRITIC_PASSES`](../reference/configuration/facts-validation.md#facts_critic_passes)
   (on by default) and
   [`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes)
-  (one pass by default, spent only on a part with a mandatory finding).
+  (off by default; at one pass, spent only on a part with a mandatory finding).
 - **Completion passes** (facts only, off by default) ask the model for
   measurements the render missed, adding facts and never removing any; see
   [`FACTS_COMPLETION_PASSES`](../reference/configuration/facts-validation.md#facts_completion_passes).

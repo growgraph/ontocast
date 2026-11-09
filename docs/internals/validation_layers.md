@@ -98,7 +98,7 @@ The ontology loop is the same loop with these differences:
 - It renders against a copy of the unit's ontology snapshot and validates the
   unit's net insert/delete **delta**, never snapshot plus delta: that would
   attribute every existing catalog defect to the unit.
-- At the default `ONTOLOGY_CRITIC_PASSES=1` the critic pass is spent only on a
+- At `ONTOLOGY_CRITIC_PASSES=1` the critic pass is spent only on a
   unit with a mandatory finding; a clean unit records a `critic_skipped`
   attempt with reason `no_mandatory_findings`. With 2 or more passes every pass
   runs. There is no completion pass.
@@ -106,7 +106,8 @@ The ontology loop is the same loop with these differences:
   without a label gets an `rdfs:label` derived from its local name
   (`PerovskiteSample` gives "Perovskite sample"), recorded as a `missing_label`
   repair and counted in `ontology/labels_derived`. An opaque local name
-  (`Q42`, a hash) is left to the `missing_label` finding.
+  (`Q42`, a hash) is left to the `missing_label` finding. A term of the catalog
+  or of a well-known vocabulary is never labelled: an axiom on it is a reuse.
 - Patches go through the unit's update channel, so the delta built at reduce
   time includes them; an update the channel refuses leaves the graph unchanged.
 - The critic sees the retrieved catalog for judging term choices, but only the
@@ -114,9 +115,11 @@ The ontology loop is the same loop with these differences:
 - A rename is never allowed, and the delete limits are stricter
   (`ONTOLOGY_CRITIC_MAX_DELETE_SHARE`, `ONTOLOGY_CRITIC_MIN_DELETES`), because an
   ontology delete propagates to every document that uses the term.
-- Under `selected_vector_search_ontology`, the render and critic prompts carry
-  a partial-context notice: a term absent from the prompt may simply not have
-  been retrieved.
+- When a unit's context is a retrieved subset of the catalog (vector
+  retrieval, per unit or as one document-scope union), the render and critic
+  prompts carry a partial-context notice: a term absent from the prompt may
+  simply not have been retrieved. A unit shown each ontology whole gets no
+  notice.
 
 ## Layer 1: parse-time repairs
 
@@ -251,7 +254,7 @@ Screening then withholds what a pass may not destroy:
 | `FACTS_CRITIC_MAX_DELETE_SHARE`, with a `FACTS_CRITIC_MIN_DELETES` floor | Past the share a critique is rewriting, not correcting; over it, every fix that deletes goes back whole and only pure additions are kept. The floor keeps short units correctable |
 | A `REMOVE` may not empty a subject | Removing the last statement about a node deletes the node |
 | A `REPLACE` may not write about a different subject than it deletes | That is a rename: it orphans the old node and leaves the new one bare. `FACTS_CRITIC_ALLOW_SUBJECT_RENAME` opts in (facts only) |
-| A blank node is deleted whole or not at all | A partial delete leaves a stub |
+| A blank-node structure is deleted whole or not at all, at any depth | A partial delete leaves a stub; a structure another subject still points at stays |
 | A value is addressed through its carrier | A structured value is a blank node, so a fix names the statement that carries it, never the value as a subject |
 
 The surviving fixes are applied **one at a time**, each judged against the graph
@@ -399,16 +402,18 @@ decisions see the delta:
 | Policy | Behavior | Counter |
 |---|---|---|
 | Minted-term reconciliation (`ONTOLOGY_RECONCILE_MINTED_TERMS`, default `detect`) | A new term whose label, preferred label or notation, or else local name, equals case-insensitively that of exactly one catalog term of compatible role, in any catalog ontology, is a re-mint of a term retrieval did not surface. `detect` logs the pairs, `rewrite` substitutes the catalog IRI in the merged update, `off` skips the check | `minted_duplicates`, `minted_duplicate_pairs`, `minted_duplicates_rewritten` |
-| Delete policy (vector mode only) | A merged delete whose subject the merged inserts do not redeclare is dropped: it was judged on partial evidence and would change shared catalog terms | `deletes_dropped_unredeclared` |
+| Delete policy | A unit can delete only what its context showed it: its deletes are the context statements its updates removed. A delete from a unit whose context was a retrieved subset is dropped unless the document's merged inserts redeclare its subject: it was judged on partial evidence and would change shared catalog terms. Deletes from units shown their ontologies whole are kept | `deletes_dropped_unredeclared` |
 | Fresh-ontology reconciliation | Units that rendered fresh each produced terms under the document's one home ontology; their graphs are unioned into one root. A fresh unit under any other IRI is a fault and stops the run | `fresh_ontologies_merged` |
 | External subjects | A triple whose subject lies in the namespace of an external ontology (one not under `CURRENT_DOMAIN`), or under a path of it, is removed: external terms are used, never changed | `external_subject_refused` |
 | Example namespaces | A triple naming an IRI under `example.org`, `example.com` or `example.net` outside `CURRENT_DOMAIN` is removed: the model took a placeholder namespace from a prompt example | `example_namespace_dropped` |
-| Minted outside home | A term the delta newly declares (not in the catalog) under any namespace other than the home ontology's is removed with every triple naming it: every new term of a document lives under its home namespace | `minted_outside_home_dropped` |
+| Minted outside home | A term the delta newly declares (not in the catalog) under any namespace other than the home ontology's is removed: every new term of a document lives under its home namespace. Under the deployment's own domain every triple naming the term goes; in another vocabulary only the statements about it go, and a home axiom pointing at it stays as a reuse. A term counts as declared when it is typed as a class, a property or a SKOS concept, or carries a subclass, subproperty, domain, range, equivalence, inverse or disjointness axiom; a term of a well-known vocabulary is never newly declared | `minted_outside_home_dropped` |
 | Non-term subjects | A subject in the facts namespace, an individual (typed, but neither as a class, a property nor a SKOS concept), or an untyped subject that neither the catalog nor a subclass, domain or range axiom declares is removed: an ontology update declares terms and value sets, and the rest belongs in the facts graph | `non_term_subjects_dropped` |
 | Datatype ranges | A property with several datatype ranges keeps one: `rdfs:Literal` goes beside a concrete datatype, and of several concrete ones the first of `rdf:langString`, `xsd:string`, then numbers from wide to narrow, then time, stays. Several ranges mean their intersection, empty for two datatypes | `datatype_ranges_normalized` |
 | `Thing` | `owl:Thing` or `schema:Thing` as a range or domain, or as a parent beside another parent, is removed: it constrains nothing | `vacuous_upper_terms_dropped` |
 | Home target | The home ontology is always a write target. When it is not stored yet and no unit rendered it fresh, an empty root under its identity receives its terms; under vector retrieval units render updates against catalog patches even for a new home | — |
-| Attribution | A triple goes to the writable ontology that owns its subject's namespace. A blank subject (a restriction, a list cell) goes to its object's owner; a named subject no writable ontology owns is dropped, never filed by its predicate or object | `unattributed_insert_triples` |
+| Blank nodes | A blank node and every blank node connected to it are one blank-node structure (a restriction, a list, an anonymous axiom), with the named subjects that point at it as its anchors. Every rule above removes a structure whole: when one of its statements goes, or when every statement pointing at it goes, the structure goes with those statements. No restriction is left half-written or orphaned | — |
+| Fresh renders | A fresh ontology is filed like an update: its header and the statements its home owns stay, a statement whose subject another writable ontology owns joins the delta for that ontology, and one no writable ontology owns is removed | `fresh_triples_refiled`, `fresh_triples_unattributed` |
+| Attribution | A triple goes to the writable ontology that owns its subject's namespace: an ontology owns the namespace of its IRI, and a namespace it only binds as a prefix only when no writable ontology owns that one outright. A named subject no writable ontology owns is dropped, never filed by its predicate or object. A blank-node structure goes whole to the owner of its anchors, or, with no anchor, to the owner of its `owl:annotatedSource`, else to the single owner of the named terms it uses; with several owners or none it is dropped, with the statements pointing at it. An external ontology owns its namespace but receives nothing: what it would own is dropped | `unattributed_insert_triples` |
 
 ## The ontology plan and term decisions
 
@@ -470,8 +475,13 @@ diverged: `apply_deletes_no_match` (delete triples absent from the catalog at
 apply time, typically a stale vector index),
 `unattributed_insert_triples` / `unattributed_delete_triples` (triples no
 writable ontology claims, the loss `foreign_namespace` predicts) and
-`apply_header_triples_dropped` (triples on the ontology IRI itself, dropped
-because the version header is written by code, never by a render).
+`apply_header_triples_dropped` (statements on the ontology IRI itself, and the
+blank-node structures only they point at, dropped because the version header is
+written by code, never by a render). Deletes keep the catalog's blank-node
+structures whole: a delete of every statement pointing at a structure removes
+the structure too (`apply_structure_deletes_expanded`), and a delete of part of
+a structure that something still points at is dropped
+(`apply_structure_deletes_dropped`).
 
 `minted_classes` counts the classes the document minted. When the run renders
 both lanes, the facts gate adds `unused_minted_classes` and

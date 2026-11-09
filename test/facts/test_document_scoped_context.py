@@ -108,6 +108,7 @@ def _install_per_unit_resolver(monkeypatch) -> None:
                 _unit_graph(f"Term{unit.index}"),
                 source_iris=[f"https://example.org/onto/{unit.index}"],
                 assembly_mode=OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE,
+                partial=True,
             ),
             writable_iris=[f"https://example.org/onto/{unit.index}"],
             confidence=1.0,
@@ -136,6 +137,22 @@ async def test_union_contains_every_unit_context(monkeypatch) -> None:
     for index in range(4):
         assert f"https://example.org/onto#Term{index}" in terms
     assert context.budget_tracker.counters[UNION_CALLS] == 1
+
+
+async def test_a_union_of_retrieved_subsets_is_partial(monkeypatch) -> None:
+    """The union is assembled as a merge, but each part was a retrieved
+    subset, so units must still be told their context is partial."""
+    _install_per_unit_resolver(monkeypatch)
+    state = _state(2)
+
+    unioned = await build_unioned_document_ontology_context(
+        UnitLoopContext.from_agent_state(state),
+        _tools(scope=OntologyContextScope.DOCUMENT),
+        state.content_units,
+    )
+
+    assert unioned is not None
+    assert unioned.snapshot.partial
 
 
 async def test_union_is_stable_across_calls(monkeypatch) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from rdflib import OWL, RDF, URIRef
+from rdflib import DCTERMS, OWL, RDF, RDFS, BNode, Literal, URIRef
 
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.onto.enum import OntologyAssemblyMode
@@ -101,6 +101,7 @@ def test_partition_triples_by_namespace_routes_to_owner() -> None:
         inserts,
         writable_iris=[iri_a, iri_b],
         ontology_manager=mgr,
+        current_domain="https://example.org",
     )
     assert iri_a in partitioned
     assert iri_b in partitioned
@@ -214,3 +215,86 @@ def test_apply_partitioned_updates_base_override_wins_over_terminal() -> None:
     # Map-stage additions survive consolidation apply.
     assert (map_stage_class, RDF.type, OWL.Class) in result.graph
     assert (consolidation_class, RDF.type, OWL.Class) in result.graph
+
+
+def _base_with_restriction(iri: str) -> tuple[OntologyManager, URIRef, BNode]:
+    """A catalog ontology whose class ``A`` carries one restriction."""
+    ns = f"{iri}#"
+    base_graph = _onto_graph(iri, "A", "exa")
+    restriction = BNode()
+    cls = URIRef(f"{ns}A")
+    base_graph.add((cls, RDFS.subClassOf, restriction))
+    base_graph.add((restriction, RDF.type, OWL.Restriction))
+    base_graph.add((restriction, OWL.onProperty, URIRef(f"{ns}p")))
+    base_graph.add((restriction, OWL.someValuesFrom, URIRef(f"{ns}B")))
+    mgr = OntologyManager()
+    mgr.add_ontology(
+        stamped_ontology(base_graph, ontology_id="exa"), skip_vector_index=True
+    )
+    head = mgr.get_head_by_iri(iri)
+    assert head is not None
+    (stored,) = set(head.graph.objects(cls, RDFS.subClassOf))
+    assert isinstance(stored, BNode)
+    return mgr, cls, stored
+
+
+def test_a_delete_of_part_of_a_catalog_restriction_is_dropped() -> None:
+    iri = "https://example.org/a"
+    mgr, cls, restriction = _base_with_restriction(iri)
+    deletes = RDFGraph()
+    deletes.add((restriction, OWL.someValuesFrom, URIRef(f"{iri}#B")))
+
+    artifacts, metrics, _ = apply_partitioned_updates(
+        {},
+        ontology_manager=mgr,
+        normalize_units_fn=normalize_ontology_units,
+        tools=None,
+        partitioned_deletes={iri: deletes},
+    )
+
+    assert metrics["apply_structure_deletes_dropped"] == 1
+    assert artifacts == []
+
+
+def test_a_delete_of_the_edge_to_a_catalog_restriction_removes_it_whole() -> None:
+    iri = "https://example.org/a"
+    mgr, cls, restriction = _base_with_restriction(iri)
+    deletes = RDFGraph()
+    deletes.add((cls, RDFS.subClassOf, restriction))
+
+    artifacts, metrics, _ = apply_partitioned_updates(
+        {},
+        ontology_manager=mgr,
+        normalize_units_fn=normalize_ontology_units,
+        tools=None,
+        partitioned_deletes={iri: deletes},
+    )
+
+    assert metrics["apply_structure_deletes_expanded"] == 3
+    (result,) = artifacts
+    assert not list(result.graph.subjects(RDF.type, OWL.Restriction))
+    assert not list(result.graph.objects(cls, RDFS.subClassOf))
+
+
+def test_a_structure_hanging_off_a_rendered_header_goes_with_it() -> None:
+    iri = "https://example.org/a"
+    mgr = OntologyManager()
+    mgr.add_ontology(_catalog_ontology(iri, "A", "exa"), skip_vector_index=True)
+    inserts = RDFGraph()
+    creator = BNode()
+    inserts.add((URIRef(iri), DCTERMS.creator, creator))
+    inserts.add((creator, RDFS.label, Literal("a model")))
+    new_class = URIRef(f"{iri}#New")
+    inserts.add((new_class, RDF.type, OWL.Class))
+
+    artifacts, metrics, _ = apply_partitioned_updates(
+        {iri: inserts},
+        ontology_manager=mgr,
+        normalize_units_fn=normalize_ontology_units,
+        tools=None,
+    )
+
+    assert metrics["apply_header_triples_dropped"] == 2
+    (result,) = artifacts
+    assert (new_class, RDF.type, OWL.Class) in result.graph
+    assert not list(result.graph.triples((None, RDFS.label, Literal("a model"))))

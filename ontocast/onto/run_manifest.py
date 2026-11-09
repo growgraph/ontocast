@@ -563,6 +563,18 @@ class RunManifestPrompting(BaseModel):
     )
 
 
+class RunManifestHome(BaseModel):
+    """Where the document minted new vocabulary: its home ontology."""
+
+    iri: str
+    ontology_id: str
+    namespace: str = Field(description="Every term the document minted is under it.")
+    extends: str | None = Field(
+        default=None,
+        description="The external ontology an extension home adds terms to.",
+    )
+
+
 class RunManifest(BaseModel):
     """What produced one document's dump, and what it cost."""
 
@@ -651,6 +663,10 @@ class RunManifest(BaseModel):
             "Ontology versions the run wrote (role 'created' or 'updated') and "
             "read without changing (role 'read'), each with iri and version_iri."
         ),
+    )
+    home_ontology: RunManifestHome | None = Field(
+        default=None,
+        description="The document's home ontology; None when the ontology lane did not run.",
     )
     retrieval_metrics: dict[str, Any] = Field(
         default_factory=dict,

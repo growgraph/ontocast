@@ -191,10 +191,12 @@ async def build_unioned_document_ontology_context(
     merged_graph = RDFGraph()
     writable: list[str] = []
     sources: list[str] = []
+    partial = False
     for ctx in resolved:
         if ctx is None or not len(ctx.snapshot.graph):
             continue
         merged_graph += ctx.snapshot.graph
+        partial = partial or ctx.snapshot.partial
         writable.extend(ctx.writable_iris)
         sources.extend(ctx.snapshot.source_iris)
     if not len(merged_graph):
@@ -211,6 +213,8 @@ async def build_unioned_document_ontology_context(
         # unstable prompt is the thing this whole path exists to avoid.
         source_iris=sorted(set(sources)),
         assembly_mode=OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED,
+        # A union of retrieved subsets is still a subset.
+        partial=partial,
         title="Unioned document ontology context",
         description=(
             "Union of the per-unit retrieved contexts, shared by every unit so "
@@ -454,6 +458,7 @@ async def _resolve_ensemble_context(
         patch_graph,
         source_iris=source_iris,
         assembly_mode=mode,
+        partial=True,
         title="Vector search ensemble context",
         description="Stitched induced subgraphs from hybrid retrieval.",
         strip_headers=True,

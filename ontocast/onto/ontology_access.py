@@ -187,6 +187,7 @@ class UnitOntologyAccess:
             graph=self.effective_graph_for_prompt().copy(),
             source_iris=list(snap.source_iris),
             assembly_mode=snap.assembly_mode,
+            partial=snap.partial,
             title=snap.title,
             description=snap.description,
         )

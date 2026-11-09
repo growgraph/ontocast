@@ -3125,11 +3125,11 @@ class OntologyValidationConfig(BaseSettings):
         ),
     )
     critic_passes: int = Field(
-        default=1,
+        default=0,
         ge=0,
         description=(
             "Review-and-patch passes per ontology unit, in LLM calls. 0 "
-            "disables the ontology critic. With 1 (default) the pass is spent "
+            "(default) disables the ontology critic. With 1 the pass is spent "
             "only on a unit whose deterministic findings include a mandatory "
             "one, so a clean unit costs no critic call. With 2 or more every "
             "pass runs on every unit."

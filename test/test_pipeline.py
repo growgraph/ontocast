@@ -208,6 +208,7 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
                 SimpleNamespace(
                     validation_policy=None,
                     ontology_critic_passes=1,
+                    catalog_terms=lambda: set(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
@@ -726,6 +727,7 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
                 SimpleNamespace(
                     validation_policy=None,
                     ontology_critic_passes=1,
+                    catalog_terms=lambda: set(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
@@ -815,6 +817,7 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
                 SimpleNamespace(
                     validation_policy=None,
                     ontology_critic_passes=2,  # the critic as judge: runs on a clean unit
+                    catalog_terms=lambda: set(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),

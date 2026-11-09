@@ -67,9 +67,9 @@ RENDER_MODE=ontology          # build ontologies only; no facts are extracted
 ONTOLOGY_CRITIC_PASSES=2      # review every part, faulted or not; the ontology is the deliverable
 ```
 
-By default the ontology critic reviews only the parts whose checks found a
-mandatory defect. Here a review of every part earns its call: a wrong term
-carries into every fact extracted with it later. Each pass applies its fixes as
+By default the ontology critic is off, and at one pass it reviews only the
+parts whose checks found a mandatory defect. Here a review of every part earns
+its call: a wrong term carries into every fact extracted with it later. Each pass applies its fixes as
 a patch, and only to the part's own changes, so it cannot delete terms that
 came from your catalog.
 

@@ -29,7 +29,10 @@ ONTO = "https://example.com/onto"
 
 
 def _state(
-    assembly_mode: OntologyAssemblyMode, writable_iris: list[str]
+    assembly_mode: OntologyAssemblyMode,
+    writable_iris: list[str],
+    *,
+    partial: bool = False,
 ) -> UnitOntologyState:
     graph = RDFGraph()
     graph.add((URIRef(f"{ONTO}#Sample"), RDFS.label, Literal("Sample")))
@@ -41,7 +44,10 @@ def _state(
             graph=RDFGraph(),
         ),
         ontology_snapshot=OntologySnapshot(
-            graph=graph, source_iris=writable_iris, assembly_mode=assembly_mode
+            graph=graph,
+            source_iris=writable_iris,
+            assembly_mode=assembly_mode,
+            partial=partial,
         ),
     )
     state.writable_iris = writable_iris
@@ -49,15 +55,27 @@ def _state(
 
 
 @pytest.mark.parametrize("writable", [[ONTO], [ONTO, f"{ONTO}-2"]])
-def test_vector_assembled_context_declares_itself_partial(
+def test_a_partial_context_declares_itself_partial(
     writable: list[str],
 ) -> None:
-    state = _state(OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE, writable)
+    state = _state(
+        OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE, writable, partial=True
+    )
     intro = render_ontology_module._build_update_intro(
         state, ontology_access_for_unit_ontology(state)
     )
     assert "PARTIAL CONTEXT" in intro
     assert "RETRIEVED SUBSET" in intro
+
+
+def test_a_document_union_of_retrieved_subsets_declares_itself_partial() -> None:
+    """Keyed on the flag, not the assembly mode: a document-scope union of
+    retrieved subsets is assembled as a merge and is still a subset."""
+    state = _state(OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED, [ONTO], partial=True)
+    intro = render_ontology_module._build_update_intro(
+        state, ontology_access_for_unit_ontology(state)
+    )
+    assert "PARTIAL CONTEXT" in intro
 
 
 def test_full_copy_context_keeps_the_whole_ontology_phrasing() -> None:

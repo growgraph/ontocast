@@ -20,6 +20,7 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.run_manifest import (
     RunManifest,
+    RunManifestHome,
     RunManifestLLM,
     RunManifestLoops,
     RunManifestPrompting,
@@ -33,7 +34,6 @@ from ontocast.onto.run_meter import (
     active_run_meter,
     run_meter_scope,
 )
-from ontocast.onto.section_models import OutlineLabelReport
 from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
@@ -506,6 +506,16 @@ def dump_run_manifest(
             {**ref.model_dump(mode="json"), "role": "read"}
             for ref in state.ontology_versions_read
         ],
+        home_ontology=(
+            RunManifestHome(
+                iri=state.home_ontology.iri,
+                ontology_id=state.home_ontology.ontology_id,
+                namespace=state.home_ontology.namespace,
+                extends=state.home_ontology.extends,
+            )
+            if state.home_ontology is not None
+            else None
+        ),
     )
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -813,116 +823,22 @@ def _merge_workflow_state_into_agent_state(
     state: AgentState,
     workflow_state: AgentState | dict,
 ) -> AgentState:
-    """Copy dump-relevant fields from an astream values chunk onto ``state``."""
+    """Carry an astream values chunk onto ``state``, every field of it.
+
+    The dumps and the run manifest read the merged state, so a field the graph
+    set must reach it whatever its name: each key that is an ``AgentState``
+    field is assigned through the model's own validation, which also builds a
+    nested model a chunk carries as a plain dict.
+    """
     if isinstance(workflow_state, AgentState):
         return workflow_state
     if not isinstance(workflow_state, dict):
         return state
-    # The map nodes set FAILED when *every* unit failed (_map_stage_status),
-    # and merge_facts preserves it. Off this copy list the batch path could not
-    # see it, which is how a document that produced nothing still exited 0.
-    status = workflow_state.get("status")
-    if status is not None:
-        state.status = status
-    facts = workflow_state.get("aggregated_facts")
-    if facts is not None:
-        state.aggregated_facts = facts
-    meta = workflow_state.get("document_metadata")
-    if meta:
-        state.document_metadata = dict(meta)
-    doc_hid = workflow_state.get("doc_hid")
-    if doc_hid:
-        state.doc_hid = doc_hid
-    current_domain = workflow_state.get("current_domain")
-    if current_domain:
-        state.current_domain = current_domain
-    reduced = workflow_state.get("reduced_ontology_artifacts")
-    if reduced is not None:
-        state.reduced_ontology_artifacts = list(reduced)
-    artifacts = workflow_state.get("ontology_artifacts")
-    if artifacts is not None:
-        state.ontology_artifacts = list(artifacts)
-    # Written by serialization: the manifest's version lineage and the dump of
-    # each ontology as stored both read them.
-    written = workflow_state.get("ontology_versions_written")
-    if written is not None:
-        state.ontology_versions_written = list(written)
-    read = workflow_state.get("ontology_versions_read")
-    if read is not None:
-        state.ontology_versions_read = list(read)
-    # Without these the post-aggregation validation gate is log-only on the
-    # batch path: its findings and counters never reach the dumped state.
-    findings = workflow_state.get("facts_validation_findings")
-    if findings is not None:
-        state.facts_validation_findings = list(findings)
-    gate_repairs = workflow_state.get("facts_gate_repairs")
-    if gate_repairs is not None:
-        state.facts_gate_repairs = list(gate_repairs)
-    conformance = workflow_state.get("facts_conformance")
-    if conformance:
-        state.facts_conformance = dict(conformance)
-    metrics = workflow_state.get("retrieval_metrics")
-    if metrics:
-        state.retrieval_metrics = dict(metrics)
-    # The chunk node is the only writer of the routing counters; without this
-    # the manifest's selection block reports every run as having skipped
-    # nothing.
-    for counter in (
-        "bibliography_units_skipped",
-        "undersized_units_skipped",
-        "non_content_units_skipped",
-        "allowlist_excluded_chars",
-        "allowlist_excluded_unlabeled_chars",
-    ):
-        value = workflow_state.get(counter)
-        if value:
-            setattr(state, counter, int(value))
-    route_histogram = workflow_state.get("route_histogram")
-    if route_histogram:
-        state.route_histogram = dict(route_histogram)
-    outline_labels = workflow_state.get("outline_labels")
-    if outline_labels is not None:
-        state.outline_labels = OutlineLabelReport.model_validate(outline_labels)
-    # The manifest's critic blocks read these; without this copy the manifest
-    # would report no critic calls while retrieval_metrics recorded them.
-    facts_telemetry = workflow_state.get("facts_loop_telemetry")
-    if facts_telemetry:
-        state.facts_loop_telemetry = dict(facts_telemetry)
-    ontology_telemetry = workflow_state.get("ontology_loop_telemetry")
-    if ontology_telemetry:
-        state.ontology_loop_telemetry = dict(ontology_telemetry)
-    reduce_metrics = workflow_state.get("ontology_reduce_metrics")
-    if reduce_metrics:
-        state.ontology_reduce_metrics = dict(reduce_metrics)
-    # The manifest's selection census reads content_units and the validation
-    # dump reads the per-unit repairs and failures. Off this copy list, the
-    # census was always empty on the batch path (labeled_units absent, so a
-    # section filter that never acted was unrecordable) and the repairs were
-    # logged and dropped -- while the HTTP path returned both.
-    content_units = workflow_state.get("content_units")
-    if content_units is not None:
-        state.content_units = list(content_units)
-    context_sources = workflow_state.get("unit_context_sources")
-    if context_sources:
-        state.unit_context_sources = {
-            lane: dict(sources) for lane, sources in context_sources.items()
-        }
-    unit_failures = workflow_state.get("unit_failures")
-    if unit_failures is not None:
-        state.unit_failures = list(unit_failures)
-    unit_repairs = workflow_state.get("facts_repairs_applied")
-    if unit_repairs:
-        state.facts_repairs_applied = {
-            unit_index: list(records) for unit_index, records in unit_repairs.items()
-        }
-    clusters = workflow_state.get("aggregation_clusters")
-    if clusters:
-        state.aggregation_clusters = {
-            final_iri: list(members) for final_iri, members in clusters.items()
-        }
-    key_clusters = workflow_state.get("aggregation_key_clusters")
-    if key_clusters is not None:
-        state.aggregation_key_clusters = list(key_clusters)
+    fields = AgentState.model_fields
+    validator = AgentState.__pydantic_validator__
+    for name, value in workflow_state.items():
+        if name in fields:
+            validator.validate_assignment(state, name, value)
     return state
 
 

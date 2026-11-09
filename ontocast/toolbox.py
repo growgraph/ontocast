@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal, overload
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
-from rdflib.namespace import OWL, RDF
+from rdflib.namespace import DCTERMS, OWL, RDF
 
 from ontocast.config import Config
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
@@ -1912,11 +1912,17 @@ def sample_ontology_graph(graph: RDFGraph, max_triples: int = 100) -> RDFGraph:
         graph: The full ontology graph
         max_triples: Maximum number of sections to include in the sample
 
+    The header's ``dcterms:created`` and ``dcterms:modified`` are left out:
+    they are stamped when the ontology is stored, so they differ on every
+    load, and the sample is a prompt whose cached answer must stay reusable.
+
     Returns:
         RDFGraph: A sampled version of the ontology with representative triples
     """
-    # Serialize to turtle
-    turtle_str = graph.serialize_canonical_turtle()
+    stable = graph.copy()
+    for predicate in (DCTERMS.created, DCTERMS.modified):
+        stable.remove((None, predicate, None))
+    turtle_str = stable.serialize_canonical_turtle()
 
     # Split on blank lines (typical turtle format uses \n\n to separate blocks)
     sections = turtle_str.split("\n\n")

@@ -7,7 +7,9 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from rdflib import OWL, RDF, RDFS, XSD, Literal, URIRef
+from rdflib import OWL, PROV, RDF, RDFS, XSD, BNode, Literal, URIRef
+from rdflib.collection import Collection
+from rdflib.term import Node
 
 from ontocast.config import (
     Config,
@@ -31,7 +33,11 @@ from ontocast.onto.model import (
     OntologyIdentityProposal,
     OntologyPlanReport,
 )
-from ontocast.onto.ontology_apply import partition_triples_by_namespace
+from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_apply import (
+    partition_triples_by_namespace,
+    refile_fresh_statements,
+)
 from ontocast.onto.ontology_header import mint_ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState, InputDocument
@@ -304,7 +310,10 @@ def test_a_named_subject_is_not_filed_by_its_object() -> None:
     inserts = RDFGraph()
     inserts.add((stray, RDFS.subClassOf, URIRef(f"{EXT_IRI}/Organisation")))
     buckets, unattributed = partition_triples_by_namespace(
-        inserts, writable_iris=[head.iri], ontology_manager=_manager(head)
+        inserts,
+        writable_iris=[head.iri],
+        ontology_manager=_manager(head),
+        current_domain=DOMAIN,
     )
     assert buckets == {}
     assert unattributed == 1
@@ -322,13 +331,53 @@ def test_a_named_subject_is_not_filed_by_its_predicate() -> None:
         )
     )
     buckets, unattributed = partition_triples_by_namespace(
-        inserts, writable_iris=[head.iri], ontology_manager=_manager(head)
+        inserts,
+        writable_iris=[head.iri],
+        ontology_manager=_manager(head),
+        current_domain=DOMAIN,
     )
     assert buckets == {}
     assert unattributed == 1
 
 
 HOME_NS = f"{DOMAIN}/sports#"
+
+
+def test_a_bound_prefix_never_takes_a_namespace_from_its_owner() -> None:
+    """An extension that binds another owned ontology's prefix (it refers to
+    its terms) used to claim that namespace when it came first, and statements
+    about the other ontology's terms were written into the extension."""
+    sports = stamped_ontology(
+        _classes(f"{DOMAIN}/sports#", "Venue"),
+        ontology_id="sports",
+        iri=f"{DOMAIN}/sports",
+        title="Sports",
+    )
+    ext_graph = _classes(f"{DOMAIN}/ext-ext#", "Club")
+    ext_graph.bind("sp", f"{DOMAIN}/sports#")
+    ext_graph.add(
+        (
+            URIRef(f"{DOMAIN}/ext-ext#Club"),
+            RDFS.subClassOf,
+            URIRef(f"{DOMAIN}/sports#Venue"),
+        )
+    )
+    extension = stamped_ontology(
+        ext_graph, ontology_id="ext-ext", iri=f"{DOMAIN}/ext-ext", title="Extension"
+    )
+    inserts = RDFGraph()
+    venue = URIRef(f"{DOMAIN}/sports#Venue")
+    inserts.add((venue, RDFS.comment, Literal("Where a match is played.")))
+
+    buckets, unattributed = partition_triples_by_namespace(
+        inserts,
+        writable_iris=[extension.iri, sports.iri],
+        ontology_manager=_manager(extension, sports),
+        current_domain=DOMAIN,
+    )
+
+    assert unattributed == 0
+    assert set(buckets) == {sports.iri}
 
 
 def test_facts_individuals_and_undeclared_subjects_are_dropped() -> None:
@@ -369,12 +418,296 @@ def test_a_term_minted_outside_the_home_goes_with_every_mention() -> None:
     graph.add((stray, RDFS.label, Literal("edition")))
 
     dropped = drop_terms_minted_outside_home(
-        graph, home_namespace=HOME_NS, catalog_terms={str(catalog_term)}
+        graph,
+        home_namespace=HOME_NS,
+        catalog_terms={str(catalog_term)},
+        current_domain=DOMAIN,
     )
 
     assert dropped == 3
     assert set(graph.subjects()) == {home_term, catalog_term}
     assert (home_term, RDFS.subClassOf, stray) not in graph
+
+
+def test_an_untyped_term_outside_the_home_is_a_stray_but_a_reuse_is_not() -> None:
+    """A term declared by an axiom alone is still declared: outside the home it
+    is a stray. An axiom pointing at a well-known term is a reuse."""
+    graph = RDFGraph()
+    home_term = URIRef(f"{HOME_NS}Edition")
+    graph.add((home_term, RDF.type, OWL.Class))
+    graph.add((home_term, RDFS.subClassOf, URIRef("https://schema.org/Event")))
+    stray = URIRef(f"{DOMAIN}/other#Season")
+    graph.add((stray, RDFS.subClassOf, home_term))
+    graph.add((home_term, RDFS.seeAlso, stray))
+
+    dropped = drop_terms_minted_outside_home(
+        graph, home_namespace=HOME_NS, catalog_terms=set(), current_domain=DOMAIN
+    )
+
+    assert dropped == 2
+    assert set(graph) == {
+        (home_term, RDF.type, OWL.Class),
+        (home_term, RDFS.subClassOf, URIRef("https://schema.org/Event")),
+    }
+
+
+def test_an_external_parent_the_render_declares_stays_a_parent() -> None:
+    """A render that echoes the external parent it reuses (its type, its own
+    parent) declares a term it may not write; the statements about it go, the
+    home's axiom pointing at it stays, as when the parent is not declared."""
+    graph = RDFGraph()
+    home_term = URIRef(f"{HOME_NS}Perovskite")
+    graph.add((home_term, RDF.type, OWL.Class))
+    parent = URIRef("http://purl.test/obo/CHEBI_1")
+    graph.add((home_term, RDFS.subClassOf, parent))
+    graph.add((parent, RDFS.subClassOf, URIRef("http://purl.test/obo/CHEBI_2")))
+    typed = URIRef("http://purl.test/obo/CHEBI_3")
+    graph.add((home_term, RDFS.subClassOf, typed))
+    graph.add((typed, RDF.type, OWL.Class))
+    _restriction(graph, typed, URIRef(f"{HOME_NS}uses"), home_term)
+
+    dropped = drop_terms_minted_outside_home(
+        graph, home_namespace=HOME_NS, catalog_terms=set(), current_domain=DOMAIN
+    )
+
+    assert dropped == 6
+    assert set(graph) == {
+        (home_term, RDF.type, OWL.Class),
+        (home_term, RDFS.subClassOf, parent),
+        (home_term, RDFS.subClassOf, typed),
+    }
+
+
+# --- blank nodes travel as units -------------------------------------------
+
+
+def _home_head():
+    return stamped_ontology(
+        _classes(HOME_NS, "Team"),
+        ontology_id="sports",
+        iri=f"{DOMAIN}/sports",
+        title="Sports",
+    )
+
+
+def _restriction(graph: RDFGraph, owner: URIRef, prop: URIRef, filler: URIRef):
+    restriction = BNode()
+    graph.add((owner, RDFS.subClassOf, restriction))
+    graph.add((restriction, RDF.type, OWL.Restriction))
+    graph.add((restriction, OWL.onProperty, prop))
+    graph.add((restriction, OWL.someValuesFrom, filler))
+    return restriction
+
+
+def test_a_restriction_is_filed_whole_with_the_class_that_uses_it() -> None:
+    """Per-triple filing dropped the restriction's type (it names only OWL) and
+    sent ``owl:onProperty ext:p`` to the external ontology."""
+    home, external = _home_head(), _external_head()
+    inserts = RDFGraph()
+    team = URIRef(f"{HOME_NS}Team")
+    _restriction(
+        inserts, team, URIRef(f"{EXT_IRI}/league"), URIRef(f"{EXT_IRI}/League")
+    )
+
+    buckets, unattributed = partition_triples_by_namespace(
+        inserts,
+        writable_iris=[external.iri, home.iri],
+        ontology_manager=_manager(external, home),
+        current_domain=DOMAIN,
+    )
+
+    assert unattributed == 0
+    assert set(buckets) == {home.iri}
+    assert set(buckets[home.iri]) == set(inserts)
+
+
+def test_a_list_is_filed_whole() -> None:
+    home = _home_head()
+    inserts = RDFGraph()
+    team = URIRef(f"{HOME_NS}Team")
+    members: list[Node] = [URIRef(f"{HOME_NS}Club"), URIRef(f"{HOME_NS}Squad")]
+    union = BNode()
+    inserts.add((team, OWL.equivalentClass, union))
+    head = BNode()
+    inserts.add((union, OWL.unionOf, head))
+    Collection(inserts, head, members)
+
+    buckets, unattributed = partition_triples_by_namespace(
+        inserts,
+        writable_iris=[home.iri],
+        ontology_manager=_manager(home),
+        current_domain=DOMAIN,
+    )
+
+    assert unattributed == 0
+    assert set(buckets[home.iri]) == set(inserts)
+
+
+def test_an_unanchored_axiom_goes_to_the_single_owner_of_its_terms() -> None:
+    home, other = (
+        _home_head(),
+        stamped_ontology(
+            _classes(f"{DOMAIN}/venues#", "Venue"),
+            ontology_id="venues",
+            iri=f"{DOMAIN}/venues",
+            title="Venues",
+        ),
+    )
+    manager = _manager(home, other)
+    disjoint = RDFGraph()
+    axiom, head = BNode(), BNode()
+    disjoint.add((axiom, RDF.type, OWL.AllDisjointClasses))
+    disjoint.add((axiom, OWL.members, head))
+    Collection(disjoint, head, [URIRef(f"{HOME_NS}Club"), URIRef(f"{HOME_NS}Squad")])
+
+    buckets, unattributed = partition_triples_by_namespace(
+        disjoint,
+        writable_iris=[home.iri, other.iri],
+        ontology_manager=manager,
+        current_domain=DOMAIN,
+    )
+    assert unattributed == 0
+    assert set(buckets[home.iri]) == set(disjoint)
+
+    mixed = RDFGraph()
+    axiom, head = BNode(), BNode()
+    mixed.add((axiom, RDF.type, OWL.AllDisjointClasses))
+    mixed.add((axiom, OWL.members, head))
+    Collection(
+        mixed, head, [URIRef(f"{HOME_NS}Club"), URIRef(f"{DOMAIN}/venues#Venue")]
+    )
+
+    buckets, unattributed = partition_triples_by_namespace(
+        mixed,
+        writable_iris=[home.iri, other.iri],
+        ontology_manager=manager,
+        current_domain=DOMAIN,
+    )
+    assert buckets == {}
+    assert unattributed == len(mixed)
+
+
+def test_nothing_is_filed_into_an_external_ontology() -> None:
+    """An external ontology is writable only to give its namespace an owner;
+    an axiom over its terms alone is unattributed, never written into it."""
+    home, external = _home_head(), _external_head()
+    inserts = RDFGraph()
+    axiom, head = BNode(), BNode()
+    inserts.add((axiom, RDF.type, OWL.AllDisjointClasses))
+    inserts.add((axiom, OWL.members, head))
+    Collection(
+        inserts, head, [URIRef(f"{EXT_IRI}/Company"), URIRef(f"{EXT_IRI}/League")]
+    )
+    inserts.add((URIRef(f"{EXT_IRI}/League"), RDFS.comment, Literal("A league.")))
+
+    buckets, unattributed = partition_triples_by_namespace(
+        inserts,
+        writable_iris=[external.iri, home.iri],
+        ontology_manager=_manager(external, home),
+        current_domain=DOMAIN,
+    )
+
+    assert buckets == {}
+    assert unattributed == len(inserts)
+
+
+def test_an_annotated_axiom_goes_with_its_source() -> None:
+    """An ``owl:Axiom`` names its source and its target; its owner is the
+    source's, as for the axiom it annotates."""
+    home = _home_head()
+    venues = stamped_ontology(
+        _classes(f"{DOMAIN}/venues#", "Venue"),
+        ontology_id="venues",
+        iri=f"{DOMAIN}/venues",
+        title="Venues",
+    )
+    stadium, venue = URIRef(f"{HOME_NS}Stadium"), URIRef(f"{DOMAIN}/venues#Venue")
+    inserts = RDFGraph()
+    inserts.add((stadium, RDFS.subClassOf, venue))
+    annotation = BNode()
+    inserts.add((annotation, RDF.type, OWL.Axiom))
+    inserts.add((annotation, OWL.annotatedSource, stadium))
+    inserts.add((annotation, OWL.annotatedProperty, RDFS.subClassOf))
+    inserts.add((annotation, OWL.annotatedTarget, venue))
+    inserts.add((annotation, RDFS.comment, Literal("Every stadium is a venue.")))
+
+    buckets, unattributed = partition_triples_by_namespace(
+        inserts,
+        writable_iris=[home.iri, venues.iri],
+        ontology_manager=_manager(home, venues),
+        current_domain=DOMAIN,
+    )
+
+    assert unattributed == 0
+    assert set(buckets) == {home.iri}
+    assert set(buckets[home.iri]) == set(inserts)
+
+
+def test_a_dropped_subject_takes_its_restriction_with_it() -> None:
+    graph = RDFGraph()
+    external_class = URIRef(f"{EXT_IRI}/SportsTeam")
+    _restriction(
+        graph, external_class, URIRef(f"{HOME_NS}plays"), URIRef(f"{HOME_NS}Sport")
+    )
+    kept = URIRef(f"{HOME_NS}Team")
+    _restriction(graph, kept, URIRef(f"{HOME_NS}plays"), URIRef(f"{HOME_NS}Sport"))
+    before = len(graph)
+
+    assert drop_external_subjects(graph, [EXT_IRI]) == 4
+    assert len(graph) == before - 4
+    assert all(s != external_class for s in graph.subjects())
+    # The kept class's restriction is whole.
+    (restriction,) = graph.objects(kept, RDFS.subClassOf)
+    assert (restriction, RDF.type, OWL.Restriction) in graph
+
+
+def test_a_restriction_naming_a_stray_goes_whole() -> None:
+    """Removing only ``owl:someValuesFrom stray`` would leave a restriction that
+    constrains nothing."""
+    graph = RDFGraph()
+    team = URIRef(f"{HOME_NS}Team")
+    graph.add((team, RDF.type, OWL.Class))
+    stray = URIRef(f"{DOMAIN}/other#Sport")
+    graph.add((stray, RDF.type, OWL.Class))
+    _restriction(graph, team, URIRef(f"{HOME_NS}plays"), stray)
+
+    drop_terms_minted_outside_home(
+        graph, home_namespace=HOME_NS, catalog_terms=set(), current_domain=DOMAIN
+    )
+
+    assert set(graph) == {(team, RDF.type, OWL.Class)}
+
+
+def test_a_fresh_render_is_filed_by_subject() -> None:
+    """A fresh ontology's statement about another ontology's term belongs to
+    that ontology; one about a well-known term belongs to no writable one."""
+    venues = stamped_ontology(
+        _classes(f"{DOMAIN}/venues#", "Venue"),
+        ontology_id="venues",
+        iri=f"{DOMAIN}/venues",
+        title="Venues",
+    )
+    home = OntologyIdentity(ontology_id="sports", iri=f"{DOMAIN}/sports", title="S")
+    graph = _classes(HOME_NS, "Stadium")
+    stadium = URIRef(f"{HOME_NS}Stadium")
+    venue = URIRef(f"{DOMAIN}/venues#Venue")
+    graph.add((venue, RDFS.comment, Literal("Where a match is played.")))
+    graph.add((URIRef("https://schema.org/Place"), RDFS.subClassOf, stadium))
+    graph.add((stadium, RDFS.subClassOf, venue))
+    fresh = mint_ontology(home, graph)
+
+    moved, unattributed = refile_fresh_statements(
+        fresh,
+        writable_iris=[venues.iri],
+        ontology_manager=_manager(venues),
+        current_domain=DOMAIN,
+    )
+
+    assert set(moved) == {(venue, RDFS.comment, Literal("Where a match is played."))}
+    assert unattributed == 1
+    subjects = set(fresh.graph.subjects())
+    assert venue not in subjects
+    assert (stadium, RDFS.subClassOf, venue) in fresh.graph
 
 
 def test_the_critic_is_told_the_home_namespace() -> None:
@@ -439,18 +772,8 @@ def _config() -> Config:
     )
 
 
-def test_update_renders_land_in_the_extension_and_never_in_the_external(
-    monkeypatch,
-) -> None:
-    """Units render updates against the external ontology's patch.
-
-    Each unit mints a class under the home (the extension, not yet stored),
-    re-declares an external term with a new parent, writes a stray
-    example.com axiom, a fact using an external property, an individual under
-    the home namespace, and a copy of its class under another writable owned
-    ontology. Only the home terms are written, into a new extension ontology
-    that imports the external one.
-    """
+def _extension_catalog() -> tuple[ToolBox, Ontology, Ontology]:
+    """A toolbox holding an external ontology and an owned one, ``sports``."""
     tools = ToolBox(_config())
     external = _external_head()
     tools.ontology_manager.add_ontology(external, skip_vector_index=True)
@@ -461,7 +784,21 @@ def test_update_renders_land_in_the_extension_and_never_in_the_external(
         title="Sports",
     )
     tools.ontology_manager.add_ontology(sports, skip_vector_index=True)
+    return tools, external, sports
 
+
+def _script_extension_run(
+    monkeypatch, external: Ontology, sports: Ontology, *, serialize: bool
+) -> None:
+    """Script every model call of a document whose home is ``external``'s extension.
+
+    Each unit mints a class named after its text under the home, with a
+    restriction on an external property; it also re-declares an external
+    term, states a disjointness over external terms alone, writes a stray
+    example.com axiom, a fact using an external property, an individual
+    under the home namespace, and a copy of its class under
+    ``sports``. With ``serialize`` false the serialize node is a passthrough.
+    """
     _answer_identity(monkeypatch, "ext")
 
     def fake_convert(state: AgentState, tools: ToolBox) -> AgentState:
@@ -487,14 +824,25 @@ def test_update_renders_land_in_the_extension_and_never_in_the_external(
     async def update_render(state: UnitOntologyState, tools, **kwargs):
         home = state.home_ontology
         assert home is not None
-        name = f"Term{state.content_unit.index}"
+        name = "".join(word.title() for word in state.content_unit.text.split())
         inserts = RDFGraph()
         term = URIRef(f"{home.namespace}{name}")
         inserts.add((term, RDF.type, OWL.Class))
         inserts.add((term, RDFS.label, Literal(name)))
         inserts.add((term, RDFS.subClassOf, URIRef(f"{EXT_IRI}/Organisation")))
+        _restriction(
+            inserts, term, URIRef(f"{EXT_IRI}/city"), URIRef(f"{EXT_IRI}/League")
+        )
         inserts.add(
             (URIRef(f"{EXT_IRI}/SportsTeam"), RDFS.subClassOf, URIRef(f"{EXT_IRI}/X"))
+        )
+        disjoint, members = BNode(), BNode()
+        inserts.add((disjoint, RDF.type, OWL.AllDisjointClasses))
+        inserts.add((disjoint, OWL.members, members))
+        Collection(
+            inserts,
+            members,
+            [URIRef(f"{EXT_IRI}/Company"), URIRef(f"{EXT_IRI}/League")],
         )
         inserts.add(
             (
@@ -544,7 +892,8 @@ def test_update_renders_land_in_the_extension_and_never_in_the_external(
 
     monkeypatch.setattr(create_module, "convert_document", fake_convert)
     monkeypatch.setattr(create_module, "chunk_text", fake_chunk)
-    monkeypatch.setattr(create_module, "serialize", passthrough_serialize)
+    if not serialize:
+        monkeypatch.setattr(create_module, "serialize", passthrough_serialize)
     for factory in (
         "make_normalize_ontology_node",
         "make_structural_check_node",
@@ -557,13 +906,25 @@ def test_update_renders_land_in_the_extension_and_never_in_the_external(
     monkeypatch.setattr(unit_loops, "criticise_ontology", fake_critic)
     monkeypatch.setattr(unit_loops, "resolve_unit_ontology_context", fake_resolve)
 
-    document = AgentState(
-        input_document=InputDocument(
-            filename="doc.txt", data=b"teams one\n\nteams two"
-        ),
+
+def _document(filename: str, text: str) -> AgentState:
+    return AgentState(
+        input_document=InputDocument(filename=filename, data=text.encode("utf-8")),
         render_mode=RenderMode.ONTOLOGY,
         current_domain=DOMAIN,
     )
+
+
+def test_update_renders_land_in_the_extension_and_never_in_the_external(
+    monkeypatch,
+) -> None:
+    """Units render updates against the external ontology's patch; only the
+    home terms are written, into a new extension ontology that imports the
+    external one, each with its restriction whole."""
+    tools, external, sports = _extension_catalog()
+    _script_extension_run(monkeypatch, external, sports, serialize=False)
+
+    document = _document("doc.txt", "teams one\n\nteams two")
     final = asyncio.run(create_agent_graph(tools).ainvoke(document))
 
     home = final["home_ontology"]
@@ -576,17 +937,68 @@ def test_update_renders_land_in_the_extension_and_never_in_the_external(
     assert artifact.iri == home.iri
     assert (URIRef(home.iri), OWL.imports, URIRef(EXT_IRI)) in artifact.graph
     declared = {str(s) for s in artifact.graph.subjects(RDF.type, OWL.Class)}
-    assert declared == {f"{home.namespace}Term0", f"{home.namespace}Term1"}
-    subjects = {str(s) for s in artifact.graph.subjects()}
+    assert declared == {f"{home.namespace}TeamsOne", f"{home.namespace}TeamsTwo"}
+    subjects = {str(s) for s in artifact.graph.subjects() if isinstance(s, URIRef)}
     assert not any(s.startswith(EXT_IRI) for s in subjects)
     assert not any("example.com/cycling-sport" in s for s in subjects)
     assert not any(s.startswith(DEFAULT_IRI) for s in subjects)
     assert f"{home.namespace}Leeds" not in subjects
+    restrictions = set(artifact.graph.subjects(RDF.type, OWL.Restriction))
+    assert len(restrictions) == 2
+    for restriction in restrictions:
+        assert (
+            restriction,
+            OWL.onProperty,
+            URIRef(f"{EXT_IRI}/city"),
+        ) in artifact.graph
     metrics = final["ontology_reduce_metrics"]
     assert metrics["external_subject_refused"] >= 1
     assert metrics["example_namespace_dropped"] >= 1
     assert metrics["non_term_subjects_dropped"] >= 2
     assert metrics["minted_outside_home_dropped"] >= 2
+    # Each unit's disjointness axiom over external terms has no owned owner.
+    assert metrics["unattributed_insert_triples"] == 2 * 6
+
+
+def test_stored_versions_name_their_document_and_leave_the_external_alone(
+    monkeypatch,
+) -> None:
+    """Two documents through the whole graph, serialization included.
+
+    The first creates the extension, the second updates it. Each stored
+    version names its document and the second points at the first; the
+    external ontology keeps the one version it was loaded with.
+    """
+    tools, external, sports = _extension_catalog()
+    _script_extension_run(monkeypatch, external, sports, serialize=True)
+    graph = create_agent_graph(tools)
+
+    first_doc = _document("one.txt", "teams one\n\nteams two")
+    second_doc = _document("two.txt", "clubs three")
+    first = asyncio.run(graph.ainvoke(first_doc))
+    second = asyncio.run(graph.ainvoke(second_doc))
+
+    manager = tools.ontology_manager
+    external_head = manager.get_head_by_iri(EXT_IRI)
+    assert external_head is not None
+    assert external_head.version_iri == external.version_iri
+    home_iri = first["home_ontology"].iri
+    assert second["home_ontology"].iri == home_iri
+
+    (created,) = first["ontology_versions_written"]
+    (updated,) = second["ontology_versions_written"]
+    assert (created.iri, created.role) == (home_iri, "created")
+    assert (updated.iri, updated.role) == (home_iri, "updated")
+    assert created.version_iri in updated.prior_version_iris
+
+    head = manager.get_head_by_iri(home_iri)
+    assert head is not None
+    assert head.version_iri == updated.version_iri
+    header = URIRef(home_iri)
+    assert (header, PROV.wasDerivedFrom, second_doc.doc_iri) in head.graph
+    assert (header, OWL.priorVersion, URIRef(created.version_iri)) in head.graph
+    for restriction in head.graph.subjects(RDF.type, OWL.Restriction):
+        assert (restriction, OWL.onProperty, URIRef(f"{EXT_IRI}/city")) in head.graph
 
 
 def test_the_update_prompt_names_the_home_namespace() -> None:
@@ -609,3 +1021,33 @@ def test_the_update_prompt_names_the_home_namespace() -> None:
     intro = render_module._build_update_intro(state, access)
     assert f"<{home.namespace}>" in intro
     assert "`ext-ext:`" in intro
+
+
+def test_a_structure_whose_anchors_disagree_goes_with_its_edges() -> None:
+    """Two owners point at one blank node: neither may keep an edge to a
+    node the other would hold, so the structure and its edges go together."""
+    home = _home_head()
+    other = stamped_ontology(
+        _classes(f"{DOMAIN}/venues#", "Venue"),
+        ontology_id="venues",
+        iri=f"{DOMAIN}/venues",
+        title="Venues",
+    )
+    inserts = RDFGraph()
+    restriction = _restriction(
+        inserts,
+        URIRef(f"{HOME_NS}Team"),
+        URIRef(f"{HOME_NS}playsAt"),
+        URIRef(f"{DOMAIN}/venues#Venue"),
+    )
+    inserts.add((URIRef(f"{DOMAIN}/venues#Venue"), RDFS.subClassOf, restriction))
+
+    buckets, unattributed = partition_triples_by_namespace(
+        inserts,
+        writable_iris=[home.iri, other.iri],
+        ontology_manager=_manager(home, other),
+        current_domain=DOMAIN,
+    )
+
+    assert buckets == {}
+    assert unattributed == len(inserts)

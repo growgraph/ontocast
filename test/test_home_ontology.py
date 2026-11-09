@@ -506,6 +506,144 @@ def test_without_consolidation_candidates_are_dropped(monkeypatch) -> None:
     assert final["ontology_reduce_metrics"]["plan_candidates_dropped"] == 1
 
 
+def test_a_fresh_render_keeps_only_what_its_home_owns(monkeypatch) -> None:
+    """A fresh ontology is filed by subject like an update: an axiom about a
+    well-known term belongs to no writable ontology and is not written."""
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+    place = URIRef("https://schema.org/Place")
+
+    async def render(state: UnitOntologyState, tools, **kwargs):
+        home = state.home_ontology
+        assert home is not None
+        graph = _terms(home.namespace, "Venue")
+        graph.add((place, RDFS.subClassOf, URIRef(f"{home.namespace}Venue")))
+        ontology = mint_ontology(home, graph)
+        state.fresh_ontology = ontology
+        state.working_graph = ontology.graph.copy()
+        state.writable_iris = [ontology.iri]
+        state.assembly_anchor_iri = ontology.iri
+        state.status = Status.SUCCESS
+        return state
+
+    monkeypatch.setattr(unit_loops, "render_ontology", render)
+
+    final = asyncio.run(app.ainvoke(_document("alpha one")))
+
+    (artifact,) = final["ontology_artifacts"]
+    assert place not in set(artifact.graph.subjects())
+    assert final["ontology_reduce_metrics"]["fresh_triples_unattributed"] >= 1
+
+
+def test_a_fresh_render_with_nothing_of_its_own_writes_no_ontology(
+    monkeypatch,
+) -> None:
+    """When every statement of a fresh render is filed elsewhere, only the
+    header is left; a header alone is not an ontology the document wrote."""
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+    place = URIRef("https://schema.org/Place")
+
+    async def render(state: UnitOntologyState, tools, **kwargs):
+        home = state.home_ontology
+        assert home is not None
+        graph = RDFGraph()
+        graph.add((place, RDFS.subClassOf, URIRef(f"{home.namespace}Venue")))
+        ontology = mint_ontology(home, graph)
+        state.fresh_ontology = ontology
+        state.working_graph = ontology.graph.copy()
+        state.writable_iris = [ontology.iri]
+        state.assembly_anchor_iri = ontology.iri
+        state.status = Status.SUCCESS
+        return state
+
+    monkeypatch.setattr(unit_loops, "render_ontology", render)
+
+    final = asyncio.run(app.ainvoke(_document("alpha one")))
+
+    assert final["ontology_artifacts"] == []
+
+
+def test_consolidation_decides_every_batch(monkeypatch) -> None:
+    """With one term per call, each candidate gets its own call, and the actions
+    of every call are compiled, not only the last one's."""
+    monkeypatch.setenv("ONTOLOGY_CONSOLIDATION_MAX_TERMS", "1")
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+
+    async def plan_call(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport.model_validate(
+            {"proposals": [{"kind": "class", "label": "Film", "local_name": "Film"}]}
+        )
+
+    batches: list[str] = []
+
+    async def consolidation_call(**kwargs) -> OntologyConsolidationReport:
+        terms = str(kwargs["prompt_kwargs"]["terms"])
+        batches.append(terms)
+        if "alpha:Layer" in terms:
+            action = {"term": "alpha:Layer", "action": "merge_into", "target": "Film"}
+        else:
+            action = {"term": "alpha:Device", "action": "drop"}
+        return OntologyConsolidationReport.model_validate({"actions": [action]})
+
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", plan_call)
+    monkeypatch.setattr(
+        consolidate_ontology_module, "call_llm_with_retry", consolidation_call
+    )
+    monkeypatch.setattr(
+        unit_loops, "render_ontology", _render_minting(["Film", "Layer", "Device"])
+    )
+    app = create_agent_graph(ToolBox(_config()))
+
+    final = asyncio.run(app.ainvoke(_document("alpha one\n\nalpha two\n\nalpha three")))
+
+    assert len(batches) == 2
+    metrics = final["ontology_reduce_metrics"]
+    assert metrics["consolidation_merge_into"] == 1
+    assert metrics["consolidation_drop"] == 1
+    (artifact,) = final["ontology_artifacts"]
+    terms = {str(s) for s, _, _ in artifact.graph.triples((None, RDF.type, OWL_CLASS))}
+    assert terms == {f"{final['home_ontology'].namespace}Film"}
+
+
+def test_a_planned_term_with_a_review_finding_goes_to_consolidation(
+    monkeypatch,
+) -> None:
+    """A finding alone is reason enough: a planned leaf whose label names one
+    case (a digit in it) is reviewed, and the other planned term is not."""
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+
+    async def plan_call(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport.model_validate(
+            {
+                "proposals": [
+                    {"kind": "class", "label": name, "local_name": name}
+                    for name in ("Film", "Sample42")
+                ]
+            }
+        )
+
+    reviewed: list[str] = []
+
+    async def consolidation_call(**kwargs) -> OntologyConsolidationReport:
+        reviewed.append(str(kwargs["prompt_kwargs"]["terms"]))
+        return OntologyConsolidationReport()
+
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", plan_call)
+    monkeypatch.setattr(
+        consolidate_ontology_module, "call_llm_with_retry", consolidation_call
+    )
+    monkeypatch.setattr(
+        unit_loops, "render_ontology", _render_minting(["Film", "Sample42"])
+    )
+
+    final = asyncio.run(app.ainvoke(_document("alpha one\n\nalpha two")))
+
+    (prompt,) = reviewed
+    assert "alpha:Sample42" in prompt
+    assert "specific_label_leaf" in prompt
+    assert "alpha:Film` (" not in prompt
+    assert final["ontology_reduce_metrics"]["consolidation_flagged"] == 1
+
+
 # --- render_ontology_fresh -------------------------------------------------------
 
 

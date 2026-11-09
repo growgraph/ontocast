@@ -58,3 +58,18 @@ def test_labelled_and_opaque_terms_are_left_alone() -> None:
     snapshot = RDFGraph()
     snapshot.add((snapshot_labelled, RDFS.label, Literal("Device")))
     assert len(derive_missing_labels(inserts, snapshot)) == 0
+
+
+def test_well_known_and_catalog_terms_are_never_labelled() -> None:
+    """An axiom on someone else's term is a reuse: its labels are its owner's."""
+    place = URIRef("https://schema.org/Place")
+    catalog_term = URIRef(EX + "Stadium")
+    venue = URIRef(EX + "Venue")
+    inserts = RDFGraph()
+    inserts.add((place, RDFS.subClassOf, venue))
+    inserts.add((catalog_term, RDFS.subClassOf, venue))
+    inserts.add((venue, RDF.type, OWL.Class))
+
+    labels = derive_missing_labels(inserts, None, {str(catalog_term)})
+
+    assert set(labels) == {(venue, RDFS.label, Literal("Venue", lang="en"))}

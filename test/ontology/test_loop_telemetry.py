@@ -17,7 +17,7 @@ import pytest
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
 from ontocast.onto.content_unit import ContentUnit
-from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode, Status
+from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.model import (
     OntologyCritiqueReport,
     OntologyUnitFinding,
@@ -268,6 +268,7 @@ async def test_loop_collects_findings_even_when_no_critic_runs(
                 SimpleNamespace(
                     validation_policy=None,
                     ontology_critic_passes=ontology_critic_passes,
+                    catalog_terms=lambda: set(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
@@ -301,16 +302,14 @@ async def test_loop_collects_findings_even_when_no_critic_runs(
 
 
 @pytest.mark.anyio
-async def test_critic_criteria_carry_the_partial_context_notice_in_vector_mode(
+async def test_critic_criteria_carry_the_partial_context_notice_on_a_partial_view(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A critic judging a retrieved subset must not demand unretrieved concepts."""
     captured: dict = {}
     _stub(monkeypatch, _critique(success=True, score=95), captured)
     state = _unit_state()
-    state.ontology_snapshot.assembly_mode = (
-        OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
-    )
+    state.ontology_snapshot.partial = True
 
     await criticise_ontology_module.criticise_ontology(state, _tools())
 
@@ -368,6 +367,7 @@ async def _run_ontology_loop(
                 SimpleNamespace(
                     validation_policy=None,
                     ontology_critic_passes=critic_passes,
+                    catalog_terms=lambda: set(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),

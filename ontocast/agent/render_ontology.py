@@ -16,7 +16,6 @@ from ontocast.agent.update_common import finalize_update_report, log_quarantine
 from ontocast.onto.enum import (
     FailureStage,
     LLMPhase,
-    OntologyAssemblyMode,
     Status,
     WorkflowNode,
 )
@@ -138,15 +137,9 @@ def _prepare_ontology_common_prompt_layers(
 def _build_update_intro(state: UnitOntologyState, access: UnitOntologyAccess) -> str:
     writable = access.writable_iris()
     ontology_desc = access.prompt_ontology_description()
-    # Keyed on how the snapshot was ASSEMBLED, not on how many IRIs are
-    # writable: a vector-retrieval unit whose retrieval happened to hit one
-    # ontology used to get the single-ontology phrasing verbatim — presenting
-    # a retrieved subset as "the domain ontology provided below".
-    is_partial_view = (
-        state.ontology_snapshot.assembly_mode
-        == OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
-    )
-    notice = partial_context_notice if is_partial_view else ""
+    # Keyed on the snapshot, not on how many IRIs are writable: a retrieval
+    # that happened to hit one ontology is still a subset of it.
+    notice = partial_context_notice if state.ontology_snapshot.partial else ""
     home = state.home_ontology
     home_clause = (
         home_namespace_clause.format(

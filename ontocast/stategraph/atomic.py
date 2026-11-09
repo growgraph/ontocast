@@ -163,7 +163,9 @@ def _repair_facts_patch(
     return [*records, *entailed]
 
 
-def _derive_ontology_labels(unit_state: UnitOntologyState) -> list[GraphRepairRecord]:
+def _derive_ontology_labels(
+    unit_state: UnitOntologyState, atomic: AtomicToolBox
+) -> list[GraphRepairRecord]:
     """Label the unit's unlabelled minted terms from their local names.
 
     Applied as an insert update, so the labels reach the delta and the reduce
@@ -174,7 +176,9 @@ def _derive_ontology_labels(unit_state: UnitOntologyState) -> list[GraphRepairRe
         if unit_state.ontology_snapshot.is_empty()
         else unit_state.ontology_snapshot.graph
     )
-    labels = derive_missing_labels(unit_state.build_delta().inserts, snapshot_graph)
+    labels = derive_missing_labels(
+        unit_state.build_delta().inserts, snapshot_graph, atomic.catalog_terms()
+    )
     if len(labels) == 0:
         return []
     update = GraphUpdate(triple_operations=[TripleOp(type="insert", graph=labels)])
@@ -195,7 +199,7 @@ def _repair_ontology_patch(
     unit_state: UnitOntologyState, atomic: AtomicToolBox
 ) -> list[GraphRepairRecord]:
     """Label what a critic patch minted without a label, before it is judged."""
-    return _derive_ontology_labels(unit_state)
+    return _derive_ontology_labels(unit_state, atomic)
 
 
 def _collect_facts_findings(
@@ -907,7 +911,7 @@ async def _render_ontology_phase(state, atomic, supplemental) -> None:
         state,
     )
     if state.status == Status.SUCCESS:
-        state.applied_repairs.extend(_derive_ontology_labels(state))
+        state.applied_repairs.extend(_derive_ontology_labels(state, atomic))
 
 
 async def _criticise_facts_phase(state, atomic) -> None:

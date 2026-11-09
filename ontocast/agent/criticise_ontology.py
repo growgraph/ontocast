@@ -14,7 +14,6 @@ from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import (
     FailureStage,
     LLMPhase,
-    OntologyAssemblyMode,
     Status,
     WorkflowNode,
 )
@@ -155,10 +154,7 @@ async def criticise_ontology(
         WorkflowNode.CRITICISE_ONTOLOGY, web_search_enabled
     )
     ontology_criteria_str = ontology_criteria
-    if (
-        state.ontology_snapshot.assembly_mode
-        == OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
-    ):
+    if state.ontology_snapshot.partial:
         ontology_criteria_str = (
             f"{ontology_criteria_str}\n{partial_context_critique_notice}"
         )

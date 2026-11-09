@@ -19,8 +19,8 @@ deeper than
 [`ONTOLOGY_MAX_CLASS_DEPTH`](../reference/configuration/ontology-validation.md#ontology_max_class_depth),
 sibling subclasses that only enumerate values, terms that duplicate one
 already in the catalog). A missing label is derived from the term's name
-without a model call. The ontology critic runs one pass by default, and only
-on a part whose checks found a mandatory defect
+without a model call. The ontology critic is off by default; at one pass it
+runs only on a part whose checks found a mandatory defect
 ([`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes)).
 
 Validation never withholds output. The gate repairs what it can and reports the

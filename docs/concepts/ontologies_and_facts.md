@@ -68,7 +68,10 @@ critic prompts name it, and a term newly declared anywhere else is dropped
 (`minted_outside_home_dropped`). An ontology update declares classes,
 properties and SKOS concepts (value sets) only: a person, place, organisation
 or event named in the text is a fact, and is dropped from the update
-(`non_term_subjects_dropped`).
+(`non_term_subjects_dropped`). Each statement is written to the ontology that
+owns its subject; a restriction or a list travels whole with the term that
+uses it, so a restriction on an external property is written beside the home
+class, never into the external ontology.
 
 A unit mints a class only at the level a second document in the same domain
 would reuse. A case the document reports, such as a numbered sample or a

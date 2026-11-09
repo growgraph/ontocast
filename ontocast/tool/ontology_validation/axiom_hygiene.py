@@ -20,8 +20,13 @@ many it removed, for ``ontology_reduce_metrics``:
   a term nor as a SKOS concept), or an untyped subject that nothing declares
   belongs in the facts graph, not in an ontology.
 - :func:`drop_terms_minted_outside_home`: every new term of a document lives
-  under its home namespace; a term newly declared under another namespace is
-  a second copy of one the document already named, or a guess.
+  under its home namespace; a term newly declared under another namespace of
+  the deployment is a second copy of one the document already named, and one
+  declared in another vocabulary is that vocabulary's to write.
+
+Every rule removes a blank-node structure (a restriction, a list) whole or not at all:
+removing one of its statements, or every statement pointing at it, removes it
+with the statements pointing at it (:func:`ontocast.onto.blank_structures.remove_with_structures`).
 """
 
 from __future__ import annotations
@@ -30,7 +35,10 @@ from collections.abc import Iterable
 
 from rdflib import OWL, RDF, RDFS, SKOS, XSD, Graph, URIRef
 
+from ontocast.onto.blank_structures import remove_with_structures
+from ontocast.onto.identity import is_owned_ontology
 from ontocast.onto.iri_policy import split_namespace_local
+from ontocast.onto.well_known import well_known_vocabulary
 
 #: Reserved by RFC 2606 for documentation; never a real vocabulary.
 EXAMPLE_NAMESPACE_STEMS: tuple[str, ...] = tuple(
@@ -127,10 +135,7 @@ def drop_external_subjects(graph: Graph, external_stems: Iterable[str]) -> int:
             stem == root or stem.startswith((f"{root}/", f"{root}#")) for root in stems
         )
 
-    doomed = [triple for triple in graph if external(triple[0])]
-    for triple in doomed:
-        graph.remove(triple)
-    return len(doomed)
+    return remove_with_structures(graph, [t for t in graph if external(t[0])])
 
 
 def drop_example_namespace_triples(graph: Graph, current_domain: str) -> int:
@@ -149,10 +154,9 @@ def drop_example_namespace_triples(graph: Graph, current_domain: str) -> int:
             and not text.startswith(own)
         )
 
-    doomed = [triple for triple in graph if any(stray(node) for node in triple)]
-    for triple in doomed:
-        graph.remove(triple)
-    return len(doomed)
+    return remove_with_structures(
+        graph, [triple for triple in graph if any(stray(node) for node in triple)]
+    )
 
 
 def normalize_datatype_ranges(graph: Graph) -> int:
@@ -195,10 +199,9 @@ def drop_vacuous_upper_terms(graph: Graph) -> int:
 
 
 def _drop_subjects(graph: Graph, subjects: Iterable[URIRef]) -> int:
-    doomed = [triple for s in subjects for triple in graph.triples((s, None, None))]
-    for triple in doomed:
-        graph.remove(triple)
-    return len(doomed)
+    return remove_with_structures(
+        graph, [triple for s in subjects for triple in graph.triples((s, None, None))]
+    )
 
 
 def drop_non_term_subjects(
@@ -232,29 +235,53 @@ def drop_non_term_subjects(
 
 
 def drop_terms_minted_outside_home(
-    graph: Graph, *, home_namespace: str, catalog_terms: Iterable[str]
+    graph: Graph,
+    *,
+    home_namespace: str,
+    catalog_terms: Iterable[str],
+    current_domain: str,
 ) -> int:
-    """Remove every triple naming a term newly declared outside ``home_namespace``.
+    """Remove the statements about a term newly declared outside ``home_namespace``.
 
-    A term is newly declared when the graph types it as one of
-    :data:`TERM_TYPES` (ontology headers aside) and the catalog does not hold
-    it. Triples naming it as an object go too, so no axiom points at a term
-    that is not written.
+    A term is newly declared when the catalog does not hold it and the graph
+    either types it as one of :data:`TERM_TYPES` (ontology headers aside) or,
+    untyped, gives it one of :data:`TERM_AXIOMS`. A term of a well-known
+    vocabulary is never newly declared: an axiom about one is a reuse, and
+    the partition decides where it goes.
+
+    Under ``current_domain`` such a term is a second copy of one the document
+    already named, so every triple naming it goes, and no axiom points at a
+    term that is not written. Outside it the term is another vocabulary's: the
+    statements about it go and a reference to it stays, as it would had the
+    render not declared it.
     """
     catalog = set(catalog_terms)
-    strays = {
+
+    def outside(s: object) -> bool:
+        return (
+            isinstance(s, URIRef)
+            and not str(s).startswith(home_namespace)
+            and str(s) not in catalog
+        )
+
+    typed = {
         s
         for s, o in graph.subject_objects(RDF.type)
-        if isinstance(s, URIRef)
-        and o in TERM_TYPES
-        and o != OWL.Ontology
-        and not str(s).startswith(home_namespace)
-        and str(s) not in catalog
+        if o in TERM_TYPES and o != OWL.Ontology and outside(s)
     }
-    doomed = [triple for triple in graph if triple[0] in strays or triple[2] in strays]
-    for triple in doomed:
-        graph.remove(triple)
-    return len(doomed)
+    untyped = {
+        s
+        for p in TERM_AXIOMS
+        for s in graph.subjects(p, None)
+        if outside(s)
+        and not (set(graph.objects(s, RDF.type)) & TERM_TYPES)
+        and well_known_vocabulary(str(s)) is None
+    }
+    strays = typed | untyped
+    owned = {s for s in strays if is_owned_ontology(str(s), current_domain)}
+    return remove_with_structures(
+        graph, [t for t in graph if t[0] in strays or t[2] in owned]
+    )
 
 
 __all__ = [

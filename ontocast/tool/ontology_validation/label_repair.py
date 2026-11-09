@@ -10,11 +10,13 @@ words; it is left unlabelled and the ``missing_label`` finding still fires.
 from __future__ import annotations
 
 import re
+from collections.abc import Set
 
 from rdflib import RDFS, SKOS, Literal, URIRef
 
 from ontocast.onto.iri_policy import is_opaque_local_name
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.well_known import is_well_known_term
 from ontocast.tool.facts_validation.terms import _local_name
 from ontocast.tool.ontology_validation.unit_findings import (
     _declared_class_or_property_subjects,
@@ -61,21 +63,28 @@ def _has_label(subject: URIRef, *graphs: RDFGraph | None) -> bool:
 
 
 def derive_missing_labels(
-    inserts: RDFGraph, snapshot_graph: RDFGraph | None
+    inserts: RDFGraph,
+    snapshot_graph: RDFGraph | None,
+    known_terms: Set[str] = frozenset(),
 ) -> RDFGraph:
-    """The ``rdfs:label`` triples the delta's unlabelled terms are missing.
+    """The ``rdfs:label`` triples the delta's unlabelled minted terms are missing.
 
     Covers every class or property the delta declares that has no label in the
-    delta or the snapshot and whose local name has words.
+    delta or the snapshot and whose local name has words. A term of a
+    well-known vocabulary or of the catalog (``known_terms``) is never minted
+    here: an axiom on it is a reuse, and its labels are its owner's.
 
     Returns:
         A graph of the label triples to insert, empty when none is missing.
     """
     labels = RDFGraph()
     for subject in sorted(_declared_class_or_property_subjects(inserts), key=str):
+        iri = str(subject)
+        if iri in known_terms or is_well_known_term(iri) is not None:
+            continue
         if _has_label(subject, inserts, snapshot_graph):
             continue
-        label = label_from_local_name(_local_name(str(subject)))
+        label = label_from_local_name(_local_name(iri))
         if label is not None:
             labels.add((subject, RDFS.label, Literal(label, lang="en")))
     return labels

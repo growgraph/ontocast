@@ -132,37 +132,43 @@ def build_document_excerpt(state: AgentState) -> str:
     return ""
 
 
-def enforce_redeclared_deletes(delta: OntologyDelta) -> int:
-    """Drop merged deletes whose subject the merged inserts do not redeclare.
+def enforce_redeclared_deletes(
+    delta: OntologyDelta, judged_on_partial_view: RDFGraph
+) -> int:
+    """Drop deletes judged on a partial view whose subject is not redeclared.
 
-    Applied only under vector-retrieval context: each unit judged its deletes
-    on a *retrieved subset*, so a delete is trusted only as part of a
-    redeclaration — the corrected statement must reappear in the inserts. A
-    bare delete of catalog content, judged on partial evidence, would
-    propagate onto shared catalog terminals cross-document. A safety invariant
-    like the insert-wins veto in :func:`merge_unit_deltas`, not a knob; the
-    per-unit ``foreign_delete`` finding teaches the loop, this backstops the
-    write.
+    A unit whose context was a retrieved subset of the catalog
+    (:attr:`OntologySnapshot.partial`) judged its deletes without seeing the
+    rest of the ontology, so such a delete is trusted only as part of a
+    redeclaration: the corrected statement's subject must reappear in the
+    document's merged inserts. A bare delete of catalog content, judged on
+    partial evidence, would propagate onto shared catalog terminals across
+    documents. Deletes from units that saw their ontologies whole are not
+    touched. A unit can never delete a statement it was not shown: its deletes
+    are the snapshot triples its updates removed.
+
+    Args:
+        delta: The merged document delta, edited in place.
+        judged_on_partial_view: The deletes proposed by units with a partial
+            view.
 
     Returns:
         Number of delete triples dropped.
     """
-    if len(delta.deletes) == 0:
+    if len(delta.deletes) == 0 or len(judged_on_partial_view) == 0:
         return 0
     redeclared = {
         subject for subject in delta.inserts.subjects() if isinstance(subject, URIRef)
     }
     dropped = 0
     for triple in list(delta.deletes):
-        if triple[0] not in redeclared:
+        if triple in judged_on_partial_view and triple[0] not in redeclared:
             delta.deletes.remove(triple)
             dropped += 1
     if dropped:
         logger.warning(
-            "Dropped %d delete triple(s) whose subject the merged inserts do "
-            "not redeclare — under retrieved (partial) context an "
-            "unredeclared delete is judged on partial evidence and would "
-            "propagate to shared catalog terminals",
+            "Dropped %d delete triple(s) judged on a partial view whose subject "
+            "the merged inserts do not redeclare",
             dropped,
         )
     return dropped

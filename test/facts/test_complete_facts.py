@@ -357,6 +357,7 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
                 AtomicToolBox,
                 SimpleNamespace(
                     ontology_critic_passes=0,
+                    catalog_terms=lambda: set(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),

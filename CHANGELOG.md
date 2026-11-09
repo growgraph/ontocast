@@ -21,11 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Owned and external ontologies: a catalog ontology outside `CURRENT_DOMAIN` is never written to. A document whose home is one gets its terms in the extension ontology `CURRENT_DOMAIN/<id>-ext`, which imports it; triples about external terms are refused (`external_subject_refused`).
 - End-of-document clean-up of the ontology delta: IRIs under `example.org`/`.com`/`.net` outside `CURRENT_DOMAIN` (`example_namespace_dropped`), one datatype range per property (`datatype_ranges_normalized`), `Thing` as range, domain or second parent (`vacuous_upper_terms_dropped`).
 - The same clean-up drops terms newly declared outside the home namespace (`minted_outside_home_dropped`) and subjects that are not terms or SKOS concepts: facts, individuals, undeclared subjects (`non_term_subjects_dropped`). It runs before consolidation.
+- `home_ontology` in the run manifest: the document's home ontology (`iri`, `ontology_id`, `namespace`, `extends`).
 
 ### Changed
 
 - A proposed new home ontology is overridden by the catalog ontology whose terms the text names at least five times (`home_new_overridden`).
-- `ONTOLOGY_CRITIC_PASSES` defaults to 1, and at 1 the critic is called only for a unit with a mandatory deterministic finding. A default run now pays one extra call per faulted ontology unit; set 0 to restore no critic, 2 or more to review every unit.
+- At `ONTOLOGY_CRITIC_PASSES=1` the ontology critic is called only for a unit with a mandatory deterministic finding; 2 or more review every unit. The default stays 0 (no ontology critic).
 - The ontology render and critic prompts ask for classes at the level another document in the domain would reuse: a distinction that varies per instance is a property with values, not sibling subclasses, and existing terms are reused before minting.
 - The render prompt's value-set example uses SKOS concepts: a SKOS concept is the only individual an ontology update may declare.
 - A critic fix's `explanation` is optional: a report with a fix that omits it is kept instead of re-requested.
@@ -39,6 +40,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An OWL restriction, a list or an anonymous axiom is written whole, with the term that uses it: its `rdf:type owl:Restriction` and list links were dropped, and `owl:onProperty` an external property wrote a new version of the external ontology. A clean-up rule that drops a term drops its restrictions too.
+- A fresh ontology render is filed by subject like an update: a statement about another ontology's term was written into the home (`fresh_triples_refiled`, `fresh_triples_unattributed`).
+- A term declared outside the home namespace by an axiom alone (`rdfs:subClassOf`, …) is dropped like a typed one; it was filed into another owned ontology.
+- A term of another vocabulary that a render declares (an echoed parent) loses only the statements about it; the home axioms that reuse it were dropped with them.
+- Nothing is filed into an external ontology: an anonymous axiom over its terms alone wrote it a new version. An `owl:Axiom` annotation is filed with its `owl:annotatedSource`.
+- A fresh render left with only its header, its statements filed elsewhere, is no longer written as a new ontology version.
+- A statement about an owned ontology's term is written to that ontology even when another ontology binds its prefix: the first writable ontology to bind it took its statements.
+- `ontocast process` dumps and run manifests receive every field of the document's final state; fields left off a copy list arrived empty.
+- A unit is told its context is partial whenever it is a retrieved subset, including the document-scope union of retrieved contexts, which went without the notice. A delete judged on a partial view needs a redeclaration per unit, in every context mode (`deletes_dropped_unredeclared`).
+- A label derived from a local name is never given to a catalog or well-known term.
+- The prompt that describes a seed ontology at start-up no longer carries the header's `dcterms:created` / `dcterms:modified`, which change on every load, so its cached answer is reused across runs.
+- A facts critic fix that touches a nested blank-node structure removes all of it; one level was removed and the rest left as stubs. A structure another subject still points at stays.
+- A blank-node structure filed to no ontology takes the statements pointing at it along; each anchor's ontology kept an edge to nothing. A header statement dropped at apply takes the structures only it points at.
+- Deletes keep a catalog's blank-node structures whole: deleting every edge to a restriction removes it, and deleting part of a restriction still in use is dropped (`apply_structure_deletes_expanded`, `apply_structure_deletes_dropped`).
 - Under vector retrieval, the terms a document mints under a new home ontology are written; they were dropped when no unit rendered the ontology fresh. The update and critic prompts now name the home namespace, and a triple whose named subject no ontology owns is no longer filed under its predicate's or object's ontology, which wrote facts into an external one.
 - `ontocast process` dumps an ontology the document wrote a version of as that stored version, header included; a new ontology was dumped without its header.
 - The `foreign_namespace` finding accepts the document's home namespace: a new home has no terms in the unit's context, so every term minted there was flagged as unattributable and the critic moved it to another ontology. With a home, a new term under any other namespace is flagged instead.

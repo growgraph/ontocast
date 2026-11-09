@@ -32,6 +32,7 @@ from ontocast.onto.ontology_apply import (
     OntologyDelta,
     apply_partitioned_updates,
     partition_triples_by_namespace,
+    refile_fresh_statements,
 )
 from ontocast.onto.ontology_header import mint_ontology
 from ontocast.onto.ontology_snapshot import OntologySnapshot
@@ -152,7 +153,10 @@ def clean_ontology_delta(
         )
         if home_namespace:
             counts["minted_outside_home_dropped"] += drop_terms_minted_outside_home(
-                graph, home_namespace=home_namespace, catalog_terms=catalog_terms
+                graph,
+                home_namespace=home_namespace,
+                catalog_terms=catalog_terms,
+                current_domain=current_domain,
             )
         counts["non_term_subjects_dropped"] += drop_non_term_subjects(
             graph, declared=declared, facts_namespace=DEFAULT_IRI
@@ -364,6 +368,9 @@ def make_render_ontology_node(tools: ToolBox):
 
         ontology_units: list[ContentUnit] = []
         unit_deltas: list[OntologyDelta] = []
+        # Deletes of units whose context was a retrieved subset: kept only
+        # where the document redeclares their subject.
+        deletes_on_partial_view = RDFGraph()
         fresh_ontologies: list[Ontology] = []
         failed_without_output_count = unit_errors
         salvaged_failed_count = 0
@@ -439,6 +446,8 @@ def make_render_ontology_node(tools: ToolBox):
                         term_units.setdefault(str(subject), set()).add(unit_index)
             if not delta.is_empty():
                 unit_deltas.append(delta)
+            if result.ontology_snapshot.partial:
+                deletes_on_partial_view += delta.deletes
             if len(delta.inserts) > 0:
                 ontology_units.append(
                     ContentUnit(
@@ -523,16 +532,11 @@ def make_render_ontology_node(tools: ToolBox):
         if _insert_only(tools):
             _count_insert_only_drops(state, drop_all_deletes(merged_delta))
 
-        # Single-ontology modes are untouched by the delete policy: there the
-        # model saw the whole graph, so its deletes were judged on full
-        # evidence.
-        if (
-            state.ontology_context_mode
-            == OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY
-        ):
-            state.ontology_reduce_metrics["deletes_dropped_unredeclared"] = (
-                enforce_redeclared_deletes(merged_delta)
-            )
+        # A unit that saw its ontologies whole judged its deletes on full
+        # evidence; only deletes judged on a partial view need a redeclaration.
+        state.ontology_reduce_metrics["deletes_dropped_unredeclared"] = (
+            enforce_redeclared_deletes(merged_delta, deletes_on_partial_view)
+        )
 
         # Clean-up without a model, before anything reviews the delta:
         # consolidation and duplicate detection should not spend a decision on
@@ -616,6 +620,26 @@ def make_render_ontology_node(tools: ToolBox):
             seen_writable.add(state.home_ontology.iri)
             all_writable.append(state.home_ontology.iri)
 
+        # A fresh render is filed by subject like an update: what it states
+        # about another ontology's terms joins the delta for that ontology.
+        refiled = unowned = 0
+        for fresh in fresh_ontologies:
+            moved, dropped = refile_fresh_statements(
+                fresh,
+                writable_iris=all_writable,
+                ontology_manager=tools.ontology_manager,
+                current_domain=state.current_domain,
+                base_overrides=base_overrides,
+            )
+            for triple in moved:
+                merged_delta.inserts.add(triple)
+            refiled += len(moved)
+            unowned += dropped
+        if refiled:
+            state.ontology_reduce_metrics["fresh_triples_refiled"] = refiled
+        if unowned:
+            state.ontology_reduce_metrics["fresh_triples_unattributed"] = unowned
+
         catalog_index = tools.ontology_manager.catalog_surface_index()
         catalog_subjects = catalog_index.terms
         state.ontology_minted_classes = sorted(
@@ -628,12 +652,17 @@ def make_render_ontology_node(tools: ToolBox):
             state.ontology_minted_classes
         )
 
-        artifacts: list[Ontology] = list(fresh_ontologies)
+        # A fresh render whose every statement was filed elsewhere is not an
+        # ontology the document wrote.
+        artifacts: list[Ontology] = [
+            o for o in fresh_ontologies if set(o.graph.subjects()) - {URIRef(o.iri)}
+        ]
         if not merged_delta.is_empty() and all_writable:
             partitioned_inserts, unattributed = partition_triples_by_namespace(
                 merged_delta.inserts,
                 writable_iris=all_writable,
                 ontology_manager=tools.ontology_manager,
+                current_domain=state.current_domain,
                 base_overrides=base_overrides,
             )
             state.ontology_reduce_metrics["unattributed_insert_triples"] = unattributed
@@ -641,6 +670,7 @@ def make_render_ontology_node(tools: ToolBox):
                 merged_delta.deletes,
                 writable_iris=all_writable,
                 ontology_manager=tools.ontology_manager,
+                current_domain=state.current_domain,
                 base_overrides=base_overrides,
             )
             state.ontology_reduce_metrics["unattributed_delete_triples"] = (

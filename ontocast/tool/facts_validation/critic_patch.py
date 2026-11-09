@@ -47,6 +47,7 @@ from rdflib import RDF, BNode, Graph, URIRef
 from rdflib.term import Node
 
 from ontocast.onto.annotation import is_annotation
+from ontocast.onto.blank_structures import structure_closure
 from ontocast.onto.model import TripleFix
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
@@ -620,32 +621,17 @@ class _Candidate:
 
 
 def _bnode_closure(deletes: list[Triple], graph: RDFGraph) -> list[Triple]:
-    """Every statement about a blank node the fix touches.
+    """The fix's deletes plus every blank-node structure they would break.
 
     Deleting part of a blank node leaves the stub the ontology validator flags
     as a degenerate restriction: an ``owl:Restriction`` that constrains nothing,
-    still hanging off its ``subClassOf`` edge. A blank node is one object, so it
-    goes whole or not at all.
+    still hanging off its ``subClassOf`` edge. A structure (a restriction, a
+    list, nested to any depth) goes whole or not at all; see
+    :func:`~ontocast.onto.blank_structures.structure_closure`.
     """
-    closure = list(deletes)
-    seen = {triple for triple in deletes}
-    for _, _, obj in list(deletes):
-        if not isinstance(obj, BNode):
-            continue
-        for triple in graph.triples((obj, None, None)):
-            if triple not in seen:
-                seen.add(triple)
-                closure.append(triple)
-    for subject in {s for s, _, _ in deletes if isinstance(s, BNode)}:
-        for triple in graph.triples((subject, None, None)):
-            if triple not in seen:
-                seen.add(triple)
-                closure.append(triple)
-        for triple in graph.triples((None, None, subject)):
-            if triple not in seen:
-                seen.add(triple)
-                closure.append(triple)
-    return closure
+    closure = structure_closure(graph, deletes)
+    extra = sorted(closure.difference(deletes), key=lambda t: tuple(map(str, t)))
+    return [*deletes, *extra]
 
 
 def _subject_survives(

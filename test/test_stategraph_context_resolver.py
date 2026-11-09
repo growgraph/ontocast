@@ -324,6 +324,7 @@ def test_resolver_vector_retrieval_prefers_ensemble() -> None:
     assert result.primary_writable_iri == ontology_iri
     assert len(result.snapshot.graph) > 0
     assert result.assembly_mode == OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
+    assert result.snapshot.partial
 
 
 def test_resolver_vector_retrieval_raises_when_vector_stack_missing() -> None:

@@ -185,7 +185,7 @@ def test_unredeclared_deletes_are_dropped_redeclared_kept() -> None:
             (has_part, RDFS.label, Literal("has part")),  # bare -> dropped
         ),
     )
-    dropped = enforce_redeclared_deletes(delta)
+    dropped = enforce_redeclared_deletes(delta, delta.deletes.copy())
     assert dropped == 1
     assert (sample, RDFS.label, Literal("Sample")) in delta.deletes
     assert not list(delta.deletes.triples((has_part, None, None)))
