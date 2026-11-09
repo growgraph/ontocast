@@ -209,7 +209,7 @@ except `label_collision` and `specific_label_leaf`:
 
 | Finding | What it catches |
 |---|---|
-| `foreign_namespace` | A term minted under a namespace no context ontology declares terms in; the reduce would drop it as unattributable. Also `example.org` terms and ontology terms minted in a facts namespace |
+| `foreign_namespace` | A term minted under a namespace no context ontology declares terms in; the reduce would drop it as unattributable. With a home ontology, its namespace is always accepted (a new home has no terms yet), and a new term under any other namespace is flagged, since the reduce drops it. Also `example.org` terms and ontology terms minted in a facts namespace |
 | `foreign_delete` | A delete of catalog content whose subject the unit does not redeclare |
 | `subclass_cycle` | An inserted `rdfs:subClassOf` that closes a cycle through snapshot and delta |
 | `role_confusion` | A catalog class used as a property, or a catalog property used as a class |
@@ -392,7 +392,9 @@ gate without step 3, since one unit has nothing to un-merge.
 
 The per-unit snapshot under `selected_vector_search_ontology` is a retrieved
 subset of the catalog, so judgments that need the whole catalog run at the
-reduce step, where the catalog heads are loaded:
+reduce step, where the catalog heads are loaded. The clean-up rules (external
+subjects through `Thing`) run first, before reconciliation and the term
+decisions see the delta:
 
 | Policy | Behavior | Counter |
 |---|---|---|
@@ -401,10 +403,12 @@ reduce step, where the catalog heads are loaded:
 | Fresh-ontology reconciliation | Units that rendered fresh each produced terms under the document's one home ontology; their graphs are unioned into one root. A fresh unit under any other IRI is a fault and stops the run | `fresh_ontologies_merged` |
 | External subjects | A triple whose subject lies in the namespace of an external ontology (one not under `CURRENT_DOMAIN`), or under a path of it, is removed: external terms are used, never changed | `external_subject_refused` |
 | Example namespaces | A triple naming an IRI under `example.org`, `example.com` or `example.net` outside `CURRENT_DOMAIN` is removed: the model took a placeholder namespace from a prompt example | `example_namespace_dropped` |
+| Minted outside home | A term the delta newly declares (not in the catalog) under any namespace other than the home ontology's is removed with every triple naming it: every new term of a document lives under its home namespace | `minted_outside_home_dropped` |
+| Non-term subjects | A subject in the facts namespace, an individual (typed, but neither as a class, a property nor a SKOS concept), or an untyped subject that neither the catalog nor a subclass, domain or range axiom declares is removed: an ontology update declares terms and value sets, and the rest belongs in the facts graph | `non_term_subjects_dropped` |
 | Datatype ranges | A property with several datatype ranges keeps one: `rdfs:Literal` goes beside a concrete datatype, and of several concrete ones the first of `rdf:langString`, `xsd:string`, then numbers from wide to narrow, then time, stays. Several ranges mean their intersection, empty for two datatypes | `datatype_ranges_normalized` |
 | `Thing` | `owl:Thing` or `schema:Thing` as a range or domain, or as a parent beside another parent, is removed: it constrains nothing | `vacuous_upper_terms_dropped` |
 | Home target | The home ontology is always a write target. When it is not stored yet and no unit rendered it fresh, an empty root under its identity receives its terms; under vector retrieval units render updates against catalog patches even for a new home | — |
-| Attribution | A triple goes to the writable ontology that owns its subject's namespace, else its predicate's. Only a blank subject (a restriction, a list cell) falls back to its object's owner; a named subject no writable ontology owns is dropped | `unattributed_insert_triples` |
+| Attribution | A triple goes to the writable ontology that owns its subject's namespace. A blank subject (a restriction, a list cell) goes to its object's owner; a named subject no writable ontology owns is dropped, never filed by its predicate or object | `unattributed_insert_triples` |
 
 ## The ontology plan and term decisions
 

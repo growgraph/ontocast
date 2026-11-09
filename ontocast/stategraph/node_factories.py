@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, Coroutine, Sequence
+from collections.abc import AsyncGenerator, Collection, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, TypeVar
 
@@ -10,6 +10,7 @@ from rdflib import RDF, RDFS, Literal, URIRef
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.agent.resolve_coreference import judge_coreference
 from ontocast.agent.summarize_chunks import ensure_unit_summary
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.enum import (
     OntologyAssemblyMode,
@@ -66,6 +67,8 @@ from ontocast.tool.ontology_validation import (
 from ontocast.tool.ontology_validation.axiom_hygiene import (
     drop_example_namespace_triples,
     drop_external_subjects,
+    drop_non_term_subjects,
+    drop_terms_minted_outside_home,
     drop_vacuous_upper_terms,
     normalize_datatype_ranges,
 )
@@ -118,19 +121,41 @@ def external_namespaces(tools: ToolBox, current_domain: str) -> list[str]:
 
 
 def clean_ontology_delta(
-    graphs: Sequence[RDFGraph], external: Sequence[str], current_domain: str
+    graphs: Sequence[RDFGraph],
+    *,
+    external: Sequence[str],
+    current_domain: str,
+    catalog_terms: Collection[str],
+    ontology_iris: Collection[str],
+    home_namespace: str | None,
 ) -> dict[str, int]:
-    """Apply the deterministic clean-up rules to each graph; the counts removed."""
+    """Apply the deterministic clean-up rules to each graph; the counts removed.
+
+    ``catalog_terms`` are the terms every catalog head declares and
+    ``ontology_iris`` the heads' (and the home's) IRIs: statements about them
+    are not undeclared. Without a home namespace, terms are not checked for
+    where they were minted.
+    """
     counts = {
         "external_subject_refused": 0,
         "example_namespace_dropped": 0,
+        "minted_outside_home_dropped": 0,
+        "non_term_subjects_dropped": 0,
         "datatype_ranges_normalized": 0,
         "vacuous_upper_terms_dropped": 0,
     }
+    declared = {*catalog_terms, *ontology_iris}
     for graph in graphs:
         counts["external_subject_refused"] += drop_external_subjects(graph, external)
         counts["example_namespace_dropped"] += drop_example_namespace_triples(
             graph, current_domain
+        )
+        if home_namespace:
+            counts["minted_outside_home_dropped"] += drop_terms_minted_outside_home(
+                graph, home_namespace=home_namespace, catalog_terms=catalog_terms
+            )
+        counts["non_term_subjects_dropped"] += drop_non_term_subjects(
+            graph, declared=declared, facts_namespace=DEFAULT_IRI
         )
         counts["datatype_ranges_normalized"] += normalize_datatype_ranges(graph)
         counts["vacuous_upper_terms_dropped"] += drop_vacuous_upper_terms(graph)
@@ -509,6 +534,29 @@ def make_render_ontology_node(tools: ToolBox):
                 enforce_redeclared_deletes(merged_delta)
             )
 
+        # Clean-up without a model, before anything reviews the delta:
+        # consolidation and duplicate detection should not spend a decision on
+        # a triple that is never written.
+        home = state.home_ontology
+        hygiene = clean_ontology_delta(
+            [
+                merged_delta.inserts,
+                merged_delta.deletes,
+                *(o.graph for o in fresh_ontologies),
+            ],
+            external=external_namespaces(tools, state.current_domain),
+            current_domain=state.current_domain,
+            catalog_terms=tools.ontology_manager.catalog_surface_index().terms,
+            ontology_iris=[
+                *(head.iri for head in tools.ontology_manager.ontologies if head.iri),
+                *([home.iri] if home is not None else []),
+            ],
+            home_namespace=home.namespace if home is not None else None,
+        )
+        state.ontology_reduce_metrics.update(
+            {key: value for key, value in hygiene.items() if value}
+        )
+
         # Minted-duplicate reconciliation against the whole catalog, not the
         # units' snapshots: under vector retrieval a term the retrieval failed
         # to surface gets re-minted under a fresh IRI. 'detect' (default) only
@@ -561,18 +609,6 @@ def make_render_ontology_node(tools: ToolBox):
         )
         fresh_ontologies = [o for o in fresh_ontologies if len(o.graph) > 0]
 
-        hygiene = clean_ontology_delta(
-            [
-                merged_delta.inserts,
-                merged_delta.deletes,
-                *(o.graph for o in fresh_ontologies),
-            ],
-            external_namespaces(tools, state.current_domain),
-            state.current_domain,
-        )
-        state.ontology_reduce_metrics.update(
-            {key: value for key, value in hygiene.items() if value}
-        )
         base_overrides = home_base_overrides(state, tools, fresh_ontologies)
         if state.home_ontology is not None and state.home_ontology.iri not in (
             seen_writable

@@ -12,7 +12,7 @@ import logging
 from collections import defaultdict
 
 from pydantic import Field
-from rdflib import Literal, URIRef
+from rdflib import URIRef
 
 from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.content_unit import ContentUnit, OutputType
@@ -160,9 +160,12 @@ def partition_triples_by_namespace(
 ) -> tuple[dict[str, RDFGraph], int]:
     """Partition delta triples onto writable catalog IRIs by namespace ownership.
 
-    Works for both insert and delete deltas. Ownership prefers the subject URI
-    namespace, then the predicate namespace; a blank subject falls back to the
-    object's.
+    Works for both insert and delete deltas. A triple belongs to the ontology
+    that owns its subject; a blank subject (an OWL restriction, a list cell)
+    belongs to the owner of its object. A named subject no writable ontology
+    owns is never filed by its predicate or object: that would write an
+    assertion about an individual, or an axiom about a term whose declaration
+    went nowhere, into whichever ontology owns the property it uses.
     Returns ``(iri → graph, unattributed_triple_count)``.
     """
     owners = build_namespace_owner_map(
@@ -181,21 +184,8 @@ def partition_triples_by_namespace(
         owner: str | None = None
         if isinstance(s, URIRef):
             owner = _owner_for_uri(str(s), owners)
-        if owner is None and isinstance(p, URIRef):
-            owner = _owner_for_uri(str(p), owners)
-        if (
-            owner is None
-            and not isinstance(s, URIRef)
-            and isinstance(o, URIRef)
-            and not isinstance(o, Literal)
-        ):
-            # Only a blank subject (an OWL restriction, a list cell) is filed
-            # by its object. A named subject no writable ontology owns stays
-            # unattributed: filing it by its object wrote axioms about a term
-            # whose declaration went nowhere.
-            candidate = _owner_for_uri(str(o), owners)
-            if candidate is not None:
-                owner = candidate
+        elif isinstance(o, URIRef):
+            owner = _owner_for_uri(str(o), owners)
 
         if owner is None or owner not in writable:
             unattributed += 1

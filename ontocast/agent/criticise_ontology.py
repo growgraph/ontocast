@@ -38,6 +38,7 @@ from ontocast.prompt.criticise_ontology import (
 )
 from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.ontology_context import build_ontology_index
+from ontocast.prompt.render_ontology import home_namespace_clause
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool import LLMTool
 from ontocast.tool.atomic import AtomicToolBox
@@ -46,6 +47,21 @@ from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.ontology_validation import count_fixes_targeting_snapshot
 
 logger = logging.getLogger(__name__)
+
+
+def critic_intro(state: UnitOntologyState) -> str:
+    """The critic's intro, naming the document's home namespace when there is one.
+
+    A critic that does not know where new terms belong reads the home prefix
+    as undeclared and asks for a namespace repair, which re-mints the terms
+    elsewhere.
+    """
+    home = state.home_ontology
+    if home is None:
+        return intro_instruction
+    return intro_instruction + home_namespace_clause.format(
+        namespace=home.namespace, ontology_id=home.ontology_id
+    )
 
 
 async def criticise_ontology(
@@ -157,7 +173,7 @@ async def criticise_ontology(
             parser=parser,
             prompt_kwargs={
                 "preamble": system_preamble,
-                "intro_instruction": intro_instruction,
+                "intro_instruction": critic_intro(state),
                 "ontology_criteria": ontology_criteria_str,
                 "text_chapter": text_chapter,
                 "user_instruction": user_instruction,

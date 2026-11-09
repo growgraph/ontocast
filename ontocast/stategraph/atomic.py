@@ -279,6 +279,11 @@ def _collect_ontology_findings(
             else OntologyValidationConfig().max_class_depth
         ),
         catalog_index=atomic.catalog_surface_index() if atomic is not None else None,
+        home_namespace=(
+            unit_state.home_ontology.namespace
+            if unit_state.home_ontology is not None
+            else None
+        ),
     )
     unit_state.budget_tracker.add_duration(
         "ontology_validation/unit_findings", time.perf_counter() - started

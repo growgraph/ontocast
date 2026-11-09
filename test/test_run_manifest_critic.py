@@ -110,6 +110,31 @@ def test_batch_state_merge_carries_the_critic_telemetry() -> None:
     assert state.ontology_reduce_metrics["minted_duplicates"] == 2
 
 
+def test_batch_state_merge_carries_the_ontology_versions() -> None:
+    """Serialization records the versions it wrote and read; off the copy list
+    the batch manifest's ``ontology_versions`` was always empty, and the dump
+    could not find the stored version of a new ontology."""
+    from ontocast.api.process_helpers import _merge_workflow_state_into_agent_state
+    from ontocast.onto.state import AgentState, OntologyVersionRecord, VersionRef
+
+    written = OntologyVersionRecord(
+        iri="https://example.com/o",
+        version_iri="https://example.com/o#v1",
+        ontology_id="o",
+        version="1.0.0",
+        role="created",
+    )
+    read = VersionRef(
+        iri="https://example.com/c", version_iri="https://example.com/c#v3"
+    )
+    chunk = {"ontology_versions_written": [written], "ontology_versions_read": [read]}
+
+    state = _merge_workflow_state_into_agent_state(AgentState(), chunk)
+
+    assert state.ontology_versions_written == [written]
+    assert state.ontology_versions_read == [read]
+
+
 def test_batch_state_merge_carries_the_selection_census_and_unit_ledgers() -> None:
     """The selection census and the per-unit ledgers ride the same copy list.
 

@@ -15,13 +15,20 @@ many it removed, for ``ontology_reduce_metrics``:
 - :func:`drop_vacuous_upper_terms`: ``owl:Thing`` / ``schema:Thing`` as a
   range or domain, or as a parent beside another parent, says nothing and
   reads as a modelling decision.
+- :func:`drop_non_term_subjects`: an ontology update declares terms and value
+  sets. A subject in the facts namespace, an individual (typed, but neither as
+  a term nor as a SKOS concept), or an untyped subject that nothing declares
+  belongs in the facts graph, not in an ontology.
+- :func:`drop_terms_minted_outside_home`: every new term of a document lives
+  under its home namespace; a term newly declared under another namespace is
+  a second copy of one the document already named, or a guess.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-from rdflib import OWL, RDF, RDFS, XSD, Graph, URIRef
+from rdflib import OWL, RDF, RDFS, SKOS, XSD, Graph, URIRef
 
 from ontocast.onto.iri_policy import split_namespace_local
 
@@ -38,6 +45,37 @@ THING_IRIS: frozenset[URIRef] = frozenset(
         OWL.Thing,
         URIRef("http://schema.org/Thing"),
         URIRef("https://schema.org/Thing"),
+    }
+)
+
+#: ``rdf:type`` objects that make a subject something an ontology may declare.
+TERM_TYPES: frozenset[URIRef] = frozenset(
+    {
+        OWL.Class,
+        RDFS.Class,
+        OWL.ObjectProperty,
+        OWL.DatatypeProperty,
+        OWL.AnnotationProperty,
+        RDF.Property,
+        RDFS.Datatype,
+        OWL.Ontology,
+        SKOS.Concept,
+        SKOS.ConceptScheme,
+    }
+)
+
+#: Predicates only a class or a property carries: an untyped subject with one
+#: of them is a term whose declaration the model left implicit.
+TERM_AXIOMS: frozenset[URIRef] = frozenset(
+    {
+        RDFS.subClassOf,
+        RDFS.subPropertyOf,
+        RDFS.domain,
+        RDFS.range,
+        OWL.equivalentClass,
+        OWL.equivalentProperty,
+        OWL.inverseOf,
+        OWL.disjointWith,
     }
 )
 
@@ -156,12 +194,79 @@ def drop_vacuous_upper_terms(graph: Graph) -> int:
     return len(doomed)
 
 
+def _drop_subjects(graph: Graph, subjects: Iterable[URIRef]) -> int:
+    doomed = [triple for s in subjects for triple in graph.triples((s, None, None))]
+    for triple in doomed:
+        graph.remove(triple)
+    return len(doomed)
+
+
+def drop_non_term_subjects(
+    graph: Graph, *, declared: Iterable[str], facts_namespace: str
+) -> int:
+    """Remove the triples whose subject is not a term or a value set.
+
+    A named subject stays when it is typed as one of :data:`TERM_TYPES`, or is
+    untyped and either in ``declared`` (catalog terms and ontology IRIs) or
+    carries one of :data:`TERM_AXIOMS`. A subject under ``facts_namespace``
+    never stays, whatever its type.
+    """
+    known = set(declared)
+    doomed: set[URIRef] = set()
+    for s in set(graph.subjects()):
+        if not isinstance(s, URIRef):
+            continue
+        if str(s).startswith(facts_namespace):
+            doomed.add(s)
+            continue
+        types = set(graph.objects(s, RDF.type))
+        if types & TERM_TYPES:
+            continue
+        if types:
+            doomed.add(s)
+        elif str(s) not in known and not any(
+            (s, p, None) in graph for p in TERM_AXIOMS
+        ):
+            doomed.add(s)
+    return _drop_subjects(graph, doomed)
+
+
+def drop_terms_minted_outside_home(
+    graph: Graph, *, home_namespace: str, catalog_terms: Iterable[str]
+) -> int:
+    """Remove every triple naming a term newly declared outside ``home_namespace``.
+
+    A term is newly declared when the graph types it as one of
+    :data:`TERM_TYPES` (ontology headers aside) and the catalog does not hold
+    it. Triples naming it as an object go too, so no axiom points at a term
+    that is not written.
+    """
+    catalog = set(catalog_terms)
+    strays = {
+        s
+        for s, o in graph.subject_objects(RDF.type)
+        if isinstance(s, URIRef)
+        and o in TERM_TYPES
+        and o != OWL.Ontology
+        and not str(s).startswith(home_namespace)
+        and str(s) not in catalog
+    }
+    doomed = [triple for triple in graph if triple[0] in strays or triple[2] in strays]
+    for triple in doomed:
+        graph.remove(triple)
+    return len(doomed)
+
+
 __all__ = [
     "DATATYPE_PRECEDENCE",
     "EXAMPLE_NAMESPACE_STEMS",
+    "TERM_AXIOMS",
+    "TERM_TYPES",
     "THING_IRIS",
     "drop_example_namespace_triples",
     "drop_external_subjects",
+    "drop_non_term_subjects",
+    "drop_terms_minted_outside_home",
     "drop_vacuous_upper_terms",
     "normalize_datatype_ranges",
 ]

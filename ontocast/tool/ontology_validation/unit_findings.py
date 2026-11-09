@@ -99,16 +99,31 @@ def _namespace_findings(
     declared_namespaces: set[str],
     fact_namespaces: Sequence[str],
     standard_namespaces: tuple[str, ...],
+    *,
+    home_namespace: str | None = None,
+    snapshot_graph: RDFGraph | None = None,
 ) -> list[OntologyUnitFinding]:
-    """Terms minted where no context ontology owns them.
+    """Terms minted where the reduce step will not write them.
 
     The reduce step attributes delta triples to writable catalog IRIs by
-    namespace ownership and **silently drops** what it cannot attribute
-    (``partition_triples_by_namespace``'s ``unattributed`` counter, DEBUG-only
-    until now). A subject under a namespace the snapshot declares no terms in
-    is that drop, predicted per-unit while a render can still fix it.
+    namespace ownership and drops what it cannot attribute, and it drops a
+    term newly declared outside the document's home namespace. A subject
+    under a namespace the snapshot declares no terms in, or (with a home) a
+    new term under any namespace but the home's, is that drop, predicted
+    per-unit while a render can still fix it. The home namespace is always
+    accepted: a new home has no terms in the snapshot yet.
     """
     findings: list[OntologyUnitFinding] = []
+    if home_namespace:
+        declared_namespaces = {*declared_namespaces, home_namespace}
+    snapshot_subjects = (
+        set(snapshot_graph.subjects()) if snapshot_graph is not None else set()
+    )
+    where = (
+        f"the document's home namespace <{home_namespace}>"
+        if home_namespace
+        else "one of the context ontology namespaces"
+    )
     normalized_fact_namespaces = [ns for ns in fact_namespaces if ns]
     for subject in _new_subjects(inserts):
         text = str(subject)
@@ -159,6 +174,25 @@ def _namespace_findings(
                 )
             )
             continue
+        if (
+            home_namespace
+            and namespace in declared_namespaces
+            and not text.startswith(home_namespace)
+            and subject not in snapshot_subjects
+        ):
+            findings.append(
+                OntologyUnitFinding(
+                    kind=OntologyUnitFindingKind.FOREIGN_NAMESPACE,
+                    message=(
+                        f"<{text}> is a new term under <{namespace}>; every new "
+                        f"term of this document lives under {where}, and the "
+                        "catalog apply step drops it anywhere else. Declare it "
+                        "there, or reuse an existing term."
+                    ),
+                    subject=text,
+                )
+            )
+            continue
         if namespace in declared_namespaces or namespace.startswith(
             standard_namespaces
         ):
@@ -170,8 +204,7 @@ def _namespace_findings(
                     f"<{text}> is minted under <{namespace}>, a namespace no "
                     "ontology in this unit's context declares terms under. "
                     "The catalog apply step will drop these triples as "
-                    "unattributable — re-declare the term under one of the "
-                    "context ontology namespaces."
+                    f"unattributable — re-declare the term under {where}."
                 ),
                 subject=text,
             )
@@ -641,6 +674,7 @@ def collect_ontology_unit_findings(
     policy: ValidationPolicy | None = None,
     max_class_depth: int = 6,
     catalog_index: CatalogSurfaceIndex | None = None,
+    home_namespace: str | None = None,
 ) -> list[OntologyUnitFinding]:
     """Assemble all deterministic findings for one unit's ontology delta.
 
@@ -660,6 +694,8 @@ def collect_ontology_unit_findings(
             sit on.
         catalog_index: Names of every catalog term, for the duplicate check;
             ``None`` skips it.
+        home_namespace: The document's home namespace: where every new term
+            belongs. ``None`` accepts any namespace the snapshot declares.
 
     Returns:
         Findings, mandatory first is *not* guaranteed — order follows the
@@ -677,7 +713,12 @@ def collect_ontology_unit_findings(
     declared = collect_declared_namespaces(snapshot_graph)
     findings: list[OntologyUnitFinding] = [
         *_namespace_findings(
-            inserts, declared, fact_namespaces, active_policy.standard_namespaces()
+            inserts,
+            declared,
+            fact_namespaces,
+            active_policy.standard_namespaces(),
+            home_namespace=home_namespace,
+            snapshot_graph=snapshot_graph,
         ),
         *_degenerate_restriction_findings(inserts),
         *_missing_label_findings(inserts, snapshot_graph),

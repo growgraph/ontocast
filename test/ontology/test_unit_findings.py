@@ -96,6 +96,36 @@ def test_fresh_create_path_has_no_namespace_authority() -> None:
     assert findings == []
 
 
+HOME = "https://own.example/sports#"
+
+
+def test_a_new_home_namespace_is_accepted_though_the_snapshot_has_no_terms() -> None:
+    """A new home has no terms yet; flagging its prefix as unattributable
+    sent the critic to re-mint every term under a context namespace."""
+    league = URIRef(f"{HOME}League")
+    inserts = _graph(
+        (league, RDF.type, OWL.Class),
+        (league, RDFS.label, Literal("League")),
+        (league, RDFS.subClassOf, URIRef(f"{ONTO}Device")),
+    )
+    assert _collect(inserts, home_namespace=HOME) == []
+    assert _kinds(_collect(inserts)) == {OntologyUnitFindingKind.FOREIGN_NAMESPACE}
+
+
+def test_with_a_home_a_new_term_under_another_context_namespace_is_mandatory() -> None:
+    """Reduce drops it; the finding names the home so the fix lands there."""
+    stray = URIRef(f"{ONTO}Edition")
+    inserts = _graph(
+        (stray, RDF.type, OWL.Class),
+        (stray, RDFS.label, Literal("Edition")),
+        (URIRef(f"{ONTO}Sample"), RDFS.comment, Literal("A sample.")),
+    )
+    findings = _collect(inserts, home_namespace=HOME)
+    assert [finding.subject for finding in findings] == [str(stray)]
+    assert findings[0].mandatory
+    assert f"<{HOME}>" in findings[0].message
+
+
 def test_example_org_placeholder_flagged_even_on_fresh_path() -> None:
     minted = URIRef("http://example.org/onto#Thing")
     inserts = _graph(

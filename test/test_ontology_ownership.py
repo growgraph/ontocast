@@ -17,6 +17,7 @@ from ontocast.config import (
     PathConfig,
     ToolConfig,
 )
+from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import RenderMode, Status
 from ontocast.onto.identity import (
@@ -41,6 +42,8 @@ from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.ontology_validation.axiom_hygiene import (
     drop_example_namespace_triples,
     drop_external_subjects,
+    drop_non_term_subjects,
+    drop_terms_minted_outside_home,
     drop_vacuous_upper_terms,
     normalize_datatype_ranges,
 )
@@ -307,6 +310,119 @@ def test_a_named_subject_is_not_filed_by_its_object() -> None:
     assert unattributed == 1
 
 
+def test_a_named_subject_is_not_filed_by_its_predicate() -> None:
+    """A fact using an external property never lands in the external ontology."""
+    head = _external_head()
+    inserts = RDFGraph()
+    inserts.add(
+        (
+            URIRef(f"{DEFAULT_IRI}Acme"),
+            URIRef(f"{EXT_IRI}/city"),
+            URIRef(f"{DEFAULT_IRI}SantaClara"),
+        )
+    )
+    buckets, unattributed = partition_triples_by_namespace(
+        inserts, writable_iris=[head.iri], ontology_manager=_manager(head)
+    )
+    assert buckets == {}
+    assert unattributed == 1
+
+
+HOME_NS = f"{DOMAIN}/sports#"
+
+
+def test_facts_individuals_and_undeclared_subjects_are_dropped() -> None:
+    graph = RDFGraph()
+    league = URIRef(f"{HOME_NS}League")
+    graph.add((league, RDF.type, OWL.Class))
+    graph.add((league, RDFS.label, Literal("league")))
+    weekly = URIRef(f"{HOME_NS}Weekly")
+    graph.add((weekly, RDF.type, URIRef("http://www.w3.org/2004/02/skos/core#Concept")))
+    implicit = URIRef(f"{HOME_NS}Cup")
+    graph.add((implicit, RDFS.subClassOf, league))
+    catalog_term = URIRef(f"{DOMAIN}/sports#Team")
+    graph.add((catalog_term, RDFS.comment, Literal("A team.")))
+    fact = URIRef(f"{DEFAULT_IRI}Acme")
+    graph.add((fact, URIRef(f"{EXT_IRI}/city"), URIRef(f"{DEFAULT_IRI}SantaClara")))
+    graph.add((fact, RDF.type, OWL.Class))
+    person = URIRef(f"{HOME_NS}TerryCampese")
+    graph.add((person, RDF.type, URIRef("http://xmlns.com/foaf/0.1/Person")))
+    match = URIRef(f"{HOME_NS}2022Match")
+    graph.add((match, URIRef("https://schema.org/competitor"), league))
+
+    dropped = drop_non_term_subjects(
+        graph, declared={str(catalog_term)}, facts_namespace=DEFAULT_IRI
+    )
+
+    assert dropped == 4
+    assert {s for s in graph.subjects()} == {league, weekly, implicit, catalog_term}
+
+
+def test_a_term_minted_outside_the_home_goes_with_every_mention() -> None:
+    graph = RDFGraph()
+    home_term = URIRef(f"{HOME_NS}Edition")
+    stray = URIRef(f"{DOMAIN}/ext-ext#Edition")
+    catalog_term = URIRef(f"{DOMAIN}/ext-ext#Venue")
+    for term in (home_term, stray, catalog_term):
+        graph.add((term, RDF.type, OWL.Class))
+    graph.add((home_term, RDFS.subClassOf, stray))
+    graph.add((stray, RDFS.label, Literal("edition")))
+
+    dropped = drop_terms_minted_outside_home(
+        graph, home_namespace=HOME_NS, catalog_terms={str(catalog_term)}
+    )
+
+    assert dropped == 3
+    assert set(graph.subjects()) == {home_term, catalog_term}
+    assert (home_term, RDFS.subClassOf, stray) not in graph
+
+
+def test_the_critic_is_told_the_home_namespace() -> None:
+    """Without it the critic reads the home prefix as undeclared and asks for a
+    namespace repair, which re-mints the terms elsewhere."""
+    critic_module = importlib.import_module("ontocast.agent.criticise_ontology")
+    home = OntologyIdentity(
+        ontology_id="ext-ext", iri=f"{DOMAIN}/ext-ext", title="Extension"
+    )
+    unit = ContentUnit(text="Teams.", index=0, doc_iri=URIRef(f"{DOMAIN}/doc/d1"))
+    state = UnitOntologyState(content_unit=unit, home_ontology=home)
+    assert f"<{home.namespace}>" in critic_module.critic_intro(state)
+    bare = UnitOntologyState(content_unit=unit)
+    assert critic_module.critic_intro(bare) == critic_module.intro_instruction
+
+
+def test_a_written_ontology_is_dumped_as_its_stored_version(tmp_path) -> None:
+    """The reduced artifact precedes stamping: a new ontology has no header."""
+    from ontocast.api.process_helpers import dump_ontology_ttls
+    from ontocast.onto.state import OntologyVersionRecord
+
+    home = OntologyIdentity(ontology_id="sports", iri=f"{DOMAIN}/sports", title="S")
+    reduced = mint_ontology(home, _classes(HOME_NS, "League"))
+    stored = stamped_ontology(
+        _classes(HOME_NS, "League"), ontology_id="sports", iri=home.iri, title="S"
+    )
+    assert stored.version_iri is not None
+    state = AgentState(current_domain=DOMAIN)
+    state.reduced_ontology_artifacts = [reduced]
+    state.ontology_versions_written = [
+        OntologyVersionRecord(
+            iri=stored.iri,
+            version_iri=stored.version_iri,
+            ontology_id="sports",
+            version=stored.version or "",
+            role="created",
+        )
+    ]
+    src = tmp_path / "doc.txt"
+    src.write_text("x")
+    (path,) = dump_ontology_ttls(
+        state, src, output_dir=tmp_path, ontology_manager=_manager(stored)
+    )
+    dumped = RDFGraph._from_turtle_str(path.read_text())
+    assert (URIRef(home.iri), RDF.type, OWL.Ontology) in dumped
+    assert (URIRef(home.iri), OWL.versionIRI, URIRef(stored.version_iri)) in dumped
+
+
 # --- end to end: a document whose home is an external ontology -------------
 
 
@@ -329,13 +445,22 @@ def test_update_renders_land_in_the_extension_and_never_in_the_external(
     """Units render updates against the external ontology's patch.
 
     Each unit mints a class under the home (the extension, not yet stored),
-    re-declares an external term with a new parent, and writes a stray
-    example.com axiom. Only the home terms are written, into a new extension
-    ontology that imports the external one.
+    re-declares an external term with a new parent, writes a stray
+    example.com axiom, a fact using an external property, an individual under
+    the home namespace, and a copy of its class under another writable owned
+    ontology. Only the home terms are written, into a new extension ontology
+    that imports the external one.
     """
     tools = ToolBox(_config())
     external = _external_head()
     tools.ontology_manager.add_ontology(external, skip_vector_index=True)
+    sports = stamped_ontology(
+        _classes(f"{DOMAIN}/sports#", "Venue"),
+        ontology_id="sports",
+        iri=f"{DOMAIN}/sports",
+        title="Sports",
+    )
+    tools.ontology_manager.add_ontology(sports, skip_vector_index=True)
 
     _answer_identity(monkeypatch, "ext")
 
@@ -355,7 +480,7 @@ def test_update_renders_land_in_the_extension_and_never_in_the_external(
     async def fake_resolve(_state, _tools, _unit, **_kwargs) -> UnitOntologyContext:
         return UnitOntologyContext(
             snapshot=snapshot_from_ontology(external),
-            writable_iris=[external.iri],
+            writable_iris=[external.iri, sports.iri],
             confidence=1.0,
         )
 
@@ -378,10 +503,23 @@ def test_update_renders_land_in_the_extension_and_never_in_the_external(
                 URIRef(f"{EXT_IRI}/League"),
             )
         )
+        inserts.add(
+            (
+                URIRef(f"{DEFAULT_IRI}Club{state.content_unit.index}"),
+                URIRef(f"{EXT_IRI}/city"),
+                URIRef(f"{DEFAULT_IRI}Leeds"),
+            )
+        )
+        inserts.add(
+            (URIRef(f"{home.namespace}Leeds"), RDF.type, URIRef(f"{EXT_IRI}/League"))
+        )
+        copy = URIRef(f"{DOMAIN}/sports#{name}")
+        inserts.add((copy, RDF.type, OWL.Class))
+        inserts.add((copy, RDFS.label, Literal(name)))
         report = GraphUpdateRenderReport(insert_graph=inserts)
         state.ontology_updates.append(report.to_graph_update())
         state.update_ontology()
-        state.writable_iris = [external.iri]
+        state.writable_iris = [external.iri, sports.iri]
         state.status = Status.SUCCESS
         return state
 
@@ -442,9 +580,13 @@ def test_update_renders_land_in_the_extension_and_never_in_the_external(
     subjects = {str(s) for s in artifact.graph.subjects()}
     assert not any(s.startswith(EXT_IRI) for s in subjects)
     assert not any("example.com/cycling-sport" in s for s in subjects)
+    assert not any(s.startswith(DEFAULT_IRI) for s in subjects)
+    assert f"{home.namespace}Leeds" not in subjects
     metrics = final["ontology_reduce_metrics"]
     assert metrics["external_subject_refused"] >= 1
     assert metrics["example_namespace_dropped"] >= 1
+    assert metrics["non_term_subjects_dropped"] >= 2
+    assert metrics["minted_outside_home_dropped"] >= 2
 
 
 def test_the_update_prompt_names_the_home_namespace() -> None:

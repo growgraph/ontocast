@@ -63,6 +63,13 @@ ontology is refused at the end of the document and counted
 redeclared or given new axioms. To extend a seed ontology in place, serve it
 under `CURRENT_DOMAIN`.
 
+Every new term of a document lives under its home namespace; the render and
+critic prompts name it, and a term newly declared anywhere else is dropped
+(`minted_outside_home_dropped`). An ontology update declares classes,
+properties and SKOS concepts (value sets) only: a person, place, organisation
+or event named in the text is a fact, and is dropped from the update
+(`non_term_subjects_dropped`).
+
 A unit mints a class only at the level a second document in the same domain
 would reuse. A case the document reports, such as a numbered sample or a
 composition, is an individual or a property value in the facts. A distinction

@@ -39,6 +39,7 @@ from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.llm import LLMConfigurationError
+from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 from ontocast.util.graph_metrics import facts_graph_shape_metrics
@@ -534,15 +535,48 @@ def _ontology_artifacts_for_dump(state: AgentState) -> list[Ontology]:
     ]
 
 
+def _as_written(
+    artifacts: list[Ontology], state: AgentState, ontology_manager: OntologyManager
+) -> list[Ontology]:
+    """Each artifact the document wrote a version of, replaced by that version.
+
+    The reduced artifact precedes stamping, so a new ontology has no header
+    yet and an updated one still carries its prior version's.
+    """
+    written = {
+        record.iri: record.version_iri for record in state.ontology_versions_written
+    }
+    result: list[Ontology] = []
+    for artifact in artifacts:
+        version_iri = written.get(artifact.iri)
+        head = (
+            ontology_manager.get_ontology(ontology_iri=artifact.iri)
+            if version_iri
+            else None
+        )
+        if head is not None and not head.is_null() and head.version_iri == version_iri:
+            result.append(head)
+        else:
+            result.append(artifact)
+    return result
+
+
 def dump_ontology_ttls(
     state: AgentState,
     file_path: pathlib.Path,
     *,
     line_number: int | None = None,
     output_dir: pathlib.Path | None = None,
+    ontology_manager: OntologyManager | None = None,
 ) -> list[pathlib.Path]:
-    """Write provenance-stripped ontology Turtle dumps when artifacts exist."""
+    """Write provenance-stripped ontology Turtle dumps when artifacts exist.
+
+    With ``ontology_manager``, an ontology the document wrote a version of is
+    dumped as that stored version, header included.
+    """
     artifacts = _ontology_artifacts_for_dump(state)
+    if ontology_manager is not None:
+        artifacts = _as_written(artifacts, state, ontology_manager)
     if not artifacts:
         return []
     if output_dir is not None:
@@ -808,6 +842,14 @@ def _merge_workflow_state_into_agent_state(
     artifacts = workflow_state.get("ontology_artifacts")
     if artifacts is not None:
         state.ontology_artifacts = list(artifacts)
+    # Written by serialization: the manifest's version lineage and the dump of
+    # each ontology as stored both read them.
+    written = workflow_state.get("ontology_versions_written")
+    if written is not None:
+        state.ontology_versions_written = list(written)
+    read = workflow_state.get("ontology_versions_read")
+    if read is not None:
+        state.ontology_versions_read = list(read)
     # Without these the post-aggregation validation gate is log-only on the
     # batch path: its findings and counters never reach the dumped state.
     findings = workflow_state.get("facts_validation_findings")
@@ -1060,6 +1102,7 @@ async def process_files_input(
                     file_path,
                     line_number=line_number,
                     output_dir=ontology_dir,
+                    ontology_manager=tools.ontology_manager,
                 )
                 if dump_catalog:
                     await dump_catalog_nquads(

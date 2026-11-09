@@ -131,7 +131,7 @@ general_ontology_instruction = f"""
    - **Naming: Follow existing PascalCase/camelCase patterns**
    - **Structure: Respect existing hierarchy depth and property usage patterns**
 
-5a. **Subclass or property value?** A distinction that varies from one instance to the next (a composition, a material, a method, a status, a category) is a property with values: an object property whose values are individuals or SKOS concepts, or a datatype property. It is never a family of sibling subclasses. Example: `ex:Vehicle` with `ex:hasFuelType` and individuals `ex:Diesel`, `ex:Petrol`, not `ex:DieselVehicle` and `ex:PetrolVehicle`. A subclass is justified only when it carries properties or restrictions of its own.
+5a. **Subclass or property value?** A distinction that varies from one instance to the next (a composition, a material, a method, a status, a category) is a property with values: an object property whose values are SKOS concepts, or a datatype property. It is never a family of sibling subclasses. Example: `ex:Vehicle` with `ex:hasFuelType` and `ex:Diesel a skos:Concept`, `ex:Petrol a skos:Concept`, not `ex:DieselVehicle` and `ex:PetrolVehicle`. A SKOS concept is the only individual an ontology update may declare: a named person, place, organisation or event belongs in the facts graph. A subclass is justified only when it carries properties or restrictions of its own.
 
 5b. **Reuse before minting, and stay shallow.** When a term in the ontology context or a well-known vocabulary (schema.org, SKOS, SOSA/SSN, QUDT, PROV-O) names the concept, use it. Attach a new class at most two levels below an existing class, and do not build chains of single-child intermediate classes.
 
