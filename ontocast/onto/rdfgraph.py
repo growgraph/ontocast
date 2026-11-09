@@ -1619,9 +1619,35 @@ class RDFGraph(Graph):
             A new graph with the same triples, the same namespace bindings, and
             blank nodes named ``_:b0``, ``_:b1``, ... in canonical order.
         """
+        renamed = self.canonical_bnode_names()
+        if not renamed:
+            return self
+
+        canonical = RDFGraph()
+        for prefix, namespace in self.namespaces():
+            canonical.bind(prefix, namespace)
+        for subject, predicate, obj in self:
+            canonical.add(
+                (
+                    renamed.get(subject, subject),
+                    renamed.get(predicate, predicate),
+                    renamed.get(obj, obj),
+                )
+            )
+        if self.has_reifications:
+            canonical.reifications.update(self.reifications)
+            canonical.reifications.rename(lambda term: renamed.get(term, term))
+        return canonical
+
+    def canonical_bnode_names(self) -> dict[BNode, BNode]:
+        """The canonical label of each blank node, as :meth:`canonicalize_bnodes` assigns it.
+
+        For a view that shows the graph under canonical labels while keeping its
+        own nodes, such as a prompt listing whose ids resolve back to this graph.
+        """
         bnodes = {term for triple in self for term in triple if isinstance(term, BNode)}
         if not bnodes:
-            return self
+            return {}
 
         signatures: dict[BNode, str] = dict.fromkeys(bnodes, "")
 
@@ -1648,23 +1674,7 @@ class RDFGraph(Graph):
             signatures = refined
 
         order = sorted(bnodes, key=lambda node: (signatures[node], str(node)))
-        renamed = {node: BNode(f"b{index}") for index, node in enumerate(order)}
-
-        canonical = RDFGraph()
-        for prefix, namespace in self.namespaces():
-            canonical.bind(prefix, namespace)
-        for subject, predicate, obj in self:
-            canonical.add(
-                (
-                    renamed.get(subject, subject),
-                    renamed.get(predicate, predicate),
-                    renamed.get(obj, obj),
-                )
-            )
-        if self.has_reifications:
-            canonical.reifications.update(self.reifications)
-            canonical.reifications.rename(lambda term: renamed.get(term, term))
-        return canonical
+        return {node: BNode(f"b{index}") for index, node in enumerate(order)}
 
     def serialize_canonical_turtle(self) -> str:
         """Serialize to Turtle after canonical namespace/prefix sanitization.

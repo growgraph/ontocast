@@ -25,8 +25,8 @@ from datetime import datetime, timezone
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
-from rdflib import RDFS, URIRef
-from rdflib.namespace import PROV
+from rdflib import OWL, RDFS, Literal, URIRef
+from rdflib.namespace import DCTERMS, PROV
 
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.agent.consolidate_ontology import (
@@ -120,34 +120,66 @@ async def attribute_terms(
     version's priors does. Each version's header names its own source
     (``prov:wasDerivedFrom`` is rewritten per version).
 
+    The lineage is walked from the versions the manager holds through
+    ``owl:priorVersion``: a manager loaded from a triple store holds only each
+    ontology's head, and an unvisited prior would leave every term it
+    introduced counted as authored. A version not held is read from its stored
+    graph, whose header carries its priors, its date and its source.
+
     Returns:
         ``(minted_by, authored)``: term IRI to its document, and term IRI to
         role for terms of versions with no document.
     """
-    versions = {
+    held = {
         v.version_iri: v
         for v in tools.ontology_manager.get_ontology_versions_by_iri(head.iri)
         if v.version_iri
     }
+    if head.version_iri:
+        held.setdefault(head.version_iri, head)
+    subject = URIRef(head.iri)
     graphs: dict[str, RDFGraph] = {}
 
     async def graph_of(version_iri: str) -> RDFGraph:
         if version_iri not in graphs:
-            version = versions.get(version_iri)
+            version = held.get(version_iri)
             graph = version.graph if version is not None else None
             if graph is None or len(graph) == 0:
                 graph = await tools.aget_version_graph(version_iri) or RDFGraph()
             graphs[version_iri] = graph
         return graphs[version_iri]
 
+    def priors_of(version_iri: str, graph: RDFGraph) -> list[str]:
+        version = held.get(version_iri)
+        if version is not None:
+            return list(version.prior_version_iris)
+        return sorted(str(p) for p in graph.objects(subject, OWL.priorVersion))
+
+    def stamp_of(version_iri: str, graph: RDFGraph) -> datetime:
+        version = held.get(version_iri)
+        stamp = version.modified_at if version is not None else None
+        if stamp is None:
+            value = graph.value(subject, DCTERMS.modified)
+            parsed = value.toPython() if isinstance(value, Literal) else None
+            stamp = parsed if isinstance(parsed, datetime) else None
+        return stamp or datetime.min.replace(tzinfo=timezone.utc)
+
+    lineage: list[str] = list(held)
+    seen = set(lineage)
+    for version_iri in lineage:  # grows while walked: breadth-first over priors
+        for prior in priors_of(version_iri, await graph_of(version_iri)):
+            if prior not in seen:
+                seen.add(prior)
+                lineage.append(prior)
+
     introduced_by: dict[str, tuple[datetime, str | None]] = {}
-    for version_iri, version in versions.items():
+    for version_iri in lineage:
         graph = await graph_of(version_iri)
         declared = set(_declared(graph))
-        for prior in version.prior_version_iris:
+        for prior in priors_of(version_iri, graph):
             declared -= set(_declared(await graph_of(prior)))
-        stamp = version.modified_at or datetime.min.replace(tzinfo=timezone.utc)
-        source = version_source(version, graph)
+        stamp = stamp_of(version_iri, graph)
+        source = version_source(head, graph)
         for term in declared:
             current = introduced_by.get(term)
             if current is None or stamp < current[0]:

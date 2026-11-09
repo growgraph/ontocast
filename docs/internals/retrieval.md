@@ -358,7 +358,9 @@ Consequences at the default weights and constant:
    caps their total, skipping a module too large for what is left and moving
    on to the next. This runs after the triple budget, so it can take the
    context past it; `ONTOLOGY_CONTEXT_MAX_TRIPLES` still applies. The per-ontology
-   atom floor is what lets a small module win its first seed.
+   atom floor is what lets a small module win its first seed. A module is read at
+   its current head on every retrieval, never kept from an earlier one: a home
+   ontology gains a version with each document.
 
 ## Catalog I/O
 

@@ -52,6 +52,9 @@ reports = await curate_catalog(tools, ontology="my_ontology", apply=False)
 `--apply` writes the change as the ontology's next version, derived from a
 `urn:ontocast:curation:<time>` source rather than a document, so later
 curation runs still attribute each term to the document that added it.
+Attribution follows each ontology's version history back through
+`owl:priorVersion`, so it holds when the catalog is loaded from a triple store
+that only keeps the latest version in memory.
 
 The calls are charged to the `ontology_curation` phase in the budget; give it
 its own model with `LLM_MODEL_BY_PHASE`.

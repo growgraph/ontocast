@@ -436,6 +436,11 @@ class OntologyManager(Tool):
         self._graph_uris_by_iri.clear()
         self._merged_cache.clear()
 
+    @property
+    def has_triple_store(self) -> bool:
+        """Whether a triple store is registered, so heads are read from its headers."""
+        return self._triple_store_manager is not None
+
     def _require_triple_store(self) -> TripleStoreManager:
         if self._triple_store_manager is None:
             raise RuntimeError(

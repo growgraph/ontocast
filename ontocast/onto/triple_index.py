@@ -24,6 +24,7 @@ resolve against a later numbering.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,11 +44,19 @@ _TERM_RANK: dict[type, int] = {URIRef: 0, BNode: 1, Literal: 2}
 RDF_TYPE = URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
 
 
-def _term_key(term: Node, nsmgr: NamespaceManager) -> tuple[int, str]:
-    return (_TERM_RANK.get(type(term), 3), format_term(term, nsmgr))
+#: Blank node -> the label a listing shows for it.
+BNodeLabels = Mapping[BNode, BNode]
 
 
-def format_term(term: Node, nsmgr: NamespaceManager) -> str:
+def _term_key(
+    term: Node, nsmgr: NamespaceManager, labels: BNodeLabels | None = None
+) -> tuple[int, str]:
+    return (_TERM_RANK.get(type(term), 3), format_term(term, nsmgr, labels))
+
+
+def format_term(
+    term: Node, nsmgr: NamespaceManager, labels: BNodeLabels | None = None
+) -> str:
     """Render one term for the indexed listing.
 
     Literals go through ``Literal.n3``, never through the Turtle serializer's
@@ -56,9 +65,13 @@ def format_term(term: Node, nsmgr: NamespaceManager) -> str:
     :data:`~ontocast.onto.rdfgraph.LOSSLESS_TURTLE_FORMAT` exists at all. The
     critic must see the value the graph actually holds, or it will report a
     rounding artifact as a defect.
+
+    A blank node is shown under its entry in ``labels`` when given: rdflib's own
+    labels are random per run, so a listing that printed them would never be the
+    same prompt twice.
     """
     if isinstance(term, BNode):
-        return f"_:{term}"
+        return f"_:{labels.get(term, term) if labels else term}"
     try:
         return term.n3(nsmgr)
     except Exception:
@@ -101,6 +114,10 @@ class TripleIndex:
     #: Subjects in listing order with their statements -- the render order is
     #: part of the contract, so it is recorded rather than recomputed.
     order: list[tuple[Node, list[IndexedTriple]]] = field(default_factory=list)
+    #: The canonical label each blank node is listed under
+    #: (:meth:`RDFGraph.canonical_bnode_names`), the same one the serialized
+    #: chapter body uses.
+    bnode_labels: dict[BNode, BNode] = field(default_factory=dict)
 
     @classmethod
     def __get_pydantic_core_schema__(
@@ -121,6 +138,10 @@ class TripleIndex:
     def is_empty(self) -> bool:
         return not self.by_id
 
+    def render(self, term: Node, nsmgr: NamespaceManager) -> str:
+        """Render ``term`` as this listing shows it."""
+        return format_term(term, nsmgr, self.bnode_labels)
+
     def resolve(self, triple_id: int) -> Triple | None:
         """Return the triple for ``triple_id``, or ``None`` if it is unknown."""
         return self.by_id.get(triple_id)
@@ -130,31 +151,42 @@ class TripleIndex:
         return self.fingerprint == fingerprint_graph(graph)
 
 
-def _sorted_triples(graph: RDFGraph, nsmgr: NamespaceManager) -> list[Triple]:
+def _sorted_triples(
+    graph: RDFGraph, nsmgr: NamespaceManager, labels: BNodeLabels
+) -> list[Triple]:
     # rdflib's iteration order is not stable across graphs, so the order is
-    # imposed here rather than inherited. Predicates sort with rdf:type first so a subject's block
-    # opens with what it is.
+    # imposed here rather than inherited, over canonical blank-node labels.
+    # Predicates sort with rdf:type first so a subject's block opens with what
+    # it is.
     def key(triple: Triple) -> tuple:
         subject, predicate, obj = triple
         return (
-            _term_key(subject, nsmgr),
-            (0, "") if predicate == RDF_TYPE else (1, format_term(predicate, nsmgr)),
-            _term_key(obj, nsmgr),
+            _term_key(subject, nsmgr, labels),
+            (0, "")
+            if predicate == RDF_TYPE
+            else (1, format_term(predicate, nsmgr, labels)),
+            _term_key(obj, nsmgr, labels),
         )
 
     return sorted(graph, key=key)
 
 
+def _line(triple: Triple, nsmgr: NamespaceManager, labels: BNodeLabels) -> bytes:
+    subject, predicate, obj = triple
+    return (
+        f"{format_term(subject, nsmgr, labels)}\t"
+        f"{format_term(predicate, nsmgr, labels)}\t"
+        f"{format_term(obj, nsmgr, labels)}\n".encode()
+    )
+
+
 def fingerprint_graph(graph: RDFGraph) -> str:
     """Digest of a graph's rendered triples, used to detect drift between passes."""
     nsmgr = graph.namespace_manager
+    labels = graph.canonical_bnode_names()
     digest = hashlib.sha256()
-    for subject, predicate, obj in _sorted_triples(graph, nsmgr):
-        digest.update(
-            f"{format_term(subject, nsmgr)}\t"
-            f"{format_term(predicate, nsmgr)}\t"
-            f"{format_term(obj, nsmgr)}\n".encode()
-        )
+    for triple in _sorted_triples(graph, nsmgr, labels):
+        digest.update(_line(triple, nsmgr, labels))
     return digest.hexdigest()
 
 
@@ -178,6 +210,7 @@ def build_triple_index(
         fingerprint of the state they were assigned against.
     """
     nsmgr = graph.namespace_manager
+    labels = graph.canonical_bnode_names()
     by_id: dict[int, Triple] = {}
     ids: dict[Triple, int] = {}
     order: list[tuple[Node, list[IndexedTriple]]] = []
@@ -186,13 +219,9 @@ def build_triple_index(
     next_id = 0
     current_subject: Node | None = None
     current_block: list[IndexedTriple] = []
-    for triple in _sorted_triples(graph, nsmgr):
+    for triple in _sorted_triples(graph, nsmgr, labels):
         subject, predicate, obj = triple
-        digest.update(
-            f"{format_term(subject, nsmgr)}\t"
-            f"{format_term(predicate, nsmgr)}\t"
-            f"{format_term(obj, nsmgr)}\n".encode()
-        )
+        digest.update(_line(triple, nsmgr, labels))
         triple_id: int | None = None
         if scope is None or triple in scope:
             next_id += 1
@@ -211,4 +240,5 @@ def build_triple_index(
         fingerprint=digest.hexdigest(),
         scope_size=len(by_id),
         order=order,
+        bnode_labels=dict(labels),
     )

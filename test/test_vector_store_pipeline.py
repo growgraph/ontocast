@@ -1633,10 +1633,10 @@ async def test_ensemble_fanout_never_fetches_full_catalog() -> None:
     stats = manager.catalog_io_stats()
     assert stats["full_catalog_fetches"] == 0
     # Only the two ontologies actually referenced are materialized per call,
-    # plus a one-off read per module for the small-module closure — which has
-    # no manager to ask here. That surcharge must stay O(modules), not
-    # O(units x modules); the +2 headroom is what pins the closure's cache.
-    assert stats["graph_fetches"] <= 5 * 2 + 2
+    # plus the small-module closure's read of the one module it closes: with
+    # no ontology manager wired there is no version-keyed cache to serve it,
+    # and a module is never memoised by IRI, since a home ontology changes.
+    assert stats["graph_fetches"] <= 5 * 2 + 5
     assert retriever.last_retrieval_metrics["catalog_access_mode"] == "sparql"
 
 
@@ -1737,6 +1737,35 @@ async def test_catalog_cache_sees_a_new_head_version() -> None:
     assert second[0].prior_version_iris == [original_version_iri]
     # The superseded version stays cached under its own version IRI.
     assert original_version_iri in catalog._graph_cache
+
+
+@pytest.mark.anyio
+async def test_small_module_closure_adds_the_current_head_version() -> None:
+    """A home ontology gains a version per document; a closure that kept the
+    first version it read would add a stale copy of the module whole."""
+    ontologies = _cross_ontology_fixture(dangling=False)
+    store, catalog = _catalog_manager(ontologies)
+    retriever = OntologyPatchRetriever.model_construct(
+        vector_store=None,
+        sparql_tool=SPARQLTool(triple_store_manager=store),
+        ontology_manager=catalog,
+        patch=PatchRetrievalConfig(small_module_closure_max_triples=10_000),
+    )
+    extra = (URIRef(f"{_PEROV_IRI}#Extra"), RDFS.label, Literal("extra"))
+
+    before = RDFGraph()
+    await retriever._apply_small_module_closure(before, [_PEROV_IRI])
+    assert len(before) > 0
+    assert extra not in before
+
+    next_graph = RDFGraph()
+    next_graph += ontologies[1].graph
+    next_graph.add(extra)
+    store.serialize(next_version(ontologies[1], next_graph))
+
+    after = RDFGraph()
+    await retriever._apply_small_module_closure(after, [_PEROV_IRI])
+    assert extra in after
 
 
 @pytest.mark.anyio

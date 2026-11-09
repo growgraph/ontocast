@@ -121,6 +121,23 @@ def test_terms_are_attributed_to_the_version_that_introduced_them() -> None:
     }
 
 
+def test_attribution_walks_priors_a_store_loaded_manager_does_not_hold() -> None:
+    """A manager loaded from a triple store holds only the head; the priors are
+    read from their stored graphs."""
+    tools = _tools()
+    head = tools.ontology_manager.get_head_by_iri(f"{DOMAIN}/cat")
+    assert head is not None
+    tools.ontology_manager.reset_catalog()
+    asyncio.run(tools.ontology_manager.aadd_ontology(head))
+    assert len(tools.ontology_manager.get_ontology_versions_by_iri(head.iri)) == 1
+
+    minted_by, authored = asyncio.run(curation.attribute_terms(tools, head))
+
+    assert set(authored) == {str(u("Sample"))}
+    assert minted_by[str(u("Widget"))] == DOC1
+    assert minted_by[str(u("Device"))] == DOC2
+
+
 def test_a_dry_run_flags_and_decides_but_writes_nothing(monkeypatch) -> None:
     tools = _tools()
     head_before = tools.ontology_manager.get_head_by_iri(f"{DOMAIN}/cat")
