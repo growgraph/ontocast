@@ -15,6 +15,9 @@ many it removed, for ``ontology_reduce_metrics``:
 - :func:`drop_vacuous_upper_terms`: ``owl:Thing`` / ``schema:Thing`` as a
   range or domain, or as a parent beside another parent, says nothing and
   reads as a modelling decision.
+- :func:`drop_role_crossing_parents`: a property's parent must be a property
+  and a class's parent a class. ``rdfs:subPropertyOf schema:Property`` names a
+  class, and ``rdfs:subClassOf`` a property or a datatype is no hierarchy.
 - :func:`drop_non_term_subjects`: an ontology update declares terms and value
   sets. A subject in the facts namespace, an individual (typed, but neither as
   a term nor as a SKOS concept), or an untyped subject that nothing declares
@@ -31,14 +34,14 @@ with the statements pointing at it (:func:`ontocast.onto.blank_structures.remove
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 
 from rdflib import OWL, RDF, RDFS, SKOS, XSD, Graph, URIRef
 
 from ontocast.onto.blank_structures import remove_with_structures
 from ontocast.onto.identity import is_owned_ontology
 from ontocast.onto.iri_policy import split_namespace_local
-from ontocast.onto.well_known import well_known_vocabulary
+from ontocast.onto.well_known import well_known_role, well_known_vocabulary
 
 #: Reserved by RFC 2606 for documentation; never a real vocabulary.
 EXAMPLE_NAMESPACE_STEMS: tuple[str, ...] = tuple(
@@ -193,6 +196,53 @@ def drop_vacuous_upper_terms(graph: Graph) -> int:
                 for parent in graph.objects(cls, RDFS.subClassOf)
             ):
                 doomed.append((cls, RDFS.subClassOf, thing))
+    for triple in doomed:
+        graph.remove(triple)
+    return len(doomed)
+
+
+_CLASS_TYPES: frozenset[URIRef] = frozenset({OWL.Class, RDFS.Class})
+_PROPERTY_TYPES: frozenset[URIRef] = frozenset(
+    {OWL.ObjectProperty, OWL.DatatypeProperty, OWL.AnnotationProperty, RDF.Property}
+)
+
+
+def drop_role_crossing_parents(
+    graph: Graph,
+    *,
+    catalog_classes: Collection[str],
+    catalog_properties: Collection[str],
+) -> int:
+    """Remove a parent of the other kind: a class above a property, or the reverse.
+
+    A parent's kind comes from the graph's own declarations first, then the
+    catalog, then :func:`ontocast.onto.well_known.well_known_role`. A
+    datatype is neither a class nor a property parent. A parent whose kind
+    is unknown is kept.
+    """
+
+    def kind(node: URIRef) -> str | None:
+        types = set(graph.objects(node, RDF.type))
+        if types & _CLASS_TYPES:
+            return "class"
+        if types & _PROPERTY_TYPES:
+            return "property"
+        iri = str(node)
+        if iri in catalog_classes:
+            return "class"
+        if iri in catalog_properties:
+            return "property"
+        return well_known_role(iri)
+
+    doomed = [
+        (child, RDFS.subPropertyOf, parent)
+        for child, parent in graph.subject_objects(RDFS.subPropertyOf)
+        if isinstance(parent, URIRef) and kind(parent) in ("class", "datatype")
+    ] + [
+        (child, RDFS.subClassOf, parent)
+        for child, parent in graph.subject_objects(RDFS.subClassOf)
+        if isinstance(parent, URIRef) and kind(parent) in ("property", "datatype")
+    ]
     for triple in doomed:
         graph.remove(triple)
     return len(doomed)

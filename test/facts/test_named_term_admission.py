@@ -12,15 +12,17 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from rdflib import RDF, RDFS, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
 from ontocast.onto.enum import OntologyAssemblyMode
+from ontocast.onto.model import OntologyPlan, OntologyPlanTerm
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import BudgetTracker
 from ontocast.stategraph.context_resolver import (
     UnitOntologyContext,
     admit_named_catalog_terms,
+    admit_planned_terms,
 )
 from ontocast.tool.ontology_manager import OntologyManager
 from test.ontology_helpers import stamped_ontology
@@ -131,3 +133,70 @@ def test_an_empty_snapshot_admits_nothing() -> None:
     )
 
     assert admit_named_catalog_terms(ctx, _tools(_manager(), {EX + "hasAmount"})) is ctx
+
+
+def _plan(*terms: OntologyPlanTerm) -> OntologyPlan:
+    return OntologyPlan(
+        terms=list(terms), prefixes={"mat": EX, "schema": "https://schema.org/"}
+    )
+
+
+def _reuse(iri: str, kind: str, label: str, definition: str = "") -> OntologyPlanTerm:
+    return OntologyPlanTerm.model_validate(
+        {
+            "kind": kind,
+            "label": label,
+            "local_name": iri.rsplit("/", 1)[-1].rsplit("#", 1)[-1],
+            "iri": iri,
+            "decision": "reuse",
+            "definition": definition,
+        }
+    )
+
+
+def test_planned_reuses_are_admitted_from_the_catalog_and_the_plan() -> None:
+    sub_event = "https://schema.org/subEvent"
+    plan = _plan(
+        _reuse(
+            sub_event,
+            "object_property",
+            "sub event",
+            "Relates a competition to an event that forms part of it.",
+        ),
+        _reuse(EX + "hasAmount", "datatype_property", "has amount"),
+        _reuse(EX + "Portion", "class", "material portion"),
+    )
+    ctx = _snapshot_with_portion_only()
+    tracker = BudgetTracker()
+
+    admitted = admit_planned_terms(
+        ctx, plan, _tools(_manager(), set()), budget_tracker=tracker
+    )
+
+    graph = admitted.snapshot.graph
+    node = URIRef(sub_event)
+    assert graph.value(node, RDF.type) == OWL.ObjectProperty
+    assert graph.value(node, RDFS.label) == Literal("sub event")
+    assert "forms part of it" in str(graph.value(node, RDFS.comment))
+    # A catalog term comes with its catalog definition, not the plan's.
+    assert graph.value(URIRef(EX + "hasAmount"), RDFS.domain) == URIRef(EX + "Portion")
+    assert dict(graph.namespaces()).get("schema") == URIRef("https://schema.org/")
+    # Portion was already defined; only the two missing terms are counted.
+    assert tracker.counters["ctx/admitted_planned_terms"] == 2
+    assert {str(s) for s in ctx.snapshot.graph.subjects()} == {EX + "Portion"}
+
+
+def test_minted_terms_and_a_missing_plan_add_nothing() -> None:
+    ctx = _snapshot_with_portion_only()
+    minted = OntologyPlanTerm.model_validate(
+        {
+            "kind": "class",
+            "label": "season",
+            "local_name": "Season",
+            "iri": EX + "Season",
+            "decision": "mint",
+        }
+    )
+
+    assert admit_planned_terms(ctx, None, _tools(_manager(), set())) is ctx
+    assert admit_planned_terms(ctx, _plan(minted), _tools(_manager(), set())) is ctx

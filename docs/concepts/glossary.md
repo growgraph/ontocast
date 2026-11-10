@@ -108,7 +108,7 @@ The terms these pages use, each with the page that explains it.
 :   The classes and properties a document adds to its domain, listed by one
     LLM call over the whole document before its units render and checked
     against the catalog without a model (`ONTOLOGY_PLAN_ENABLED`). Units mint
-    from it. See [How OntoCast works](index.md#the-ontology-block).
+    from it, and the terms it reuses are shown to the facts units. See [How OntoCast works](index.md#the-ontology-block).
 
 **Prefix**
 :   A short alias for the start of an IRI, so `ex:Device` can stand for

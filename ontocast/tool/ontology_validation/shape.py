@@ -25,7 +25,7 @@ from rdflib import Literal as RDFLiteral
 from rdflib.graph import Graph
 
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.well_known import well_known_vocabulary
+from ontocast.onto.well_known import well_known_role, well_known_vocabulary
 from ontocast.tool.facts_validation.terms import _catalog_term_roles, _local_name
 
 #: Predicates whose literal object names a term.
@@ -363,12 +363,24 @@ def resolve_unique(
 def role_compatible(
     minted_role: str, catalog_iri: str, index: CatalogSurfaceIndex
 ) -> bool:
-    """True when matching would not cross the class/property divide."""
-    if minted_role == "property":
-        return catalog_iri in index.properties or catalog_iri not in index.classes
-    if minted_role == "class":
-        return catalog_iri in index.classes or catalog_iri not in index.properties
-    return catalog_iri not in index.properties and catalog_iri not in index.classes
+    """True when matching would not cross the class/property divide.
+
+    The catalog says which side a catalog term is on; a well-known term the
+    catalog does not hold is judged by :func:`well_known_role`, so a property
+    is never matched to ``schema:Property`` (a class) nor a class to a datatype.
+    """
+    is_property = catalog_iri in index.properties
+    is_class = catalog_iri in index.classes
+    if is_property or is_class:
+        if minted_role == "property":
+            return is_property
+        if minted_role == "class":
+            return is_class
+        return False
+    known = well_known_role(catalog_iri)
+    if minted_role in ("property", "class"):
+        return known is None or known == minted_role
+    return known is None
 
 
 __all__ = [

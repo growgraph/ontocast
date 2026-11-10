@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, Field
-from rdflib import RDFS, SKOS, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 
 from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
@@ -16,6 +16,7 @@ from ontocast.onto.enum import (
     OntologyContextMode,
     RetrievalMetric,
 )
+from ontocast.onto.model import OntologyPlan
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.rdfgraph import RDFGraph
@@ -156,6 +157,75 @@ def admit_named_catalog_terms(
     )
     if budget_tracker is not None:
         budget_tracker.incr("ctx/admitted_named_terms", len(added))
+    return ctx.model_copy(
+        update={
+            "snapshot": snapshot.model_copy(
+                update={"graph": admitted, "content_hash": ""}
+            )
+        }
+    )
+
+
+_KIND_TYPES = {
+    "class": OWL.Class,
+    "object_property": OWL.ObjectProperty,
+    "datatype_property": OWL.DatatypeProperty,
+}
+
+
+def admit_planned_terms(
+    ctx: UnitOntologyContext,
+    plan: OntologyPlan | None,
+    tools: ToolBox,
+    *,
+    budget_tracker: Any = None,
+) -> UnitOntologyContext:
+    """Add the terms the document's ontology plan chose to reuse.
+
+    A reused term is never minted, so without this the facts prompt never
+    shows it, and the relation the plan assigned to it is left unstated. A
+    catalog term brings its catalog definition
+    (:meth:`OntologyManager.term_definitions`); a well-known term is declared
+    from the plan entry: its kind, the plan's label and the plan's definition
+    of it for this document. Terms the context already defines are skipped.
+
+    Returns ``ctx`` itself when nothing is added, else a context over a new
+    snapshot: a shared document context is never changed in place.
+    """
+    snapshot = ctx.snapshot
+    if plan is None or snapshot.is_empty():
+        return ctx
+    defined = {str(s) for s in snapshot.graph.subjects() if isinstance(s, URIRef)}
+    pending = [term for term in plan.reused() if term.iri not in defined]
+    if not pending:
+        return ctx
+    catalog = tools.ontology_manager.catalog_terms()
+    definitions = tools.ontology_manager.term_definitions(
+        [term.iri for term in pending if term.iri in catalog]
+    )
+    from_catalog = {str(s) for s in definitions.subjects() if isinstance(s, URIRef)}
+    admitted = snapshot.graph.copy()
+    admitted += definitions
+    for prefix, namespace in definitions.namespaces():
+        if prefix:
+            admitted.bind(prefix, namespace, override=False)
+    for term in pending:
+        if term.iri in from_catalog:
+            continue
+        node = URIRef(term.iri)
+        admitted.add((node, RDF.type, _KIND_TYPES[term.kind]))
+        admitted.add((node, RDFS.label, Literal(term.label)))
+        if term.definition:
+            admitted.add((node, RDFS.comment, Literal(term.definition)))
+        for prefix, namespace in plan.prefixes.items():
+            if prefix and term.iri.startswith(namespace):
+                admitted.bind(prefix, namespace, override=False)
+    logger.info(
+        "Admitted %d planned reuse term(s) into the facts ontology context",
+        len(pending),
+    )
+    if budget_tracker is not None:
+        budget_tracker.incr("ctx/admitted_planned_terms", len(pending))
     return ctx.model_copy(
         update={
             "snapshot": snapshot.model_copy(

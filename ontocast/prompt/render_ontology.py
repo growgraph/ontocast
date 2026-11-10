@@ -114,9 +114,10 @@ general_ontology_instruction = f"""
 
 1. **Model the domain, not the document.** Mint a class only at the level a second document in the same domain would reuse. A particular case the document reports (a named case, a person, a date, a composition, a numbered sample) is an individual or a property value in the facts graph, not a class.
 
-2. **All new classes and properties must connect to:**
-   - **Standard vocabularies (RDFS, OWL, schema.org, SKOS) via rdfs:subClassOf, rdf:type, rdfs:subPropertyOf, etc.**
-   - **OR other entities within this ontology**
+2. **All new classes and properties must connect to the rest of the vocabulary:**
+   - **A class: rdfs:subClassOf a class of this ontology or of a standard vocabulary (RDFS, OWL, schema.org, SKOS).**
+   - **A property: through its rdfs:domain and rdfs:range; rdfs:subPropertyOf only a more general property.**
+   - **A parent is of the same kind as its child. `schema:Property` and `rdf:Property` are classes: never a property's parent.**
    - **Example: `legal:CourtDecision rdfs:subClassOf schema:Event .`**
 
 3. **Every new entity must have:**

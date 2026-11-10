@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from functools import cache
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from rdflib.namespace import (
@@ -159,6 +160,56 @@ def is_well_known_term(iri: str) -> bool | None:
     return vocabulary.has_term(local_name)
 
 
+#: Well-known datatypes outside XSD; their local names are not capitalised.
+_DATATYPE_TERMS: frozenset[str] = frozenset(
+    {
+        str(RDF.langString),
+        f"{RDF}dirLangString",
+        str(RDF.HTML),
+        str(RDF.XMLLiteral),
+        str(RDF.JSON),
+        str(RDF.PlainLiteral),
+        str(OWL.real),
+        str(OWL.rational),
+    }
+)
+
+#: Well-known individuals, neither classes nor properties.
+_INDIVIDUAL_TERMS: frozenset[str] = frozenset({str(RDF.nil)})
+
+#: Vocabularies whose terms are individuals (units, quantity kinds).
+_INDIVIDUAL_VOCABULARIES: frozenset[str] = frozenset({"unit", "quantitykind"})
+
+WellKnownRole = Literal["class", "property", "datatype"]
+
+
+def well_known_role(iri: str) -> WellKnownRole | None:
+    """The kind of a well-known term, by the naming its vocabulary follows.
+
+    The well-known vocabularies capitalise their classes and not their
+    properties; XSD's terms and a few RDF and OWL literal types are
+    datatypes.
+
+    Returns:
+        ``None`` for an IRI outside the well-known vocabularies, a term its
+        vocabulary does not have, or an individual (QUDT units and quantity
+        kinds, ``rdf:nil``).
+    """
+    namespace, local_name = _split(iri)
+    vocabulary = _index().get(namespace)
+    if (
+        vocabulary is None
+        or not local_name
+        or vocabulary.prefix in _INDIVIDUAL_VOCABULARIES
+        or not vocabulary.has_term(local_name)
+        or iri in _INDIVIDUAL_TERMS
+    ):
+        return None
+    if vocabulary.prefix == "xsd" or iri in _DATATYPE_TERMS:
+        return "datatype"
+    return "class" if local_name[0].isupper() else "property"
+
+
 def well_known_terms(namespace: str) -> set[str]:
     """The term IRIs of the vocabulary at ``namespace``, spelled in it.
 
@@ -180,8 +231,10 @@ def well_known_prompt_list() -> str:
 
 __all__ = [
     "WELL_KNOWN_VOCABULARIES",
+    "WellKnownRole",
     "WellKnownVocabulary",
     "is_well_known_term",
+    "well_known_role",
     "well_known_namespaces",
     "well_known_prompt_list",
     "well_known_terms",

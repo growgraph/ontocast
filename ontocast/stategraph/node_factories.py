@@ -43,6 +43,7 @@ from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import (
     admit_named_catalog_terms,
+    admit_planned_terms,
     aggregate_writable_metrics,
     build_merged_document_ontology_context,
     build_unioned_document_ontology_context,
@@ -70,12 +71,16 @@ from ontocast.tool.ontology_validation.axiom_hygiene import (
     drop_example_namespace_triples,
     drop_external_subjects,
     drop_non_term_subjects,
+    drop_role_crossing_parents,
     drop_terms_minted_outside_home,
     drop_vacuous_upper_terms,
     normalize_datatype_ranges,
 )
 from ontocast.tool.ontology_validation.reconcile import MintedDuplicate
-from ontocast.tool.ontology_validation.shape import minted_class_iris
+from ontocast.tool.ontology_validation.shape import (
+    CatalogSurfaceIndex,
+    minted_class_iris,
+)
 from ontocast.tool.validate import RDFGraphConnectivityValidator
 from ontocast.toolbox import ToolBox
 from ontocast.util.loop_lag import loop_lag
@@ -127,14 +132,14 @@ def clean_ontology_delta(
     *,
     external: Sequence[str],
     current_domain: str,
-    catalog_terms: Collection[str],
+    catalog_index: CatalogSurfaceIndex,
     ontology_iris: Collection[str],
     home_namespace: str | None,
 ) -> dict[str, int]:
     """Apply the deterministic clean-up rules to each graph; the counts removed.
 
-    ``catalog_terms`` are the terms every catalog head declares and
-    ``ontology_iris`` the heads' (and the home's) IRIs: statements about them
+    ``catalog_index`` names the terms every catalog head declares, and which
+    are classes and properties; ``ontology_iris`` the heads' (and the home's) IRIs: statements about them
     are not undeclared. Without a home namespace, terms are not checked for
     where they were minted.
     """
@@ -145,7 +150,9 @@ def clean_ontology_delta(
         "non_term_subjects_dropped": 0,
         "datatype_ranges_normalized": 0,
         "vacuous_upper_terms_dropped": 0,
+        "role_crossing_parents_dropped": 0,
     }
+    catalog_terms = catalog_index.terms
     declared = {*catalog_terms, *ontology_iris}
     for graph in graphs:
         counts["external_subject_refused"] += drop_external_subjects(graph, external)
@@ -164,6 +171,11 @@ def clean_ontology_delta(
         )
         counts["datatype_ranges_normalized"] += normalize_datatype_ranges(graph)
         counts["vacuous_upper_terms_dropped"] += drop_vacuous_upper_terms(graph)
+        counts["role_crossing_parents_dropped"] += drop_role_crossing_parents(
+            graph,
+            catalog_classes=catalog_index.classes,
+            catalog_properties=catalog_index.properties,
+        )
     return counts
 
 
@@ -551,7 +563,7 @@ def make_render_ontology_node(tools: ToolBox):
             ],
             external=external_namespaces(tools, state.current_domain),
             current_domain=state.current_domain,
-            catalog_terms=tools.ontology_manager.catalog_surface_index().terms,
+            catalog_index=tools.ontology_manager.catalog_surface_index(),
             ontology_iris=[
                 *(head.iri for head in tools.ontology_manager.ontologies if head.iri),
                 *([home.iri] if home is not None else []),
@@ -775,6 +787,12 @@ def make_render_facts_node(tools: ToolBox):
                 UnitLoopContext.from_agent_state(state), tools, state.content_units
             )
         if merged_context is not None:
+            merged_context = admit_planned_terms(
+                merged_context,
+                state.ontology_plan,
+                tools,
+                budget_tracker=state.budget_tracker,
+            )
             merged_context = admit_named_catalog_terms(
                 merged_context, tools, budget_tracker=state.budget_tracker
             )

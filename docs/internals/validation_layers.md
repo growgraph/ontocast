@@ -410,6 +410,7 @@ decisions see the delta:
 | Non-term subjects | A subject in the facts namespace, an individual (typed, but neither as a class, a property nor a SKOS concept), or an untyped subject that neither the catalog nor a subclass, domain or range axiom declares is removed: an ontology update declares terms and value sets, and the rest belongs in the facts graph | `non_term_subjects_dropped` |
 | Datatype ranges | A property with several datatype ranges keeps one: `rdfs:Literal` goes beside a concrete datatype, and of several concrete ones the first of `rdf:langString`, `xsd:string`, then numbers from wide to narrow, then time, stays. Several ranges mean their intersection, empty for two datatypes | `datatype_ranges_normalized` |
 | `Thing` | `owl:Thing` or `schema:Thing` as a range or domain, or as a parent beside another parent, is removed: it constrains nothing | `vacuous_upper_terms_dropped` |
+| Parent kind | A property's `rdfs:subPropertyOf` naming a class or a datatype (`schema:Property` and `rdf:Property` are classes), and a class's `rdfs:subClassOf` naming a property or a datatype, are removed. A parent's kind comes from the delta's own declarations, then the catalog, then the well-known vocabulary's naming: classes capitalised, properties not, XSD terms datatypes. A parent of unknown kind stays | `role_crossing_parents_dropped` |
 | Home target | The home ontology is always a write target. When it is not stored yet and no unit rendered it fresh, an empty root under its identity receives its terms; under vector retrieval units render updates against catalog patches even for a new home | — |
 | Blank nodes | A blank node and every blank node connected to it are one blank-node structure (a restriction, a list, an anonymous axiom), with the named subjects that point at it as its anchors. Every rule above removes a structure whole: when one of its statements goes, or when every statement pointing at it goes, the structure goes with those statements. No restriction is left half-written or orphaned | — |
 | Fresh renders | A fresh ontology is filed like an update: its header and the statements its home owns stay, a statement whose subject another writable ontology owns joins the delta for that ontology, and one no writable ontology owns is removed | `fresh_triples_refiled`, `fresh_triples_unattributed` |
@@ -421,18 +422,27 @@ Before the units render, the document plan's proposals are checked against the
 whole catalog, without a model:
 
 - a proposal whose `reuse` names a catalog or well-known term of compatible
-  role (a class never reuses a property) is a reuse of that term;
+  role (a class never reuses a property; a well-known term's role is read
+  from its vocabulary's naming, so a property never reuses `schema:Property`)
+  is a reuse of that term;
 - a proposal whose label or local name names exactly one catalog term of
   compatible role becomes a reuse of it;
 - a second proposal with the same local name or label is refused, and so is
   every proposal past `ONTOLOGY_PLAN_MAX_TERMS`;
 - a parent must be a catalog term, a well-known term or another accepted
-  proposal; an unknown parent is dropped and the term kept;
+  proposal, of the term's own role; any other parent is dropped and the term
+  kept;
 - a plan with no term counts as no plan, so units render without one.
 
 Counters: `plan_proposed`, `plan_minted`, `plan_reused`,
 `plan_resolved_to_catalog`, `plan_rejected`, and `plan_failed` / `plan_empty`
 when no plan reached the units.
+
+A reused term is never minted, so the facts lane would not see it. Before the
+facts units render, every reused term the facts ontology context does not
+define is added to it: a catalog term with its catalog definition, a
+well-known term declared from the plan entry (its kind, label and the plan's
+definition). Counter: `ctx/admitted_planned_terms`.
 
 At reduce, after the merge and the reconciliation above, every minted term
 (a class or property neither the catalog nor a well-known vocabulary holds)

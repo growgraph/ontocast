@@ -113,6 +113,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `chapter/triples_over_budget` | `ontocast/agent/render_facts.py` | Facts chapters still over `ONTOLOGY_CONTEXT_MAX_TRIPLES` after condensing, passed through whole |
 | `ctx/merge_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Document ontology merges; `1` per document |
 | `ctx/union_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Union chapters built; `1` per facts-only document with a document scope |
+| `ctx/admitted_planned_terms` | `ontocast/stategraph/context_resolver.py` | Terms the ontology plan reuses that were added to the facts ontology context |
 | `ctx/admitted_named_terms` | `ontocast/stategraph/context_resolver.py` | Catalog terms the facts prompt names (conformance rules, notes) whose definitions were added to the ontology context |
 | `vector/transport_retry` | `ontocast/tool/vector_store/qdrant.py` | Qdrant reads retried after a transport error; the third failure fails the unit |
 | `<node>/unit_errors` | `ontocast/stategraph/node_factories.py` | Units of a fan-out node that raised |

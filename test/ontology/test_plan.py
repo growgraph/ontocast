@@ -172,3 +172,39 @@ def test_candidates_are_minted_terms_the_plan_does_not_name():
     }
     assert plan_candidates([graph], plan, catalog) == {f"{HOME.namespace}Superradiance"}
     assert plan_candidates([graph], None, catalog) == set()
+
+
+def test_a_well_known_term_of_the_other_kind_is_neither_a_reuse_nor_a_parent():
+    """``schema:Property`` is a class: a property never reuses or extends it."""
+    report = OntologyPlanReport(
+        proposals=[
+            _proposal(
+                kind="object_property",
+                label="has season",
+                local_name="hasSeason",
+                parent="schema:Property",
+            ),
+            _proposal(
+                kind="object_property",
+                label="sub event",
+                local_name="subEvent",
+                reuse="schema:subEvent",
+            ),
+            _proposal(
+                kind="object_property",
+                label="person",
+                local_name="person",
+                reuse="schema:Person",
+            ),
+        ]
+    )
+    plan = check_plan(
+        report, home=HOME, catalog_index=_catalog(), prefixes=PREFIXES, max_terms=10
+    )
+    season, sub_event, person = plan.terms
+    assert season.decision == "mint" and season.parent_iri is None
+    assert (sub_event.decision, sub_event.iri) == (
+        "reuse",
+        "https://schema.org/subEvent",
+    )
+    assert person.decision == "mint"
