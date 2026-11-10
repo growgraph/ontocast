@@ -325,7 +325,7 @@ The passes stop as soon as nothing is missing.
     | `suspect_multi_value`: two numeric values on one property; irreconcilable short strings on a property that is single-valued for most subjects; or two IRIs on such a property | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | un-merge when an error |
     | `degenerate_coreference`: one IRI object shared by two single-valued properties of a subject | error | un-merge |
     | `shacl` | from the shape | autofix |
-    | `non_catalog_vocabulary` | a term of an existing well-known, declared or fallback vocabulary: warning; any other term, or a well-known term that does not exist: error under `FACTS_VOCABULARY=strict`, warning under `open` | reported (a retrieval miss, or outside the projection) |
+    | `non_catalog_vocabulary`: a term neither the ontology context nor the catalog has | a term of an existing well-known, declared or fallback vocabulary: warning; any other term, or a well-known term that does not exist: error under `FACTS_VOCABULARY=strict`, warning under `open` | reported (a retrieval miss, or outside the projection) |
     | `dangling_reference` | warning | reported |
     | `mixed_object_kinds`: a property used with both IRI and literal objects | warning | reported |
 

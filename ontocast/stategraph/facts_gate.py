@@ -384,6 +384,7 @@ def run_facts_gate(
     # union of retrieved snapshots (a term a snapshot omitted is still a
     # term), and the shapes-contract exemptions the unit loop applies.
     _, contract_terms, _ = tools.shapes_prompt_contract()
+    catalog_terms = tools.ontology_manager.catalog_terms()
     contradictions = shacl_catalog_contradictions(
         shapes_graph,
         ontology_graph,
@@ -396,7 +397,7 @@ def run_facts_gate(
             contract_exempt_terms=contract_terms,
             vocabulary=facts_validation.vocabulary,
         ),
-        catalog_terms=tools.ontology_manager.catalog_terms(),
+        catalog_terms=catalog_terms,
     )
     if contradictions:
         # Data cannot satisfy both sides: the shapes demand these properties
@@ -443,6 +444,7 @@ def run_facts_gate(
             additional_standard_namespaces=tuple(
                 facts_validation.additional_standard_namespaces
             ),
+            catalog_terms=catalog_terms,
         )
 
     def merge_signature_errors(report: FactsValidationReport) -> int:

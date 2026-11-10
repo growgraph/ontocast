@@ -223,3 +223,30 @@ def test_shapes_catalog_selection_modes() -> None:
     assert catalog.selected_chapter(set(context), max_lines=60) is selected
     # Empty context -> empty chapter.
     assert catalog.selected_chapter(set(), max_lines=60) == ""
+
+
+def test_named_terms_cover_the_selected_shapes_only() -> None:
+    from ontocast.onto.rdfgraph import RDFGraph
+    from ontocast.tool.shapes_catalog import ShapesCatalog
+
+    graph = RDFGraph()
+    graph.parse(
+        data="""
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix ex: <https://example.org/s#> .
+ex:PortionShape a sh:NodeShape ; sh:targetClass ex:Portion ;
+    sh:property [ sh:path ex:hasAmount ; sh:minCount 1 ] .
+ex:SampleShape a sh:NodeShape ; sh:targetClass ex:Sample ;
+    sh:property [ sh:path ex:hasLabel ; sh:minCount 1 ] .
+""",
+        format="turtle",
+    )
+    catalog = ShapesCatalog()
+    catalog._graph = graph
+
+    selected = catalog.named_terms({"https://example.org/s#Portion"}, max_lines=60)
+    everything = catalog.named_terms(None, max_lines=60)
+
+    assert "https://example.org/s#hasAmount" in selected
+    assert "https://example.org/s#hasLabel" not in selected
+    assert "https://example.org/s#hasLabel" in everything

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import httpx
 import pytest
 from pydantic import Field, PrivateAttr
 from qdrant_client.http import models as qdrant_models
+from qdrant_client.http.exceptions import ResponseHandlingException
 from rdflib import OWL, RDF, Literal, URIRef
 from rdflib.namespace import RDFS
 
@@ -23,10 +25,13 @@ from ontocast.config import (
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_namespace import described_namespaces
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.state import BudgetTracker
+from ontocast.tool.llm import use_budget_tracker
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.sparql import SPARQLTool
 from ontocast.tool.triple_manager.in_memory import InMemoryTripleStoreManager
 from ontocast.tool.triple_manager.mock import MockTripleStoreManager
+from ontocast.tool.vector_store import qdrant as qdrant_module
 from ontocast.tool.vector_store.atomizer import GraphAtomizer
 from ontocast.tool.vector_store.core import (
     BM25_VECTOR_NAME,
@@ -2131,3 +2136,79 @@ async def test_without_a_floor_selection_is_score_order(
 ) -> None:
     """With the floor off, the cap admits the dominant ontology alone."""
     assert await _selection_under(merge_mode, per_ontology_atom_floor=0) == {_BIG}
+
+
+class _FlakyQueryClient:
+    """``query_points`` stand-in that fails with a transport error ``failures`` times."""
+
+    def __init__(self, failures: int, exc: Exception) -> None:
+        self.failures = failures
+        self.exc = exc
+        self.calls = 0
+
+    def query_points(self, **kwargs: Any) -> Any:
+        del kwargs
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise self.exc
+        return qdrant_models.QueryResponse(points=[])
+
+
+def _store_with_client(client: _FlakyQueryClient) -> QdrantVectorStoreManager:
+    store = QdrantVectorStoreManager(
+        store_config=VectorStoreConfig(),
+        qdrant_config=QdrantConfig(),
+        embedding=CountingEmbeddingTool(config=EmbeddingConfig(dimension=8)),
+    )
+    store._client = cast(Any, client)
+    return store
+
+
+@pytest.fixture
+def _no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qdrant_module.time, "sleep", lambda _s: None)
+
+
+@pytest.mark.usefixtures("_no_retry_sleep")
+@pytest.mark.parametrize(
+    "exc",
+    [
+        httpx.ReadError("Bad file descriptor"),
+        ResponseHandlingException(httpx.ReadError("Bad file descriptor")),
+    ],
+)
+def test_a_transient_transport_error_is_retried_and_counted(exc: Exception) -> None:
+    client = _FlakyQueryClient(failures=1, exc=exc)
+    store = _store_with_client(client)
+    tracker = BudgetTracker()
+
+    with use_budget_tracker(tracker):
+        points = store._query_named_vector("core", [0.0] * 8, 5, None)
+
+    assert points == []
+    assert client.calls == 2
+    assert tracker.counters["vector/transport_retry"] == 1
+
+
+@pytest.mark.usefixtures("_no_retry_sleep")
+def test_a_persistent_transport_error_propagates_after_the_last_attempt() -> None:
+    client = _FlakyQueryClient(failures=99, exc=httpx.ReadError("down"))
+    store = _store_with_client(client)
+
+    with pytest.raises(httpx.ReadError):
+        store._query_named_vector("core", [0.0] * 8, 5, None)
+
+    assert client.calls == qdrant_module.TRANSPORT_RETRY_ATTEMPTS
+
+
+@pytest.mark.usefixtures("_no_retry_sleep")
+def test_a_non_transport_error_is_not_retried() -> None:
+    client = _FlakyQueryClient(
+        failures=99, exc=ResponseHandlingException(ValueError("bad payload"))
+    )
+    store = _store_with_client(client)
+
+    with pytest.raises(ResponseHandlingException):
+        store._query_named_vector("core", [0.0] * 8, 5, None)
+
+    assert client.calls == 1

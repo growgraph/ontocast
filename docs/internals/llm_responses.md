@@ -17,8 +17,10 @@ telemetry](../guides/telemetry.md).
    leniency is raw control characters inside strings, which models do emit.
 3. **Fall back.** If that fails, a fenced ```` ```json ```` block is
    extracted and parsed. A complete object followed only by closing brackets
-   and whitespace is taken without them (`llm/json_surplus_closer`); any other
-   trailing content still fails. Otherwise closing brackets are rewritten to
+   and whitespace is taken without them (`llm/json_surplus_closer`). An object
+   closed after its first member and continued with more members is taken
+   without that early brace when the rest closes one object with no key named
+   twice (`llm/json_premature_closer`); any other trailing content still fails. Otherwise closing brackets are rewritten to
    the kind their opening bracket needs. This repair only substitutes
    characters; it never inserts, deletes or reorders them, and it gives up on an
    unmatched closing bracket or an unclosed one at the end, because that is a

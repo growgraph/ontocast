@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import MutableMapping, Sequence
+from collections.abc import Set as AbstractSet
 from itertools import combinations
 
 from pydantic import BaseModel, Field
@@ -311,8 +312,9 @@ def _non_catalog_vocabulary_findings(
     document: set[Node],
     severity: str = "warning",
     declared_namespaces: tuple[str, ...] = (),
+    catalog_terms: AbstractSet[str] = frozenset(),
 ) -> list[FactsValidationFinding]:
-    """Report terms the facts graph uses that the ontology context never supplied.
+    """Report terms the facts graph uses that neither the context nor the catalog has.
 
     When the renderer cannot find a term for something the text states, the
     prompt's documented fallback is to reach for a well-known vocabulary
@@ -339,6 +341,9 @@ def _non_catalog_vocabulary_findings(
             borrowed vocabulary.
         severity: Severity of a term outside every configured vocabulary.
         declared_namespaces: Namespaces the deployment counts as its own.
+        catalog_terms: Every term the whole catalog declares or references.
+            A term a unit's snapshot omitted is still a catalog term: the unit
+            validator and the shapes chapter both count it, so the gate does too.
 
     Returns:
         list: One finding per non-catalog term, ordered by IRI.
@@ -355,7 +360,7 @@ def _non_catalog_vocabulary_findings(
     # all three triple positions). A subjects()-only view calls a term supplied
     # solely as an rdfs:range object non-catalog -- exactly the terms the
     # domain/range schema closure is designed to admit.
-    supplied = collect_catalog_terms(ontology_graph)
+    supplied = collect_catalog_terms(ontology_graph) | catalog_terms
     used: dict[str, set[str]] = {}
     for subject, predicate, obj in graph:
         if not isinstance(subject, URIRef) or is_scaffolding(
@@ -490,6 +495,7 @@ def validate_aggregated_facts(
     cross_unit_pairs: Sequence[tuple[str, str]] | None = None,
     non_catalog_severity: str = "warning",
     additional_standard_namespaces: Sequence[str] = (),
+    catalog_terms: AbstractSet[str] = frozenset(),
 ) -> FactsValidationReport:
     """Check post-merge invariants over the aggregated facts graph.
 
@@ -516,8 +522,8 @@ def validate_aggregated_facts(
         - ``DEGENERATE_COREFERENCE``: one IRI object shared by >= 2 distinct
           functional-ish predicates of one subject (collapsed range bounds).
         - ``SHACL``: optional, when ``pyshacl`` is installed and shapes exist.
-        - ``NON_CATALOG_VOCABULARY``: terms the ontology context never
-          supplied. A warning under an open vocabulary (a retrieval miss the
+        - ``NON_CATALOG_VOCABULARY``: terms neither the ontology context nor
+          ``catalog_terms`` supplies. A warning under an open vocabulary (a retrieval miss the
           renderer papered over with a documented fallback);
           ``non_catalog_severity`` under a strict one, where such a term is
           outside the projection. Terms of ``additional_standard_namespaces``
@@ -551,6 +557,8 @@ def validate_aggregated_facts(
             and a full title can be two names for one key-confirmed record,
             and an error here would drive the un-merge repair to split a
             correct merge.
+        catalog_terms: Every term of the whole catalog, so NON_CATALOG_VOCABULARY
+            agrees with the unit validator on what "in the catalog" means.
 
     Returns:
         Report with all findings, ordered by subject.
@@ -800,6 +808,7 @@ def validate_aggregated_facts(
             document=document,
             severity=non_catalog_severity,
             declared_namespaces=tuple(additional_standard_namespaces),
+            catalog_terms=catalog_terms,
         )
     )
 

@@ -337,6 +337,7 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
             aggregator=_Aggregator(),
             shapes_catalog=SimpleNamespace(graph=lambda: None),
             shapes_prompt_contract=lambda: ("", (), False),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
             ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
             config=Config(),
         ),
@@ -1131,6 +1132,7 @@ def test_process_unit_route_runs_the_validation_gate(
             aggregator=_Aggregator(),
             shapes_catalog=SimpleNamespace(graph=lambda: stored_shapes),
             shapes_prompt_contract=lambda: ("", (), False),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
             ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
@@ -1581,7 +1583,7 @@ def test_curate_passes_its_options_and_prints_the_decisions(
 
     seen: dict[str, object] = {}
 
-    def fake_bootstrap(**kwargs):
+    async def fake_bootstrap(**kwargs):
         seen["bootstrap"] = kwargs
         return SimpleNamespace(tools="tools")
 
@@ -1596,7 +1598,7 @@ def test_curate_passes_its_options_and_prints_the_decisions(
             )
         ]
 
-    monkeypatch.setattr(server_module, "_bootstrap_tools", fake_bootstrap)
+    monkeypatch.setattr(server_module, "_abootstrap_tools", fake_bootstrap)
     monkeypatch.setattr(curation_module, "curate_catalog", fake_curate)
     out = tmp_path / "report.json"
 
@@ -1621,3 +1623,65 @@ def test_curate_passes_its_options_and_prints_the_decisions(
     )
     assert "drop" in result.output and "(dry run)" in result.output
     assert _json.loads(out.read_text())[0]["predicted_version"] == "1.0.2"
+
+
+def test_curate_bootstraps_and_works_on_one_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider clients opened at start-up are bound to its loop."""
+    from click.testing import CliRunner
+
+    from ontocast.cli import server as server_module
+    from ontocast.tool import curation as curation_module
+
+    loops: dict[str, asyncio.AbstractEventLoop] = {}
+
+    async def fake_bootstrap(**kwargs):
+        del kwargs
+        loops["bootstrap"] = asyncio.get_running_loop()
+        return SimpleNamespace(tools="tools")
+
+    async def fake_curate(tools, **kwargs):
+        del tools, kwargs
+        loops["work"] = asyncio.get_running_loop()
+        return []
+
+    monkeypatch.setattr(server_module, "_abootstrap_tools", fake_bootstrap)
+    monkeypatch.setattr(curation_module, "curate_catalog", fake_curate)
+
+    result = CliRunner().invoke(server_module.cli, ["curate"])
+
+    assert result.exit_code == 0, result.output
+    assert loops["bootstrap"] is loops["work"]
+
+
+def test_serve_bootstraps_and_serves_on_one_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from click.testing import CliRunner
+
+    from ontocast.cli import server as server_module
+
+    loops: dict[str, asyncio.AbstractEventLoop] = {}
+    config = Config()
+
+    async def fake_bootstrap(**kwargs):
+        del kwargs
+        loops["bootstrap"] = asyncio.get_running_loop()
+        return SimpleNamespace(tools="tools", config=config, tenant="t", project="p")
+
+    class FakeServer:
+        def __init__(self, server_config) -> None:
+            del server_config
+
+        async def serve(self) -> None:
+            loops["serve"] = asyncio.get_running_loop()
+
+    monkeypatch.setattr(server_module, "_abootstrap_tools", fake_bootstrap)
+    monkeypatch.setattr(server_module, "create_app", lambda **kwargs: object())
+    monkeypatch.setattr(server_module.uvicorn, "Server", FakeServer)
+
+    result = CliRunner().invoke(server_module.cli, ["serve"])
+
+    assert result.exit_code == 0, result.output
+    assert loops["bootstrap"] is loops["serve"]

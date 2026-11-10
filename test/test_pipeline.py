@@ -156,6 +156,7 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
                 ),
             ),
             ontology_manager=OntologyManager(),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
         ),
     )
     document_state = AgentState(render_mode=RenderMode.FACTS)

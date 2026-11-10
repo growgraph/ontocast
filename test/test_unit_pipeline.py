@@ -56,6 +56,7 @@ def _fake_tools(*, max_visits_per_node: int) -> ToolBox:
                 )
             ),
             shapes_prompt_contract=lambda: ("", (), False),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
             ontology_manager=OntologyManager(),
             get_llm_tool=get_llm_tool,
         ),

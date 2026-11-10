@@ -214,3 +214,30 @@ def test_prov_terms_are_reported_on_instances_and_not_on_the_document_node() -> 
         f"{FACTS}sample_record"
     ]
     assert "http://purl.org/dc/terms/title" not in flagged
+
+
+def test_a_catalog_term_the_snapshot_omitted_is_not_flagged_under_strict() -> None:
+    """The gate agrees with the unit validator: the catalog, not the snapshot.
+
+    ``qudt:numericValue`` here stands for a catalog property a shape names: the
+    unit's snapshot omitted it, the shapes chapter told the model to use it, and
+    the unit check accepted it. A strict gate calling it "not a term of the
+    catalog" would be false.
+    """
+    graph = RDFGraph()
+    graph.parse(data=_FACTS, format="turtle")
+    ontology = RDFGraph()
+    ontology.parse(data=_ONTOLOGY, format="turtle")
+    numeric_value = "http://qudt.org/schema/qudt/numericValue"
+
+    report = validate_aggregated_facts(
+        graph,
+        ontology,
+        fact_namespaces=[FACTS],
+        non_catalog_severity="error",
+        catalog_terms={numeric_value},
+    )
+    flagged = _non_catalog(report)
+
+    assert numeric_value not in flagged
+    assert "https://schema.org/hasPart" in flagged

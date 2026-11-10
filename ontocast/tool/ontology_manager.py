@@ -8,10 +8,11 @@ lineage using hash-based identifiers.
 import asyncio
 import logging
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
+from rdflib import RDF, RDFS, SKOS, BNode, URIRef
 
 from ontocast.onto.ontology_header import DivergedOntologyError, heads_by_iri
 
@@ -30,6 +31,20 @@ from .triple_manager.core import TripleStoreManager
 from .triple_manager.util import head_headers
 
 logger = logging.getLogger(__name__)
+
+#: What :meth:`OntologyManager.term_definitions` copies for a term.
+_DEFINITION_PREDICATES = (
+    RDF.type,
+    RDFS.label,
+    SKOS.prefLabel,
+    SKOS.definition,
+    SKOS.scopeNote,
+    RDFS.comment,
+    RDFS.domain,
+    RDFS.range,
+    RDFS.subClassOf,
+    RDFS.subPropertyOf,
+)
 
 #: Distinct ontology selections whose merged graphs stay resident. Content units
 #: within a document overwhelmingly repeat the same selection, so a handful of
@@ -601,6 +616,43 @@ class OntologyManager(Tool):
         index = build_catalog_surface_index(o.graph for o in held.values())
         self._surface_index_memo = (key, index)
         return index
+
+    def term_definitions(self, terms: Iterable[str]) -> RDFGraph:
+        """The statements that define ``terms`` in the held catalog.
+
+        For each term, its type, labels, notes, domain, range and parents, taken
+        from the first held ontology that states any of them -- the heads come
+        before the graph cache, so the current version wins. Objects that are
+        blank nodes are left out: a partial structure would mislead more than
+        its absence. The prefix each source binds for a term's namespace is
+        bound in the result. A term no held ontology defines contributes nothing.
+
+        Args:
+            terms: Term IRIs to look up.
+
+        Returns:
+            RDFGraph: A new graph; empty when nothing is defined.
+        """
+        out = RDFGraph()
+        held = list(self._held_ontologies().values())
+        for term_iri in terms:
+            term = URIRef(term_iri)
+            for ontology in held:
+                triples = [
+                    (term, predicate, obj)
+                    for predicate in _DEFINITION_PREDICATES
+                    for obj in ontology.graph.objects(term, predicate)
+                    if not isinstance(obj, BNode)
+                ]
+                if not triples:
+                    continue
+                for triple in triples:
+                    out.add(triple)
+                for prefix, namespace in ontology.graph.namespaces():
+                    if prefix and term_iri.startswith(str(namespace)):
+                        out.bind(prefix, namespace, override=False)
+                break
+        return out
 
     def _cache_graph(self, ontology: Ontology, graph_uri: str | None = None) -> None:
         """Register a store-read ``ontology`` under the graph URI it was read from.

@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, TypeAlias, cast
+from typing import Any, TypeAlias, TypeVar, cast
 
+import httpx
 from pydantic import Field, PrivateAttr, model_validator
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from ontocast.config import EmbeddingConfig, QdrantConfig, VectorStoreConfig
 from ontocast.onto.enum import VectorDistance
@@ -58,6 +62,54 @@ from ontocast.tool.vector_store.util import (
 logger = logging.getLogger(__name__)
 
 ChannelVector: TypeAlias = list[float] | qdrant_models.SparseVector
+
+_T = TypeVar("_T")
+
+TRANSPORT_RETRY_ATTEMPTS = 3
+"""Attempts per retrieval read before a transport error propagates."""
+
+TRANSPORT_RETRY_BACKOFF_SECONDS = 0.2
+"""Base delay between attempts; attempt ``n`` waits ``n`` times this."""
+
+
+def is_transport_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is a transient HTTP transport fault, not a server answer.
+
+    The Qdrant HTTP client wraps whatever its send raises in
+    :class:`ResponseHandlingException`, so the wrapped ``source`` is checked too.
+    A status-code error (:class:`UnexpectedResponse`) is an answer and is never
+    transient here.
+    """
+    if isinstance(exc, ResponseHandlingException):
+        return isinstance(exc.source, httpx.TransportError)
+    return isinstance(exc, httpx.TransportError)
+
+
+def call_with_transport_retry(operation: str, call: Callable[[], _T]) -> _T:
+    """Run a read against Qdrant, retrying a transport error a bounded number of times.
+
+    Every retry is logged and counted as ``vector/transport_retry`` on the
+    running task's budget tracker. After the last attempt the error propagates,
+    so the caller fails visibly rather than continuing without retrieval.
+    """
+    for attempt in range(1, TRANSPORT_RETRY_ATTEMPTS + 1):
+        try:
+            return call()
+        except Exception as exc:
+            if attempt == TRANSPORT_RETRY_ATTEMPTS or not is_transport_error(exc):
+                raise
+            from ontocast.tool.llm import record_active_count
+
+            record_active_count("vector/transport_retry")
+            logger.warning(
+                "Qdrant %s failed with a transport error (attempt %d of %d): %r",
+                operation,
+                attempt,
+                TRANSPORT_RETRY_ATTEMPTS,
+                exc,
+            )
+            time.sleep(TRANSPORT_RETRY_BACKOFF_SECONDS * attempt)
+    raise AssertionError("unreachable")
 
 
 def _to_qdrant_sparse(vector: SparseVector) -> qdrant_models.SparseVector:
@@ -634,11 +686,15 @@ class QdrantVectorStoreManager(VectorStoreManager):
         if not atom_ids:
             return {}
         point_id_to_atom_id = {point_id(atom_id): atom_id for atom_id in atom_ids}
-        points = self.client.retrieve(
-            collection_name=self._ontology_collection_name(),
-            ids=list(point_id_to_atom_id.keys()),
-            with_vectors=True,
-            with_payload=False,
+        collection_name = self._ontology_collection_name()
+        points = call_with_transport_retry(
+            "retrieve",
+            lambda: self.client.retrieve(
+                collection_name=collection_name,
+                ids=list(point_id_to_atom_id.keys()),
+                with_vectors=True,
+                with_payload=False,
+            ),
         )
         out: dict[str, tuple[list[float], list[float]]] = {}
         for point in points:
@@ -975,13 +1031,17 @@ class QdrantVectorStoreManager(VectorStoreManager):
         limit: int,
         search_filter: qdrant_models.Filter | None,
     ) -> list[Any]:
-        response = self.client.query_points(
-            collection_name=self._ontology_collection_name(),
-            query=vector,
-            using=vector_name,
-            query_filter=search_filter,
-            with_payload=True,
-            limit=limit,
+        collection_name = self._ontology_collection_name()
+        response = call_with_transport_retry(
+            "query_points",
+            lambda: self.client.query_points(
+                collection_name=collection_name,
+                query=vector,
+                using=vector_name,
+                query_filter=search_filter,
+                with_payload=True,
+                limit=limit,
+            ),
         )
         return response.points
 

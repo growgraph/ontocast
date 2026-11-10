@@ -19,7 +19,8 @@ from pydantic import Field
 from ontocast.agent import common
 from ontocast.agent.common import _retry_backoff_seconds, call_llm_with_retry
 from ontocast.onto.model import BasePydanticModel
-from ontocast.tool.llm import LLMTool
+from ontocast.onto.state import BudgetTracker
+from ontocast.tool.llm import LLMTool, use_budget_tracker
 
 pytestmark = [pytest.mark.anyio, pytest.mark.unit]
 
@@ -347,6 +348,39 @@ def test_parse_json_object_drops_surplus_closers_after_a_complete_object(
 def test_parse_json_object_keeps_failing_on_trailing_content(tail: str) -> None:
     with pytest.raises(common.LLMJsonParseError):
         common.parse_json_object('{"a": 1}' + tail)
+
+
+def test_parse_json_object_drops_a_premature_closer_before_more_members() -> None:
+    text = (
+        '{"semantic_graph":"cd:a cd:b cd:c ."},'
+        '"ontology_relevance_score":68,"triples_generation_score":88}'
+    )
+    tracker = BudgetTracker()
+    with use_budget_tracker(tracker):
+        parsed = common.parse_json_object(text)
+
+    assert parsed == {
+        "semantic_graph": "cd:a cd:b cd:c .",
+        "ontology_relevance_score": 68,
+        "triples_generation_score": 88,
+    }
+    assert tracker.counters["llm/json_premature_closer"] == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"a": 1},"a": 2}',  # a key named twice is not one object
+        '{"a": 1}, "b"}',  # a key with no value
+        '{"a": 1},"b": 2',  # no closer for the members that follow
+        '{},"b": 2}',  # nothing before the early closer
+    ],
+)
+def test_parse_json_object_keeps_failing_when_the_members_do_not_close_one_object(
+    text: str,
+) -> None:
+    with pytest.raises(common.LLMJsonParseError):
+        common.parse_json_object(text)
 
 
 def test_parse_json_object_accepts_fenced_and_control_characters() -> None:

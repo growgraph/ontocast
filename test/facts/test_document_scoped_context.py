@@ -93,6 +93,7 @@ def _tools(*, scope: OntologyContextScope, warmup: int = 0) -> ToolBox:
                 get_tool_config=lambda: tool_config,
             ),
             shapes_prompt_contract=lambda: ("", (), False),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
         ),
     )
 

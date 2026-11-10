@@ -9,7 +9,7 @@ from collections.abc import Sequence
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
-from rdflib import OWL, RDF
+from rdflib import OWL, RDF, RDFS
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.agent.update_common import finalize_update_report, log_quarantine
@@ -32,7 +32,7 @@ from ontocast.onto.ontology_access import (
     ontology_access_for_unit_ontology,
 )
 from ontocast.onto.ontology_header import mint_ontology
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
 from ontocast.prompt.common import text_template
@@ -51,10 +51,45 @@ from ontocast.prompt.render_ontology import (
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation.literal_repair import repair_compact_iri_literals
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.ontology_validation.plan import compact_iri
 
 logger = logging.getLogger(__name__)
+
+#: RDFS/OWL schema predicates whose object is an IRI by construction. Declared
+#: as object properties so the facts lane's compact-IRI repair recognises them.
+_SCHEMA_IRI_PREDICATES = (
+    RDFS.subClassOf,
+    RDFS.subPropertyOf,
+    RDFS.domain,
+    RDFS.range,
+    OWL.equivalentClass,
+    OWL.equivalentProperty,
+    OWL.inverseOf,
+    OWL.disjointWith,
+    OWL.onProperty,
+    OWL.someValuesFrom,
+    OWL.allValuesFrom,
+    OWL.onClass,
+)
+_SCHEMA_IRI_PREDICATE_GRAPH = RDFGraph()
+for _predicate in _SCHEMA_IRI_PREDICATES:
+    _SCHEMA_IRI_PREDICATE_GRAPH.add((_predicate, RDF.type, OWL.ObjectProperty))
+
+
+def repair_schema_iri_literals(
+    graph: RDFGraph,
+) -> tuple[RDFGraph, list[RejectedLiteralTriple]]:
+    """Coerce compact IRIs written as strings on schema predicates into IRIs.
+
+    Under the JSON-LD wire a bare string (``"rdfs:subClassOf": "ex:Bar"``)
+    parses as a literal. On the predicates above an IRI is the only legal
+    object, so a plain compact-IRI literal with a bound prefix is rewritten;
+    anything else is left as it is. Usable as an ``insert_hook``.
+    """
+    repair_compact_iri_literals(graph, _SCHEMA_IRI_PREDICATE_GRAPH, set())
+    return graph, []
 
 
 def _create_ontology_render_prompt_template() -> PromptTemplate:
@@ -281,6 +316,7 @@ async def render_ontology_fresh(
         )
         graph = render_report.graph
         graph.sanitize_prefixes_namespaces()
+        graph, _ = repair_schema_iri_literals(graph)
         header_triples = sum(
             1
             for s, _, _ in graph.triples((None, RDF.type, OWL.Ontology))
@@ -403,17 +439,19 @@ async def render_ontology_update(
             render_report.external_evidence_request,
             web_search_enabled,
         )
-        # No insert_hook: the facts repairs are instance-level (literal retyping,
-        # unit-code resolution) and have no ontology counterpart. The ontology
-        # side's deterministic validator runs in the loop instead, against the
-        # net delta -- see stategraph/atomic.py::_collect_ontology_findings.
+        # The insert hook repairs only schema-predicate IRIs written as strings;
+        # the facts repairs are instance-level and have no ontology counterpart.
+        # The deterministic validator runs in the loop, against the net delta --
+        # see stategraph/atomic.py::_collect_ontology_findings.
         if tools.ontology_insert_only and len(render_report.delete_graph):
             state.budget_tracker.incr(
                 "ontology/deletes_dropped_insert_only",
                 len(render_report.delete_graph),
             )
             render_report.delete_graph = RDFGraph()
-        graph_update, rejected = finalize_update_report(render_report)
+        graph_update, rejected = finalize_update_report(
+            render_report, insert_hook=repair_schema_iri_literals
+        )
         state.quarantined_literal_triples = rejected
         log_quarantine("Ontology", rejected)
         state.ontology_updates.append(graph_update)

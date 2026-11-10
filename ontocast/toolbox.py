@@ -784,20 +784,42 @@ class ToolBox:
         are catalog IRIs either way.
         """
         cfg = self.config.tool_config.facts_validation
-        mode = cfg.shapes_prompt_contract
-        if mode == "off":
+        if cfg.shapes_prompt_contract == "off":
             return "", (), False
         max_lines = cfg.shapes_prompt_max_lines
         terms = self.shapes_catalog.prompt_contract_terms(max_lines=max_lines)
-        select = mode == "context" or (
-            mode == "auto" and self.shapes_catalog.needs_selection(max_lines=max_lines)
-        )
-        if select:
+        if self._shapes_select_per_unit():
             return "", terms, True
         return (
             self.shapes_catalog.conformance_chapter(max_lines=max_lines),
             terms,
             False,
+        )
+
+    def shapes_chapter_terms(self, context_terms: set[str]) -> frozenset[str]:
+        """The IRIs named by the conformance chapter a unit with this context sees.
+
+        Follows :meth:`shapes_prompt_contract`: nothing when the contract is
+        off, the selected shapes' terms under per-unit selection, every shape's
+        terms when the whole chapter is printed.
+        """
+        cfg = self.config.tool_config.facts_validation
+        if cfg.shapes_prompt_contract == "off":
+            return frozenset()
+        return self.shapes_catalog.named_terms(
+            context_terms if self._shapes_select_per_unit() else None,
+            max_lines=cfg.shapes_prompt_max_lines,
+        )
+
+    def _shapes_select_per_unit(self) -> bool:
+        """Whether each unit gets a chapter selected on its context."""
+        cfg = self.config.tool_config.facts_validation
+        mode = cfg.shapes_prompt_contract
+        return mode == "context" or (
+            mode == "auto"
+            and self.shapes_catalog.needs_selection(
+                max_lines=cfg.shapes_prompt_max_lines
+            )
         )
 
     def shapes_chapter_for_context(self, context_terms: set[str]) -> str:

@@ -61,7 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ontocast process` dumps an ontology the document wrote a version of as that stored version, header included; a new ontology was dumped without its header.
 - The `foreign_namespace` finding accepts the document's home namespace: a new home has no terms in the unit's context, so every term minted there was flagged as unattributable and the critic moved it to another ontology. With a home, a new term under any other namespace is flagged instead.
 - `ontocast process` run manifests list the ontology versions a document wrote and read (`ontology_versions`); the batch path dropped them.
-- `ontocast process`, `serve` and `curate` no longer fail with "Event loop is closed" when start-up already called the model (a seed ontology without a description): the LLM tool rebuilds its provider client for each event loop. The Anthropic provider still shares one HTTP client per process.
+- `ontocast process`, `serve` and `curate` no longer fail with "Event loop is closed" when start-up already called the model (a seed ontology without a description): each command runs start-up and its work on one event loop, for every provider, Anthropic included.
+- A stripped ontology header takes its `sh:declare` prefix declarations with it; prompt contexts carried them as orphaned blank nodes.
+- A transient Qdrant transport error during retrieval is retried up to three times (`vector/transport_retry`) instead of failing the unit.
+- A JSON answer that closes its object after the first member and then continues with more members is parsed without a re-render (`llm/json_premature_closer`).
+- Under the JSON-LD wire, an ontology render's `rdfs:subClassOf`, `rdfs:domain`, `rdfs:range` and other schema objects written as strings (`"ex:Bar"`) become IRIs (`repair/compact_iri_literal`).
+- The facts gate's `non_catalog_vocabulary` counts every catalog term, as the unit validator does; a catalog term the unit's snapshot omitted was an error under `strict`.
+- A facts prompt defines every catalog term it names: the terms of the conformance rules it shows and the terms its notes quote are added to the ontology context when the snapshot lacks them (`ctx/admitted_named_terms`).
 - A critic patch on an ontology unit that creates a new ontology no longer drops the render: the unit's delta and written ontology held the patch alone.
 - An applied ontology critic patch no longer raises on the missing repair log.
 - Provenance survives copying, merging and a JSON round trip of a facts graph; it used to be dropped silently, and loading a dumped graph raised.

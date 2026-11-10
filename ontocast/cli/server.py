@@ -273,7 +273,7 @@ def store_names_replaced_by_tenancy(
     return replaced
 
 
-def _bootstrap_tools(
+async def _abootstrap_tools(
     *,
     tenant: str | None,
     project: str | None,
@@ -284,6 +284,10 @@ def _bootstrap_tools(
     batch: bool = False,
 ) -> BootstrappedRuntime:
     """Load config, construct ToolBox, apply tenancy, and initialize tools.
+
+    Runs on the caller's event loop, and each command does its work on that same
+    loop: a provider client opened during start-up (seed-ontology descriptions)
+    holds connections bound to it.
 
     Args:
         ontology_dir: ``--ontology-dir``. ``None`` leaves
@@ -319,7 +323,7 @@ def _bootstrap_tools(
             "config field ontology_context_fixed_ontology_id)."
         )
 
-    tools: ToolBox = ToolBox(config)
+    tools: ToolBox = await ToolBox.acreate(config)
     t_res, p_res = resolve_tenant_project(tenant, project)
     ontology_context_mode_value = config.server.ontology_context_mode
     vector_mode_enabled = (
@@ -336,29 +340,25 @@ def _bootstrap_tools(
                 t_res,
                 p_res,
             )
-        asyncio.run(
-            tools.update_tenancy_with_vector_mode(
-                t_res,
-                p_res,
-                initialize_vector_store=False,
-                fail_on_vector_store_error=vector_mode_enabled,
-            )
+        await tools.update_tenancy_with_vector_mode(
+            t_res,
+            p_res,
+            initialize_vector_store=False,
+            fail_on_vector_store_error=vector_mode_enabled,
         )
 
     if flush_on_clean and config.clean:
-        asyncio.run(flush_triple_configured_scope(tools))
+        await flush_triple_configured_scope(tools)
 
     try:
-        asyncio.run(
-            tools.initialize(
-                ontology_context_mode=ontology_context_mode_value,
-                fail_on_vector_store_error=vector_mode_enabled,
-                wipe_vector_store=wipe_vector_store,
-                require_populated_catalog=(
-                    batch and config.server.render_mode == RenderMode.FACTS
-                ),
-                require_all_seeds=batch,
-            )
+        await tools.initialize(
+            ontology_context_mode=ontology_context_mode_value,
+            fail_on_vector_store_error=vector_mode_enabled,
+            wipe_vector_store=wipe_vector_store,
+            require_populated_catalog=(
+                batch and config.server.render_mode == RenderMode.FACTS
+            ),
+            require_all_seeds=batch,
         )
     except SeedOntologyLoadError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -474,42 +474,49 @@ def serve(
     wipe_vector_store: bool | None,
 ) -> None:
     """Start the OntoCast API server."""
-    runtime = _bootstrap_tools(
-        tenant=tenant,
-        project=project,
-        wipe_vector_store=wipe_vector_store,
-        ontology_dir=ontology_dir,
-        shapes_dir=shapes_dir,
-        flush_on_clean=False,
-    )
-    parsed_max_visits = parse_max_visits_param(
-        max_visits,
-        default=runtime.config.server.max_visits_per_node,
-    )
-    runtime.config.server.max_visits_per_node = parsed_max_visits
-    app = create_app(
-        tools=runtime.tools,
-        server_config=runtime.config.server,
-        head_chunks=head_chunks,
-        active_tenant=runtime.tenant,
-        active_project=runtime.project,
-    )
-    bind_host = runtime.config.server.host
-    logger.info(
-        "Starting Ontocast server on %s:%s", bind_host, runtime.config.server.port
-    )
-    if bind_host not in {"127.0.0.1", "localhost", "::1"}:
-        logger.warning(
-            "Binding %s: the server has no authentication and /flush is "
-            "destructive. Put it behind a proxy that authenticates.",
-            bind_host,
+
+    async def _run() -> None:
+        runtime = await _abootstrap_tools(
+            tenant=tenant,
+            project=project,
+            wipe_vector_store=wipe_vector_store,
+            ontology_dir=ontology_dir,
+            shapes_dir=shapes_dir,
+            flush_on_clean=False,
         )
-    uvicorn.run(
-        app,
-        host=bind_host,
-        port=runtime.config.server.port,
-        log_level="info",
-    )
+        parsed_max_visits = parse_max_visits_param(
+            max_visits,
+            default=runtime.config.server.max_visits_per_node,
+        )
+        runtime.config.server.max_visits_per_node = parsed_max_visits
+        app = create_app(
+            tools=runtime.tools,
+            server_config=runtime.config.server,
+            head_chunks=head_chunks,
+            active_tenant=runtime.tenant,
+            active_project=runtime.project,
+        )
+        bind_host = runtime.config.server.host
+        logger.info(
+            "Starting Ontocast server on %s:%s", bind_host, runtime.config.server.port
+        )
+        if bind_host not in {"127.0.0.1", "localhost", "::1"}:
+            logger.warning(
+                "Binding %s: the server has no authentication and /flush is "
+                "destructive. Put it behind a proxy that authenticates.",
+                bind_host,
+            )
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=bind_host,
+                port=runtime.config.server.port,
+                log_level="info",
+            )
+        )
+        await server.serve()
+
+    asyncio.run(_run())
 
 
 @cli.command("process")
@@ -674,69 +681,78 @@ def process(
     document_metadata: str | None,
 ) -> None:
     """Process local files through the extraction pipeline (no HTTP server)."""
-    runtime = _bootstrap_tools(
-        tenant=tenant,
-        project=project,
-        wipe_vector_store=wipe_vector_store,
-        ontology_dir=ontology_dir,
-        shapes_dir=shapes_dir,
-        flush_on_clean=True,
-        batch=True,
-    )
-    # The parsers are shared with the HTTP layer and signal bad input by
-    # raising; surface that as a click usage error rather than a traceback.
-    try:
-        parsed_target_sections = (
-            parse_sections_list_param(target_sections, param="target-sections")
-            if target_sections is not None
-            else None
-        )
-        parsed_exclude_sections = (
-            parse_sections_list_param(exclude_sections, param="exclude-sections")
-            if exclude_sections is not None
-            else None
-        )
-        parsed_summarize_sections = (
-            parse_sections_list_param(summarize_sections, param="summarize-sections")
-            if summarize_sections is not None
-            else None
-        )
-        parsed_summary_max_sentences = parse_summary_max_sentences_param(
-            summary_max_sentences,
-            default=5,
-        )
-        parsed_document_type_hint = parse_document_type_hint_param(document_type_hint)
-        parsed_section_schema_id = parse_section_schema_id_param(section_schema_id)
-        parsed_max_visits = parse_max_visits_param(
-            max_visits,
-            default=runtime.config.server.max_visits_per_node,
-        )
-        parsed_document_metadata = parse_document_metadata_param(document_metadata)
-    except ValueError as exc:
-        raise click.BadParameter(str(exc)) from exc
-    runtime.config.server.max_visits_per_node = parsed_max_visits
 
-    workflow: CompiledStateGraph = create_agent_graph(runtime.tools)
-    input_path = input_path.expanduser()
-    out_dir = output_dir.expanduser() if output_dir is not None else None
-    facts_dir = facts_output_dir.expanduser() if facts_output_dir is not None else None
-    ontology_out_dir = (
-        ontology_output_dir.expanduser() if ontology_output_dir is not None else None
-    )
-    supported_suffixes = get_batch_input_extensions(runtime.tools)
-    try:
-        files = sorted(crawl_directories(input_path, suffixes=supported_suffixes))
-    except ValueError as exc:
-        raise click.BadParameter(str(exc), param_hint="--input-path") from exc
-    if not files:
-        # An empty crawl used to exit 0 with no output, which reads as success.
-        raise click.ClickException(
-            f"No supported input files under {input_path} "
-            f"(looking for {', '.join(supported_suffixes)})."
+    async def _run() -> None:
+        runtime = await _abootstrap_tools(
+            tenant=tenant,
+            project=project,
+            wipe_vector_store=wipe_vector_store,
+            ontology_dir=ontology_dir,
+            shapes_dir=shapes_dir,
+            flush_on_clean=True,
+            batch=True,
         )
-    try:
-        failed_files = asyncio.run(
-            process_files_input(
+        # The parsers are shared with the HTTP layer and signal bad input by
+        # raising; surface that as a click usage error rather than a traceback.
+        try:
+            parsed_target_sections = (
+                parse_sections_list_param(target_sections, param="target-sections")
+                if target_sections is not None
+                else None
+            )
+            parsed_exclude_sections = (
+                parse_sections_list_param(exclude_sections, param="exclude-sections")
+                if exclude_sections is not None
+                else None
+            )
+            parsed_summarize_sections = (
+                parse_sections_list_param(
+                    summarize_sections, param="summarize-sections"
+                )
+                if summarize_sections is not None
+                else None
+            )
+            parsed_summary_max_sentences = parse_summary_max_sentences_param(
+                summary_max_sentences,
+                default=5,
+            )
+            parsed_document_type_hint = parse_document_type_hint_param(
+                document_type_hint
+            )
+            parsed_section_schema_id = parse_section_schema_id_param(section_schema_id)
+            parsed_max_visits = parse_max_visits_param(
+                max_visits,
+                default=runtime.config.server.max_visits_per_node,
+            )
+            parsed_document_metadata = parse_document_metadata_param(document_metadata)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc)) from exc
+        runtime.config.server.max_visits_per_node = parsed_max_visits
+
+        workflow: CompiledStateGraph = create_agent_graph(runtime.tools)
+        input_root = input_path.expanduser()
+        out_dir = output_dir.expanduser() if output_dir is not None else None
+        facts_dir = (
+            facts_output_dir.expanduser() if facts_output_dir is not None else None
+        )
+        ontology_out_dir = (
+            ontology_output_dir.expanduser()
+            if ontology_output_dir is not None
+            else None
+        )
+        supported_suffixes = get_batch_input_extensions(runtime.tools)
+        try:
+            files = sorted(crawl_directories(input_root, suffixes=supported_suffixes))
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--input-path") from exc
+        if not files:
+            # An empty crawl used to exit 0 with no output, which reads as success.
+            raise click.ClickException(
+                f"No supported input files under {input_root} "
+                f"(looking for {', '.join(supported_suffixes)})."
+            )
+        try:
+            failed_files = await process_files_input(
                 files,
                 config=runtime.config,
                 head_chunks=head_chunks,
@@ -761,23 +777,24 @@ def process(
                 strip_provenance=not keep_provenance,
                 dump_catalog=dump_catalog,
             )
-        )
-    except LLMConfigurationError as exc:
-        # Not one failed file among many: the request as configured is one the
-        # provider will never accept, so the batch stopped where it stood. A
-        # dedicated exit code lets a benchmark driver tell "fix your LLM_*
-        # settings" from "some documents did not extract".
-        raise LLMConfigAbort(
-            f"{exc} -- fix the LLM_* configuration and re-run."
-        ) from exc
-    if failed_files:
-        # Exit non-zero so a scripted pipeline can tell a partial or total
-        # failure from a clean run.
-        raise click.ClickException(
-            f"{len(failed_files)} of {len(files)} input file(s) failed: "
-            + ", ".join(str(path) for path in failed_files[:5])
-            + (" ..." if len(failed_files) > 5 else "")
-        )
+        except LLMConfigurationError as exc:
+            # Not one failed file among many: the request as configured is one the
+            # provider will never accept, so the batch stopped where it stood. A
+            # dedicated exit code lets a benchmark driver tell "fix your LLM_*
+            # settings" from "some documents did not extract".
+            raise LLMConfigAbort(
+                f"{exc} -- fix the LLM_* configuration and re-run."
+            ) from exc
+        if failed_files:
+            # Exit non-zero so a scripted pipeline can tell a partial or total
+            # failure from a clean run.
+            raise click.ClickException(
+                f"{len(failed_files)} of {len(files)} input file(s) failed: "
+                + ", ".join(str(path) for path in failed_files[:5])
+                + (" ..." if len(failed_files) > 5 else "")
+            )
+
+    asyncio.run(_run())
 
 
 @cli.command("curate")
@@ -842,24 +859,25 @@ def curate(
     """
     import json
 
-    from ontocast.tool.curation import curate_catalog
+    from ontocast.tool.curation import CurationReport, curate_catalog
 
-    runtime = _bootstrap_tools(
-        tenant=tenant,
-        project=project,
-        wipe_vector_store=None,
-        ontology_dir=ontology_dir,
-    )
-    try:
-        reports = asyncio.run(
-            curate_catalog(
-                runtime.tools,
-                ontology=ontology_ref,
-                apply=apply,
-                batch_size=batch_size,
-                use_facts=facts_usage,
-            )
+    async def _run() -> list[CurationReport]:
+        runtime = await _abootstrap_tools(
+            tenant=tenant,
+            project=project,
+            wipe_vector_store=None,
+            ontology_dir=ontology_dir,
         )
+        return await curate_catalog(
+            runtime.tools,
+            ontology=ontology_ref,
+            apply=apply,
+            batch_size=batch_size,
+            use_facts=facts_usage,
+        )
+
+    try:
+        reports = asyncio.run(_run())
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     for report in reports:

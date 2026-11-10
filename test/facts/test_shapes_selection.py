@@ -90,6 +90,9 @@ def _toolbox_stub(mode: str, *, oversized: bool) -> ToolBox:
         needs_selection=lambda *, max_lines: oversized,
         conformance_chapter=lambda *, max_lines: "# FULL CHAPTER",
         selected_chapter=lambda terms, *, max_lines: "# SELECTED",
+        named_terms=lambda terms, *, max_lines: frozenset(
+            {"https://vocab.test/all"} if terms is None else terms
+        ),
     )
     stub = SimpleNamespace(
         config=SimpleNamespace(
@@ -104,6 +107,8 @@ def _toolbox_stub(mode: str, *, oversized: bool) -> ToolBox:
     )
     stub.shapes_prompt_contract = ToolBox.shapes_prompt_contract.__get__(stub)
     stub.shapes_chapter_for_context = ToolBox.shapes_chapter_for_context.__get__(stub)
+    stub.shapes_chapter_terms = ToolBox.shapes_chapter_terms.__get__(stub)
+    stub._shapes_select_per_unit = ToolBox._shapes_select_per_unit.__get__(stub)
     return cast(ToolBox, stub)
 
 
@@ -129,3 +134,19 @@ def test_mode_resolution(mode, oversized, expect_chapter, expect_pending) -> Non
 def test_chapter_for_context_delegates() -> None:
     tools = _toolbox_stub("context", oversized=True)
     assert tools.shapes_chapter_for_context({"x"}) == "# SELECTED"
+
+
+@pytest.mark.parametrize(
+    ("mode", "oversized", "expected"),
+    [
+        ("off", False, frozenset()),
+        ("full", True, frozenset({"https://vocab.test/all"})),
+        ("auto", False, frozenset({"https://vocab.test/all"})),
+        ("auto", True, frozenset({"x"})),
+        ("context", False, frozenset({"x"})),
+    ],
+)
+def test_chapter_terms_follow_what_the_unit_is_shown(mode, oversized, expected) -> None:
+    """The whole chapter names every shape's terms; a selection names its own."""
+    tools = _toolbox_stub(mode, oversized=oversized)
+    assert tools.shapes_chapter_terms({"x"}) == expected

@@ -1,11 +1,13 @@
 import asyncio
 import logging
+import re
 import time
 from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, Field
+from rdflib import RDFS, SKOS, Literal, URIRef
 
 from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
@@ -50,6 +52,117 @@ class UnitOntologyContext(BaseModel):
         if self.writable_iris:
             return self.writable_iris[0]
         return NULL_ONTOLOGY.iri
+
+
+def snapshot_context_terms(graph: RDFGraph, writable_iris: Sequence[str]) -> set[str]:
+    """Every IRI of a snapshot graph, in any position, plus the writable IRIs.
+
+    The join key the conformance chapter is selected on: the schema closure
+    carries superclass IRIs as objects, which is how a shape targeting a
+    superclass reaches a unit typed with the subclass.
+    """
+    terms: set[str] = set(writable_iris)
+    for triple in graph:
+        for term in triple:
+            if isinstance(term, URIRef):
+                terms.add(str(term))
+    return terms
+
+
+#: The note predicates the term sheet prints (``prompt/term_sheet.py``).
+_NOTE_PREDICATES = (SKOS.scopeNote, SKOS.definition, RDFS.comment)
+
+#: A compact IRI written inside prose: ``prefix:Local``, not part of a URL.
+_COMPACT_IRI_IN_TEXT = re.compile(r"(?<![\w/#:.])([A-Za-z][\w-]*):([A-Za-z_][\w-]*)")
+
+#: Admission rounds: an admitted term can join a further shape, whose own terms
+#: are then named. The catalog is finite; this only bounds the work.
+_ADMISSION_ROUNDS = 3
+
+
+def _note_terms(graph: RDFGraph) -> set[str]:
+    """Catalog-shaped IRIs that the snapshot's notes name in prose."""
+    prefixes = dict(RDFGraph.get_known_prefixes() or {})
+    prefixes.update(
+        {prefix: str(namespace) for prefix, namespace in graph.namespaces() if prefix}
+    )
+    named: set[str] = set()
+    for predicate in _NOTE_PREDICATES:
+        for note in graph.objects(None, predicate):
+            if not isinstance(note, Literal):
+                continue
+            for prefix, local in _COMPACT_IRI_IN_TEXT.findall(str(note)):
+                namespace = prefixes.get(prefix)
+                if namespace:
+                    named.add(f"{namespace}{local}")
+    return named
+
+
+def admit_named_catalog_terms(
+    ctx: UnitOntologyContext,
+    tools: ToolBox,
+    *,
+    budget_tracker: Any = None,
+) -> UnitOntologyContext:
+    """Add the definitions of catalog terms the prompt names but the snapshot lacks.
+
+    The conformance chapter prints every rule of a shape it selects, and a
+    term's note may quote another term, so a facts prompt can tell the model
+    to use a catalog term its ``# ONTOLOGY`` chapter never defines. Each such
+    term that the catalog defines gets its defining statements
+    (:meth:`OntologyManager.term_definitions`) added to a copy of the
+    snapshot. Only catalog terms are admitted, and only ones the prompt
+    already names, so the pass adds no vocabulary the prompt did not mention.
+
+    Returns ``ctx`` itself when nothing is admitted, else a context over a
+    new snapshot: a shared document context is never changed in place.
+    """
+    snapshot = ctx.snapshot
+    if snapshot.is_empty():
+        return ctx
+    current = snapshot.graph
+    admitted: RDFGraph | None = None
+    tried: set[str] = set()
+    for _ in range(_ADMISSION_ROUNDS):
+        named = tools.shapes_chapter_terms(
+            snapshot_context_terms(current, ctx.writable_iris)
+        ) | _note_terms(current)
+        defined = {str(s) for s in current.subjects() if isinstance(s, URIRef)}
+        undefined = named - defined - tried
+        if not undefined:
+            break
+        missing = sorted(undefined & tools.ontology_manager.catalog_terms())
+        if not missing:
+            break
+        tried.update(missing)
+        definitions = tools.ontology_manager.term_definitions(missing)
+        if not len(definitions):
+            break
+        if admitted is None:
+            admitted = snapshot.graph.copy()
+        admitted += definitions
+        for prefix, namespace in definitions.namespaces():
+            if prefix:
+                admitted.bind(prefix, namespace, override=False)
+        current = admitted
+    if admitted is None:
+        return ctx
+    added = {str(s) for s in admitted.subjects() if isinstance(s, URIRef)} - {
+        str(s) for s in snapshot.graph.subjects() if isinstance(s, URIRef)
+    }
+    logger.info(
+        "Admitted %d catalog term(s) the prompt names into the ontology context",
+        len(added),
+    )
+    if budget_tracker is not None:
+        budget_tracker.incr("ctx/admitted_named_terms", len(added))
+    return ctx.model_copy(
+        update={
+            "snapshot": snapshot.model_copy(
+                update={"graph": admitted, "content_hash": ""}
+            )
+        }
+    )
 
 
 def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:

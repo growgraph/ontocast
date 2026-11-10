@@ -42,6 +42,7 @@ from ontocast.onto.state import UNIT_SUM_SUFFIX, AgentState, BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import (
+    admit_named_catalog_terms,
     aggregate_writable_metrics,
     build_merged_document_ontology_context,
     build_unioned_document_ontology_context,
@@ -774,6 +775,9 @@ def make_render_facts_node(tools: ToolBox):
                 UnitLoopContext.from_agent_state(state), tools, state.content_units
             )
         if merged_context is not None:
+            merged_context = admit_named_catalog_terms(
+                merged_context, tools, budget_tracker=state.budget_tracker
+            )
             # Hand the same graph to merge/validate downstream instead of
             # letting each rebuild it.
             state.facts_ontology_context = merged_context.snapshot.graph

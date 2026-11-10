@@ -275,6 +275,57 @@ def leading_object_before_surplus_closers(text: str) -> Any | None:
     return value
 
 
+class _DuplicateKeyError(ValueError):
+    """A JSON object names the same key twice."""
+
+
+def _pairs_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise _DuplicateKeyError(key)
+        out[key] = value
+    return out
+
+
+def object_with_premature_closer(text: str) -> dict[str, Any] | None:
+    """The object ``text`` meant to send, when its first ``}`` came too early.
+
+    A model sometimes closes the object after its first member and then writes
+    the remaining members and the real closer (``{"a": 1},"b": 2}``). The
+    repair drops that one early ``}`` only when what follows is another member
+    (``,`` then a string key) and the result decodes to one object with no key
+    named twice. Anything else is left to fail.
+
+    Returns:
+        The repaired object, or ``None`` when the text does not have that shape.
+    """
+    stripped = text.lstrip()
+    try:
+        value, end = json.JSONDecoder(strict=False).raw_decode(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict) or not value or stripped[end - 1] != "}":
+        return None
+    rest = stripped[end:]
+    after_comma = rest.lstrip()
+    if not after_comma.startswith(","):
+        return None
+    if not after_comma[1:].lstrip().startswith('"'):
+        return None
+    try:
+        repaired = json.loads(
+            stripped[: end - 1] + rest,
+            strict=False,
+            object_pairs_hook=_pairs_without_duplicates,
+        )
+    except (json.JSONDecodeError, _DuplicateKeyError):
+        return None
+    if not isinstance(repaired, dict):
+        return None
+    return repaired
+
+
 def parse_json_object(text: str) -> dict[str, Any]:
     """Parse LLM JSON output strictly, failing loudly with position context.
 
@@ -325,6 +376,15 @@ def parse_json_object(text: str) -> dict[str, Any]:
                 )
                 record_active_count("llm/json_surplus_closer")
                 return leading
+            premature = object_with_premature_closer(text)
+            if premature is not None:
+                logger.warning(
+                    "Dropped a premature closing brace inside a JSON object in "
+                    "LLM response (char %d)",
+                    reported.pos,
+                )
+                record_active_count("llm/json_premature_closer")
+                return premature
 
         repaired, fixes = repair_bracket_kinds(text)
         if fixes:

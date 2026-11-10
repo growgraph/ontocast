@@ -198,6 +198,22 @@ class ShapesCatalog(Tool):
             self._selection_cache[key] = cached
         return cached
 
+    def named_terms(
+        self, context_terms: set[str] | None, *, max_lines: int
+    ) -> frozenset[str]:
+        """The IRIs the conformance chapter a unit sees names.
+
+        Every requirement's terms when ``context_terms`` is ``None`` (the whole
+        chapter is printed), else the terms of the requirements
+        :meth:`selected_chapter` selects for that context.
+        """
+        requirements, _, _ = self._contract(max_lines)
+        if context_terms is not None:
+            from ontocast.prompt.shapes_contract import select_requirements
+
+            requirements = tuple(select_requirements(requirements, context_terms))
+        return frozenset(term for r in requirements for term in r.terms)
+
     async def sync(self, shapes_dir: str | None = None) -> None:
         """Seed from ``shapes_dir`` when needed, then materialize the merged graph.
 

@@ -18,8 +18,6 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, TypeVar
 
-from rdflib import URIRef
-
 from ontocast.agent.complete_facts import complete_facts
 from ontocast.agent.criticise_facts import criticise_facts
 from ontocast.agent.criticise_ontology import criticise_ontology
@@ -56,7 +54,9 @@ from ontocast.onto.triple_index import Triple
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
     UnitOntologyContext,
+    admit_named_catalog_terms,
     resolve_unit_ontology_context,
+    snapshot_context_terms,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
@@ -837,6 +837,7 @@ async def _apply_facts_ontology_context(
     (single-unit pipelines, or facts-only runs with no ontology stage).
     """
     ctx = await resolve_unit_ontology_context(context, tools, unit_state.content_unit)
+    ctx = admit_named_catalog_terms(ctx, tools, budget_tracker=context.budget_tracker)
     logger.info(
         "Ontology context for mode %s: sources=%s writable=%s",
         context.ontology_context_mode,
@@ -857,11 +858,9 @@ def _select_conformance_chapter(unit_state: UnitFactsState, tools: ToolBox) -> N
     subclass -- plus the writable IRIs. An empty snapshot selects nothing:
     a unit with no ontology context has no classes to hold to their rules.
     """
-    context_terms: set[str] = set(unit_state.writable_iris or ())
-    for triple in unit_state.ontology_snapshot.graph:
-        for term in triple:
-            if isinstance(term, URIRef):
-                context_terms.add(str(term))
+    context_terms = snapshot_context_terms(
+        unit_state.ontology_snapshot.graph, unit_state.writable_iris or ()
+    )
     unit_state.conformance_chapter = tools.shapes_chapter_for_context(context_terms)
     unit_state.conformance_selection_pending = False
     logger.debug(

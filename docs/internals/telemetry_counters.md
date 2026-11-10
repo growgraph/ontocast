@@ -99,10 +99,11 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `llm/parse_retry` | `ontocast/agent/common.py` | Calls re-sent because the previous answer did not parse or validate |
 | `llm/json_bracket_repair` | `ontocast/agent/common.py` | Answers recovered by correcting mismatched closing brackets |
 | `llm/json_surplus_closer` | `ontocast/agent/common.py` | Answers recovered by dropping closing brackets after a complete object |
+| `llm/json_premature_closer` | `ontocast/agent/common.py` | Answers recovered by dropping a closing brace written after the first member, before the rest |
 | `llm/parse_abandoned` | `ontocast/agent/common.py` | Calls given up after the retries ran out or the same JSON error recurred |
 | `rdf/turtle_repair` | `ontocast/onto/rdfgraph.py` | Turtle payloads that parsed only after repair (truncated statement, unknown prefix, update-query wrapper) |
 | `rdf/jsonld_rdflib_fallback` | `ontocast/onto/rdfgraph.py` | JSON-LD payloads that failed URDNA2015 normalization and were parsed by rdflib instead |
-| `repair/compact_iri_literal` | `ontocast/tool/facts_validation/literal_repair.py` | Compact IRIs written as plain strings on an IRI-valued position and coerced back to IRIs, in renders and in critic and completion patches |
+| `repair/compact_iri_literal` | `ontocast/tool/facts_validation/literal_repair.py` | Compact IRIs written as plain strings on an IRI-valued position and coerced back to IRIs: in facts renders and their critic and completion patches, and on the schema predicates of ontology renders |
 | `repair/entailed_type` | `ontocast/tool/facts_validation/literal_repair.py` | `rdf:type` triples added from a predicate's `rdfs:domain` or `rdfs:range`, in renders and in critic and completion patches |
 | `llm/ontology_selection` | `ontocast/agent/select_ontology_catalog.py` | Ontology selection calls, one per unit in `selected_single_ontology` mode |
 | `chapter/text_chars_before` | `ontocast/agent/render_facts.py` | Summed length of capped text literals before the text caps |
@@ -112,6 +113,8 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `chapter/triples_over_budget` | `ontocast/agent/render_facts.py` | Facts chapters still over `ONTOLOGY_CONTEXT_MAX_TRIPLES` after condensing, passed through whole |
 | `ctx/merge_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Document ontology merges; `1` per document |
 | `ctx/union_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Union chapters built; `1` per facts-only document with a document scope |
+| `ctx/admitted_named_terms` | `ontocast/stategraph/context_resolver.py` | Catalog terms the facts prompt names (conformance rules, notes) whose definitions were added to the ontology context |
+| `vector/transport_retry` | `ontocast/tool/vector_store/qdrant.py` | Qdrant reads retried after a transport error; the third failure fails the unit |
 | `<node>/unit_errors` | `ontocast/stategraph/node_factories.py` | Units of a fan-out node that raised |
 | `ontology/update_rejected_over_budget` | `ontocast/agent/render_ontology.py` | Ontology updates discarded for exceeding `ONTOLOGY_MAX_TRIPLES` |
 | `ontology/deletes_dropped_insert_only` | `ontocast/agent/render_ontology.py`, `ontocast/stategraph/node_factories.py` | Ontology delete triples dropped under `ONTOLOGY_UPDATE_MODE=insert_only` |

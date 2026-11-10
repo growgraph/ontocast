@@ -223,9 +223,11 @@ vocabulary marked "no" is admitted by namespace, as are your own namespaces.
 these vocabularies can type or relate, and a quantity they have no value class
 or carrier property for, is not extracted. A class or property from any other
 vocabulary is an `unknown_term` finding the renderer must rewrite or remove,
-and at the gate `non_catalog_vocabulary` is an error for it. The model sees the
-unit's retrieved context, not the whole catalog, so a property retrieval missed
-is a statement made in a well-known vocabulary or not made at all: watch
+and at the gate `non_catalog_vocabulary` is an error for it. Both checks count
+every term of your catalog, not only the unit's retrieved context. The model
+sees the retrieved context, plus the definition of any catalog term the
+conformance rules or a term's note name, so a property retrieval missed is
+otherwise a statement made in a well-known vocabulary or not made at all: watch
 `non_catalog_vocabulary`, `facts_isolated` and `facts_unlinked_dropped`, and
 widen the context (`ONTOLOGY_CONTEXT_MODE`) when they grow.
 
