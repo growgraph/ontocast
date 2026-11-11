@@ -199,7 +199,9 @@ The model is instructed to:
 
 The served graph holds statements only. After merging, an entity linked to
 nothing and holding no value is dropped, and so is a value no statement
-carries (`facts_unlinked_dropped`). Values are never merged with each other;
+carries (`facts_unlinked_dropped`). A value written as an entity of its own,
+typed with a quantity-value class, and linked to nothing is dropped too, after
+the link pass has had its chance to attach it. Values are never merged with each other;
 each is named under its carrier, `<carrier>.<property>` (then a number when a
 carrier holds several values on one property), so it has a stable IRI.
 

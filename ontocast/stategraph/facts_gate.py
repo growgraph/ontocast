@@ -21,7 +21,7 @@ import logging
 from collections.abc import Sequence
 from itertools import combinations
 
-from rdflib import BNode, Literal, URIRef
+from rdflib import RDF, BNode, Literal, URIRef
 from rdflib.term import Node
 
 from ontocast.onto.constants import DEFAULT_IRI
@@ -64,6 +64,7 @@ from ontocast.tool.facts_validation import (
     validate_aggregated_facts,
 )
 from ontocast.tool.facts_validation.date_values import add_date_values
+from ontocast.tool.facts_validation.terms import is_value_node
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -310,6 +311,89 @@ def drop_unlinked_instances(
             len(orphaned),
         )
     return graph, [str(instance) for instance in silent], len(orphaned)
+
+
+def drop_detached_values(
+    graph: RDFGraph,
+    isolated: Sequence[str],
+    ontology_graph: RDFGraph,
+    fact_namespaces: Sequence[str],
+) -> list[str]:
+    """Remove every isolated instance typed as a value, with the parts it owns.
+
+    A value belongs to the statement that carries it; its type reaches a class
+    of :data:`~ontocast.tool.facts_validation.terms.VALUE_CLASSES` through the
+    ontology's subclass closure. One linked to no instance nor the document
+    has lost its statement, whatever numbers it holds, so it is not a fact.
+    A value linked to anything, in either direction, is kept.
+
+    ``isolated`` is the gate's list as the link pass left it: computed before
+    values were named, so a value's own parts, named under it since, are not
+    links. Its parts go with it: the instances and blank nodes it reaches that
+    nothing else points at.
+
+    Args:
+        graph: Served facts graph, mutated in place.
+        isolated: IRIs of the instances linked to nothing.
+        ontology_graph: The ontology context the subclass closure walks.
+        fact_namespaces: Namespaces holding minted instances.
+
+    Returns:
+        The dropped value IRIs, ordered by IRI.
+    """
+    closures: dict[URIRef, set[URIRef]] = {}
+    detached = sorted(
+        (
+            URIRef(iri)
+            for iri in isolated
+            if is_value_node(graph, URIRef(iri), ontology_graph, closures)
+        ),
+        key=str,
+    )
+    if not detached:
+        return []
+    parts = _owned_parts(graph, detached, fact_namespaces)
+    _remove_instances(graph, [*detached, *sorted(parts, key=str)])
+    logger.info(
+        "Dropped %d value(s) linked to nothing from the served facts", len(detached)
+    )
+    return [str(value) for value in detached]
+
+
+def _owned_parts(
+    graph: RDFGraph, roots: Sequence[URIRef], fact_namespaces: Sequence[str]
+) -> set[URIRef]:
+    """Instances reachable from ``roots`` that only the roots and they point at."""
+    roots_set: set[Node] = set(roots)
+
+    def is_part(node: Node) -> bool:
+        return isinstance(node, BNode) or (
+            isinstance(node, URIRef)
+            and any(ns and str(node).startswith(ns) for ns in fact_namespaces)
+        )
+
+    reached: set[Node] = set()
+    frontier: list[Node] = list(roots)
+    while frontier:
+        node = frontier.pop()
+        for predicate, obj in graph.predicate_objects(node):
+            if predicate == RDF.type or obj in roots_set or obj in reached:
+                continue
+            if is_part(obj):
+                reached.add(obj)
+                frontier.append(obj)
+    owned = set(reached)
+    changed = True
+    while changed:
+        changed = False
+        for node in list(owned):
+            if any(
+                subject not in roots_set and subject not in owned
+                for subject in graph.subjects(None, node)
+            ):
+                owned.discard(node)
+                changed = True
+    return {node for node in owned if isinstance(node, URIRef)}
 
 
 def _remove_instances(graph: RDFGraph, instances: Sequence[URIRef]) -> None:

@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A value the model writes as an entity of its own (typed with a quantity-value class) and links to nothing is dropped after the link pass, like a blank-node value with no carrier.
+
 - One prefix per namespace in every prompt, parse and export: a well-known namespace keeps its standard prefix, an ontology's own namespace the prefix its author bound, else the `ontology_id`. The author's prefix is kept through adoption and the triple store; other prefixes, the id among them, are aliases that answers may use and that notes and shape messages are shown without.
 - A well-known namespace an ontology's terms use comes back from the triple store under its standard prefix (`qudt:`, `quantitykind:`), not a synthetic `<id>_<name>` one.
 - An OWL restriction, a list or an anonymous axiom is written whole, with the term that uses it: its `rdf:type owl:Restriction` and list links were dropped, and `owl:onProperty` an external property wrote a new version of the external ontology. A clean-up rule that drops a term drops its restrictions too.

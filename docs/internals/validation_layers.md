@@ -41,6 +41,15 @@ by the gate. Metrics: `facts_link_isolated`, `facts_link_proposed`,
 `facts_link_added`, `facts_link_rejections_by_reason`; the links are on
 `AgentState.facts_links_added`.
 
+Then, whether the pass ran or not, every instance still isolated whose type
+reaches a structured-value class (a QUDT quantity value or a schema.org
+structured value, through the ontology's subclass closure) is dropped with the
+parts only it points at (`drop_detached_values`): a value linked to nothing has
+lost its statement. A value linked to anything, in either direction, is kept.
+Records are kind `unlinked_dropped` and `facts_unlinked_dropped` counts them;
+`facts_isolated` and `facts_components` are rewritten. Validation findings
+describe the graph the gate validated.
+
 No layer withholds output. A unit that leaves the loop without being accepted
 keeps its graph: the reduce merges it and logs it as salvaged from a
 non-converged loop. The gate serves the facts it repaired, with the remaining

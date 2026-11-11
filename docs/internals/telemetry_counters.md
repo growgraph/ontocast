@@ -190,7 +190,7 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | `facts_shacl_repairs`, `facts_shacl_autofix_passes`, `facts_shacl_autofix_reverted` | Repairs applied, passes kept, and whether a pass was reverted. Present only when the repair ran |
 | `facts_untyped_inferred` | Instances untyped after aggregation that the gate typed from the domains and ranges of their links, against the whole ontology context |
 | `facts_untyped_dropped` | Instances dropped at the gate for carrying no concrete `rdf:type` after aggregation; their IRIs are `AgentState.facts_untyped_dropped` |
-| `facts_unlinked_dropped` | Instances dropped at the gate for stating nothing (linked to no other instance nor the document, no value of their own), plus values no statement carries |
+| `facts_unlinked_dropped` | Instances dropped at the gate for stating nothing (linked to no other instance nor the document, no value of their own), plus values no statement carries, plus value-typed instances still linked to nothing after the link pass |
 | `facts_date_values_added` | Nodes standing for a date (object of a temporal property, typed with an OWL-Time class, or labelled with a whole date) that held only a label, given the typed ISO 8601 value the label names |
 | `facts_links_removed` | Links between instances that the gate's SHACL prune and untyped drop removed |
 | `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance (each holds a value of its own); both after the link pass |

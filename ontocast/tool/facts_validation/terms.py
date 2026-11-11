@@ -382,6 +382,47 @@ def superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIRe
     return seen
 
 
+#: Well-known classes of structured values: a value belongs to the statement
+#: that carries it, so it is never a fact on its own.
+VALUE_CLASSES: frozenset[URIRef] = frozenset(
+    {
+        URIRef(namespace + name)
+        for namespace in ("https://schema.org/", "http://schema.org/")
+        for name in (
+            "StructuredValue",
+            "QuantitativeValue",
+            "PropertyValue",
+            "MonetaryAmount",
+        )
+    }
+    | {URIRef("http://qudt.org/schema/qudt/QuantityValue")}
+)
+
+
+def is_value_node(
+    graph: RDFGraph,
+    node: Node,
+    ontology_graph: RDFGraph,
+    closures: dict[URIRef, set[URIRef]],
+) -> bool:
+    """Whether a type of ``node`` reaches a class of :data:`VALUE_CLASSES`.
+
+    Args:
+        graph: The facts graph holding ``node``'s types.
+        node: The node to test.
+        ontology_graph: The ontology context the subclass closure walks.
+        closures: Cache of :func:`superclass_closure` results, filled in place.
+    """
+    for type_iri in graph.objects(node, RDF.type):
+        if not isinstance(type_iri, URIRef):
+            continue
+        if type_iri not in closures:
+            closures[type_iri] = superclass_closure(type_iri, ontology_graph)
+        if closures[type_iri] & VALUE_CLASSES:
+            return True
+    return False
+
+
 def _described_classes(ontology_graph: RDFGraph) -> set[URIRef]:
     """Classes whose position in the hierarchy the context actually states.
 

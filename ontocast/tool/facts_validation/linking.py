@@ -41,7 +41,7 @@ from ontocast.tool.facts_validation.terms import (
     _described_classes,
     declared_class_ranges,
     fact_instances,
-    superclass_closure,
+    is_value_node,
     types_compatible,
 )
 
@@ -57,22 +57,6 @@ _MIN_NEEDLE = 3
 
 _CLASS_TYPES = frozenset({OWL.Class, RDFS.Class})
 _NON_OBJECT_PROPERTY_TYPES = frozenset({OWL.DatatypeProperty, OWL.AnnotationProperty})
-#: Well-known classes of structured values. A value belongs to its carrier
-#: through a property made for it, so a link may reach one only through a
-#: property whose declared domain or range is shown to fit it.
-_VALUE_CLASSES: frozenset[URIRef] = frozenset(
-    {
-        URIRef(namespace + name)
-        for namespace in ("https://schema.org/", "http://schema.org/")
-        for name in (
-            "StructuredValue",
-            "QuantitativeValue",
-            "PropertyValue",
-            "MonetaryAmount",
-        )
-    }
-    | {URIRef("http://qudt.org/schema/qudt/QuantityValue")}
-)
 
 
 class LinkCandidates(BaseModel):
@@ -432,12 +416,9 @@ def validate_link_proposals(
         )
 
     def is_value(node: URIRef) -> bool:
-        for type_iri in _types(graph, node):
-            if type_iri not in closures:
-                closures[type_iri] = superclass_closure(type_iri, ontology_graph)
-            if closures[type_iri] & _VALUE_CLASSES:
-                return True
-        return False
+        # A value belongs to its carrier through a property made for it, so a
+        # link may reach one only through a domain or range shown to fit it.
+        return is_value_node(graph, node, ontology_graph, closures)
 
     local_names: dict[str, list[str]] = {}
     for iri in candidates.properties.values():

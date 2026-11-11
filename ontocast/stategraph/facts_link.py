@@ -3,7 +3,8 @@
 Shared by the document graph (``LINK_FACTS``) and the single-unit path, like
 :mod:`ontocast.stategraph.facts_gate`. It must run after the gate's last
 re-aggregation: a later one would rebuild the graph from the units and lose
-the links.
+the links. Values still isolated after it are dropped, whether the pass ran
+or not.
 """
 
 from __future__ import annotations
@@ -17,9 +18,14 @@ from ontocast.agent import link_facts
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import RetrievalMetric
-from ontocast.onto.model import FactsValidationFindingKind
+from ontocast.onto.model import (
+    FactsGateRepairKind,
+    FactsValidationFindingKind,
+    GraphRepairRecord,
+)
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
+from ontocast.stategraph.facts_gate import drop_detached_values
 from ontocast.tool.agg.rewriter import add_reified_provenance
 from ontocast.tool.facts_validation.connectivity import facts_connectivity
 from ontocast.tool.facts_validation.linking import (
@@ -40,14 +46,17 @@ async def run_link_pass(
     ontology_graph: RDFGraph,
     units: Sequence[ContentUnit],
 ) -> None:
-    """Link the gate's isolated instances where the text states how they relate.
+    """Link the gate's isolated instances, then drop the values still isolated.
 
-    One model call, only when ``FACTS_LINK_PASS`` is on and the gate left an
-    isolated instance a source unit names. Every accepted link is added with a
-    reifier deriving it from the unit whose text holds its evidence; nothing
-    is removed or changed. ``facts_isolated`` and ``facts_components`` are
-    rewritten for the served graph; ``facts_link_isolated`` keeps the gate's
-    count.
+    The link pass is one model call, only when ``FACTS_LINK_PASS`` is on and
+    the gate left an isolated instance a source unit names. Every accepted link
+    is added with a reifier deriving it from the unit whose text holds its
+    evidence. Then every isolated instance typed as a value is removed
+    (:func:`~ontocast.stategraph.facts_gate.drop_detached_values`), counted in
+    ``facts_unlinked_dropped`` with records of kind ``unlinked_dropped``.
+    ``facts_isolated`` and ``facts_components`` are rewritten for the served
+    graph; ``facts_link_isolated`` keeps the gate's count. Validation findings
+    describe the graph the gate validated.
 
     Args:
         state: Document state after the gate, carrying ``aggregated_facts`` and
@@ -56,11 +65,63 @@ async def run_link_pass(
         ontology_graph: The ontology context the facts were validated against.
         units: The document's content units.
     """
+    await _link_isolated(state, tools, ontology_graph, units)
+    _drop_detached_values(state, ontology_graph)
+
+
+def _fact_namespaces(state: AgentState) -> list[str]:
+    return [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""]
+
+
+def _drop_detached_values(state: AgentState, ontology_graph: RDFGraph) -> None:
+    """Drop the values the gate and the link pass left isolated, and recount."""
+    if not state.facts_isolated_instances:
+        return
+    dropped = drop_detached_values(
+        state.aggregated_facts,
+        state.facts_isolated_instances,
+        ontology_graph,
+        _fact_namespaces(state),
+    )
+    if not dropped:
+        return
+    gone = set(dropped)
+    state.facts_isolated_instances = [
+        iri for iri in state.facts_isolated_instances if iri not in gone
+    ]
+    metrics = state.retrieval_metrics
+    unlinked = metrics.get(RetrievalMetric.FACTS_UNLINKED_DROPPED)
+    metrics[RetrievalMetric.FACTS_UNLINKED_DROPPED] = (
+        unlinked if isinstance(unlinked, int) else 0
+    ) + len(dropped)
+    metrics[RetrievalMetric.FACTS_ISOLATED] = len(state.facts_isolated_instances)
+    # Each dropped value was a component of its own.
+    components = metrics.get(RetrievalMetric.FACTS_COMPONENTS)
+    if isinstance(components, int):
+        metrics[RetrievalMetric.FACTS_COMPONENTS] = components - len(dropped)
+    state.facts_gate_repairs = [
+        *state.facts_gate_repairs,
+        *(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.UNLINKED_DROPPED, source=iri, target=""
+            )
+            for iri in dropped
+        ),
+    ]
+
+
+async def _link_isolated(
+    state: AgentState,
+    tools: ToolBox,
+    ontology_graph: RDFGraph,
+    units: Sequence[ContentUnit],
+) -> None:
+    """The link pass proper: links the text states for isolated instances."""
     config = tools.config.get_tool_config().facts_validation
     graph = state.aggregated_facts
     if not config.link_pass or not state.facts_isolated_instances or not len(graph):
         return
-    fact_namespaces = [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""]
+    fact_namespaces = _fact_namespaces(state)
     # Property names are listed, and answered, under the catalog's prefixes.
     tools.prefix_table().normalize(ontology_graph)
     # The term a non-catalog finding names is its predicate field.
