@@ -16,7 +16,7 @@ from pydantic import ConfigDict, Field
 
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.identity import OntologyIdentity
-from ontocast.onto.model import BasePydanticModel
+from ontocast.onto.model import BasePydanticModel, OntologyPlan
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.state import AgentState, BudgetTracker
@@ -26,7 +26,8 @@ class UnitLoopContext(BasePydanticModel):
     """Document-level inputs for one unit's ontology/facts loop.
 
     ``reduced_ontology_artifacts`` is shared by reference with the document
-    state — the loops only read it. ``retrieval_metrics`` is per-unit and is
+    state — the loops only read it. ``ontology_plan`` is the document's plan,
+    whose reused terms every facts context admits. ``retrieval_metrics`` is per-unit and is
     folded back into the document state after the fan-out gathers.
     """
 
@@ -37,6 +38,7 @@ class UnitLoopContext(BasePydanticModel):
     ontology_context_fixed_ontology_id: str = ""
     home_ontology: OntologyIdentity | None = None
     reduced_ontology_artifacts: list[Ontology] = Field(default_factory=list)
+    ontology_plan: OntologyPlan | None = None
     budget_tracker: BudgetTracker = Field(default_factory=BudgetTracker)
     retrieval_metrics: dict[str, int | float | str | dict[str, Any]] = Field(
         default_factory=dict
@@ -67,6 +69,7 @@ class UnitLoopContext(BasePydanticModel):
             reduced_ontology_artifacts=document_ontology_access(
                 state
             ).reduced_artifacts(),
+            ontology_plan=state.ontology_plan,
             budget_tracker=budget_tracker
             if budget_tracker is not None
             else state.budget_tracker,

@@ -923,6 +923,7 @@ def test_agent_graph_topology_is_pinned() -> None:
         str(WorkflowNode.MERGE_FACTS),
         str(WorkflowNode.RESOLVE_COREFERENCE),
         str(WorkflowNode.VALIDATE_FACTS),
+        str(WorkflowNode.LINK_FACTS),
         str(WorkflowNode.SERIALIZE),
     }
 
@@ -971,7 +972,8 @@ def test_agent_graph_topology_is_pinned() -> None:
             str(WorkflowNode.VALIDATE_FACTS),
             False,
         ),
-        (str(WorkflowNode.VALIDATE_FACTS), str(WorkflowNode.SERIALIZE), False),
+        (str(WorkflowNode.VALIDATE_FACTS), str(WorkflowNode.LINK_FACTS), False),
+        (str(WorkflowNode.LINK_FACTS), str(WorkflowNode.SERIALIZE), False),
         (str(WorkflowNode.SERIALIZE), "__end__", False),
     }
 

@@ -3033,6 +3033,26 @@ class FactsValidationConfig(BaseSettings):
             "0 reviews every unit."
         ),
     )
+    link_pass: bool = Field(
+        default=True,
+        description=(
+            "After the validation gate, one LLM call per document that still "
+            "has isolated instances (linked to no other instance). The model "
+            "may propose only links its passage states, between a listed "
+            "isolated instance and a listed instance, with a listed property;"
+            " code checks each against the source text, the property's kind, "
+            "domain and range and its functional constraint, and adds only "
+            "valid links, with provenance. Nothing is removed or changed."
+        ),
+    )
+    link_pass_max_isolated: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Most isolated instances one link pass shows the model, earliest "
+            "in the document first."
+        ),
+    )
     completion_passes: int = Field(
         default=0,
         ge=0,

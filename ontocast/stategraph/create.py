@@ -18,6 +18,7 @@ from ontocast.onto.enum import WorkflowNode
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.node_factories import (
     make_consistency_critic_node,
+    make_link_facts_node,
     make_merge_facts_node,
     make_normalize_ontology_node,
     make_render_facts_node,
@@ -116,6 +117,7 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     merge_facts_node = make_merge_facts_node(tools)
     resolve_coreference_node = make_resolve_coreference_node(tools)
     validate_facts_node = make_validate_facts_node(tools)
+    link_facts_node = make_link_facts_node(tools)
     structural_check_node = make_structural_check_node(tools)
     consistency_critic_node = make_consistency_critic_node(tools)
 
@@ -130,6 +132,7 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
         WorkflowNode.MERGE_FACTS: merge_facts_node,
         WorkflowNode.RESOLVE_COREFERENCE: resolve_coreference_node,
         WorkflowNode.VALIDATE_FACTS: validate_facts_node,
+        WorkflowNode.LINK_FACTS: link_facts_node,
         WorkflowNode.STRUCTURAL_CHECK: structural_check_node,
         WorkflowNode.CONSISTENCY_CRITIC: consistency_critic_node,
         WorkflowNode.SERIALIZE: serialize_node,
@@ -159,7 +162,10 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     workflow.add_edge(WorkflowNode.STRUCTURAL_CHECK, WorkflowNode.CONSISTENCY_CRITIC)
     workflow.add_edge(WorkflowNode.MERGE_FACTS, WorkflowNode.RESOLVE_COREFERENCE)
     workflow.add_edge(WorkflowNode.RESOLVE_COREFERENCE, WorkflowNode.VALIDATE_FACTS)
-    workflow.add_edge(WorkflowNode.VALIDATE_FACTS, WorkflowNode.SERIALIZE)
+    workflow.add_edge(WorkflowNode.VALIDATE_FACTS, WorkflowNode.LINK_FACTS)
+    # Nothing may re-aggregate after LINK_FACTS: rebuilding the graph from the
+    # units would drop the links it added.
+    workflow.add_edge(WorkflowNode.LINK_FACTS, WorkflowNode.SERIALIZE)
 
     def route_after_consistency_critic(state: AgentState) -> str:
         if state.render_facts:

@@ -363,6 +363,23 @@ class TestGraphShapeMetrics:
         assert metrics.components == 4
         assert metrics.edges == 1
 
+    def test_the_document_node_is_not_an_entity(self) -> None:
+        graph = _graph(
+            f"""
+            @prefix dcterms: <http://purl.org/dc/terms/> .
+            @prefix cd:   <{CD}> .
+            @prefix ex:   <https://x.org/schema#> .
+            <{CD}doc> dcterms:title "source.txt" .
+            cd:a ex:linksTo cd:b .
+            cd:c ex:mentionedIn <{CD}doc> .
+            """
+        )
+        metrics = facts_graph_shape_metrics(graph, [CD], document=URIRef(CD + "doc"))
+        assert metrics.nodes == 3
+        # c links only to the document node: linked, but a component of its own.
+        assert metrics.isolated_nodes == 0
+        assert metrics.components == 2
+
 
 class TestUnitSymbolCaseMismatch:
     """Two catalog units whose symbols differ only by letter case."""

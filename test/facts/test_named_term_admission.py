@@ -200,3 +200,37 @@ def test_minted_terms_and_a_missing_plan_add_nothing() -> None:
 
     assert admit_planned_terms(ctx, None, _tools(_manager(), set())) is ctx
     assert admit_planned_terms(ctx, _plan(minted), _tools(_manager(), set())) is ctx
+
+
+@pytest.mark.anyio
+async def test_a_unit_resolving_its_own_context_admits_the_planned_reuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plan that mints nothing leaves no merged context; units still get its reuses."""
+    from ontocast.onto.enum import OntologyContextMode
+    from ontocast.stategraph import atomic
+    from ontocast.stategraph.unit_context import UnitLoopContext
+
+    resolved = _snapshot_with_portion_only()
+
+    async def resolve(*_args: Any, **_kwargs: Any) -> UnitOntologyContext:
+        return resolved
+
+    monkeypatch.setattr(atomic, "resolve_unit_ontology_context", resolve)
+    sub_event = "https://schema.org/subEvent"
+    plan = _plan(_reuse(sub_event, "object_property", "sub event"))
+    tracker = BudgetTracker()
+    context = UnitLoopContext(
+        ontology_context_mode=OntologyContextMode.SELECTED_VECTOR_SEARCH_ONTOLOGY,
+        ontology_plan=plan,
+        budget_tracker=tracker,
+    )
+    unit_state: Any = SimpleNamespace(content_unit=None)
+
+    await atomic._apply_facts_ontology_context(
+        unit_state, context, _tools(_manager(), set())
+    )
+
+    graph = unit_state.ontology_snapshot.graph
+    assert graph.value(URIRef(sub_event), RDF.type) == OWL.ObjectProperty
+    assert tracker.counters["ctx/admitted_planned_terms"] == 1

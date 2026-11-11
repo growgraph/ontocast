@@ -235,6 +235,24 @@ def admit_planned_terms(
     )
 
 
+def admit_facts_context_terms(
+    ctx: UnitOntologyContext,
+    plan: OntologyPlan | None,
+    tools: ToolBox,
+    *,
+    budget_tracker: Any = None,
+) -> UnitOntologyContext:
+    """Complete a facts ontology context: planned reuses, then named catalog terms.
+
+    Every path that resolves a facts context goes through here, so the plan's
+    reuses reach the facts prompt whether the context is the merged document
+    context or a unit's own. Planned terms come first so the named-term pass
+    also admits terms their definitions quote.
+    """
+    ctx = admit_planned_terms(ctx, plan, tools, budget_tracker=budget_tracker)
+    return admit_named_catalog_terms(ctx, tools, budget_tracker=budget_tracker)
+
+
 def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
     vcfg = tools.config.tool_config.vector_store
     text = unit.text.strip()

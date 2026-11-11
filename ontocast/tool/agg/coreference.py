@@ -32,6 +32,7 @@ from rdflib.term import Node
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.iri_policy import split_namespace_local
 from ontocast.onto.model import CoreferenceCandidate
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.scaffolding import is_scaffolding, scaffolding_nodes
 
 from .unit_scope import strip_unit_scope, unit_scope_index
@@ -184,8 +185,20 @@ def describe_entity(iri: str, units: Sequence[ContentUnit]) -> str:
     unit = _unit_of(iri, units)
     if unit is None or unit.graph is None:
         return "(not described)"
-    graph = unit.graph
     node = URIRef(iri)
+    labels = sorted(str(o) for o in unit.graph.objects(node, RDFS.label))
+    parts = describe_node(unit.graph, node)
+    sentence = _source_sentence(unit.text, labels)
+    if sentence:
+        parts.append(f'source: "{sentence}"')
+    return "\n    ".join(parts) or "(not described)"
+
+
+def describe_node(graph: RDFGraph, node: URIRef) -> list[str]:
+    """``node``'s labels, types, values and relations in ``graph``, one part each.
+
+    No IRI is shown: a related node is named by its label, else its local name.
+    """
     labels = sorted(str(o) for o in graph.objects(node, RDFS.label))
     types = sorted(_local(o) for o in graph.objects(node, RDF.type))
     values: list[str] = []
@@ -210,10 +223,7 @@ def describe_entity(iri: str, units: Sequence[ContentUnit]) -> str:
         parts.append("values: " + "; ".join(values))
     if relations:
         parts.append("relations: " + "; ".join(relations))
-    sentence = _source_sentence(unit.text, labels)
-    if sentence:
-        parts.append(f'source: "{sentence}"')
-    return "\n    ".join(parts) or "(not described)"
+    return parts
 
 
 def _source_sentence(text: str, labels: Sequence[str]) -> str:
@@ -226,6 +236,43 @@ def _source_sentence(text: str, labels: Sequence[str]) -> str:
             flat = " ".join(sentence.split())
             return flat if len(flat) <= _MAX_TEXT else f"{flat[: _MAX_TEXT - 1]}…"
     return ""
+
+
+def source_excerpt(text: str, needles: Sequence[str], max_chars: int) -> str:
+    """The sentences of ``text`` naming one of ``needles``, with one on each side.
+
+    Matching is case-insensitive. Runs of selected sentences are joined, gaps
+    marked with " … ", whitespace collapsed; the result is cut at
+    ``max_chars``. Empty when no sentence names a needle.
+    """
+    lowered = sorted({needle.lower() for needle in needles if needle.strip()})
+    if not lowered:
+        return ""
+    sentences = [" ".join(s.split()) for s in _SENTENCE_RE.split(text)]
+    hits = [
+        index
+        for index, sentence in enumerate(sentences)
+        if any(needle in sentence.lower() for needle in lowered)
+    ]
+    if not hits:
+        return ""
+    keep = sorted(
+        {
+            neighbour
+            for index in hits
+            for neighbour in (index - 1, index, index + 1)
+            if 0 <= neighbour < len(sentences) and sentences[neighbour]
+        }
+    )
+    pieces: list[str] = []
+    previous = -2
+    for index in keep:
+        if pieces and index != previous + 1:
+            pieces.append("…")
+        pieces.append(sentences[index])
+        previous = index
+    excerpt = " ".join(pieces)
+    return excerpt if len(excerpt) <= max_chars else f"{excerpt[: max_chars - 1]}…"
 
 
 def verdict_pairs(
@@ -253,5 +300,7 @@ __all__ = [
     "CoreferenceCandidate",
     "coreference_candidates",
     "describe_entity",
+    "describe_node",
+    "source_excerpt",
     "verdict_pairs",
 ]

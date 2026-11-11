@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - End-of-document clean-up of the ontology delta: IRIs under `example.org`/`.com`/`.net` outside `CURRENT_DOMAIN` (`example_namespace_dropped`), one datatype range per property (`datatype_ranges_normalized`), `Thing` as range, domain or second parent (`vacuous_upper_terms_dropped`).
 - The same clean-up drops terms newly declared outside the home namespace (`minted_outside_home_dropped`) and subjects that are not terms or SKOS concepts: facts, individuals, undeclared subjects (`non_term_subjects_dropped`). It runs before consolidation.
 - `home_ontology` in the run manifest: the document's home ontology (`iri`, `ontology_id`, `namespace`, `extends`).
+- Link pass (`Link Facts` node, `FACTS_LINK_PASS`, on by default; `FACTS_LINK_PASS_MAX_ISOLATED`): after validation, one call per document with isolated instances proposes links their passages state; code checks the ends, the property's kind, domain, range and functional constraint and the quoted evidence, and adds only valid links, with provenance. LLM phase `facts_link`; metrics `facts_link_*`; `facts_isolated` and `facts_components` describe the graph after it. Also on `/process_unit`.
 
 ### Changed
 
@@ -67,7 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A JSON answer that closes its object after the first member and then continues with more members is parsed without a re-render (`llm/json_premature_closer`).
 - Under the JSON-LD wire, an ontology render's `rdfs:subClassOf`, `rdfs:domain`, `rdfs:range` and other schema objects written as strings (`"ex:Bar"`) become IRIs (`repair/compact_iri_literal`).
 - The facts gate's `non_catalog_vocabulary` counts every catalog term, as the unit validator does; a catalog term the unit's snapshot omitted was an error under `strict`.
-- The terms the ontology plan reuses (catalog or well-known) are added to the facts ontology context; they were never minted and so never shown, and the relations the plan assigned to them went unstated (`ctx/admitted_planned_terms`).
+- The terms the ontology plan reuses (catalog or well-known) are added to the facts ontology context, including a unit's own context when the document wrote no ontology; they were never minted and so never shown, and the relations the plan assigned to them went unstated (`ctx/admitted_planned_terms`).
+- The run manifest's `graph_metrics` no longer counts the document node as an isolated entity.
 - A property's parent must be a property and a class's a class: the plan drops a parent or reuse of the other kind (a well-known term's kind is read from its vocabulary's naming), the render prompts say so, and the ontology clean-up removes such a parent (`role_crossing_parents_dropped`).
 - A facts prompt defines every catalog term it names: the terms of the conformance rules it shows and the terms its notes quote are added to the ontology context when the snapshot lacks them (`ctx/admitted_named_terms`).
 - A critic patch on an ontology unit that creates a new ontology no longer drops the render: the unit's delta and written ontology held the patch alone.

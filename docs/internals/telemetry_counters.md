@@ -47,7 +47,7 @@ clock, recorded by the `_timed` wrapper in `ontocast/stategraph/create.py`:
 `Convert to Text`, `Chunk Text`, `Resolve Home Ontology`, `Plan Ontology`,
 `Update Ontology`, `Normalize Ontology Updates`, `Structural Check`,
 `Consistency Critic`, `Render Facts`, `Merge Facts`, `Resolve Coreference`,
-`Validate Facts`, `Serialize`.
+`Validate Facts`, `Link Facts`, `Serialize`.
 
 The two fan-out nodes, `Update Ontology` and `Render Facts`, add keys written
 in `ontocast/stategraph/node_factories.py`:
@@ -183,6 +183,7 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | `facts_merge_rejections_by_reason` | Those refusals by reason (`same_unit`, `sibling`, `literal_conflict`, `functional_iri_conflict`, `initials_conflict`, `role`, `type`, `lexical`, `cluster_veto`); a pair refused for several reasons counts under each |
 | `facts_merge_repair_passes`, `facts_merge_vetoes`, `facts_merge_repairs_rejected` | The un-merge repair: passes kept, merge pairs vetoed, passes reverted |
 | `facts_coreference_pairs`, `facts_coreference_same`, `facts_coreference_different` | Coreference resolution: pairs put to the model, and those it judged one entity or two |
+| `facts_link_isolated`, `facts_link_proposed`, `facts_link_added`, `facts_link_rejections_by_reason` | The link pass: instances isolated after the gate, links the model proposed, those added, and the rejected ones by reason (`unknown_entity`, `no_isolated_endpoint`, `self_link`, `unknown_property`, `not_object_property`, `domain_mismatch`, `range_mismatch`, `functional_taken`, `evidence_missing`, `duplicate`). Present only when the pass made a call |
 | `validated_without_ontology_context` | `true` when the facts were validated with an empty ontology context |
 | `facts_validation_findings`, `facts_validation_errors` | Findings after validation, and those of error severity |
 | `facts_shacl_violations_before`, `facts_shacl_violations_after` | SHACL violations around the automatic repair. Present only when the repair ran |
@@ -191,7 +192,7 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | `facts_untyped_dropped` | Instances dropped at the gate for carrying no concrete `rdf:type` after aggregation; their IRIs are `AgentState.facts_untyped_dropped` |
 | `facts_unlinked_dropped` | Instances dropped at the gate for stating nothing (linked to no other instance nor the document, no value of their own), plus values no statement carries |
 | `facts_links_removed` | Links between instances that the gate's SHACL prune and untyped drop removed |
-| `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance (each holds a value of its own) |
+| `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance (each holds a value of its own); both after the link pass |
 | `facts_twin_labels` | Labels that two or more served instances share: duplicates aggregation left, or distinct things with one name |
 | `structural_ontology_components_max` | The highest connected-component count among the ontologies the structural check examined |
 | `consistency_conflicts` | Conflicts the consistency critic reported |

@@ -54,7 +54,7 @@ from ontocast.onto.triple_index import Triple
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
     UnitOntologyContext,
-    admit_named_catalog_terms,
+    admit_facts_context_terms,
     resolve_unit_ontology_context,
     snapshot_context_terms,
 )
@@ -833,11 +833,15 @@ async def _apply_facts_ontology_context(
 ) -> None:
     """Set ontology_snapshot for facts from the per-unit context resolver.
 
-    Only reached when the caller has no merged document context to hand down
-    (single-unit pipelines, or facts-only runs with no ontology stage).
+    Reached whenever the caller has no merged document context to hand down:
+    facts-only runs, single-unit pipelines, and documents whose ontology stage
+    wrote nothing (a plan that only reuses terms). The plan's reuses are
+    admitted here as on the merged context.
     """
     ctx = await resolve_unit_ontology_context(context, tools, unit_state.content_unit)
-    ctx = admit_named_catalog_terms(ctx, tools, budget_tracker=context.budget_tracker)
+    ctx = admit_facts_context_terms(
+        ctx, context.ontology_plan, tools, budget_tracker=context.budget_tracker
+    )
     logger.info(
         "Ontology context for mode %s: sources=%s writable=%s",
         context.ontology_context_mode,

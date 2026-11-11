@@ -52,6 +52,7 @@ from ontocast.tool.facts_validation import (
     dedupe_literal_variants,
     facts_connectivity,
     instance_links,
+    isolated_instances,
     links_lost,
     materialize_entailed_types,
     record_facts_gate_metrics,
@@ -606,6 +607,14 @@ def run_facts_gate(
     )
     state.retrieval_metrics[RetrievalMetric.FACTS_COMPONENTS] = connectivity.components
     state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED] = connectivity.isolated
+    # Handed to the link pass: once values are named below, an instance holding
+    # one looks linked to it and can no longer be found isolated.
+    state.facts_isolated_instances = sorted(
+        str(node)
+        for node in isolated_instances(
+            state.aggregated_facts, fact_namespaces, state.doc_iri
+        )
+    )
     state.retrieval_metrics[RetrievalMetric.FACTS_TWIN_LABELS] = len(
         twin_labels(state.aggregated_facts, fact_namespaces, state.doc_iri)
     )

@@ -774,3 +774,31 @@ def test_build_cross_unit_object_pairs_ignores_literals() -> None:
         f'<{CD}s> <https://schema.org/name> "a" , "b" .',
     )
     assert build_cross_unit_object_pairs([unit], {}) == []
+
+
+def test_the_gate_hands_its_isolated_instances_to_the_link_pass(monkeypatch) -> None:
+    """An instance holding a structured value stays isolated once values are named."""
+    tools = _fake_tools(_normal_form_aggregator(monkeypatch))
+    state = AgentState()
+    state.current_domain = "https://x.org"
+    state.doc_hid = "1"
+    state.facts_units = [
+        _fact_unit(
+            0,
+            f"""
+@prefix cd: <{CD}> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix q: <{Q}> .
+cd:cup a q:Tournament ; rdfs:label "Spring Cup" ; q:heldAt cd:hall .
+cd:hall a q:Venue ; rdfs:label "Harbour Hall" .
+cd:limit a q:Rule ; rdfs:label "age limit" ; q:amount [ q:value 23 ] .
+""",
+        )
+    ]
+
+    make_merge_facts_node(tools)(state)
+    make_validate_facts_node(tools)(state)
+
+    isolated = state.facts_isolated_instances
+    assert [iri.rsplit("/", 1)[-1] for iri in isolated] == ["limit"]
+    assert len(isolated) == state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED]

@@ -32,18 +32,27 @@ class GraphShapeMetrics(BaseModel):
 
 
 def facts_graph_shape_metrics(
-    graph: RDFGraph, fact_namespaces: Sequence[str]
+    graph: RDFGraph,
+    fact_namespaces: Sequence[str],
+    document: URIRef | None = None,
 ) -> GraphShapeMetrics:
     """Compute connectivity metrics over the graph's fact-namespace entities.
 
     Objects outside the fact namespaces (catalog reference individuals,
     units) still connect the fact nodes that share them — linking through a
-    catalog individual is by design, not fragmentation.
+    catalog individual is by design, not fragmentation. ``document``, the
+    document node, is not an entity: it is never counted, though a link to it
+    still joins what it links.
     """
     namespaces = tuple(ns for ns in fact_namespaces if ns)
+    excluded = str(document) if document is not None else None
 
     def is_fact_node(term: object) -> bool:
-        return isinstance(term, URIRef) and str(term).startswith(namespaces)
+        return (
+            isinstance(term, URIRef)
+            and str(term).startswith(namespaces)
+            and str(term) != excluded
+        )
 
     parent: dict[str, str] = {}
 

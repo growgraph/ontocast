@@ -35,7 +35,8 @@ catalog, a user instruction, `LLM_GRAPH_FORMAT`, `LLM_OUTPUT_LAYOUT`,
 `ONTOLOGY_CHAPTER_FORMAT`, or an OntoCast upgrade that changes prompt wording.
 Settings that act after extraction leave the extraction calls warm: entity
 disambiguation (`AGG_*`) changes only the prompt of the coreference call that
-follows it.
+follows it, and validation settings (`FACTS_*` checks and repairs after the
+merge) only the prompt of the link pass.
 `LLM_PROMPT_CACHE_KEY` is not part of the key; `LLM_JSON_MODE` is, when it is on.
 
 Each entry is a JSON file holding the prompt, the response, the provider's

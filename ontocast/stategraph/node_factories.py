@@ -42,13 +42,13 @@ from ontocast.onto.state import UNIT_SUM_SUFFIX, AgentState, BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import (
-    admit_named_catalog_terms,
-    admit_planned_terms,
+    admit_facts_context_terms,
     aggregate_writable_metrics,
     build_merged_document_ontology_context,
     build_unioned_document_ontology_context,
 )
 from ontocast.stategraph.facts_gate import run_facts_gate, stored_pairs
+from ontocast.stategraph.facts_link import run_link_pass
 from ontocast.stategraph.helpers import (
     all_unit_patch_source_iris,
     drop_all_deletes,
@@ -787,14 +787,11 @@ def make_render_facts_node(tools: ToolBox):
                 UnitLoopContext.from_agent_state(state), tools, state.content_units
             )
         if merged_context is not None:
-            merged_context = admit_planned_terms(
+            merged_context = admit_facts_context_terms(
                 merged_context,
                 state.ontology_plan,
                 tools,
                 budget_tracker=state.budget_tracker,
-            )
-            merged_context = admit_named_catalog_terms(
-                merged_context, tools, budget_tracker=state.budget_tracker
             )
             # Hand the same graph to merge/validate downstream instead of
             # letting each rebuild it.
@@ -1274,6 +1271,22 @@ def make_validate_facts_node(tools: ToolBox):
         return state
 
     return validate_facts
+
+
+def make_link_facts_node(tools: ToolBox):
+    async def link_facts(state: AgentState) -> AgentState:
+        """Link the instances the gate left isolated, where the text states how.
+
+        Delegates to :func:`~ontocast.stategraph.facts_link.run_link_pass`,
+        which the single-unit entry path shares.
+        """
+        if not state.facts_units or len(state.aggregated_facts) == 0:
+            return state
+        ontology_graph, _ = _facts_aggregation_inputs(state)
+        await run_link_pass(state, tools, ontology_graph, state.facts_units)
+        return state
+
+    return link_facts
 
 
 def record_unused_minted_classes(state: AgentState) -> None:

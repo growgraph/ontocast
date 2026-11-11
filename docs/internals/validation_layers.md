@@ -25,6 +25,20 @@ and stay in force when the gate re-aggregates. [Entity
 disambiguation](../concepts/entity_disambiguation.md#coreference-the-guards-cannot-settle)
 describes it.
 
+After the gate, `LINK_FACTS` (and the same pass on `/process_unit`) makes one
+call per document that still has isolated instances (`FACTS_LINK_PASS`, on by
+default): each is shown with the passage of its source unit that names it,
+with up to eight instances it may link to and the object properties whose
+domain and range fit; the model proposes only links the passage states. Code
+keeps a proposal only when both ends are listed and one is isolated, the
+property is a listed object property, the declared domain and range admit the
+ends, a functional property is still free, and the quoted evidence occurs in a
+source unit of the isolated end. Each kept link is added with a reifier
+deriving it from that unit; nothing is removed. The links are not re-checked
+by the gate. Metrics: `facts_link_isolated`, `facts_link_proposed`,
+`facts_link_added`, `facts_link_rejections_by_reason`; the links are on
+`AgentState.facts_links_added`.
+
 No layer withholds output. A unit that leaves the loop without being accepted
 keeps its graph: the reduce merges it and logs it as salvaged from a
 non-converged loop. The gate serves the facts it repaired, with the remaining
@@ -380,7 +394,9 @@ The passes stop as soon as nothing is missing.
    what it links but is not an instance; typing, `owl:sameAs` and the
    pipeline's provenance link nothing, while a domain property links in any
    vocabulary, PROV-O included). An isolated instance left holds a value of its
-   own. `facts_twin_labels` counts the labels two or more instances share.
+   own; the gate hands these to the link pass (`facts_isolated_instances`),
+   which rewrites `facts_isolated` and `facts_components` for the graph it
+   serves. `facts_twin_labels` counts the labels two or more instances share.
    Then each blank-node value is named under its carrier
    (`<carrier>.<property>`), with the reifiers of its statements repointed.
 7. **Summary**: `facts_conformance`, `facts_validation_findings` and
@@ -442,7 +458,9 @@ A reused term is never minted, so the facts lane would not see it. Before the
 facts units render, every reused term the facts ontology context does not
 define is added to it: a catalog term with its catalog definition, a
 well-known term declared from the plan entry (its kind, label and the plan's
-definition). Counter: `ctx/admitted_planned_terms`.
+definition). This holds for every facts context: the merged document
+context, and a unit's own when the document wrote no ontology (a plan that
+only reuses terms). Counter: `ctx/admitted_planned_terms`.
 
 At reduce, after the merge and the reconciliation above, every minted term
 (a class or property neither the catalog nor a well-known vocabulary holds)

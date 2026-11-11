@@ -40,7 +40,7 @@ from ontocast.tool.facts_validation.terms import (
     collect_catalog_terms,
     collect_declared_namespaces,
     expand_vocabulary_terms,
-    superclass_closure,
+    types_compatible,
     untyped_instances,
 )
 from ontocast.util.measurement_lexicon import unit_adjacent_numbers
@@ -164,31 +164,19 @@ def domain_violation_findings(
         declared = domains.get(predicate)
         if declared is None or not isinstance(subject, URIRef):
             continue
-        # Only domains the context places in a hierarchy can be argued about.
-        declared = {value for value in declared if value in described}
-        if not declared:
-            continue
         asserted = {
             value
             for value in graph.objects(subject, RDF.type)
             if isinstance(value, URIRef)
         }
-        if not asserted or not asserted <= described:
+        # Only types and domains the context places in a hierarchy can be
+        # argued about: an undecidable pair is not reported.
+        fits = types_compatible(
+            asserted, declared, ontology_graph, described=described, closures=closures
+        )
+        if fits is not False:
             continue
-
-        def closure(class_iri: URIRef) -> set[URIRef]:
-            if class_iri not in closures:
-                closures[class_iri] = superclass_closure(class_iri, ontology_graph)
-            return closures[class_iri]
-
-        # Compatible in either direction: the asserted type specializes a
-        # declared domain, or a declared domain specializes the asserted type.
-        domain_closure = set().union(*(closure(value) for value in declared))
-        if any(
-            closure(asserted_type) & declared or asserted_type in domain_closure
-            for asserted_type in asserted
-        ):
-            continue
+        declared = {value for value in declared if value in described}
         key = (str(subject), str(predicate))
         if key in reported:
             continue

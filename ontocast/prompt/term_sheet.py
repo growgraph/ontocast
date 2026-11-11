@@ -135,7 +135,7 @@ def _iris(graph: RDFGraph, subject: URIRef, predicate: URIRef) -> list[str]:
     )
 
 
-def _partition(graph: RDFGraph) -> tuple[list[URIRef], list[URIRef], list[URIRef]]:
+def partition_terms(graph: RDFGraph) -> tuple[list[URIRef], list[URIRef], list[URIRef]]:
     """Split named subjects into classes, properties and individuals.
 
     Classification is by declared ``rdf:type``, with two structural fallbacks so
@@ -162,7 +162,7 @@ def _partition(graph: RDFGraph) -> tuple[list[URIRef], list[URIRef], list[URIRef
     return classes, properties, individuals
 
 
-def _term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
+def term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
     """The one-or-two lines describing ``subject``.
 
     Args:
@@ -252,7 +252,7 @@ def build_ontology_term_sheet(graph: RDFGraph) -> str:
     Returns:
         The chapter body, or ``""`` when the snapshot names no term.
     """
-    classes, properties, individuals = _partition(graph)
+    classes, properties, individuals = partition_terms(graph)
     sections = [
         ("Classes", classes, "class"),
         ("Properties  (domain -> range)", properties, "property"),
@@ -267,5 +267,5 @@ def build_ontology_term_sheet(graph: RDFGraph) -> str:
             continue
         lines.append(f"\n## {heading}")
         for term in terms:
-            lines.extend(_term_line(graph, term, kind=kind))
+            lines.extend(term_line(graph, term, kind=kind))
     return "\n".join(lines)

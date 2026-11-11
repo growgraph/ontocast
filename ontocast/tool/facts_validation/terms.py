@@ -412,6 +412,67 @@ def _declared_domains(ontology_graph: RDFGraph) -> dict[URIRef, set[URIRef]]:
     return domains
 
 
+def declared_class_ranges(ontology_graph: RDFGraph) -> dict[URIRef, set[URIRef]]:
+    """Predicate -> its declared ``rdfs:range`` classes, named classes only.
+
+    A datatype range (XSD, ``rdfs:Literal``, a declared ``rdfs:Datatype``)
+    types a literal, not a node, and is left out.
+    """
+    datatypes = {
+        subject
+        for subject in ontology_graph.subjects(RDF.type, RDFS.Datatype)
+        if isinstance(subject, URIRef)
+    }
+    ranges: dict[URIRef, set[URIRef]] = {}
+    for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
+        if not isinstance(predicate, URIRef) or not isinstance(range_iri, URIRef):
+            continue
+        if range_iri in datatypes or range_iri in (RDFS.Literal, RDF.langString):
+            continue
+        if str(range_iri).startswith(str(XSD)):
+            continue
+        ranges.setdefault(predicate, set()).add(range_iri)
+    return ranges
+
+
+def types_compatible(
+    asserted: set[URIRef],
+    declared: set[URIRef],
+    ontology_graph: RDFGraph,
+    *,
+    described: set[URIRef],
+    closures: dict[URIRef, set[URIRef]],
+) -> bool | None:
+    """Whether a node typed ``asserted`` fits classes ``declared`` (a domain or range).
+
+    Compatible in either direction: an asserted type specializes a declared
+    class, or a declared class specializes an asserted type. ``None`` when the
+    context cannot decide: no declared class it places in a hierarchy
+    (``described``), or an asserted type it does not describe.
+
+    Args:
+        asserted: The node's asserted types.
+        declared: The declared domain or range classes.
+        ontology_graph: The ontology context.
+        described: :func:`_described_classes` of ``ontology_graph``.
+        closures: Cache of :func:`superclass_closure` results, filled in place.
+    """
+    declared = {value for value in declared if value in described}
+    if not declared or not asserted or not asserted <= described:
+        return None
+
+    def closure(class_iri: URIRef) -> set[URIRef]:
+        if class_iri not in closures:
+            closures[class_iri] = superclass_closure(class_iri, ontology_graph)
+        return closures[class_iri]
+
+    declared_closure = set().union(*(closure(value) for value in declared))
+    return any(
+        closure(asserted_type) & declared or asserted_type in declared_closure
+        for asserted_type in asserted
+    )
+
+
 _COMPACT_IRI = re.compile(r"^([A-Za-z][\w.-]*):([^\s/][^\s]*)$")
 
 

@@ -37,6 +37,7 @@ from ontocast.tool.facts_validation.terms import (
     _vocabulary_role_subset,
     collect_catalog_terms,
     collect_declared_namespaces,
+    declared_class_ranges,
     expand_vocabulary_terms,
     resolve_unique_surface,
     superclass_closure,
@@ -288,29 +289,6 @@ def repair_compact_iri_literals(
     return len(applied), applied
 
 
-def _declared_class_ranges(ontology_graph: RDFGraph) -> dict[URIRef, set[URIRef]]:
-    """Predicate -> its declared ``rdfs:range`` classes, named classes only.
-
-    A datatype range (XSD, ``rdfs:Literal``, a declared ``rdfs:Datatype``)
-    types a literal, not a node, and is left out.
-    """
-    datatypes = {
-        subject
-        for subject in ontology_graph.subjects(RDF.type, RDFS.Datatype)
-        if isinstance(subject, URIRef)
-    }
-    ranges: dict[URIRef, set[URIRef]] = {}
-    for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
-        if not isinstance(predicate, URIRef) or not isinstance(range_iri, URIRef):
-            continue
-        if range_iri in datatypes or range_iri in (RDFS.Literal, RDF.langString):
-            continue
-        if str(range_iri).startswith(str(XSD)):
-            continue
-        ranges.setdefault(predicate, set()).add(range_iri)
-    return ranges
-
-
 def materialize_entailed_types(
     graph: RDFGraph, ontology_graph: RDFGraph | None
 ) -> tuple[int, list[GraphRepairRecord]]:
@@ -340,7 +318,7 @@ def materialize_entailed_types(
     if ontology_graph is None or not len(ontology_graph):
         return 0, []
     domains = _declared_domains(ontology_graph)
-    ranges = _declared_class_ranges(ontology_graph)
+    ranges = declared_class_ranges(ontology_graph)
     if not domains and not ranges:
         return 0, []
 

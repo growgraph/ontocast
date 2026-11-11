@@ -663,6 +663,34 @@ class CoreferenceReport(BaseModel):
     verdicts: list[CoreferenceVerdict] = Field(default_factory=list)
 
 
+class FactsLinkProposal(BaseModel):
+    """One link the passage states between two numbered entities."""
+
+    subject: int = Field(description="Number of the entity the link starts from.")
+    property: str = Field(description="A property exactly as listed under PROPERTIES.")
+    object: int = Field(description="Number of the entity the link points to.")
+    evidence: str = Field(
+        max_length=300,
+        description="The words of the passage that state the link, copied exactly.",
+    )
+
+
+class FactsLinkReport(BaseModel):
+    """Links proposed for the isolated entities; an empty list means none."""
+
+    links: list[FactsLinkProposal] = Field(default_factory=list)
+
+
+class FactsLinkRecord(BaseModel):
+    """A link the link pass added, with the unit whose text states it."""
+
+    subject: str
+    predicate: str
+    object: str
+    unit: str
+    evidence: str
+
+
 class OntologyIdentityProposal(BaseModel):
     """What the model proposes for a document's home ontology.
 

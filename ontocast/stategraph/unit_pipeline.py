@@ -39,7 +39,7 @@ from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import (
     UnitOntologyContext,
-    admit_named_catalog_terms,
+    admit_facts_context_terms,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.toolbox import ToolBox
@@ -174,8 +174,9 @@ async def run_unit_pipeline(
         else None
     )
     if facts_pre_resolved_context is not None:
-        facts_pre_resolved_context = admit_named_catalog_terms(
+        facts_pre_resolved_context = admit_facts_context_terms(
             facts_pre_resolved_context,
+            agent_state.ontology_plan,
             tools,
             budget_tracker=agent_state.budget_tracker,
         )

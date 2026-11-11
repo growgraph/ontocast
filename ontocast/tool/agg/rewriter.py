@@ -41,6 +41,43 @@ _SCHEMA = SCHEMA
 _ONTOCAST = ONTOCAST
 
 
+def add_reified_provenance(
+    graph: RDFGraph,
+    s: Node,
+    p: Node,
+    o: Node,
+    chunk_uri: URIRef,
+    reifier: BNode | None = None,
+) -> BNode:
+    """Attach provenance to a triple using RDF 1.2 reification.
+
+    Creates (or reuses) a reifier blank node and states::
+
+        _:r  rdf:reifies  <<( s p o )>> .
+        _:r  prov:wasDerivedFrom  <chunk_uri> .
+
+    ``rdf:reifies`` is recorded once per reifier, in the graph's
+    reifications; ``prov:wasDerivedFrom`` is added every time, so a shared
+    triple accumulates one arc per source chunk.
+
+    Args:
+        graph: The graph holding the triple.
+        s: Triple subject.
+        p: Triple predicate.
+        o: Triple object.
+        chunk_uri: URI of the source :class:`ContentUnit`.
+        reifier: Existing reifier to reuse; a fresh blank node when *None*.
+
+    Returns:
+        The reifier (for later reuse).
+    """
+    if reifier is None:
+        reifier = BNode()
+        graph.reifications.add(reifier, (s, p, o))
+    graph.add((reifier, _PROV.wasDerivedFrom, chunk_uri))
+    return reifier
+
+
 class GraphRewriter:
     """Rewrites RDF graphs by applying entity mappings.
 
@@ -370,33 +407,8 @@ class GraphRewriter:
         chunk_uri: URIRef,
         reifier: BNode | None = None,
     ) -> BNode:
-        """Attach provenance to a triple using RDF 1.2 reification.
-
-        Creates (or reuses) a reifier blank node and states::
-
-            _:r  rdf:reifies  <<( s p o )>> .
-            _:r  prov:wasDerivedFrom  <chunk_uri> .
-
-        ``rdf:reifies`` is recorded once per reifier, in the graph's
-        reifications; ``prov:wasDerivedFrom`` is added every time, so a shared
-        triple accumulates one arc per source chunk.
-
-        Args:
-            graph: The merged graph.
-            s: Triple subject.
-            p: Triple predicate.
-            o: Triple object.
-            chunk_uri: URI of the source :class:`ContentUnit`.
-            reifier: Existing reifier to reuse; a fresh blank node when *None*.
-
-        Returns:
-            The reifier (for later reuse).
-        """
-        if reifier is None:
-            reifier = BNode()
-            graph.reifications.add(reifier, (s, p, o))
-        graph.add((reifier, _PROV.wasDerivedFrom, chunk_uri))
-        return reifier
+        """Attach provenance to a triple; see :func:`add_reified_provenance`."""
+        return add_reified_provenance(graph, s, p, o, chunk_uri, reifier)
 
     def merge_graphs_with_provenance(
         self,
