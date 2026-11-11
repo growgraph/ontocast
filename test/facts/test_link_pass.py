@@ -289,7 +289,7 @@ async def test_the_pass_adds_a_valid_link_with_provenance(monkeypatch) -> None:
     monkeypatch.setattr(link_facts, "propose_links", propose)
     state = _state(graph, [D + "edition1971"])
 
-    await run_link_pass(state, _tools(), _ontology(), [unit])
+    await run_link_pass(state, _tools(link_pass=True), _ontology(), [unit])
 
     link = (URIRef(D + "edition1971"), URIRef(Q + "editionOf"), URIRef(D + "springCup"))
     assert link in state.aggregated_facts
@@ -312,7 +312,7 @@ async def test_the_pass_adds_a_valid_link_with_provenance(monkeypatch) -> None:
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("isolated", "settings"),
-    [([], {}), ([D + "edition1971"], {"link_pass": False})],
+    [([], {"link_pass": True}), ([D + "edition1971"], {})],
 )
 async def test_no_call_without_isolated_instances_or_with_the_pass_off(
     monkeypatch, isolated: list[str], settings: dict[str, Any]
@@ -350,7 +350,7 @@ async def test_a_failed_call_changes_nothing(monkeypatch) -> None:
     async def llm_tool(_tracker: Any) -> Any:
         return None
 
-    tools = _tools()
+    tools = _tools(link_pass=True)
     tools.get_llm_tool = llm_tool
     unit = _unit()
     state = _state(_served(unit), [D + "edition1971"])
@@ -384,3 +384,50 @@ async def test_the_single_unit_path_runs_the_gate_then_the_pass(monkeypatch) -> 
     )
 
     assert order == ["gate", "link:1"]
+
+
+def test_a_structured_value_is_reached_only_through_a_fitting_range() -> None:
+    """A quantity is no place: an undecidable range does not admit a value."""
+    unit = _unit(TEXT + " The hall covers ten acres.")
+    facts = (
+        FACTS
+        + """
+d:hallArea a <http://qudt.org/schema/qudt/QuantityValue> ; rdfs:label "ten acres" .
+"""
+    )
+    graph = _served(unit, facts)
+    candidates = select_link_candidates(
+        graph, [D + "hallArea"], [unit], _ontology(), [D], max_isolated=5
+    )
+    assert candidates is not None
+    candidates.properties["schema:location"] = "https://schema.org/location"
+    hall = candidates.entities().index(D + "harbourHall") + 1
+
+    accepted, rejected = validate_link_proposals(
+        [_proposal(hall, "schema:location", 1, "The hall covers ten acres")],
+        candidates,
+        graph,
+        _ontology(),
+        [unit],
+    )
+
+    assert accepted == []
+    assert rejected == {FactsLinkRejection.VALUE_ENDPOINT: 1}
+
+
+def test_a_bare_local_name_matching_one_listed_property_is_accepted() -> None:
+    unit = _unit()
+    graph = _served(unit)
+    candidates = _candidates(graph, unit)
+    cup = candidates.entities().index(D + "springCup") + 1
+
+    accepted, rejected = validate_link_proposals(
+        [_proposal(1, "editionOf", cup, "first edition of the Spring Cup")],
+        candidates,
+        graph,
+        _ontology(),
+        [unit],
+    )
+
+    assert [a.predicate for a in accepted] == [Q + "editionOf"]
+    assert not rejected

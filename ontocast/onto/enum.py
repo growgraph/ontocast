@@ -386,6 +386,7 @@ class FactsLinkRejection(StrEnum):
     NOT_OBJECT_PROPERTY = "not_object_property"
     DOMAIN_MISMATCH = "domain_mismatch"
     RANGE_MISMATCH = "range_mismatch"
+    VALUE_ENDPOINT = "value_endpoint"
     FUNCTIONAL_TAKEN = "functional_taken"
     EVIDENCE_MISSING = "evidence_missing"
     DUPLICATE = "duplicate"

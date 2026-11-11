@@ -26,14 +26,16 @@ disambiguation](../concepts/entity_disambiguation.md#coreference-the-guards-cann
 describes it.
 
 After the gate, `LINK_FACTS` (and the same pass on `/process_unit`) makes one
-call per document that still has isolated instances (`FACTS_LINK_PASS`, on by
+call per document that still has isolated instances (`FACTS_LINK_PASS`, off by
 default): each is shown with the passage of its source unit that names it,
 with up to eight instances it may link to and the object properties whose
 domain and range fit; the model proposes only links the passage states. Code
 keeps a proposal only when both ends are listed and one is isolated, the
 property is a listed object property, the declared domain and range admit the
-ends, a functional property is still free, and the quoted evidence occurs in a
-source unit of the isolated end. Each kept link is added with a reifier
+ends, a structured value (a QUDT quantity value or a schema.org structured
+value) is reached only through a domain or range shown to fit it, a functional
+property is still free, and the quoted evidence occurs in a source unit of the
+isolated end. Each kept link is added with a reifier
 deriving it from that unit; nothing is removed. The links are not re-checked
 by the gate. Metrics: `facts_link_isolated`, `facts_link_proposed`,
 `facts_link_added`, `facts_link_rejections_by_reason`; the links are on

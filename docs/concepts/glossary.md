@@ -34,7 +34,7 @@ The terms these pages use, each with the page that explains it.
     works](index.md#the-facts-block).
 
 **Link pass**
-:   At most one LLM call per document, after validation, that proposes links
+:   At most one LLM call per document, after validation and off by default, that proposes links
     for instances linked to nothing, from the passages that mention them; code
     checks each link before adding it (`FACTS_LINK_PASS`). See [How OntoCast
     works](index.md#the-facts-block).

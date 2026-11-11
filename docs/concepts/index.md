@@ -21,7 +21,7 @@ setting changes which step.
 | Convert | The file becomes text | None |
 | Chunk | The text is cut into content units and labeled by section | None, unless `CHUNK_SECTION_CLASSIFIER=llm` |
 | Ontology block | The document's home ontology is resolved; each unit proposes changes to the ontology; the changes are merged and saved | One per document, then at least one per unit |
-| Facts block | Each unit's facts are extracted, then merged into one graph, validated and linked | At least one per unit, then at most one per document for coreference and one for links |
+| Facts block | Each unit's facts are extracted, then merged into one graph, validated and linked | At least one per unit, then at most one per document for coreference, and one for links when enabled |
 | Serialize | The graphs are stored and returned | None |
 
 ## Convert
@@ -165,7 +165,7 @@ ontology. It runs when `RENDER_MODE` is `facts` or `ontology_and_facts`.
    instances and with listed properties, are proposed; code checks each one
    and adds the valid ones. With no isolated instance, no call is made
    ([`FACTS_LINK_PASS`](../reference/configuration/facts-validation.md#facts_link_pass),
-   on by default).
+   off by default).
 
 ## Serialize
 
@@ -217,7 +217,7 @@ Inside each block, every unit runs the same short loop:
 So at the defaults, an ontology unit costs one call and a facts unit usually
 two, plus, in `selected_single_ontology` mode, one call per unit for choosing
 the ontology. The document-level calls (the home ontology, the ontology plan,
-consolidation, coreference and links) come on top.
+consolidation, coreference and, when enabled, links) come on top.
 [Validation layers](../internals/validation_layers.md) describes the checks, the
 fixes and their limits in detail.
 

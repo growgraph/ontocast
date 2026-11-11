@@ -177,7 +177,7 @@ in exchange for quality:
 | [`ONTOLOGY_PLAN_ENABLED`](../reference/configuration/ontology-validation.md#ontology_plan_enabled) | One call per document, on by default: the terms the document adds to its domain, planned with the whole document in view, so parts mint shared, reusable terms instead of one each |
 | [`ONTOLOGY_CONSOLIDATION`](../reference/configuration/ontology-validation.md#ontology_consolidation) | One call per batch of minted terms, on by default: each term is kept, merged, generalised, demoted to a property value or dropped before it is written |
 | [`FACTS_COMPLETION_PASSES`](../reference/configuration/facts-validation.md#facts_completion_passes) | One call per part that still misses measurements stated in the text; off by default |
-| [`FACTS_LINK_PASS`](../reference/configuration/facts-validation.md#facts_link_pass) | One call per document that still has isolated instances after validation: the model proposes links their passages state, and code adds the ones that pass its checks; on by default |
+| [`FACTS_LINK_PASS`](../reference/configuration/facts-validation.md#facts_link_pass) | One call per document that still has isolated instances after validation: the model proposes links their passages state, and code adds the ones that pass its checks; off by default |
 | [`AGG_LLM_COREFERENCE`](../reference/configuration/aggregation.md#agg_llm_coreference) | One call per document of two parts or more: the model decides the entity pairs merging cannot settle; on by default, bounded by `AGG_LLM_COREFERENCE_MAX_PAIRS` |
 | [`MAX_VISITS_PER_NODE`](../reference/configuration/pipeline.md#max_visits_per_node) | Retries of an extraction that failed outright. A successful extraction is never repeated |
 

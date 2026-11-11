@@ -41,6 +41,7 @@ from ontocast.tool.facts_validation.terms import (
     _described_classes,
     declared_class_ranges,
     fact_instances,
+    superclass_closure,
     types_compatible,
 )
 
@@ -56,6 +57,22 @@ _MIN_NEEDLE = 3
 
 _CLASS_TYPES = frozenset({OWL.Class, RDFS.Class})
 _NON_OBJECT_PROPERTY_TYPES = frozenset({OWL.DatatypeProperty, OWL.AnnotationProperty})
+#: Well-known classes of structured values. A value belongs to its carrier
+#: through a property made for it, so a link may reach one only through a
+#: property whose declared domain or range is shown to fit it.
+_VALUE_CLASSES: frozenset[URIRef] = frozenset(
+    {
+        URIRef(namespace + name)
+        for namespace in ("https://schema.org/", "http://schema.org/")
+        for name in (
+            "StructuredValue",
+            "QuantitativeValue",
+            "PropertyValue",
+            "MonetaryAmount",
+        )
+    }
+    | {URIRef("http://qudt.org/schema/qudt/QuantityValue")}
+)
 
 
 class LinkCandidates(BaseModel):
@@ -355,6 +372,13 @@ def _select_properties(
     return {name: str(predicate) for _, name, predicate in scored[:_MAX_PROPERTIES]}
 
 
+def _local_name(name: str) -> str:
+    """The part of a prefixed name or IRI after its last ``:``, ``#`` or ``/``."""
+    for separator in ("#", "/", ":"):
+        name = name.rsplit(separator, 1)[-1]
+    return name
+
+
 def _listed_name(graph: RDFGraph, ontology_graph: RDFGraph, predicate: URIRef) -> str:
     """The property's prefixed name in the context, else in the facts, else its IRI."""
     for source in (ontology_graph, graph):
@@ -374,9 +398,11 @@ def validate_link_proposals(
     """Keep the proposals every check admits; count the others by reason.
 
     The first failing check names the rejection: both ends listed, one end
-    isolated, two different ends, a listed property, an object property, a
-    domain and a range that admit the ends (undecidable counts as admitted),
-    a functional property still free, evidence found in a source unit of an
+    isolated, two different ends, a listed property (by its listed name, its
+    IRI, or a bare local name only one listed property has), an object
+    property, a domain and a range that admit the ends (undecidable counts as
+    admitted), a structured value reached only through a domain or range shown
+    to fit it, a functional property still free, evidence found in a source unit of an
     isolated end, and a link not already stated.
 
     Returns:
@@ -393,6 +419,34 @@ def validate_link_proposals(
     closures: dict[URIRef, set[URIRef]] = {}
     functional = harvest_max_one_predicates(ontology_graph)
     unit_text = {unit.iri_absolute: normalize_string_value(unit.text) for unit in units}
+
+    def fits(node: URIRef, declared: set[URIRef] | None) -> bool | None:
+        if not declared:
+            return None
+        return types_compatible(
+            _types(graph, node),
+            declared,
+            ontology_graph,
+            described=described,
+            closures=closures,
+        )
+
+    def is_value(node: URIRef) -> bool:
+        for type_iri in _types(graph, node):
+            if type_iri not in closures:
+                closures[type_iri] = superclass_closure(type_iri, ontology_graph)
+            if closures[type_iri] & _VALUE_CLASSES:
+                return True
+        return False
+
+    local_names: dict[str, list[str]] = {}
+    for iri in candidates.properties.values():
+        local_names.setdefault(_local_name(iri), []).append(iri)
+
+    def by_local_name(name: str) -> str | None:
+        """A listed property named by its bare local name, when only one has it."""
+        matches = local_names.get(_local_name(name.strip()), [])
+        return matches[0] if len(matches) == 1 else None
 
     accepted: list[FactsLinkRecord] = []
     stated: set[tuple[str, str, str]] = set()
@@ -414,7 +468,9 @@ def validate_link_proposals(
         if subject == obj:
             rejected[FactsLinkRejection.SELF_LINK] += 1
             continue
-        predicate_iri = names.get(proposal.property.strip())
+        predicate_iri = names.get(proposal.property.strip()) or by_local_name(
+            proposal.property
+        )
         if predicate_iri is None:
             rejected[FactsLinkRejection.UNKNOWN_PROPERTY] += 1
             continue
@@ -423,31 +479,18 @@ def validate_link_proposals(
             rejected[FactsLinkRejection.NOT_OBJECT_PROPERTY] += 1
             continue
         subject_node, object_node = URIRef(subject), URIRef(obj)
-        declared_domain = domains.get(predicate)
-        if declared_domain and (
-            types_compatible(
-                _types(graph, subject_node),
-                declared_domain,
-                ontology_graph,
-                described=described,
-                closures=closures,
-            )
-            is False
-        ):
+        domain_fit = fits(subject_node, domains.get(predicate))
+        if domain_fit is False:
             rejected[FactsLinkRejection.DOMAIN_MISMATCH] += 1
             continue
-        declared_range = ranges.get(predicate)
-        if declared_range and (
-            types_compatible(
-                _types(graph, object_node),
-                declared_range,
-                ontology_graph,
-                described=described,
-                closures=closures,
-            )
-            is False
-        ):
+        range_fit = fits(object_node, ranges.get(predicate))
+        if range_fit is False:
             rejected[FactsLinkRejection.RANGE_MISMATCH] += 1
+            continue
+        if (is_value(subject_node) and domain_fit is not True) or (
+            is_value(object_node) and range_fit is not True
+        ):
+            rejected[FactsLinkRejection.VALUE_ENDPOINT] += 1
             continue
         if predicate in functional and (
             (subject, predicate_iri) in taken
