@@ -388,7 +388,14 @@ The passes stop as soon as nothing is missing.
    instance nor the document, with no value of its own, only a type and
    names) is removed the same way, and so is every blank-node value no
    statement carries; records are kind `unlinked_dropped`, and the
-   `facts_unlinked_dropped` metric counts both.
+   `facts_unlinked_dropped` metric counts both. Before these drops, a node
+   standing for a date that holds only a label (the object of a temporal
+   property, a node typed with an OWL-Time class, or one labelled with a whole
+   date or month) gets the typed ISO 8601 value its label names: through
+   `time:inXSDDate`/`inXSDgYearMonth`/`inXSDgYear` on a `time:Instant`, else
+   `rdf:value`. A label that names no single date (`summer 2021`) is left as
+   it is. Records are kind `date_value_added`; the metric is
+   `facts_date_values_added`.
 6. **Connectivity**: `facts_links_removed` counts the links between instances
    that steps 4 and 5 removed; `facts_components` and `facts_isolated` count the
    connected groups of instances in the served graph and the instances linked

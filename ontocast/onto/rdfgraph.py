@@ -1978,8 +1978,11 @@ class RDFGraph(Graph):
                 typically the ``ontology_id``.  Produces prefixes of the form
                 ``{prefix_base}_{slug}``; without it just ``{slug}`` is used.
         """
+        from ontocast.onto.prefixes import standard_namespace_prefixes
+
         declared_namespaces = {str(ns) for _, ns in self.namespaces()}
-        standard_namespaces = {uri.strip("<>") for uri in COMMON_PREFIXES.values()}
+        standard = standard_namespace_prefixes()
+        bound_prefixes = {prefix for prefix, _ in self.namespaces()}
 
         stem_counts: dict[str, int] = {}
         for s, p, o in self:
@@ -1991,7 +1994,18 @@ class RDFGraph(Graph):
                 if not isinstance(term, URIRef):
                     continue
                 iri = str(term)
-                if any(iri.startswith(std) for std in standard_namespaces):
+                stem = iri[: max(iri.rfind("#"), iri.rfind("/")) + 1]
+                namespace = stem if stem in standard else None
+                if namespace is not None:
+                    # A standard namespace is shown under its standard prefix,
+                    # never a synthetic one.
+                    prefix = standard[namespace]
+                    if namespace not in declared_namespaces and (
+                        prefix not in bound_prefixes
+                    ):
+                        self.bind(prefix, Namespace(namespace), override=False)
+                        declared_namespaces.add(namespace)
+                        bound_prefixes.add(prefix)
                     continue
                 for sep in ("#", "/"):
                     idx = iri.rfind(sep)

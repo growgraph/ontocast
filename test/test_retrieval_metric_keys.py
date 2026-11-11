@@ -81,6 +81,7 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_SHACL_AUTOFIX_REVERTED": "facts_shacl_autofix_reverted",
     "FACTS_UNTYPED_DROPPED": "facts_untyped_dropped",
     "FACTS_UNLINKED_DROPPED": "facts_unlinked_dropped",
+    "FACTS_DATE_VALUES_ADDED": "facts_date_values_added",
     "FACTS_UNTYPED_INFERRED": "facts_untyped_inferred",
     "FACTS_LINKS_REMOVED": "facts_links_removed",
     "FACTS_COMPONENTS": "facts_components",

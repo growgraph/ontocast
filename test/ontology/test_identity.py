@@ -98,8 +98,8 @@ def test_rdfgraph_add_preserves_conflicting_prefixes() -> None:
     assert "https://example.org/b#" in bindings.values()
 
 
-def test_adopting_binds_the_id_as_the_prefix_of_the_own_namespace() -> None:
-    """The author's ``obs:`` is replaced: the id is the preferred prefix."""
+def test_adopting_keeps_the_author_prefix_of_the_own_namespace() -> None:
+    """The author's ``obs:`` is shown; the id stays the identity alias."""
     ontology = stamped_ontology(
         """
         @prefix obs: <https://growgraph.dev/ontologies/observation#> .
@@ -109,9 +109,37 @@ def test_adopting_binds_the_id_as_the_prefix_of_the_own_namespace() -> None:
         """,
         ontology_id="observation",
     )
-    assert ontology.prefix == "observation"
+    assert ontology.ontology_id == "observation"
+    assert ontology.prefix == "obs"
     bound = {p for p, u in ontology.graph.namespaces() if str(u) == ontology.namespace}
-    assert bound == {"observation"}
+    assert bound == {"obs"}
+
+
+def test_adopting_binds_the_id_when_the_author_declared_no_prefix() -> None:
+    ontology = stamped_ontology(
+        """
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        <https://growgraph.dev/ontologies/observation> a owl:Ontology .
+        <https://growgraph.dev/ontologies/observation#Reading> a owl:Class .
+        <https://growgraph.dev/ontologies/observation#Sample> a owl:Class .
+        """,
+        ontology_id="observation",
+    )
+    assert ontology.prefix == "observation"
+
+
+def test_an_author_prefix_standing_for_another_namespace_gives_way_to_the_id() -> None:
+    """``time:`` is OWL-Time's; on another namespace it would mislead."""
+    ontology = stamped_ontology(
+        """
+        @prefix time: <https://growgraph.dev/ontologies/observation#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        <https://growgraph.dev/ontologies/observation> a owl:Ontology .
+        time:Reading a owl:Class .
+        """,
+        ontology_id="observation",
+    )
+    assert ontology.prefix == "observation"
 
 
 def test_ontology_manager_aliases_prefix_and_id() -> None:

@@ -27,6 +27,7 @@ from ontocast.onto.enum import (
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_condense import TextCaps
 from ontocast.onto.ontology_snapshot import OntologySnapshot
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import node_factories
@@ -81,6 +82,7 @@ def _tools(*, context_from_units: bool = False) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             config=SimpleNamespace(
                 server=SimpleNamespace(
                     parallel_workers=4,

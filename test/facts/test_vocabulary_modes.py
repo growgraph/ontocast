@@ -188,6 +188,17 @@ def test_declared_namespaces_and_the_carrier_are_named() -> None:
     assert "to carry it, use ex:hasValue." in text
 
 
+def test_both_modes_extract_every_stated_quantity() -> None:
+    """A mode narrows the terms, never the measurements: rule 3a is shared."""
+    strict, open_ = _guidelines("strict"), _guidelines("open")
+
+    for text in (strict, open_):
+        assert "extract EVERY quantitative statement in the text" in text
+        assert "`sosa:Observation`" in text
+        assert "use the observation form of rule 3a." in text
+        assert "can carry is not extracted" not in text
+
+
 def test_mode_changes_only_the_vocabulary_rules() -> None:
     strict, open_ = _guidelines("strict"), _guidelines("open")
 

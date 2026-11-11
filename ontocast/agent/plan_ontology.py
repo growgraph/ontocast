@@ -146,7 +146,7 @@ async def plan_ontology(state: AgentState, tools: ToolBox) -> AgentState:
         return state
 
     heads = list(tools.ontology_manager.ontologies)
-    prefixes = catalog_prefixes(heads, home)
+    prefixes = catalog_prefixes(heads, home, tools.prefix_table())
     terms = catalog_terms(heads, first_iri=home.iri)
     term_sheet = format_term_sheet(terms, prefixes, config.plan_catalog_max_terms)
     try:

@@ -21,6 +21,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyAssemblyMode, RenderMode, Status
 from ontocast.onto.model import FactsUnitFinding, FactsUnitFindingKind, TripleFix
 from ontocast.onto.ontology_snapshot import OntologySnapshot
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
@@ -92,6 +93,7 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
     return cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             facts_completion_passes=completion_passes,
             facts_patch_policy=CriticPatchPolicy(),
             quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY),
@@ -277,6 +279,7 @@ def _facts_tools(*, completion_passes: int) -> object:
     atomic = cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             facts_critic_passes=0,
             facts_patch_policy=CriticPatchPolicy(),
             quantity_fallback_vocabulary=None,
@@ -353,6 +356,7 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
     tools = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
@@ -368,7 +372,7 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
                     # ontology phase must never read it (`phase.name == "facts"`
                     # short-circuits first), so its absence proves the guard.
                 ),
-            )
+            ),
         ),
     )
 

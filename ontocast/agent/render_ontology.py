@@ -278,6 +278,7 @@ async def render_ontology_fresh(
     known_prefixes = build_llm_prefix_map(
         access.ontology_graph_for_prefixes(),
         supplemental_ontologies or (),
+        tools.prefix_table(),
     )
     known_prefixes[identity.ontology_id] = identity.namespace
 
@@ -399,6 +400,7 @@ async def render_ontology_update(
     known_prefixes = build_llm_prefix_map(
         access.ontology_graph_for_prefixes(),
         supplemental_ontologies or (),
+        tools.prefix_table(),
     )
     if state.home_ontology is not None:
         # The plan block and the intro name home terms by this prefix; unbound,

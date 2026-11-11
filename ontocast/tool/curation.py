@@ -356,7 +356,9 @@ async def curate_ontology(
     if not flagged:
         return report
 
-    prefixes = catalog_prefixes(list(tools.ontology_manager.ontologies), None)
+    prefixes = catalog_prefixes(
+        list(tools.ontology_manager.ontologies), None, tools.prefix_table()
+    )
     actions = await _decide(
         tools,
         head,

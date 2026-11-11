@@ -19,6 +19,7 @@ from ontocast.onto.ontology_header import DivergedOntologyError, heads_by_iri
 from ..onto.null import NULL_ONTOLOGY
 from ..onto.ontology import Ontology
 from ..onto.ontology_header import OntologyHeader
+from ..onto.prefixes import PrefixTable, build_prefix_table
 from ..onto.rdfgraph import RDFGraph
 from ..onto.util import normalize_ontology_iri
 from .facts_validation.terms import collect_catalog_terms
@@ -91,8 +92,9 @@ class OntologyManager(Tool):
         self._iri_to_ontology_id: dict[str, str] = {}
         # Lowercased alias (ontology_id, author prefix, …) → IRI.
         self._alias_to_iri: dict[str, str] = {}
-        # Preferred author prefix per namespace URI (for sanitize preference).
-        self._namespace_to_author_prefix: dict[str, str] = {}
+        # The catalog's prefix table, per set of extra graphs (the shapes);
+        # dropped whenever the catalog changes.
+        self._prefix_tables: dict[tuple[int, ...], PrefixTable] = {}
         # Content-addressed caches. An entry can never go stale on read: a
         # concurrent writer produces a *new* key, which is a miss, never an
         # incorrect hit. Both are bounded -- they hold whole rdflib graphs, and
@@ -240,9 +242,7 @@ class OntologyManager(Tool):
         normalized = normalize_ontology_iri(iri).lower()
         if normalized:
             self._alias_to_iri[normalized] = iri
-        prefix = ontology.prefix
-        if prefix and ontology.namespace:
-            self._namespace_to_author_prefix[str(ontology.namespace)] = prefix
+        self._prefix_tables.clear()
 
     def resolve_ontology_ref(self, ref: str) -> str | None:
         """Resolve an absolute IRI or registered alias to a catalog ontology IRI."""
@@ -260,21 +260,19 @@ class OntologyManager(Tool):
                 return iri
         return None
 
-    def author_prefix_for_namespace(self, namespace: str) -> str | None:
-        """Return the catalog-registered author prefix for a namespace, if any."""
-        direct = self._namespace_to_author_prefix.get(namespace)
-        if direct is not None:
-            return direct
-        stripped = namespace.rstrip("/#")
-        for key, value in self._namespace_to_author_prefix.items():
-            if key.rstrip("/#") == stripped:
-                return value
-        return None
+    def prefix_table(self, others: Sequence[RDFGraph] = ()) -> PrefixTable:
+        """The catalog's prefix table: one shown prefix per namespace.
 
-    @property
-    def preferred_namespace_prefixes(self) -> dict[str, str]:
-        """Namespace URI → author prefix for sanitize preference."""
-        return dict(self._namespace_to_author_prefix)
+        Args:
+            others: Further graphs whose bindings name namespaces, such as the
+                shapes graph, whose prose the prompt shows.
+        """
+        key = tuple(id(graph) for graph in others)
+        table = self._prefix_tables.get(key)
+        if table is None:
+            table = build_prefix_table(self.ontologies, others)
+            self._prefix_tables[key] = table
+        return table
 
     def __contains__(self, item: object) -> bool:
         """Check if an item (IRI or alias) is in the ontology manager.
@@ -316,6 +314,7 @@ class OntologyManager(Tool):
             return False
         versions.append(ontology)
         self._cached_ontologies.pop(ontology.iri, None)
+        self._prefix_tables.clear()
         logger.debug("Registered version %s", ontology.version_iri)
         return True
 
@@ -416,15 +415,7 @@ class OntologyManager(Tool):
         stale = [alias for alias, bound in self._alias_to_iri.items() if bound == iri]
         for alias in stale:
             del self._alias_to_iri[alias]
-        # Drop author-prefix entries whose IRI matches (by scanning versions was already removed).
-        # Namespace map is best-effort; rebuild from remaining ontologies.
-        self._namespace_to_author_prefix = {}
-        for versions in self.ontology_versions.values():
-            if not versions:
-                continue
-            onto = versions[-1]
-            if onto.prefix and onto.namespace:
-                self._namespace_to_author_prefix[str(onto.namespace)] = onto.prefix
+        self._prefix_tables.clear()
 
     def register_vector_store(self, retriever: "OntologyPatchRetriever") -> None:
         """Register a patch retriever for vector context lookups."""
@@ -446,7 +437,7 @@ class OntologyManager(Tool):
         self._cached_ontologies.clear()
         self._iri_to_ontology_id.clear()
         self._alias_to_iri.clear()
-        self._namespace_to_author_prefix.clear()
+        self._prefix_tables.clear()
         self._graph_cache.clear()
         self._graph_uris_by_iri.clear()
         self._merged_cache.clear()

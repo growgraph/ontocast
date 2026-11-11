@@ -52,7 +52,7 @@ facts_instruction_shared = """\n\n
    - CRITICAL: NEVER type a `cd:` instance as `rdfs:Class` or `rdf:Property` (you are extracting data occurrences, not rewriting or defining the schema), nor as `owl:Thing` alone — a vacuous type is no type.
    - Do NOT mint an entity for a bare number, a citation marker, or a reference token (`[12]`, "19", equation numbers). These are typography, not facts.
 5. Declare every namespace prefix you use (rdf, rdfs, owl, schema, domain ontologies, cd, etc.).
-5a. PREFIX HYGIENE: Use **only** prefix aliases declared in the ONTOLOGY section below. Do not invent alternative aliases.
+5a. PREFIX HYGIENE: Write each namespace with the prefix this prompt shows for it: the domain ontologies of rule 1a, the well-known vocabularies of rule 2, and the names in the ONTOLOGY section. Do not invent alternative aliases.
 6. CRITICAL - Entity Matching & Namespace Isolation Protocol:
    - Understand the Ontology Contents: The provided ontology contains the schema (Classes and Properties). It may also contain a small set of static Reference Individuals (e.g., fixed status constants, countries, or controlled vocabularies). It does NOT contain the dynamic data instances described in your source text.
    - The Target Lookup Rule: BEFORE creating a `cd:` entity, check if the text mention refers to one of those static Reference Individuals existing verbatim in the provided ontology context (declared as `owl:NamedIndividual` or an explicit individual token).
@@ -240,15 +240,18 @@ _VOCABULARY_PRECEDENCE_OPEN = """2. VOCABULARY PRECEDENCE (open vocabulary): use
 {reason}
 {vacuous}"""
 
-_QUANTITATIVE_COMPLETENESS_STRICT = """3a. QUANTITATIVE COMPLETENESS: extract EVERY quantitative statement these vocabularies can express — every measured value, duration, condition, concentration, ratio, threshold, and uncertainty for which the provided ontology or a well-known vocabulary (QUDT among them) offers a value class (rule 8) and a property that carries it. A number attached to a stated quantity is a fact and must reach the graph with its verbatim value and unit; a bare citation, page, figure, or equation token is typography and must not (rule 4). Silently skipping a quantity these vocabularies can express is a defect, not a simplification."""
-
-_QUANTITATIVE_COMPLETENESS_OPEN = """3a. QUANTITATIVE COMPLETENESS: extract EVERY quantitative statement in the text — every measured value, duration, condition, concentration, ratio, threshold, and uncertainty — even when the provided ontology has no term for it (rule 2 and the quantity fallback of rule 8 apply in that case). A number attached to a stated quantity is a fact and must reach the graph with its verbatim value and unit; a bare citation, page, figure, or equation token is typography and must not (rule 4). Completeness of the measured content is judged, so silently skipping a stated measurement is a defect, not a simplification."""
+# One rule for both modes: a mode narrows the terms, never the measurements.
+# Every stated quantity has a carrier -- the observation form below needs only
+# an observation class and a result property, which SOSA always offers.
+_QUANTITATIVE_COMPLETENESS = """3a. QUANTITATIVE COMPLETENESS: extract EVERY quantitative statement in the text — every measured value, duration, condition, concentration, ratio, threshold, and uncertainty, including a dimensionless ratio or a parameter of a model. Every one can be expressed: carry the value with the property the provided ontology offers for it, and where it offers none, state the quantity as an observation — the ontology's observation class, else `sosa:Observation` — whose result is the value (`sosa:hasResult`, or the ontology's result property) and whose observed property names what was measured. A number attached to a stated quantity is a fact and must reach the graph with its verbatim value and unit; a bare citation, page, figure, or equation token is typography and must not (rule 4). Completeness of the measured content is judged, so silently skipping a stated measurement is a defect, not a simplification."""
 
 _CONNECT = """3b. CONNECT WHAT THE TEXT CONNECTS: when the text relates two instances — one is part of, belongs to, takes part in, measures, or describes the other — assert that link with a property of the provided ontology, or, when it has none for that relation, {fallback} (rule 2). A `cd:` instance left with only its type, label and literal values often means a stated relation was missed; look for it. Assert only relations the text states or directly entails: never invent or guess a link. An instance the text relates to nothing these vocabularies can express, and that holds no value, is a mention (rule 3) — leave it out. When the text mentions one thing in several places, use one `cd:` IRI for it throughout this extraction instead of minting one per mention."""
 
 _TYPING = """4. Enforce typing: all `cd:` entities (facts) are data instances and must be linked via `rdf:type` to a valid operational Class — from the provided ontology wherever one fits (e.g. `onto:Trial`), and only otherwise {fallback} (e.g. `schema:Person`). An instance no class of these fits is not minted."""
 
-_CARRIER = """     If the provided ontology has no property to carry it, use {carrier}.{rest}"""
+_CARRIER = (
+    """     If the provided ontology has no property to carry it, use {carrier}."""
+)
 
 
 def format_vocabulary_rules(
@@ -292,8 +295,7 @@ def format_vocabulary_rules(
         else "a term of a well-known or another established vocabulary"
     )
     carrier = (quantity_fallback_vocabulary or {}).get("carrier") or (
-        f"a property of a well-known{'' if strict else ' or another established'} "
-        "vocabulary (rule 2)"
+        "the observation form of rule 3a"
     )
     return {
         "vocabulary_precedence_rule": precedence.format(
@@ -301,22 +303,10 @@ def format_vocabulary_rules(
             reason=_PRECEDENCE_REASON,
             vacuous=_NO_VACUOUS_TYPE,
         ),
-        "quantitative_completeness_rule": (
-            _QUANTITATIVE_COMPLETENESS_STRICT
-            if strict
-            else _QUANTITATIVE_COMPLETENESS_OPEN
-        ),
+        "quantitative_completeness_rule": _QUANTITATIVE_COMPLETENESS,
         "connect_rule": _CONNECT.format(fallback=f"with {fallback}"),
         "typing_rule": _TYPING.format(fallback=f"from {fallback}"),
-        "carrier_fallback_clause": _CARRIER.format(
-            carrier=carrier,
-            rest=(
-                " A value none of these vocabularies can carry is not extracted"
-                " (rule 3a)."
-                if strict
-                else ""
-            ),
-        ),
+        "carrier_fallback_clause": _CARRIER.format(carrier=carrier),
     }
 
 

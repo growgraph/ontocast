@@ -16,6 +16,7 @@ from ontocast.onto.enum import (
     RetrievalMetric,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     EmptyOntologyContextError,
@@ -54,7 +55,7 @@ def _build_unit() -> ContentUnit:
 
 def _stub_ontology_manager(**kwargs: object) -> SimpleNamespace:
     kwargs.setdefault("has_ontologies", True)
-    return SimpleNamespace(preferred_namespace_prefixes={}, **kwargs)
+    return SimpleNamespace(**kwargs)
 
 
 def _build_tools(
@@ -69,6 +70,7 @@ def _build_tools(
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             patch_retriever=patch_retriever,
             vector_store=vector_store,
             is_vector_store_ready=lambda: (
@@ -464,8 +466,6 @@ def test_resolver_fixed_single_ontology_resolves_from_manager() -> None:
     )
 
     class _StubOntologyManager:
-        preferred_namespace_prefixes: dict[str, str] = {}
-
         def get_head(self, ontology_id: str | None = None) -> Ontology | None:
             if ontology_id == "finance":
                 return finance_ontology

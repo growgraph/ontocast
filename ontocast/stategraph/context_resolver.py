@@ -250,7 +250,19 @@ def admit_facts_context_terms(
     also admits terms their definitions quote.
     """
     ctx = admit_planned_terms(ctx, plan, tools, budget_tracker=budget_tracker)
-    return admit_named_catalog_terms(ctx, tools, budget_tracker=budget_tracker)
+    ctx = admit_named_catalog_terms(ctx, tools, budget_tracker=budget_tracker)
+    show_prefixes(ctx.snapshot, tools)
+    return ctx
+
+
+def show_prefixes(snapshot: OntologySnapshot, tools: ToolBox) -> None:
+    """Make a prompt context read under the catalog's prefix table, in place.
+
+    Every context a prompt is rendered from passes through here, so the term
+    sheet, its notes, the domain clause and the conformance chapter show one
+    prefix per namespace, the one answers are parsed with.
+    """
+    tools.prefix_table().normalize(snapshot.graph)
 
 
 def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
@@ -435,6 +447,7 @@ async def build_unioned_document_ontology_context(
         len(snapshot.graph),
         len(snapshot.source_iris),
     )
+    show_prefixes(snapshot, tools)
     return UnitOntologyContext(
         snapshot=snapshot,
         writable_iris=sorted(set(writable)),
@@ -652,8 +665,7 @@ async def _resolve_ensemble_context(
         context.retrieval_metrics[RetrievalMetric.EMPTY_SNAPSHOT_REASON] = reason
         logger.warning("Ontology context for this unit is empty (%s)", reason)
 
-    preferred = tools.ontology_manager.preferred_namespace_prefixes or None
-    patch_graph.sanitize_prefixes_namespaces(preferred_namespace_prefixes=preferred)
+    patch_graph.sanitize_prefixes_namespaces()
 
     snapshot = OntologySnapshot.from_graph(
         patch_graph,
@@ -755,11 +767,13 @@ async def resolve_unit_ontology_context(
             context.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = len(
                 home.snapshot.graph
             )
+            show_prefixes(home.snapshot, tools)
             return home
         logger.info(
             "No ontology context for this unit; rendering a fresh ontology from "
             "its text"
         )
+    show_prefixes(resolved.snapshot, tools)
     return resolved
 
 

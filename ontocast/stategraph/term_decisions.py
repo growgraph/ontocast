@@ -90,7 +90,9 @@ async def decide_minted_terms(
         plan.prefixes
         if plan is not None and plan.prefixes
         else catalog_prefixes(
-            list(tools.ontology_manager.ontologies), state.home_ontology
+            list(tools.ontology_manager.ontologies),
+            state.home_ontology,
+            tools.prefix_table(),
         )
     )
     flagged = structural_flags(minted, carriers, catalog_index)

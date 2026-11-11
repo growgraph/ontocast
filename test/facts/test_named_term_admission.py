@@ -17,6 +17,7 @@ from rdflib import OWL, RDF, RDFS, Literal, URIRef
 from ontocast.onto.enum import OntologyAssemblyMode
 from ontocast.onto.model import OntologyPlan, OntologyPlanTerm
 from ontocast.onto.ontology_snapshot import OntologySnapshot
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import BudgetTracker
 from ontocast.stategraph.context_resolver import (
@@ -79,6 +80,7 @@ def _snapshot_with_portion_only() -> UnitOntologyContext:
 
 def _tools(manager: OntologyManager, chapter_terms: set[str]) -> Any:
     return SimpleNamespace(
+        prefix_table=lambda: PrefixTable({}, {}),
         ontology_manager=manager,
         shapes_chapter_terms=lambda context_terms: frozenset(chapter_terms),
     )

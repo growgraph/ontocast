@@ -35,6 +35,7 @@ from ontocast.onto.model import (
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_apply import OntologyDelta
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState, InputDocument
@@ -134,6 +135,7 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
@@ -204,6 +206,7 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
@@ -462,6 +465,7 @@ async def test_render_ontology_update_adds_external_evidence_when_enabled(
     tools = cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_llm_tool=fake_get_llm_tool,
             web_grounding_enabled_for_node=lambda _node: True,
         ),
@@ -507,6 +511,7 @@ async def test_criticise_ontology_skips_external_evidence_when_disabled(
     tools = cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_llm_tool=fake_get_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
         ),
@@ -545,6 +550,7 @@ async def test_criticise_ontology_prompt_includes_graph_format_instruction(
     tools = cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_llm_tool=fake_get_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
         ),
@@ -723,6 +729,7 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
@@ -813,6 +820,7 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
@@ -1008,6 +1016,7 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
     state.ontology_artifacts = list(state.reduced_ontology_artifacts)
     store = RecordingStore()
     toolbox = SimpleNamespace(
+        prefix_table=lambda: PrefixTable({}, {}),
         ontology_manager=RecordingOntologyManager(),
         triple_store_manager=store,
     )
@@ -1041,6 +1050,7 @@ def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
     state.ontology_artifacts = list(state.reduced_ontology_artifacts)
     store = RecordingStore()
     toolbox = SimpleNamespace(
+        prefix_table=lambda: PrefixTable({}, {}),
         ontology_manager=RecordingOntologyManager(),
         triple_store_manager=store,
     )
@@ -1082,6 +1092,7 @@ def test_toolbox_serialize_persists_all_ontology_artifacts() -> None:
     store = RecordingStore()
     manager = RecordingOntologyManager()
     toolbox = SimpleNamespace(
+        prefix_table=lambda: PrefixTable({}, {}),
         ontology_manager=manager,
         triple_store_manager=store,
     )

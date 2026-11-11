@@ -121,7 +121,10 @@ Returned `Ontology` objects are shared, read-only references: catalog
 selection uses the live objects, and the cache depends on nobody mutating them.
 
 `resolve_ontology_ref` accepts the ontology IRI, the short `ontology_id`, or
-the author's Turtle prefix. Prompt assembly works on `OntologySnapshot` views,
+the author's Turtle prefix. `OntologyManager.prefix_table` (through
+`ToolBox.prefix_table`, which adds the shapes' bindings) gives each namespace
+the one prefix prompts, parsing and exports use; it is rebuilt when the catalog
+changes. Prompt assembly works on `OntologySnapshot` views,
 which have no catalog id; writeback applies insert complements onto the head
 of each ontology by namespace ownership, and snapshots are never registered as
 catalog entries. See [Choosing ontology context](../guides/ontology_context.md).

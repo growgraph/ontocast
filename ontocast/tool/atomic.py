@@ -1,6 +1,7 @@
 """Minimal tool contracts for atomic render/critic loops."""
 
 import copy
+from collections.abc import Callable
 from typing import Protocol
 
 from pydantic import BaseModel
@@ -11,6 +12,7 @@ from ontocast.config import (
     WebSearchConfig,
 )
 from ontocast.onto.enum import WorkflowNode
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.tool.facts_validation import (
     CriticPatchPolicy,
     FactsAcceptancePolicy,
@@ -115,6 +117,7 @@ class AtomicToolBox:
 
         self.llm_provider = llm_provider
         self.search_provider = search_provider
+        self._prefix_tables: Callable[[], PrefixTable] | None = None
         self.web_search_config = web_search
         self.ontology_catalog: AtomicOntologyCatalog | None = ontology_catalog
 
@@ -219,17 +222,37 @@ class AtomicToolBox:
         self.web_search_blocked_domains = _domain_set(web_search.blocked_domains)
         self.web_search_min_snippet_chars = web_search.min_snippet_chars
 
-    def scoped_to_catalog(self, catalog: AtomicOntologyCatalog) -> "AtomicToolBox":
+    def scoped_to_catalog(
+        self,
+        catalog: AtomicOntologyCatalog,
+        prefix_tables: Callable[[], PrefixTable] | None = None,
+    ) -> "AtomicToolBox":
         """A shallow copy of this surface bound to ``catalog``.
 
         The surface is tenancy-independent and shared by every scope; a
         catalog is not. Binding on a copy rather than on ``self`` keeps one
         scope's catalog from being read by a unit of another scope that runs on
         the same shared instance.
+
+        Args:
+            catalog: The scope's ontology catalog.
+            prefix_tables: Returns the scope's current prefix table; read on
+                every call, since the catalog changes while a document runs.
         """
         scoped = copy.copy(self)
         scoped.ontology_catalog = catalog
+        scoped._prefix_tables = prefix_tables
         return scoped
+
+    def prefix_table(self) -> PrefixTable:
+        """The bound scope's prefix table; an empty one when none is bound.
+
+        An empty table still shows every well-known namespace under its
+        standard prefix.
+        """
+        if self._prefix_tables is None:
+            return PrefixTable({}, {})
+        return self._prefix_tables()
 
     def catalog_terms(self) -> set[str]:
         """Every IRI the bound catalog declares or references, across all of it.

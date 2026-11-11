@@ -11,6 +11,7 @@ from typing import Protocol
 from ontocast.onto.constants import prefix_lookup_for_ingest
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_snapshot import OntologySnapshot
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph, extract_known_prefixes
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
@@ -97,9 +98,19 @@ def _add_semantic_aliases(prefix_map: dict[str, str]) -> dict[str, str]:
 def build_llm_prefix_map_from_graphs(
     primary: RDFGraph,
     supplemental: Iterable[RDFGraph | Ontology] = (),
+    table: PrefixTable | None = None,
 ) -> dict[str, str]:
-    """Collect namespace prefixes for LLM Turtle/JSON-LD ingest repair from graphs."""
+    """Collect namespace prefixes for LLM Turtle/JSON-LD ingest repair from graphs.
+
+    The catalog's prefix table comes right after the standard prefixes, so a
+    prefix the prompt shows and an alias an author's prose writes (``life:``
+    where the term sheet says ``lifecycle:``, or the reverse) both parse to
+    the namespace they stand for.
+    """
     merged = prefix_lookup_for_ingest()
+    if table is not None:
+        for prefix, namespace in table.parse_map().items():
+            merged.setdefault(prefix, namespace)
     _merge_prefix_bindings_from_graph(merged, primary)
     for item in supplemental:
         if isinstance(item, Ontology):
@@ -127,6 +138,7 @@ def build_llm_prefix_map_from_graphs(
 def build_llm_prefix_map(
     primary: Ontology | OntologySnapshot | RDFGraph,
     supplemental: Iterable[Ontology] = (),
+    table: PrefixTable | None = None,
 ) -> dict[str, str]:
     """Collect namespace prefixes for LLM Turtle/JSON-LD ingest repair.
 
@@ -137,7 +149,7 @@ def build_llm_prefix_map(
         primary_graph = primary.graph
     elif isinstance(primary, Ontology):
         if primary.is_null():
-            return _add_semantic_aliases(prefix_lookup_for_ingest())
+            return build_llm_prefix_map_from_graphs(RDFGraph(), (), table)
         primary_graph = primary.graph
         if not isinstance(primary_graph, RDFGraph):
             normalized = RDFGraph()
@@ -148,7 +160,7 @@ def build_llm_prefix_map(
             primary_graph = normalized
     else:
         primary_graph = primary
-    return build_llm_prefix_map_from_graphs(primary_graph, supplemental)
+    return build_llm_prefix_map_from_graphs(primary_graph, supplemental, table)
 
 
 class UnitOntologyAccess:

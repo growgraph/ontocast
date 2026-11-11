@@ -14,6 +14,7 @@ from rdflib import OWL, RDF, URIRef
 from ontocast.onto.constants import prefix_lookup_for_ingest
 from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.prefixes import PrefixTable, build_prefix_table
 from ontocast.tool.facts_validation.terms import _catalog_term_roles
 from ontocast.tool.ontology_validation.plan import compact_iri
 from ontocast.tool.ontology_validation.shape import (
@@ -35,17 +36,21 @@ class CatalogTerm:
 
 
 def catalog_prefixes(
-    heads: Sequence[Ontology], home: OntologyIdentity | None
+    heads: Sequence[Ontology],
+    home: OntologyIdentity | None,
+    table: PrefixTable | None = None,
 ) -> dict[str, str]:
-    """CURIE prefixes for the catalog's ontologies, well-known ones and home."""
+    """CURIE prefixes for the catalog's ontologies, well-known ones and home.
+
+    Each namespace gets the prefix ``table`` shows for it (the catalog's own
+    table when none is given), so this lane names terms as the facts lane
+    does. A home ontology not in the catalog yet is named by its id.
+    """
+    table = table if table is not None else build_prefix_table(heads)
     prefixes = dict(prefix_lookup_for_ingest())
-    for head in heads:
-        if head.is_null() or not head.namespace:
-            continue
-        prefix = head.prefix or head.ontology_id
-        if prefix and prefix not in prefixes:
-            prefixes[prefix] = head.namespace
-    if home is not None:
+    for namespace, prefix in sorted(table.shown.items()):
+        prefixes.setdefault(prefix, namespace)
+    if home is not None and home.namespace not in prefixes.values():
         prefixes[home.ontology_id] = home.namespace
     return prefixes
 

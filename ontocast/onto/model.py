@@ -1126,6 +1126,9 @@ class FactsGateRepairKind(StrEnum):
     #: A fact-namespace instance that states nothing (no link, no value),
     #: removed with its names.
     UNLINKED_DROPPED = "unlinked_dropped"
+    #: A node standing for a date, given the typed ISO 8601 value its label
+    #: names.
+    DATE_VALUE_ADDED = "date_value_added"
 
 
 class GraphRepairRecord(BaseModel):

@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from rdflib import RDF, Graph, URIRef
 from rdflib.namespace import SH
 
+from ontocast.onto.prefixes import PrefixTable
+
 logger = logging.getLogger(__name__)
 
 CHAPTER_HEADING = "# CONFORMANCE REQUIREMENTS"
@@ -59,9 +61,11 @@ class ShapeRequirement:
     closed: bool = False
 
 
-def _curie(graph: Graph, term) -> str:
+def _curie(graph: Graph, term, table: PrefixTable | None = None) -> str:
     if not isinstance(term, URIRef):
         return str(term)
+    if table is not None:
+        return table.qname(str(term))
     try:
         prefix, _, local = graph.compute_qname(term, generate=False)
         return f"{prefix}:{local}"
@@ -69,7 +73,9 @@ def _curie(graph: Graph, term) -> str:
         return str(term)
 
 
-def _synthesized_line(graph: Graph, prop) -> str | None:
+def _synthesized_line(
+    graph: Graph, prop, table: PrefixTable | None = None
+) -> str | None:
     """A rule line composed from constraint structure, for message-less shapes."""
     path = graph.value(prop, SH.path)
     if path is None or not isinstance(path, URIRef):
@@ -84,33 +90,49 @@ def _synthesized_line(graph: Graph, prop) -> str | None:
     if max_count is not None:
         parts.append(f"at most {max_count}")
     if klass is not None:
-        parts.append(f"of type {_curie(graph, klass)}")
+        parts.append(f"of type {_curie(graph, klass, table)}")
     if datatype is not None:
-        parts.append(f"as {_curie(graph, datatype)}")
+        parts.append(f"as {_curie(graph, datatype, table)}")
     if not parts:
         return None
-    return f"{_curie(graph, path)}: " + ", ".join(parts)
+    return f"{_curie(graph, path, table)}: " + ", ".join(parts)
 
 
-def derive_shape_requirements(shapes_graph: Graph) -> list[ShapeRequirement]:
+def derive_shape_requirements(
+    shapes_graph: Graph, table: PrefixTable | None = None
+) -> list[ShapeRequirement]:
     """Reduce every node shape to an anchor and prose rule lines.
 
     Preference order per constraint: the author's ``sh:message`` verbatim; a
     synthesized structural line; nothing (SPARQL constraints without a
     message, warned once per derivation).
+
+    With ``table``, every name is shown under the table's prefixes: anchors
+    and synthesized lines are written with them, and the CURIEs of a message
+    are rewritten to them, read through the shapes graph's own bindings.
     """
+    bindings = {
+        prefix: str(namespace)
+        for prefix, namespace in shapes_graph.namespaces()
+        if prefix
+    }
+
+    def prose(text: str) -> str:
+        return table.rewrite_curies(text, bindings) if table is not None else text
+
+    def curie(term) -> str:
+        return _curie(shapes_graph, term, table)
+
     requirements: list[ShapeRequirement] = []
     unrenderable = 0
     for shape in sorted(shapes_graph.subjects(RDF.type, SH.NodeShape), key=str):
-        anchors = [
-            _curie(shapes_graph, t) for t in shapes_graph.objects(shape, SH.targetClass)
-        ]
+        anchors = [curie(t) for t in shapes_graph.objects(shape, SH.targetClass)]
         anchors.extend(
-            f"subjects of {_curie(shapes_graph, p)}"
+            f"subjects of {curie(p)}"
             for p in shapes_graph.objects(shape, SH.targetSubjectsOf)
         )
         anchors.extend(
-            f"objects of {_curie(shapes_graph, p)}"
+            f"objects of {curie(p)}"
             for p in shapes_graph.objects(shape, SH.targetObjectsOf)
         )
         if not anchors:
@@ -137,9 +159,9 @@ def derive_shape_requirements(shapes_graph: Graph) -> list[ShapeRequirement]:
                 )
             message = shapes_graph.value(prop, SH.message)
             if message is not None:
-                lines.append(str(message))
+                lines.append(prose(str(message)))
                 continue
-            synthesized = _synthesized_line(shapes_graph, prop)
+            synthesized = _synthesized_line(shapes_graph, prop, table)
             if synthesized is not None:
                 lines.append(synthesized)
         for sparql in shapes_graph.objects(shape, SH.sparql):
@@ -147,7 +169,7 @@ def derive_shape_requirements(shapes_graph: Graph) -> list[ShapeRequirement]:
                 shape, SH.message
             )
             if message is not None:
-                lines.append(str(message))
+                lines.append(prose(str(message)))
             else:
                 unrenderable += 1
         closed = bool(shapes_graph.value(shape, SH.closed))

@@ -15,6 +15,7 @@ from ontocast.config import FactsValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import FactsGateRepairKind
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import drop_unlinked_instances, run_facts_gate
@@ -173,6 +174,7 @@ def _fake_tools() -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             shapes_catalog=SimpleNamespace(graph=lambda: None),
             shapes_prompt_contract=lambda: ("", (), False),
             shapes_chapter_terms=lambda context_terms: frozenset(),

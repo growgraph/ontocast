@@ -25,6 +25,7 @@ from ontocast.onto.model import (
     TripleFix,
 )
 from ontocast.onto.ontology_snapshot import OntologySnapshot
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
@@ -80,6 +81,7 @@ def _tools() -> AtomicToolBox:
     return cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_llm_tool=_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
             ontology_acceptance_policy=FactsAcceptancePolicy(
@@ -263,6 +265,7 @@ async def test_loop_collects_findings_even_when_no_critic_runs(
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
@@ -362,6 +365,7 @@ async def _run_ontology_loop(
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(

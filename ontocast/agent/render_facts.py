@@ -375,6 +375,7 @@ async def render_facts_fresh(
     known_prefixes = build_llm_prefix_map(
         access.ontology_for_prefixes(),
         supplemental_ontologies or (),
+        tools.prefix_table(),
     )
 
     web_search_enabled = tools.web_grounding_enabled_for_node(

@@ -191,6 +191,9 @@ class RetrievalMetric(StrEnum):
     #: Instances dropped for stating nothing: linked to no other instance nor
     #: the document, and holding no value, only a type and names.
     FACTS_UNLINKED_DROPPED = "facts_unlinked_dropped"
+    #: Nodes standing for a date that held only a label, given the typed
+    #: ISO 8601 value the label names (``date_value_added`` repairs).
+    FACTS_DATE_VALUES_ADDED = "facts_date_values_added"
     #: Links between instances the gate's repairs removed (SHACL prune and
     #: the untyped drop), counted after any un-merge pass.
     FACTS_LINKS_REMOVED = "facts_links_removed"

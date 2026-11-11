@@ -22,6 +22,7 @@ from ontocast.config import Config
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyContextMode, RenderMode, Status
 from ontocast.onto.model import Suggestions, TripleFix
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState
@@ -70,6 +71,7 @@ def _tools(critic_passes: int = 1) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(

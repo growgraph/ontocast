@@ -26,6 +26,7 @@ import pathlib
 from rdflib import RDF, URIRef
 from rdflib.namespace import OWL
 
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.onto import Tool
 from ontocast.tool.triple_manager.core import TripleStoreManager
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 #: Bound on cached per-unit shape selections; distinct selections per run
 #: are at most the unit count, so this is generous.
 _SELECTION_CACHE_MAX = 64
+_CONTRACT_CACHE_MAX = 4
 
 #: Every triple in the shapes partition, merged. SHACL evaluates one shapes
 #: graph, and shapes documents are independent, so the union is the whole answer.
@@ -95,16 +97,13 @@ class ShapesCatalog(Tool):
         super().__init__(**kwargs)
         self._triple_store_manager: TripleStoreManager | None = None
         self._graph: RDFGraph | None = None
-        # Prompt-contract memo, keyed on the merged graph's identity: every
-        # (re)materialization builds a new graph object, so the key
-        # invalidates itself without each assignment site knowing about it.
-        self._contract_key: tuple[int, int] | None = None
-        self._contract_requirements: tuple = ()
-        self._contract_chapter: str = ""
-        self._contract_terms: tuple[str, ...] = ()
-        # Per-unit selections, keyed by the selected anchor set; bounded and
-        # dropped whenever the contract memo rebuilds.
-        self._selection_cache: dict[tuple[str, ...], str] = {}
+        # Prompt-contract memo, keyed on the merged graph's identity, the line
+        # cap and the prefix table: every (re)materialization builds a new
+        # graph object, so a key invalidates itself without each assignment
+        # site knowing about it. Bounded; the oldest entry goes first.
+        self._contracts: dict[tuple[int, int, PrefixTable | None], tuple] = {}
+        # Per-unit selections, keyed by contract and selected anchor set.
+        self._selection_cache: dict[tuple, str] = {}
 
     def register_triple_store(self, manager: TripleStoreManager | None) -> None:
         """Register the triple store holding the shapes partition."""
@@ -123,34 +122,50 @@ class ShapesCatalog(Tool):
         """
         return self._graph if self._graph is not None and len(self._graph) else None
 
-    def _contract(self, max_lines: int):
+    def _contract(self, max_lines: int, table: PrefixTable | None = None):
         graph = self.graph()
         if graph is None:
             return (), "", ()
-        key = (id(graph), max_lines)
-        if self._contract_key != key:
+        return self._contract_entry(graph, max_lines, table)[1]
+
+    def _contract_entry(
+        self, graph: RDFGraph, max_lines: int, table: PrefixTable | None
+    ) -> tuple[tuple[int, int, PrefixTable | None], tuple]:
+        # The table itself is in the key (hashed by identity), which also keeps
+        # it alive, so a later table can never reuse its id.
+        key = (id(graph), max_lines, table)
+        entry = self._contracts.get(key)
+        if entry is None:
             from ontocast.prompt.shapes_contract import (
                 contract_terms,
                 derive_shape_requirements,
                 format_conformance_chapter,
             )
 
-            self._contract_requirements = tuple(derive_shape_requirements(graph))
-            self._contract_chapter = format_conformance_chapter(
-                self._contract_requirements, max_lines=max_lines
+            requirements = tuple(derive_shape_requirements(graph, table))
+            entry = (
+                requirements,
+                format_conformance_chapter(requirements, max_lines=max_lines),
+                contract_terms(graph),
             )
-            self._contract_terms = contract_terms(graph)
-            self._contract_key = key
-            self._selection_cache = {}
-        return self._contract_requirements, self._contract_chapter, self._contract_terms
+            if len(self._contracts) >= _CONTRACT_CACHE_MAX:
+                stale = next(iter(self._contracts))
+                del self._contracts[stale]
+                self._selection_cache = {
+                    k: v for k, v in self._selection_cache.items() if k[0] != stale
+                }
+            self._contracts[key] = entry
+        return key, entry
 
-    def conformance_chapter(self, *, max_lines: int) -> str:
+    def conformance_chapter(
+        self, *, max_lines: int, table: PrefixTable | None = None
+    ) -> str:
         """The whole catalog rendered as a prompt chapter; "" without shapes.
 
         Memoized per merged graph -- run-constant, shared by every unit of
         every document in a tenancy.
         """
-        return self._contract(max_lines)[1]
+        return self._contract(max_lines, table)[1]
 
     def prompt_contract_terms(self, *, max_lines: int) -> tuple[str, ...]:
         """IRIs the shapes require of the output (the exemption set).
@@ -172,7 +187,13 @@ class ShapesCatalog(Tool):
         requirements, _, _ = self._contract(max_lines)
         return sum(len(r.lines) for r in requirements) > max_lines
 
-    def selected_chapter(self, context_terms: set[str], *, max_lines: int) -> str:
+    def selected_chapter(
+        self,
+        context_terms: set[str],
+        *,
+        max_lines: int,
+        table: PrefixTable | None = None,
+    ) -> str:
         """The chapter for one unit, joined on its ontology-context IRIs.
 
         A shape is included iff its own terms (targets, paths, classes)
@@ -180,7 +201,12 @@ class ShapesCatalog(Tool):
         by the unit count, so rendered chapters are cached by selected-anchor
         set (bounded; oldest evicted first).
         """
-        requirements, _, _ = self._contract(max_lines)
+        graph = self.graph()
+        if graph is None:
+            return ""
+        contract_key, (requirements, _, _) = self._contract_entry(
+            graph, max_lines, table
+        )
         if not requirements:
             return ""
         from ontocast.prompt.shapes_contract import (
@@ -189,7 +215,7 @@ class ShapesCatalog(Tool):
         )
 
         selected = select_requirements(requirements, context_terms)
-        key = tuple(r.anchor for r in selected)
+        key = (contract_key, *(r.anchor for r in selected))
         cached = self._selection_cache.get(key)
         if cached is None:
             cached = format_conformance_chapter(selected, max_lines=max_lines)

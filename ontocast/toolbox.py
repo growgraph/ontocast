@@ -15,6 +15,7 @@ from ontocast.onto.identity import OntologyVersionRecord, VersionRef
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.ontology_header import SeedOntologyLoadError
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState, BudgetTracker
@@ -767,7 +768,20 @@ class ToolBox:
         lives on the catalog -- so a tool replaced on the shared instance is
         seen by the next unit.
         """
-        return self.atomic_tools.scoped_to_catalog(self.ontology_manager)
+        return self.atomic_tools.scoped_to_catalog(
+            self.ontology_manager, self.prefix_table
+        )
+
+    def prefix_table(self) -> PrefixTable:
+        """The catalog's prefix table, the shapes' bindings included.
+
+        Every prompt shows a namespace under the prefix this table gives it,
+        and every answer is parsed with it.
+        """
+        shapes = self.shapes_catalog.graph()
+        return self.ontology_manager.prefix_table(
+            (shapes,) if shapes is not None else ()
+        )
 
     def shapes_prompt_contract(self) -> tuple[str, tuple[str, ...], bool]:
         """Conformance chapter, term exemptions, and the selection flag.
@@ -791,7 +805,9 @@ class ToolBox:
         if self._shapes_select_per_unit():
             return "", terms, True
         return (
-            self.shapes_catalog.conformance_chapter(max_lines=max_lines),
+            self.shapes_catalog.conformance_chapter(
+                max_lines=max_lines, table=self.prefix_table()
+            ),
             terms,
             False,
         )
@@ -826,7 +842,9 @@ class ToolBox:
         """Per-unit conformance chapter, joined on the unit's context IRIs."""
         cfg = self.config.tool_config.facts_validation
         return self.shapes_catalog.selected_chapter(
-            context_terms, max_lines=cfg.shapes_prompt_max_lines
+            context_terms,
+            max_lines=cfg.shapes_prompt_max_lines,
+            table=self.prefix_table(),
         )
 
     def serialize(self, state: AgentState) -> None:

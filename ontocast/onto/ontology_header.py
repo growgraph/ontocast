@@ -49,6 +49,7 @@ from ontocast.onto.ontology import (
     normalize_semantic_version,
 )
 from ontocast.onto.ontology_namespace import ontology_namespace
+from ontocast.onto.prefixes import bind_own_namespace
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.util import derive_ontology_id
@@ -290,8 +291,8 @@ def write_header(graph: RDFGraph, version: Ontology, *, source_doc: str | None) 
     )
     if source_doc:
         graph.add((subject, PROV.wasDerivedFrom, URIRef(source_doc)))
-    if version.ontology_id:
-        graph.bind(version.ontology_id, version.namespace, override=True)
+    if version.ontology_id and version.namespace:
+        bind_own_namespace(graph, version.namespace, version.ontology_id)
     graph.bind("vann", str(VANN))
 
 
@@ -478,7 +479,9 @@ def adopt_ontology(
     for p in _REWRITTEN_PREDICATES:
         for o in list(terms.objects(subject, p)):
             terms.remove((subject, p, o))
-    terms.bind(identity.ontology_id, namespace, override=True)
+    # The author's prefix for the own namespace is kept: it is what the file's
+    # prose and its shapes write. The id is bound only where there is none.
+    bind_own_namespace(terms, namespace, identity.ontology_id)
     terms.bind_implicit_namespaces(prefix_base=identity.ontology_id)
     root = Ontology(
         ontology_id=identity.ontology_id,
@@ -527,7 +530,8 @@ def ontology_from_version_graph(graph_uri: str, graph: RDFGraph) -> Ontology:
     # Author prefix names only survive the store as sh:declare triples.
     ontology.graph.bind_declared_prefixes()
     ontology.graph.bind_implicit_namespaces(prefix_base=ontology.ontology_id)
-    ontology.graph.bind(header.ontology_id or "", ontology.namespace, override=True)
+    if header.ontology_id and ontology.namespace:
+        bind_own_namespace(ontology.graph, ontology.namespace, header.ontology_id)
     return ontology
 
 

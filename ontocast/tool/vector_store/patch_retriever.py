@@ -1318,9 +1318,10 @@ class OntologyPatchRetriever(Tool):
             candidate += partial
 
         prefix_map: dict[str, str] = {}
+        table = manager.prefix_table()
         for header in headers:
             namespace = str(header.namespace)
-            prefix = manager.author_prefix_for_namespace(namespace)
+            prefix = table.prefix_for(namespace)
             if prefix:
                 prefix_map[prefix] = namespace
         prefix_map = filter_overbroad_namespace_map(prefix_map)

@@ -61,6 +61,8 @@ async def run_link_pass(
     if not config.link_pass or not state.facts_isolated_instances or not len(graph):
         return
     fact_namespaces = [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""]
+    # Property names are listed, and answered, under the catalog's prefixes.
+    tools.prefix_table().normalize(ontology_graph)
     # The term a non-catalog finding names is its predicate field.
     refused = {
         finding.predicate

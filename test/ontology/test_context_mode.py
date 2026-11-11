@@ -13,6 +13,7 @@ from ontocast.config import VectorStoreConfig
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyAssemblyMode, OntologyContextMode
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import vector_retrieval_available
 from ontocast.onto.state import AgentState
@@ -61,6 +62,7 @@ async def test_full_ttl_does_not_invoke_ensemble_path(monkeypatch) -> None:
     tools = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             ontology_manager=SimpleNamespace(),
             llm=AsyncMock(),
             config=SimpleNamespace(

@@ -20,6 +20,7 @@ from rdflib import URIRef
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import FailureStage, RenderMode, Status, WorkflowNode
 from ontocast.onto.model import Suggestions, TripleFix
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import EmptyOntologyContextError
 from ontocast.onto.state import AgentState
@@ -53,6 +54,7 @@ def _tools(critic_passes: int = 1, *, critic_min_triples: int = 0) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(

@@ -31,6 +31,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
@@ -180,6 +181,7 @@ def _tools(vector_store: object | None, patch_retriever: object | None) -> ToolB
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             vector_store=vector_store,
             patch_retriever=patch_retriever,
             vector_store_last_error=None,
@@ -334,6 +336,7 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
     tools = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             aggregator=_Aggregator(),
             shapes_catalog=SimpleNamespace(graph=lambda: None),
             shapes_prompt_contract=lambda: ("", (), False),
@@ -1129,6 +1132,7 @@ def test_process_unit_route_runs_the_validation_gate(
     tools = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             aggregator=_Aggregator(),
             shapes_catalog=SimpleNamespace(graph=lambda: stored_shapes),
             shapes_prompt_contract=lambda: ("", (), False),

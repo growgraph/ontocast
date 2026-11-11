@@ -26,6 +26,7 @@ from ontocast.onto.enum import (
     Status,
 )
 from ontocast.onto.ontology_condense import TextCaps
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import context_resolver, node_factories
@@ -80,6 +81,7 @@ def _tools(*, scope: OntologyContextScope, warmup: int = 0) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             config=SimpleNamespace(
                 server=SimpleNamespace(
                     parallel_workers=4,

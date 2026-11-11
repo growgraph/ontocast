@@ -63,6 +63,7 @@ from ontocast.tool.facts_validation import (
     untyped_instances,
     validate_aggregated_facts,
 )
+from ontocast.tool.facts_validation.date_values import add_date_values
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -561,6 +562,12 @@ def run_facts_gate(
         if repair_result.records:
             state.aggregated_facts = repair_result.graph
 
+    # A node standing for a date says which date it is with a typed value.
+    date_records = add_date_values(
+        state.aggregated_facts, ontology_graph, fact_namespaces
+    )
+    state.retrieval_metrics[RetrievalMetric.FACTS_DATE_VALUES_ADDED] = len(date_records)
+
     # Every instance the served graph holds is typed. An instance still
     # untyped once all units have contributed their types takes the class its
     # links entail; whatever stays untyped is removed, with its links.
@@ -621,14 +628,21 @@ def run_facts_gate(
     # Values are blank nodes under their carriers until here, so the counts
     # above see them as parts of statements; the served graph names them.
     name_values(state.aggregated_facts)
+    # The served graph shows each namespace under the prefix the prompts did.
+    tools.prefix_table().bind(state.aggregated_facts)
 
-    if repair_result.records or untyped_records or inferred_records:
+    if repair_result.records or untyped_records or inferred_records or date_records:
         report = run_validation()
 
-    if dedupe_records or repair_result.records or untyped_records or inferred_records:
-        state.facts_gate_repairs = (
-            dedupe_records + repair_result.records + inferred_records + untyped_records
-        )
+    gate_repairs = (
+        dedupe_records
+        + repair_result.records
+        + date_records
+        + inferred_records
+        + untyped_records
+    )
+    if gate_repairs:
+        state.facts_gate_repairs = gate_repairs
 
     state.facts_validation_findings = report.findings
     state.facts_conformance = summarize_conformance(

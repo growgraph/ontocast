@@ -11,6 +11,7 @@ from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_e
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph import context_resolver as cr
@@ -120,6 +121,7 @@ async def test_context_resolver_forwards_selection_instruction(monkeypatch) -> N
     tools = ToolBox.__new__(ToolBox)
     tools.ontology_manager = OntologyManager.__new__(OntologyManager)
     tools.llm = LLMTool.__new__(LLMTool)
+    monkeypatch.setattr(ToolBox, "prefix_table", lambda _self: PrefixTable({}, {}))
     unit = ContentUnit(
         text="Alpha is a concept",
         index=0,

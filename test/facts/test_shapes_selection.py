@@ -16,6 +16,7 @@ from rdflib import RDF, URIRef
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyAssemblyMode
 from ontocast.onto.ontology_snapshot import OntologySnapshot
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.stategraph.atomic import _select_conformance_chapter
@@ -88,13 +89,14 @@ def _toolbox_stub(mode: str, *, oversized: bool) -> ToolBox:
     catalog = SimpleNamespace(
         prompt_contract_terms=lambda *, max_lines: ("https://vocab.test/t",),
         needs_selection=lambda *, max_lines: oversized,
-        conformance_chapter=lambda *, max_lines: "# FULL CHAPTER",
-        selected_chapter=lambda terms, *, max_lines: "# SELECTED",
+        conformance_chapter=lambda *, max_lines, table=None: "# FULL CHAPTER",
+        selected_chapter=lambda terms, *, max_lines, table=None: "# SELECTED",
         named_terms=lambda terms, *, max_lines: frozenset(
             {"https://vocab.test/all"} if terms is None else terms
         ),
     )
     stub = SimpleNamespace(
+        prefix_table=lambda: PrefixTable({}, {}),
         config=SimpleNamespace(
             tool_config=SimpleNamespace(
                 facts_validation=SimpleNamespace(

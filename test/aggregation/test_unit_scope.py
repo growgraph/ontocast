@@ -19,6 +19,7 @@ from ontocast.config import AggregationConfig, FactsValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI, PROV
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.iri_policy import split_namespace_local
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.node_factories import (
@@ -350,6 +351,7 @@ def _fake_tools(aggregator: EmbeddingBasedAggregator) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             aggregator=aggregator,
             shapes_catalog=SimpleNamespace(graph=lambda: None),
             shapes_prompt_contract=lambda: ("", (), False),

@@ -18,6 +18,7 @@ from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.model import OntologyIdentityProposal
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_condense import TextCaps
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState, InputDocument
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
@@ -43,6 +44,7 @@ def _fake_tools(*, max_visits_per_node: int) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             config=SimpleNamespace(
                 server=SimpleNamespace(
                     max_visits_per_node=max_visits_per_node,

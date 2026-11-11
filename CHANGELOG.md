@@ -37,10 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The facts prompt asks for statements: an entity is minted only when a statement is about it, and a structured value is a blank node under the property that carries it, never an entity of its own.
 - Between two entities found in the text, different types no longer block a merge: only an `owl:disjointWith` (or `owl:AllDisjointClasses`) declared on their types or superclasses does. Types that share no class merge on an equal label, initials, a shared key or a coreference verdict, not on a plausible name match. A merge with an individual of the ontology still needs a shared type. Entities sharing a label are compared even when their embeddings place them apart.
 - `facts_merge_rejections_by_reason` (the aggregator's refusals by reason) and `facts_twin_labels` (labels several served instances share) in `retrieval_metrics`.
+- The facts prompt asks for every stated quantity in both vocabulary modes; where no property carries one, it is stated as an observation whose result is the value. `strict` narrows the terms, not the measurements.
+- The facts gate gives a node standing for a date that holds only a label the typed ISO 8601 value its label names (`facts_date_values_added`, repair kind `date_value_added`).
 - The facts gate drops entities that state nothing (no link, no value) and values no statement carries (`facts_unlinked_dropped`, repair kind `unlinked_dropped`), then names each value under its carrier, `<carrier>.<property>`.
 
 ### Fixed
 
+- One prefix per namespace in every prompt, parse and export: a well-known namespace keeps its standard prefix, an ontology's own namespace the prefix its author bound, else the `ontology_id`. The author's prefix is kept through adoption and the triple store; other prefixes, the id among them, are aliases that answers may use and that notes and shape messages are shown without.
+- A well-known namespace an ontology's terms use comes back from the triple store under its standard prefix (`qudt:`, `quantitykind:`), not a synthetic `<id>_<name>` one.
 - An OWL restriction, a list or an anonymous axiom is written whole, with the term that uses it: its `rdf:type owl:Restriction` and list links were dropped, and `owl:onProperty` an external property wrote a new version of the external ontology. A clean-up rule that drops a term drops its restrictions too.
 - A fresh ontology render is filed by subject like an update: a statement about another ontology's term was written into the home (`fresh_triples_refiled`, `fresh_triples_unattributed`).
 - A term declared outside the home namespace by an axiom alone (`rdfs:subClassOf`, …) is dropped like a typed one; it was filed into another owned ontology.

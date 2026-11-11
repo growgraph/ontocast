@@ -24,13 +24,30 @@ ontology, such as
 [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](../reference/configuration/pipeline.md#ontology_context_fixed_ontology_id),
 any of the three works.
 
-An `ontology_id` is a lowercase handle matching `^[a-z][a-z0-9_-]{1,31}$`. It
-is also the prefix the ontology's terms are shown under. The names OntoCast uses
-itself (`cd`, `doc`, `facts`, `oc`, `ontocast`) are refused. A standard prefix
-(`sosa`, `prov`, `skos`, `schema`, ...) names only the ontology whose namespace
-is that prefix's standard one: the W3C SOSA file loads as `sosa` and PROV-O as
-`prov`, while any other ontology, and every ontology OntoCast creates, needs
-another id.
+An `ontology_id` is a lowercase handle matching `^[a-z][a-z0-9_-]{1,31}$`. The
+names OntoCast uses itself (`cd`, `doc`, `facts`, `oc`, `ontocast`) are refused.
+A standard prefix (`sosa`, `prov`, `skos`, `schema`, ...) names only the
+ontology whose namespace is that prefix's standard one: the W3C SOSA file loads
+as `sosa` and PROV-O as `prov`, while any other ontology, and every ontology
+OntoCast creates, needs another id.
+
+### Prefixes
+
+Every prompt, every parse of a model's answer and every export shows a
+namespace under one prefix, chosen in this order:
+
+1. a well-known namespace keeps its standard prefix (`unit:`, `sosa:`, `time:`),
+   also when a catalog file's terms live in it;
+2. an ontology's own namespace takes the prefix its author bound in Turtle;
+3. else its `ontology_id`, also when the author's prefix is a library name or
+   the standard prefix of another namespace;
+4. a namespace no catalog ontology owns takes the prefix the catalog binds to it
+   most often.
+
+The author's prefix is stored with each version, so it survives the triple
+store. Any other prefix bound to a namespace, the `ontology_id` among them, is
+an alias: an answer that writes it still parses, and a CURIE in a term's note or
+a shape's `sh:message` written with it is shown under the chosen prefix.
 
 ### The home ontology
 
@@ -108,7 +125,7 @@ ontology IRI carries the version header:
 | `owl:versionIRI` | The named graph, `<iri>#<key>` |
 | `owl:priorVersion` | The version(s) this one was made from: none on a root, one for an update, several for a merge |
 | `owl:versionInfo` | A semantic version label: `1.0.0` on a root, then bumped per ontology from the updates applied to it. Major when more than five triples are deleted and the updates declare or remove more than two classes or more than three properties; minor for any other deletion, or for five or more new classes or properties; patch otherwise |
-| `vann:preferredNamespacePrefix`, `vann:preferredNamespaceUri` | The `ontology_id` and the namespace |
+| `vann:preferredNamespacePrefix`, `vann:preferredNamespaceUri` | The `ontology_id` and the namespace; the author's prefix is kept as an `sh:declare` |
 | `dcterms:title`, `rdfs:label` | The title |
 | `dcterms:description` | The description, when there is one |
 | `dcterms:created` | When the root of the lineage was created, carried forward |
@@ -220,8 +237,9 @@ vocabulary: one it does not have, such as `schema:vulnerableTo`, is an
 vocabulary marked "no" is admitted by namespace, as are your own namespaces.
 
 **`strict`** (the default) stops there. A thing that neither your catalog nor
-these vocabularies can type or relate, and a quantity they have no value class
-or carrier property for, is not extracted. A class or property from any other
+these vocabularies can type or relate is not extracted. A stated quantity always
+is: where no property carries it, it is written as an observation whose result
+is the value. A class or property from any other
 vocabulary is an `unknown_term` finding the renderer must rewrite or remove,
 and at the gate `non_catalog_vocabulary` is an error for it. Both checks count
 every term of your catalog, not only the unit's retrieved context. The model
@@ -237,7 +255,8 @@ are listed per document as `non_catalog_vocabulary` warnings, so the gaps in
 your catalog are visible.
 
 In both modes the `carrier` role of `FACTS_QUANTITY_FALLBACK_VOCABULARY` names
-the property that carries a quantity when your catalog has none, and an entity
+the property that carries a quantity when your catalog has none (unset, the
+observation form above), and an entity
 linked to nothing and holding no value is dropped at the gate.
 
 ## Provenance

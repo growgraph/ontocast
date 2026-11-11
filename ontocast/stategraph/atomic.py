@@ -1154,6 +1154,7 @@ async def run_unit_loop(
         catalog_prefixes = build_llm_prefix_map(
             unit_state.ontology_snapshot,
             _supplemental_ontologies_for_unit(document_context, unit_state, tools),
+            tools.prefix_table(),
         )
         RDFGraph.set_known_prefixes(catalog_prefixes if catalog_prefixes else None)
         installed_prefixes = True

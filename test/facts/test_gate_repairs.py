@@ -15,6 +15,7 @@ from rdflib.namespace import XSD
 from ontocast.config import FactsValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.stategraph.facts_gate import vetoes_from_findings
 from ontocast.tool.facts_validation import (
@@ -205,6 +206,7 @@ def _fake_tools(aggregator, *, shapes=None, **overrides) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             aggregator=aggregator,
             shapes_catalog=SimpleNamespace(graph=lambda: shapes),
             shapes_prompt_contract=lambda: ("", (), False),

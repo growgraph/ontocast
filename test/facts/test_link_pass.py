@@ -13,6 +13,7 @@ from ontocast.config.settings import FactsValidationConfig
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.enum import FactsLinkRejection, RetrievalMetric
 from ontocast.onto.model import FactsLinkProposal
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.tool.agg.rewriter import add_reified_provenance
@@ -265,9 +266,10 @@ def _state(graph: RDFGraph, isolated: list[str]) -> AgentState:
 def _tools(**settings: Any) -> Any:
     facts_validation = FactsValidationConfig(**settings)
     return SimpleNamespace(
+        prefix_table=lambda: PrefixTable({}, {}),
         config=SimpleNamespace(
             get_tool_config=lambda: SimpleNamespace(facts_validation=facts_validation)
-        )
+        ),
     )
 
 
