@@ -196,6 +196,7 @@ def test_both_modes_extract_every_stated_quantity() -> None:
         assert "extract EVERY quantitative statement in the text" in text
         assert "`sosa:Observation`" in text
         assert "use the observation form of rule 3a." in text
+        assert "never at a separate result node that holds the value" in text
         assert "can carry is not extracted" not in text
 
 

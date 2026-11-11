@@ -29,6 +29,7 @@ from ontocast.tool.facts_validation.terms import (
     _COMPACT_IRI,
     _VACUOUS_TYPES,
     _alias_candidates,
+    _catalog_term_roles,
     _declared_domains,
     _local_name,
     _name_tokens,
@@ -441,6 +442,28 @@ def _select_alias_target(
     return best
 
 
+def _same_name_elsewhere(
+    alias: URIRef, terms: set[str], known_classes: set[str]
+) -> str | None:
+    """The one catalog term in another namespace spelled exactly like ``alias``.
+
+    A catalog name written under the wrong catalog prefix (``a:usesMethod`` for
+    ``b:usesMethod``) means that term: the name is exact, only the prefix
+    slipped. Two such terms are ambiguous, so neither is taken; a class never
+    replaces a predicate.
+    """
+    namespace = _namespace_of(str(alias))
+    local = _local_name(str(alias))
+    matches = {
+        term
+        for term in terms
+        if term not in known_classes
+        and _namespace_of(term) != namespace
+        and _local_name(term) == local
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
 def repair_property_aliases(
     graph: RDFGraph,
     ontology_graph: RDFGraph | None,
@@ -453,7 +476,9 @@ def repair_property_aliases(
 
     A predicate whose namespace belongs to the ontology context but which is
     not itself a catalog term is a near-miss (``qqval:lowerBound`` for
-    ``qqval:hasLowerBound``). The rewrite is deterministic and fires only when
+    ``qqval:hasLowerBound``). When exactly one catalog property in another
+    namespace has its very local name, the prefix slipped and that property is
+    the target. Otherwise the rewrite fires only when
     exactly one candidate *qualifies*: its name tokens contain the alias's,
     the alias's contain its, or the two spell the same once case and
     separators are folded. Several qualifying candidates are a tie that the
@@ -495,11 +520,14 @@ def repair_property_aliases(
         and str(predicate) not in known_elsewhere
         and _namespace_of(str(predicate)) in declared_namespaces
     }
+    _, known_classes = _catalog_term_roles(ontology_graph)
     for alias in sorted(predicates, key=str):
         candidates = _alias_candidates(
             alias, graph, catalog_terms, ontology_graph=ontology_graph
         )
-        target = _select_alias_target(str(alias), candidates, min_ratio)
+        target = _same_name_elsewhere(
+            alias, catalog_terms | known_elsewhere, known_classes
+        ) or _select_alias_target(str(alias), candidates, min_ratio)
         if target is not None:
             replacement = URIRef(target)
             alias_triples = 0

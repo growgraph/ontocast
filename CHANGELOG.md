@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Rule 3a: an observation's result is the value node itself, not a separate result node holding the value.
+
 - A proposed new home ontology is overridden by the catalog ontology whose terms the text names at least five times (`home_new_overridden`).
 - At `ONTOLOGY_CRITIC_PASSES=1` the ontology critic is called only for a unit with a mandatory deterministic finding; 2 or more review every unit. The default stays 0 (no ontology critic).
 - The ontology render and critic prompts ask for classes at the level another document in the domain would reuse: a distinction that varies per instance is a property with values, not sibling subclasses, and existing terms are reused before minting.
@@ -42,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The facts gate drops entities that state nothing (no link, no value) and values no statement carries (`facts_unlinked_dropped`, repair kind `unlinked_dropped`), then names each value under its carrier, `<carrier>.<property>`.
 
 ### Fixed
+
+- A predicate that writes a catalog property's exact local name under another catalog namespace is rewritten to that property when exactly one has the name (`property_alias` repair).
 
 - A value the model writes as an entity of its own (typed with a quantity-value class) and links to nothing is dropped after the link pass, like a blank-node value with no carrier.
 

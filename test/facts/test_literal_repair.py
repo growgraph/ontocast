@@ -743,3 +743,60 @@ def test_normalize_literals_rejects_a_malformed_gregorian_lexical_form() -> None
     """gYear has no rdflib value parser, so its lexical space is checked here."""
     graph = _facts('cd:doc ex:publishedYear "19" .')
     assert normalize_literals_against_schema(graph, _dated_ontology()) == 0
+
+
+OTHER = "https://example.com/other#"
+
+
+def test_alias_repair_moves_an_exact_name_to_its_catalog_namespace() -> None:
+    """A catalog name under the wrong catalog prefix is that catalog term."""
+    graph = _facts(
+        f"""
+        @prefix dom: <{DOM}> .
+        cd:effect dom:affectsProperty cd:wavelength .
+        """
+    )
+    ontology = _domain_ontology("hasBSiteComponent")
+    ontology.parse(
+        data=f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix other: <{OTHER}> .
+        other:affectsProperty a owl:ObjectProperty .
+        """,
+        format="turtle",
+    )
+
+    rewritten, findings, applied = repair_property_aliases(graph, ontology)
+
+    assert rewritten == 1
+    assert _alias_findings(findings) == {}
+    assert [(r.source, r.target) for r in applied] == [
+        (f"{DOM}affectsProperty", f"{OTHER}affectsProperty")
+    ]
+    assert (
+        URIRef(f"{FACTS}effect"),
+        URIRef(f"{OTHER}affectsProperty"),
+        URIRef(f"{FACTS}wavelength"),
+    ) in graph
+
+
+def test_alias_repair_leaves_an_exact_name_two_namespaces_declare() -> None:
+    graph = _facts(
+        f"""
+        @prefix dom: <{DOM}> .
+        cd:effect dom:affectsProperty cd:wavelength .
+        """
+    )
+    ontology = _domain_ontology("hasBSiteComponent")
+
+    rewritten, findings, _applied = repair_property_aliases(
+        graph,
+        ontology,
+        full_catalog_terms={
+            f"{OTHER}affectsProperty",
+            "https://example.com/third#affectsProperty",
+        },
+    )
+
+    assert rewritten == 0
+    assert f"{DOM}affectsProperty" in _alias_findings(findings)
