@@ -1,7 +1,7 @@
 """LLM-free labels for newly minted ontology terms.
 
 A minted term the model left unlabelled almost always has a readable local
-name (``PerovskiteSample``, ``hasPLRedShift``). Its label is that name split
+name (``ResearchProject``, ``hasHTTPHeader``). Its label is that name split
 into words, so deriving it costs nothing and spares the critic a call whose
 only fix would be the label. An opaque local name (``Q42``, a hash) carries no
 words; it is left unlabelled and the ``missing_label`` finding still fires.
@@ -22,7 +22,7 @@ from ontocast.tool.ontology_validation.unit_findings import (
     _declared_class_or_property_subjects,
 )
 
-#: An acronym before a capitalised word (``PL`` in ``PLRedShift``), a word,
+#: An acronym before a capitalised word (``HTTP`` in ``HTTPHeader``), a word,
 #: a run of capitals, or a number.
 _WORD_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
 
@@ -34,8 +34,8 @@ def label_from_local_name(local: str) -> str | None:
 
     Acronyms keep their capitals, other words are lower-cased, and a name that
     starts with a capital (a class) keeps a capital first letter:
-    ``PerovskiteSample`` gives "Perovskite sample", ``hasPLRedShift`` gives
-    "has PL red shift".
+    ``ResearchProject`` gives "Research project", ``hasHTTPHeader`` gives
+    "has HTTP header".
     """
     if not local or is_opaque_local_name(local):
         return None

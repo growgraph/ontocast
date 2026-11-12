@@ -93,8 +93,8 @@ facts_instruction_shared = """\n\n
      IRI for a value, and never leave a value standing alone: a value no
      statement carries is dropped downstream. Give it an `rdfs:label` with
      its verbatim text.
-     CORRECT: `cd:sample_1 onto:hasThickness [ a onto:QuantityValue ; rdfs:label "about 20 nm" ; … ] .`
-     WRONG:   `cd:value_1 a onto:QuantityValue ; rdfs:label "about 20 nm" .` — a value with no carrier
+     CORRECT: `cd:item_1 onto:hasLength [ a onto:QuantityValue ; rdfs:label "about 20 m" ; … ] .`
+     WRONG:   `cd:value_1 a onto:QuantityValue ; rdfs:label "about 20 m" .` — a value with no carrier
    - When a measurement appears with an epistemic qualifier — approximation
      (∼, ~, ≈, ca., about), bound (<, >, ≤, ≥, up to, at least, more than,
      exceeding), range (X–Y, X to Y), or uncertainty (X ± Y) — decompose

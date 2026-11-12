@@ -840,6 +840,32 @@ def _same_name_elsewhere(alias: URIRef, properties: set[str]) -> str | None:
     return next(iter(matches)) if len(matches) == 1 else None
 
 
+def _most_specific_same_name(
+    alias: URIRef, classes: set[str], hierarchy: RDFGraph
+) -> str | None:
+    """The catalog class in another namespace spelled like ``alias``, if one is meant.
+
+    With one candidate, that one. With several, the one that is a subclass of
+    every other: typing with it entails them all, so the choice loses nothing.
+    Otherwise none.
+    """
+    namespace, local = _namespace_of(str(alias)), _local_name(str(alias))
+    candidates = sorted(
+        term
+        for term in classes
+        if _namespace_of(term) != namespace and _local_name(term) == local
+    )
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    under_all = [
+        candidate
+        for candidate in candidates
+        if {URIRef(c) for c in candidates} - {URIRef(candidate)}
+        <= superclass_closure(URIRef(candidate), hierarchy)
+    ]
+    return under_all[0] if len(under_all) == 1 else None
+
+
 def repair_property_aliases(
     graph: RDFGraph,
     ontology_graph: RDFGraph | None,
@@ -867,6 +893,11 @@ def repair_property_aliases(
     a rewrite: a high ratio also joins names that differ by exactly one token,
     and rewriting across that gap substitutes one property for another.
     Anything else becomes a mandatory finding carrying the top suggestions.
+
+    A class written as an ``rdf:type`` object follows the same exact-name
+    rule: one that exists nowhere is rewritten to the catalog class, in
+    another namespace, with exactly its local name -- the only one, or among
+    several the one that is a subclass of every other (``class_alias``).
 
     Only namespaces the catalog *declares* terms in are eligible for the
     near-miss rewrite (see :func:`collect_declared_namespaces`); ``exempt_terms`` (expanded fallback
@@ -900,7 +931,7 @@ def repair_property_aliases(
         and str(predicate) not in known_elsewhere
         and is_well_known_term(str(predicate)) is not True
     }
-    snapshot_properties, _ = _catalog_term_roles(ontology_graph)
+    snapshot_properties, snapshot_classes = _catalog_term_roles(ontology_graph)
     # A well-known property the catalog only references is a property too.
     properties = (
         set(snapshot_properties)
@@ -958,6 +989,47 @@ def repair_property_aliases(
                 suggestions=candidates,
             )
         )
+
+    # A class named under the wrong prefix: the same exact-name rule, on types.
+    classes = set(snapshot_classes) | (
+        set(catalog_roles.classes) if catalog_roles is not None else set()
+    )
+    unknown_types = {
+        cls
+        for cls in graph.objects(None, RDF.type)
+        if isinstance(cls, URIRef)
+        and str(cls) not in catalog_terms
+        and str(cls) not in exempt
+        and str(cls) not in known_elsewhere
+        and is_well_known_term(str(cls)) is not True
+    }
+    context = ontology_graph if ontology_graph is not None else RDFGraph()
+    hierarchy = (
+        catalog_roles.with_axioms(context) if catalog_roles is not None else context
+    )
+    for alias in sorted(unknown_types, key=str):
+        if (
+            _namespace_of(str(alias)) not in declared_namespaces
+            and is_well_known_term(str(alias)) is None
+        ):
+            continue
+        target = _most_specific_same_name(alias, classes, hierarchy)
+        if target is None:
+            continue
+        typed = list(graph.subjects(RDF.type, alias))
+        for subject in typed:
+            graph.remove((subject, RDF.type, alias))
+            graph.add((subject, RDF.type, URIRef(target)))
+        rewritten += len(typed)
+        applied.append(
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.CLASS_ALIAS,
+                source=str(alias),
+                target=target,
+                triple_count=len(typed),
+            )
+        )
+        logger.info("Repaired class alias %s -> %s", alias, target)
     return rewritten, findings, applied
 
 

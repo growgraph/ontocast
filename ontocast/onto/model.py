@@ -951,6 +951,10 @@ class FactsUnitFindingKind(StrEnum):
     #: range as written and fit them swapped, turned around.
     #: Repair-only: never raised as a finding.
     TRIPLE_REVERSED = "triple_reversed"
+    #: A class that exists nowhere, written as an ``rdf:type`` object,
+    #: rewritten to the one catalog class with exactly its local name.
+    #: Repair-only: never raised as a finding.
+    CLASS_ALIAS = "class_alias"
     NUMERIC_COVERAGE = "numeric_coverage"
     LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"
@@ -1050,7 +1054,7 @@ class OntologyUnitFindingKind(StrEnum):
     #: subclasses.
     VALUE_SET_SIBLINGS = "value_set_siblings"
     #: A minted leaf class, used by no property, whose label carries a
-    #: number, a chemical formula or four or more words: likely one
+    #: number or four or more words: likely one
     #: document's case rather than a reusable kind. Advisory.
     SPECIFIC_LABEL_LEAF = "specific_label_leaf"
     #: A minted term whose label or local name names a term elsewhere in the

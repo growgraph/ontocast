@@ -8,7 +8,7 @@ manager's :class:`~ontocast.tool.ontology_validation.shape.CatalogSurfaceIndex`.
 
 A minted term matches a catalog term when one of its labels, preferred labels
 or notations equals a catalog one case-insensitively, or else when its local
-name does (``plRedShiftProperty`` and ``PLRedShiftProperty``). The match must
+name does (``httpHeaderProperty`` and ``HTTPHeaderProperty``). The match must
 resolve to exactly **one** catalog IRI -- an ambiguous name is refused -- and
 the roles must be compatible: a minted property never reconciles onto a
 catalog class, nor the reverse.

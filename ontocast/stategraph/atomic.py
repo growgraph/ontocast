@@ -84,6 +84,7 @@ from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.ontology_validation import collect_ontology_unit_findings
 from ontocast.tool.ontology_validation.label_repair import derive_missing_labels
 from ontocast.toolbox import ToolBox
+from ontocast.util.numeric_inventory import NumericInventory
 
 logger = logging.getLogger(__name__)
 
@@ -745,22 +746,29 @@ async def _run_completion_passes(
     """Insert-only gap passes, run once the critic loop is done.
 
     Each pass asks :func:`ontocast.agent.complete_facts.complete_facts` to
-    close the unit's gaps -- measurements the numeric inventory still lists
-    as missing, and statements or values linked to nothing -- then applies
+    close the unit's gaps -- statements or values linked to nothing, and,
+    when ``atomic.facts_completion_measurements`` is on, measurements the
+    numeric inventory still lists as missing -- then applies
     the proposal through :func:`_apply_patches`, the same per-subject
     regression check a critic fix goes through, so an insert that leaves the
     unit worse is rolled back on its own. Stops once no gap is left; the
     caller has already checked ``atomic.facts_completion_passes > 0`` and
     that this is the facts phase.
     """
-    for pass_index in range(1, atomic.facts_completion_passes + 1):
-        inventory = unit_numeric_inventory(
+
+    def missing_measurements() -> NumericInventory:
+        if not atomic.facts_completion_measurements:
+            return NumericInventory()
+        return unit_numeric_inventory(
             graph=unit_state.content_unit.graph,
             ontology_graph=unit_state.ontology_snapshot.graph,
             extraction_text=unit_state.content_unit.extraction_text,
             policy=atomic.validation_policy,
             limit=atomic.numeric_coverage_limit,
         )
+
+    for pass_index in range(1, atomic.facts_completion_passes + 1):
+        inventory = missing_measurements()
         findings = phase.collect_findings(unit_state, atomic)
         unit_state.deterministic_findings = findings
         subject_gaps = _subject_gaps(findings)
@@ -783,13 +791,7 @@ async def _run_completion_passes(
         unit_state.deterministic_findings = run.findings
         _reevaluate_unit_status(unit_state, phase, atomic, run.findings)
 
-        post_inventory = unit_numeric_inventory(
-            graph=unit_state.content_unit.graph,
-            ontology_graph=unit_state.ontology_snapshot.graph,
-            extraction_text=unit_state.content_unit.extraction_text,
-            policy=atomic.validation_policy,
-            limit=atomic.numeric_coverage_limit,
-        )
+        post_inventory = missing_measurements()
         recovered = max(
             0, len(inventory.measurements) - len(post_inventory.measurements)
         )

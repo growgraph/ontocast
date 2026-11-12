@@ -96,6 +96,7 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
         SimpleNamespace(
             prefix_table=lambda: PrefixTable({}, {}),
             facts_completion_passes=completion_passes,
+            facts_completion_measurements=True,
             facts_patch_policy=CriticPatchPolicy(),
             quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY),
             additional_standard_namespaces=(),
@@ -293,6 +294,7 @@ def _facts_tools(*, completion_passes: int) -> object:
             numeric_coverage_mandatory="off",
             facts_critic_min_triples=0,
             facts_completion_passes=completion_passes,
+            facts_completion_measurements=True,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
             subject_contract=lambda: None,

@@ -921,3 +921,68 @@ def test_a_class_never_replaces_a_predicate() -> None:
     rewritten, _findings, _applied = repair_property_aliases(graph, _ledger_catalog())
 
     assert rewritten == 0
+
+
+def _slipped_types(body: str, catalog: RDFGraph) -> tuple[RDFGraph, list]:
+    graph = _facts(body)
+    _, _findings, applied = repair_property_aliases(
+        graph, catalog, full_catalog_terms=collect_catalog_terms(catalog)
+    )
+    return graph, [r for r in applied if r.kind == FactsUnitFindingKind.CLASS_ALIAS]
+
+
+def test_a_class_name_slipped_into_another_catalog_namespace_is_repaired() -> None:
+    catalog = _ledger_catalog()
+    catalog.parse(data=f"<{DOM}Holding> a <http://www.w3.org/2002/07/owl#Class> .")
+    graph, applied = _slipped_types(f"cd:loan a <{DOM}Entry> .", catalog)
+
+    assert (URIRef(f"{FACTS}loan"), RDF.type, URIRef(f"{_LEDGER}Entry")) in graph
+    assert [(r.source, r.target, r.triple_count) for r in applied] == [
+        (f"{DOM}Entry", f"{_LEDGER}Entry", 1)
+    ]
+
+
+def test_a_class_name_two_catalog_namespaces_hold_is_left_alone() -> None:
+    catalog = _ledger_catalog()
+    catalog.parse(
+        data=f"<{OTHER}Entry> a <http://www.w3.org/2002/07/owl#Class> ."
+        f"<{DOM}Holding> a <http://www.w3.org/2002/07/owl#Class> ."
+    )
+    graph, applied = _slipped_types(f"cd:loan a <{DOM}Entry> .", catalog)
+
+    assert applied == []
+    assert (URIRef(f"{FACTS}loan"), RDF.type, URIRef(f"{DOM}Entry")) in graph
+
+
+def test_a_property_never_replaces_a_class() -> None:
+    catalog = _ledger_catalog()
+    catalog.parse(data=f"<{DOM}Holding> a <http://www.w3.org/2002/07/owl#Class> .")
+    _, applied = _slipped_types(f"cd:loan a <{DOM}hasPrincipal> .", catalog)
+    assert applied == []
+
+
+def test_a_real_well_known_class_is_kept() -> None:
+    catalog = _ledger_catalog()
+    catalog.parse(data=f"<{_LEDGER}Person> a <http://www.w3.org/2002/07/owl#Class> .")
+    graph, applied = _slipped_types(
+        "@prefix foaf: <http://xmlns.com/foaf/0.1/> . cd:p a foaf:Person .", catalog
+    )
+    assert applied == []
+
+
+def test_the_most_specific_of_same_named_classes_is_taken() -> None:
+    """A subclass of every other candidate entails them all, so nothing is lost."""
+    catalog = _ledger_catalog()
+    catalog.parse(
+        data=f"""@prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        <{OTHER}Entry> a owl:Class . <{DOM}Holding> a owl:Class .
+        <{_LEDGER}Entry> rdfs:subClassOf <{OTHER}Entry> .""",
+        format="turtle",
+    )
+    graph, applied = _slipped_types(f"cd:loan a <{DOM}Entry> .", catalog)
+
+    assert [(r.source, r.target) for r in applied] == [
+        (f"{DOM}Entry", f"{_LEDGER}Entry")
+    ]
+    assert (URIRef(f"{FACTS}loan"), RDF.type, URIRef(f"{_LEDGER}Entry")) in graph

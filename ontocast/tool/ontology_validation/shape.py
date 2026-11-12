@@ -4,8 +4,7 @@ The shape measures answer one question about a newly minted class: would a
 second document in the same domain reuse it? Three signals say it would not:
 a class sitting on a long chain of named superclasses, a family of sibling
 classes that differ by one word (a value set modelled as subclasses), and a
-leaf whose label names one document's case (a number, a chemical formula, a
-long noun phrase).
+leaf whose label names one document's case (a number, a long noun phrase).
 
 The surface index maps names to catalog IRIs across every catalog ontology,
 not the snapshot a unit was shown: a unit that re-mints a term the retrieval
@@ -35,14 +34,11 @@ SURFACE_PREDICATES = (RDFS.label, SKOS.prefLabel, SKOS.notation)
 #: (``zero-dimensional``), so it does not split.
 _TOKEN_SPLIT_RE = re.compile(r"[\s_/]+")
 
-#: A token shaped like a chemical formula: two or more element symbols, each an
-#: upper-case letter with an optional lower-case one and an optional count.
-_FORMULA_TOKEN_RE = re.compile(r"^(?:[A-Z][a-z]?\d*){2,}$")
 
 #: Labels with at least this many tokens name a case rather than a kind.
 LONG_LABEL_TOKENS = 4
 
-SpecificLabelReason = Literal["digit", "formula", "long"]
+SpecificLabelReason = Literal["digit", "long"]
 
 
 def is_depth_root(class_iri: URIRef, graph: Graph) -> bool:
@@ -118,15 +114,10 @@ def label_tokens(text: str) -> list[str]:
 def specific_label_reason(label: str) -> SpecificLabelReason | None:
     """Why ``label`` names one document's case rather than a reusable kind.
 
-    ``digit``: it carries a number (``Sample 3``). ``formula``: a token is a
-    chemical formula (``CsPbBr3 film``; an all-capitals acronym such as
-    ``XRD`` is not one). ``long``: four or more tokens.
+    ``digit``: it carries a number (``Unit 3``). ``long``: four or more tokens.
     """
     if any(character.isdigit() for character in label):
         return "digit"
-    for token in label.split():
-        if _FORMULA_TOKEN_RE.match(token) and any(c.islower() for c in token):
-            return "formula"
     if len(label_tokens(label)) >= LONG_LABEL_TOKENS:
         return "long"
     return None
@@ -136,7 +127,7 @@ class ValueSetFamily(BaseModel):
     """Sibling classes whose labels differ in one token only."""
 
     parent: str
-    #: The shared label with the varying token as ``*`` (``* perovskite``).
+    #: The shared label with the varying token as ``*`` (``* engine``).
     template: str
     #: ``(iri, label)`` pairs, sorted by IRI.
     members: list[tuple[str, str]]
@@ -230,8 +221,8 @@ def normalize_surface(text: str) -> str:
     return " ".join(text.casefold().split())
 
 
-#: A case change inside a local name: ``hasPLRedShift`` splits before ``PL``,
-#: ``Red`` and ``Shift``.
+#: A case change inside a local name: ``hasHTTPHeader`` splits before ``HTTP``
+#: and ``Header``.
 _CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 

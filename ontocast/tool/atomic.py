@@ -140,9 +140,11 @@ class AtomicToolBox:
         # Below this many rendered triples the facts critic is skipped: a
         # review of an empty graph is a call that changes nothing.
         self.facts_critic_min_triples = facts_validation.critic_min_triples
-        # Insert-only completion passes after the critic loop, each a provider
-        # call, taken only while measurements are still missing.
+        # Insert-only gap passes after the critic loop, each a provider call,
+        # taken only while a gap is left; missed measurements count as one
+        # only when their recovery is on.
         self.facts_completion_passes = facts_validation.completion_passes
+        self.facts_completion_measurements = facts_validation.completion_measurements
         self.facts_patch_policy = CriticPatchPolicy(
             max_delete_share=facts_validation.critic_max_delete_share,
             min_deletes=facts_validation.critic_min_deletes,

@@ -66,7 +66,7 @@ def qname_for(graph: RDFGraph, term: URIRef) -> str:
         term: The IRI to shorten.
 
     Returns:
-        A prefixed name such as ``ex:PowderSample``, or the IRI itself
+        A prefixed name such as ``ex:ResearchProject``, or the IRI itself
         when no bound prefix covers it.
     """
     try:

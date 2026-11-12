@@ -22,7 +22,7 @@ Return one action per term:
 - `keep`: a reusable domain term, correctly placed, that more documents of the domain will use.
 - `merge_into` with `target`: the same concept as another listed term, an authored term or a well-known term. Prefer the authored term.
 - `generalise_to` with `target`: a reusable term with the wrong or too specific parent; `target` becomes its only parent.
-- `demote_to_property_value`: a class that is really a value of some property (a material, a method, a category); it becomes a SKOS concept.
+- `demote_to_property_value`: a class that is really a value of some property (a kind, a method, a category); it becomes a SKOS concept.
 - `drop`: one document's case or a term no fact needs.
 
 A term with no action is kept. The ontology's other added terms are listed after them as possible merge targets; do not return actions for those. Name terms and targets exactly as listed.

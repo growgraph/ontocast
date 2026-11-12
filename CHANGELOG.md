@@ -28,8 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The facts and ontology prompts give domain-neutral examples, and `specific_label_leaf` no longer reads a token as a chemical formula.
 - Rule 3a: an observation's result is the value node itself, not a separate result node holding the value, and its feature of interest is the instance the text says was measured.
-- `FACTS_COMPLETION_PASSES` defaults to 1 and the pass becomes the gap pass: it runs only on a unit with a missed measurement or a `statement_without_subject` finding, and also asks for the missing subject links. A unit with no gap makes no call.
+- `FACTS_COMPLETION_PASSES` defaults to 1 and the pass becomes the gap pass: it runs only on a unit with a `statement_without_subject` finding, and asks for the missing subject links. A unit with no gap makes no call. `FACTS_COMPLETION_MEASUREMENTS=true` (off by default) also lets it recover measurements the render missed.
 - The gate drops value-typed instances linked to nothing before values are named, and every gate drop (`untyped_dropped`, `unlinked_dropped`) records the node's label and the triples removed; `facts_isolated` (manifest) lists what is left.
 
 - A proposed new home ontology is overridden by the catalog ontology whose terms the text names at least five times (`home_new_overridden`).
@@ -57,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The gap pass asks for each recovered measurement as a statement about a subject, keeps a unit its term sheet does not list as text, and shows the value terms and subject properties; its prompt never shows a prefix it does not declare.
 - A decade ("the 2040s") is no longer read as a duration in seconds.
 - A value whose own label writes its number with the unit ("0.25°") counts as present, so the gap pass no longer adds it a second time.
+- A class written under the wrong prefix is rewritten to the catalog class with exactly its name (the most specific when several qualify), recorded as `class_alias`.
 - An IRI that cannot be written in `<...>` (a space, a quote, a brace) no longer fails a unit or reaches the output: a rendered triple naming one is dropped (repair kind `malformed_iri_dropped`), and a critic or gap-pass fix naming one is refused as unparseable.
 - The retrieved ontology context is the same in every run for the same text and catalog: each retrieval lane ranks its hits by score, then IRI and atom id, and over-fetches until a run of equal scores at the cut is seen whole.
 - Text on a property whose range is a date, time or duration datatype that is not a value of it is quarantined for the facts critic instead of kept as a plain string; what is still quarantined when the unit leaves its loop is kept on its subject as `rdfs:comment` (repair kind `quarantine_as_comment`).

@@ -3038,13 +3038,24 @@ class FactsValidationConfig(BaseSettings):
         ge=0,
         description=(
             "Insert-only gap passes per facts unit, in LLM calls, run after "
-            "the critic loop only when the unit has a gap: numbers written "
-            "with a unit missing from the graph, or statements and values "
-            "linked to nothing (statement_without_subject findings). A pass "
+            "the critic loop only when the unit has a gap: statements and "
+            "values linked to nothing (statement_without_subject findings), "
+            "and, with FACTS_COMPLETION_MEASUREMENTS, numbers written with a "
+            "unit missing from the graph. A pass "
             "sees a term sheet, the unit's typed subjects, the text and the "
             "gaps, not the ontology chapter; each fix it adds is kept or "
             "rolled back by the same regression check as a critic fix. A "
             "unit with no gap costs nothing. 0 disables it."
+        ),
+    )
+    completion_measurements: bool = Field(
+        default=False,
+        description=(
+            "Let the gap pass also recover numbers written with a unit that "
+            "the render left out of the graph. Off by default: such a gap is "
+            "common in numeric prose, so the pass then runs on most units for "
+            "a few values each. Statements without a subject are gaps "
+            "either way."
         ),
     )
     shacl_max_triples: int = Field(

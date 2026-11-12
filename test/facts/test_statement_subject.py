@@ -173,6 +173,7 @@ def _atomic() -> AtomicToolBox:
         SimpleNamespace(
             prefix_table=lambda: PrefixTable({}, {}),
             facts_completion_passes=1,
+            facts_completion_measurements=False,
             facts_patch_policy=CriticPatchPolicy(),
             quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY),
             additional_standard_namespaces=(),
@@ -324,3 +325,33 @@ def test_the_term_sheet_shows_statement_properties_beside_an_observation_class()
     plain = RDFGraph()
     plain.add((URIRef(EX + "Film"), RDF.type, OWL.Class))
     assert "has feature of interest" not in build_ontology_term_sheet(plain)
+
+
+@pytest.mark.anyio
+async def test_a_missed_measurement_alone_makes_no_call_unless_recovery_is_on(
+    monkeypatch,
+) -> None:
+    """Measurement recovery is opt-in; a subject gap still calls."""
+    calls: list[int] = []
+
+    async def fake_complete(_state, _atomic, inventory, subject_gaps=()):
+        calls.append(len(inventory.measurements))
+        return []
+
+    monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
+    linked = _facts(_LAPSED + "cd:obs sosa:hasFeatureOfInterest cd:film .")
+    text = "The film was 5 nm thick."
+
+    await _run_completion_passes(
+        _state(linked, text), _atomic(), FACTS_PHASE, render_attempt=1
+    )
+    assert calls == []
+
+    measuring = cast(
+        AtomicToolBox,
+        SimpleNamespace(**{**vars(_atomic()), "facts_completion_measurements": True}),
+    )
+    await _run_completion_passes(
+        _state(linked, text), measuring, FACTS_PHASE, render_attempt=1
+    )
+    assert calls == [1]

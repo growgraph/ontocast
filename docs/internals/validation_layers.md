@@ -105,7 +105,7 @@ The ontology loop is the same loop with these differences:
   runs. There is no completion pass.
 - After the render and after each critic patch, a minted class or property
   without a label gets an `rdfs:label` derived from its local name
-  (`PerovskiteSample` gives "Perovskite sample"), recorded as a `missing_label`
+  (`ResearchProject` gives "Research project"), recorded as a `missing_label`
   repair and counted in `ontology/labels_derived`. An opaque local name
   (`Q42`, a hash) is left to the `missing_label` finding. A term of the catalog
   or of a well-known vocabulary is never labelled: an axiom on it is a reuse.
@@ -132,7 +132,7 @@ machine can decide without the model:
 | Datatype retyping | An untyped number on a property with a numeric range gets that datatype. Text on a property whose range is a date, time or duration datatype gets it when the text is a value of it as XSD writes it, or a calendar text naming exactly one such value (`"29 June 2021"` on an `xsd:date` range); an ISO date with no zone on an `xsd:dateTime` range is that day at midnight, as parsing a typed literal makes it. A range is read from the unit's context, the whole catalog and the published ranges of PROV-O, SOSA and OWL-Time; a property declared with two datatypes is not retyped |
 | `rdf:type` literal coercion | A type written as a string becomes the class IRI when it resolves unambiguously |
 | Compact-IRI literal coercion | A plain string such as `"unit:NanoM"` on another predicate becomes the IRI, when its prefix is bound and either the schema says the predicate takes an IRI or the IRI is a catalog or fallback-vocabulary term. Critic and completion patches get the same repair before they are judged |
-| Near-miss predicate rewrite | A predicate that exists nowhere (not a catalog term, not a real term of a well-known vocabulary) is rewritten to the one catalog property, across the whole catalog, in another namespace with exactly its local name (a slipped prefix, also into a well-known namespace); otherwise, in a namespace the catalog declares terms in, to the one catalog term of its own namespace whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
+| Near-miss predicate rewrite | A class written as a type that exists nowhere is rewritten to the catalog class with exactly its local name in another namespace: the only one, or among several the one that is a subclass of every other (`class_alias`). A predicate that exists nowhere (not a catalog term, not a real term of a well-known vocabulary) is rewritten to the one catalog property, across the whole catalog, in another namespace with exactly its local name (a slipped prefix, also into a well-known namespace); otherwise, in a namespace the catalog declares terms in, to the one catalog term of its own namespace whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
 | Code resolution | A node carrying a code from `FACTS_CODE_PREDICATES` (such as `qudt:ucumCode "d"`) but no link to the coded individual gains that link, when exactly one catalog individual declares the code. The linking property comes from the schema's domain and range, or else from how the graph already links such nodes |
 | Reversed triples | `x p y` becomes `y p x` when `p` declares an `rdfs:domain` and an `rdfs:range`, both ends are typed IRIs, `x` contradicts the domain and `y` the range as written, and swapped both fit. One end fitting, an untyped end, a type the context does not place, or a symmetric property leaves the triple as written. Records are kind `triple_reversed`. Critic and completion patches get the same repair |
 | Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. An IRI still untyped takes the class a link lists through `schema:domainIncludes` or `schema:rangeIncludes`, when the property lists exactly one class, declares no `rdfs` counterpart, and all of the node's links agree. Critic and completion patches get the same repair |
@@ -251,7 +251,7 @@ except `label_collision` and `specific_label_leaf`:
 | `label_collision` (advisory) | A new term whose label equals an existing term's in the snapshot |
 | `hierarchy_too_deep` | A minted class more than `ONTOLOGY_MAX_CLASS_DEPTH` named-superclass steps below its root. A root is `owl:Thing`, a well-known vocabulary term, or a class with no named superclass; restrictions are not steps |
 | `value_set_siblings` | Three or more minted subclasses of one parent whose labels differ in one word and that carry no subclass, property domain, restriction or definition of their own: a value set modelled as subclasses. The suggestions list the siblings |
-| `specific_label_leaf` (advisory) | A minted leaf no property uses whose label carries a number, a chemical formula or four or more words |
+| `specific_label_leaf` (advisory) | A minted leaf no property uses whose label carries a number or four or more words |
 | `catalog_duplicate` | A minted term whose label, preferred label, notation or local name equals, case-insensitively, that of exactly one catalog term of compatible role, anywhere in the catalog. The suggestion is the catalog IRI. An exact label match in the snapshot is left to `label_collision` |
 
 `unknown_term` has no ontology counterpart, since minting terms is the ontology
@@ -324,9 +324,10 @@ a score rule (`success`, or a score above 90) would have decided.
 
 The critic judges whether what was rendered is right, not whether something is
 missing. `FACTS_COMPLETION_PASSES` (default 1) adds insert-only passes after the
-critic loop, run only while the unit has a gap: the numeric inventory still
-lists a measurement (a number with its unit) absent from the graph, or a
-`statement_without_subject` finding holds. A unit with no gap makes no call.
+critic loop, run only while the unit has a gap: a `statement_without_subject`
+finding holds, or, with `FACTS_COMPLETION_MEASUREMENTS=true` (off by default),
+the numeric inventory still lists a measurement (a number with its unit)
+absent from the graph. A unit with no gap makes no call.
 Each pass:
 
 - shows the model a term sheet instead of the full ontology chapter: the

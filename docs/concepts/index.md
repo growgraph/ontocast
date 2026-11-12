@@ -206,8 +206,8 @@ Inside each block, every unit runs the same short loop:
   [`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes)
   (off by default; at one pass, spent only on a part with a mandatory finding).
 - **Gap passes** (facts only, one by default) run only on a part with a gap:
-  a measurement the render missed, or an observation that names nothing it is
-  about. A small call (no ontology chapter) adds the missing facts or links and
+  an observation that names nothing it is about, or, with
+  `FACTS_COMPLETION_MEASUREMENTS`, a measurement the render missed. A small call (no ontology chapter) adds the missing facts or links and
   never removes any; see
   [`FACTS_COMPLETION_PASSES`](../reference/configuration/facts-validation.md#facts_completion_passes).
 

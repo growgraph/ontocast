@@ -134,7 +134,7 @@ def test_a_child_is_counted_in_one_family_only() -> None:
         ("XRD", None),
         ("Sample 3", "digit"),
         ("CsPbBr3 film", "digit"),
-        ("NaCl crystal", "formula"),
+        ("NaCl crystal", None),
         ("thermally evaporated gold back contact", "long"),
     ],
 )

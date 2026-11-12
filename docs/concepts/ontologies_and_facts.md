@@ -91,8 +91,8 @@ uses it, so a restriction on an external property is written beside the home
 class, never into the external ontology.
 
 A unit mints a class only at the level a second document in the same domain
-would reuse. A case the document reports, such as a numbered sample or a
-composition, is an individual or a property value in the facts. A distinction
+would reuse. A case the document reports, such as a named case or one
+measured value, is an individual or a property value in the facts. A distinction
 that varies from one instance to the next is a property with values, not a
 family of sibling subclasses, and an existing or well-known term is reused
 before a new one is minted. The per-unit checks enforce the parts of this a
