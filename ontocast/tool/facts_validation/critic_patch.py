@@ -52,6 +52,7 @@ from ontocast.onto.model import TripleFix
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.triple_index import Triple, TripleIndex
+from ontocast.tool.facts_validation.terms import _local_name
 
 logger = logging.getLogger(__name__)
 
@@ -576,14 +577,6 @@ def _deletes_by_id(
 _JUNK_LOCAL_NAME = re.compile(
     r"(ignored|typograph|artifact|placeholder|_token\b|token_)", re.IGNORECASE
 )
-
-
-def _local_name(iri: str) -> str:
-    for separator in ("#", "/"):
-        head, sep, local = iri.rpartition(separator)
-        if sep and local:
-            return local
-    return iri
 
 
 def _junk_reason(inserts: list[Triple], graph: Graph) -> str | None:

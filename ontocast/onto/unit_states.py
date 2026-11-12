@@ -147,6 +147,13 @@ class UnitState(BasePydanticModel, Generic[UnitT]):
         default=0,
         description="Critic fixes compiled straight to a patch with no LLM call.",
     )
+    statements_without_subject_rendered: int = Field(
+        default=0,
+        description=(
+            "Facts only: statement_without_subject findings on the render, "
+            "before any critic or gap pass."
+        ),
+    )
     critic_fixes_residual: int = Field(
         default=0,
         description=(

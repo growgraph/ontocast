@@ -56,6 +56,18 @@ class WellKnownVocabulary(BaseModel):
         datatype_ranges: Local name of a property -> local name of the XSD
             datatype its published ``rdfs:range`` declares, for the date and
             time properties the facts repairs check literals against.
+        temporal_properties: Local names of its properties whose object is a
+            time, a temporal entity or a date literal; those in
+            ``datatype_ranges`` count without being listed here.
+        statement_classes: Local names of its classes whose instances are
+            statements about something else (an observation of a feature of
+            interest): one is a fact only with its subject.
+        statement_properties: Local name -> label of the properties a
+            statement takes (its subject, what it observed, its result),
+            shown beside a catalog's statement classes.
+        subject_links: Local name -> direction of the properties that link a
+            statement and what it is about: ``forward`` runs from the
+            statement to its subject, ``inverse`` from the subject.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -66,6 +78,12 @@ class WellKnownVocabulary(BaseModel):
     terms: frozenset[str] | None
     value_classes: frozenset[str] = frozenset()
     datatype_ranges: dict[str, str] = Field(default_factory=dict)
+    temporal_properties: frozenset[str] = frozenset()
+    statement_classes: frozenset[str] = frozenset()
+    statement_properties: dict[str, str] = Field(default_factory=dict)
+    subject_links: dict[str, Literal["forward", "inverse"]] = Field(
+        default_factory=dict
+    )
 
     def has_term(self, local_name: str) -> bool:
         """Whether ``local_name`` is a term of this vocabulary."""
@@ -90,6 +108,10 @@ def _vocabulary(
     extra: tuple[str, ...] = (),
     value_classes: tuple[str, ...] = (),
     datatype_ranges: dict[str, str] | None = None,
+    temporal_properties: tuple[str, ...] = (),
+    statement_classes: tuple[str, ...] = (),
+    statement_properties: dict[str, str] | None = None,
+    subject_links: dict[str, Literal["forward", "inverse"]] | None = None,
 ) -> WellKnownVocabulary:
     return WellKnownVocabulary(
         prefix=prefix,
@@ -98,6 +120,10 @@ def _vocabulary(
         terms=_defined_terms(namespace, *extra),
         value_classes=frozenset(value_classes),
         datatype_ranges=datatype_ranges or {},
+        temporal_properties=frozenset(temporal_properties),
+        statement_classes=frozenset(statement_classes),
+        statement_properties=statement_properties or {},
+        subject_links=subject_links or {},
     )
 
 
@@ -140,7 +166,12 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
     _vocabulary("owl", "OWL", OWL),
     _vocabulary("xsd", "XML Schema datatypes", XSD),
     _vocabulary("skos", "SKOS", SKOS),
-    _vocabulary("dcterms", "DCMI Metadata Terms", DCTERMS),
+    _vocabulary(
+        "dcterms",
+        "DCMI Metadata Terms",
+        DCTERMS,
+        temporal_properties=("date", "created", "issued", "modified"),
+    ),
     _vocabulary("dc", "Dublin Core elements", DC),
     _vocabulary(
         "prov",
@@ -157,7 +188,23 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
             )
         },
     ),
-    _vocabulary("sosa", "SOSA", SOSA, datatype_ranges={"resultTime": "dateTime"}),
+    _vocabulary(
+        "sosa",
+        "SOSA",
+        SOSA,
+        datatype_ranges={"resultTime": "dateTime"},
+        temporal_properties=("phenomenonTime",),
+        statement_classes=("Observation", "Actuation", "Sampling"),
+        statement_properties={
+            "hasFeatureOfInterest": "has feature of interest",
+            "observedProperty": "observed property",
+            "hasResult": "has result",
+        },
+        subject_links={
+            "hasFeatureOfInterest": "forward",
+            "isFeatureOfInterestOf": "inverse",
+        },
+    ),
     _vocabulary("ssn", "SSN", SSN),
     _vocabulary(
         "time",
@@ -170,6 +217,7 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
             "inXSDgYear": "gYear",
             "inXSDgYearMonth": "gYearMonth",
         },
+        temporal_properties=("hasTime", "hasBeginning", "hasEnd", "inside"),
     ),
     _vocabulary("csvw", "CSVW", CSVW),
     _vocabulary("dcat", "DCAT", DCAT),
@@ -186,6 +234,13 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
             "QuantitativeValue",
             "PropertyValue",
             "MonetaryAmount",
+        ),
+        temporal_properties=(
+            "startDate",
+            "endDate",
+            "datePublished",
+            "dateCreated",
+            "dateModified",
         ),
     ),
     _listed(
@@ -334,6 +389,61 @@ def well_known_datatype_ranges() -> dict[str, str]:
     }
 
 
+@cache
+def well_known_statement_classes() -> frozenset[str]:
+    """Classes of the well-known vocabularies whose instances are statements.
+
+    An instance of one (or of a subclass) is about something else, its
+    feature of interest; without that link it states a value of nothing.
+    """
+    return frozenset(
+        namespace + name
+        for vocabulary in WELL_KNOWN_VOCABULARIES
+        for namespace in vocabulary.namespaces
+        for name in vocabulary.statement_classes
+    )
+
+
+@cache
+def well_known_statement_properties() -> dict[str, str]:
+    """Property IRI -> label of the properties a well-known statement takes."""
+    return {
+        vocabulary.namespaces[0] + name: label
+        for vocabulary in WELL_KNOWN_VOCABULARIES
+        for name, label in vocabulary.statement_properties.items()
+    }
+
+
+@cache
+def well_known_subject_links() -> tuple[frozenset[str], frozenset[str]]:
+    """The well-known properties linking a statement and its subject, as IRIs.
+
+    Returns:
+        ``(forward, inverse)``: those running from the statement to its
+        subject, and those running from the subject to the statement.
+    """
+    links = [
+        (vocabulary.namespaces[0] + name, direction)
+        for vocabulary in WELL_KNOWN_VOCABULARIES
+        for name, direction in vocabulary.subject_links.items()
+    ]
+    return (
+        frozenset(iri for iri, direction in links if direction == "forward"),
+        frozenset(iri for iri, direction in links if direction == "inverse"),
+    )
+
+
+@cache
+def well_known_temporal_properties() -> frozenset[str]:
+    """Property IRIs of the well-known vocabularies whose object is a time."""
+    return frozenset(
+        namespace + name
+        for vocabulary in WELL_KNOWN_VOCABULARIES
+        for namespace in vocabulary.namespaces
+        for name in (*vocabulary.temporal_properties, *vocabulary.datatype_ranges)
+    )
+
+
 def well_known_prompt_list() -> str:
     """The vocabularies as the facts prompt names them: ``prefix:`` and IRI."""
     return ", ".join(
@@ -352,6 +462,10 @@ __all__ = [
     "well_known_prompt_list",
     "well_known_terms",
     "well_known_datatype_ranges",
+    "well_known_statement_classes",
+    "well_known_statement_properties",
+    "well_known_subject_links",
+    "well_known_temporal_properties",
     "well_known_value_classes",
     "well_known_vocabulary",
 ]

@@ -43,6 +43,13 @@ _PATTERNS: dict[URIRef, re.Pattern[str]] = {
 #: The datatypes :func:`is_valid_temporal_lexical` decides.
 TEMPORAL_DATATYPES: frozenset[URIRef] = frozenset(_PATTERNS)
 
+#: The temporal datatypes whose value is a point or span on the calendar: a
+#: node holding one says which date it is. Durations and recurring days are
+#: not dates.
+CALENDAR_DATATYPES: frozenset[URIRef] = frozenset(
+    {XSD.date, XSD.dateTime, XSD.dateTimeStamp, XSD.gYearMonth, XSD.gYear}
+)
+
 
 def _days_in_month(year: int | None, month: int) -> int:
     if month == 2:
@@ -65,7 +72,8 @@ def is_valid_temporal_lexical(lexical: str, datatype: URIRef) -> bool | None:
     pattern = _PATTERNS.get(datatype)
     if pattern is None:
         return None
-    match = pattern.fullmatch(lexical)
+    # These datatypes collapse whitespace before their lexical space applies.
+    match = pattern.fullmatch(" ".join(lexical.split()))
     if match is None:
         return False
     groups = match.groupdict()
@@ -75,4 +83,4 @@ def is_valid_temporal_lexical(lexical: str, datatype: URIRef) -> bool | None:
     return int(groups["day"]) <= _days_in_month(year, int(groups["month"]))
 
 
-__all__ = ["TEMPORAL_DATATYPES", "is_valid_temporal_lexical"]
+__all__ = ["CALENDAR_DATATYPES", "TEMPORAL_DATATYPES", "is_valid_temporal_lexical"]

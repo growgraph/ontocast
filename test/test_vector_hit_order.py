@@ -80,3 +80,18 @@ def test_fewer_hits_than_the_limit_are_all_returned_in_order() -> None:
         "z",
         "q",
     ]
+
+
+def test_hits_scored_at_zero_are_not_hits_and_end_the_fetch() -> None:
+    """Many atoms tie at zero (no neighbourhood): none is kept, none refetched."""
+    pool = [_hit("a", 0.9), _hit("b", 0.4), *(_hit(f"z{i}", 0.0) for i in range(500))]
+    calls: list[int] = []
+
+    def fetch(limit: int) -> list[OntologySearchHit]:
+        calls.append(limit)
+        return sorted(pool, key=lambda hit: -hit.score)[:limit]
+
+    hits = top_hits(fetch, 3)
+
+    assert [hit.atom.iri.rsplit("#", 1)[-1] for hit in hits] == ["a", "b"]
+    assert calls == [6]

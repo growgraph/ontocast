@@ -720,10 +720,7 @@ def create_app(
                 # served graph and conformance report match the CLI unit path.
                 initial_state.aggregated_facts = postprocessed_facts.graph
                 await finish_unit_pipeline_facts(
-                    initial_state,
-                    ontology_graph,
-                    scoped_tools,
-                    [facts_result.content_unit],
+                    initial_state, ontology_graph, scoped_tools
                 )
                 facts_ttl = turtle_from_graph(
                     initial_state.aggregated_facts,

@@ -132,6 +132,11 @@ def top_hits(
     store is asked for twice as many until the score at the cut is seen to
     end before the last hit fetched.
 
+    A hit scored at or below zero matches nothing (an atom with no
+    neighbourhood is penalised to zero) and is not kept. Once a batch holds
+    one, the store has no more matching hits, so no run of such ties is ever
+    fetched whole.
+
     Args:
         fetch: Returns the store's top hits for a given limit.
         limit: How many hits to keep.
@@ -140,11 +145,16 @@ def top_hits(
         return []
     asked = 2 * limit
     while True:
-        hits = sorted(
+        fetched = sorted(
             fetch(asked),
             key=lambda hit: (-hit.score, hit.atom.iri or "", hit.atom.atom_id),
         )
-        if len(hits) < asked or hits[limit - 1].score != hits[-1].score:
+        hits = [hit for hit in fetched if hit.score > 0]
+        if (
+            len(fetched) < asked
+            or len(hits) < len(fetched)
+            or hits[limit - 1].score != hits[-1].score
+        ):
             return hits[:limit]
         asked *= 2
 

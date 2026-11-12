@@ -266,6 +266,9 @@ def _collect_facts_findings(
         policy=policy,
         is_citation_metadata=unit_state.content_unit.is_citation_metadata,
         is_non_content=unit_state.content_unit.is_non_content,
+        # Read over the whole catalog: a unit's snapshot may lack the
+        # hierarchy placing its observation class under a statement class.
+        subject_contract=atomic.subject_contract() if atomic is not None else None,
     )
 
 
@@ -334,6 +337,7 @@ def _record_attempt(
     n_fixes_junk_refused: int = 0,
     n_fixes_unresolved_prefix: int = 0,
     n_measurements_recovered: int = 0,
+    n_subjects_linked: int = 0,
 ) -> None:
     """Append one telemetry record for the current loop attempt.
 
@@ -366,6 +370,7 @@ def _record_attempt(
             n_fixes_junk_refused=n_fixes_junk_refused,
             n_fixes_unresolved_prefix=n_fixes_unresolved_prefix,
             n_measurements_recovered=n_measurements_recovered,
+            n_subjects_linked=n_subjects_linked,
         )
     )
 
@@ -734,15 +739,16 @@ async def _run_completion_passes(
     *,
     render_attempt: int,
 ) -> None:
-    """Insert-only completion passes, run once the critic loop is done.
+    """Insert-only gap passes, run once the critic loop is done.
 
-    Each pass asks :func:`ontocast.agent.complete_facts.complete_facts` for
-    subjects recovering measurements the numeric inventory still lists as
-    missing, then applies the proposal through :func:`_apply_patches` -- the
-    same per-subject regression check a critic fix goes through, so an
-    insert that leaves the unit worse is rolled back on its own. Stops early
-    once the inventory is empty; the caller has already checked
-    ``atomic.facts_completion_passes > 0`` and that this is the facts phase.
+    Each pass asks :func:`ontocast.agent.complete_facts.complete_facts` to
+    close the unit's gaps -- measurements the numeric inventory still lists
+    as missing, and statements or values linked to nothing -- then applies
+    the proposal through :func:`_apply_patches`, the same per-subject
+    regression check a critic fix goes through, so an insert that leaves the
+    unit worse is rolled back on its own. Stops once no gap is left; the
+    caller has already checked ``atomic.facts_completion_passes > 0`` and
+    that this is the facts phase.
     """
     for pass_index in range(1, atomic.facts_completion_passes + 1):
         inventory = unit_numeric_inventory(
@@ -752,14 +758,14 @@ async def _run_completion_passes(
             policy=atomic.validation_policy,
             limit=atomic.numeric_coverage_limit,
         )
-        if not inventory.measurements:
-            break
-
         findings = phase.collect_findings(unit_state, atomic)
         unit_state.deterministic_findings = findings
+        subject_gaps = _subject_gaps(findings)
+        if not inventory.measurements and not subject_gaps:
+            break
         mandatory_before = sum(1 for finding in findings if finding.mandatory)
 
-        fixes = await complete_facts(unit_state, atomic, inventory)
+        fixes = await complete_facts(unit_state, atomic, inventory, subject_gaps)
         compiled = compile_critic_fixes(
             fixes, unit_state.patch_target_graph(), policy=atomic.facts_patch_policy
         )
@@ -784,14 +790,16 @@ async def _run_completion_passes(
         recovered = max(
             0, len(inventory.measurements) - len(post_inventory.measurements)
         )
+        linked = max(0, len(subject_gaps) - len(_subject_gaps(run.findings)))
         logger.info(
-            "Unit facts completion pass %s/%s: %d applied, %d rolled back, "
-            "%d measurement(s) recovered",
+            "Unit facts gap pass %s/%s: %d applied, %d rolled back, "
+            "%d measurement(s) recovered, %d statement(s) given a subject",
             pass_index,
             atomic.facts_completion_passes,
             len(run.applied),
             len(run.rolled_back),
             recovered,
+            linked,
         )
         _record_attempt(
             unit_state,
@@ -809,9 +817,19 @@ async def _run_completion_passes(
             n_fixes_junk_refused=compiled.junk_refused,
             n_fixes_unresolved_prefix=compiled.unresolved_prefix,
             n_measurements_recovered=recovered,
+            n_subjects_linked=linked,
         )
-        if not post_inventory.measurements:
+        if not post_inventory.measurements and not _subject_gaps(run.findings):
             break
+
+
+def _subject_gaps(findings: Sequence) -> list[FactsUnitFinding]:
+    """The ``statement_without_subject`` findings among ``findings``."""
+    return [
+        finding
+        for finding in findings
+        if finding.kind == FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT
+    ]
 
 
 def _reset_node_evidence_context(
@@ -1206,6 +1224,12 @@ async def run_unit_loop(
             )
             return unit_state
 
+        if isinstance(unit_state, UnitFactsState):
+            # The render's own lapses, before any pass repairs them.
+            unit_state.statements_without_subject_rendered = len(
+                _subject_gaps(phase.collect_findings(unit_state, atomic))
+            )
+
         stage = phase.critic_stage
         for pass_index in range(1, phase.critic_passes(atomic) + 1):
             findings = phase.collect_findings(unit_state, atomic)
@@ -1306,12 +1330,11 @@ async def run_unit_loop(
             )
 
         if isinstance(unit_state, UnitFactsState):
-            written_back = write_back_temporal_quarantine(
-                unit_state.content_unit.graph,
-                unresolved_quarantine(
+            written_back, unit_state.quarantined_literal_triples = (
+                write_back_temporal_quarantine(
                     unit_state.content_unit.graph,
                     unit_state.quarantined_literal_triples,
-                ),
+                )
             )
             if written_back:
                 unit_state.applied_repairs.extend(written_back)

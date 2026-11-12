@@ -37,6 +37,10 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_LLM_REPAIR_RENDERS_FAILED": "facts_llm_repair_renders_failed",
     "FACTS_REPAIR_DELETE_ONLY": "facts_repair_delete_only",
     "FACTS_MANDATORY_RESIDUAL": "facts_mandatory_residual",
+    "FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED": (
+        "facts_statements_without_subject_rendered"
+    ),
+    "FACTS_STATEMENTS_WITHOUT_SUBJECT": "facts_statements_without_subject",
     "FACTS_CRITIC_CALLS": "facts_critic_calls",
     "FACTS_CRITIC_ACCEPTED": "facts_critic_accepted",
     "FACTS_CRITIC_FIXES_APPLIED": "facts_critic_fixes_applied",
@@ -67,10 +71,6 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_COREFERENCE_PAIRS": "facts_coreference_pairs",
     "FACTS_COREFERENCE_SAME": "facts_coreference_same",
     "FACTS_COREFERENCE_DIFFERENT": "facts_coreference_different",
-    "FACTS_LINK_ISOLATED": "facts_link_isolated",
-    "FACTS_LINK_PROPOSED": "facts_link_proposed",
-    "FACTS_LINK_ADDED": "facts_link_added",
-    "FACTS_LINK_REJECTIONS_BY_REASON": "facts_link_rejections_by_reason",
     "VALIDATED_WITHOUT_ONTOLOGY_CONTEXT": "validated_without_ontology_context",
     "FACTS_VALIDATION_FINDINGS": "facts_validation_findings",
     "FACTS_VALIDATION_ERRORS": "facts_validation_errors",

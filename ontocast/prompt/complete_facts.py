@@ -1,27 +1,31 @@
-"""Prompt for the insert-only facts completion pass.
+"""Prompt for the insert-only facts gap pass.
 
-Runs after the facts render/critic loop, only when the numeric-coverage
-inventory (:mod:`ontocast.util.numeric_inventory`) still lists measurements
-absent from the unit graph. The render and critic prompts read the whole
+Runs after the facts render/critic loop, only when the unit has a gap: the
+numeric-coverage inventory (:mod:`ontocast.util.numeric_inventory`) still
+lists measurements absent from the unit graph, or a statement or value is
+linked to nothing (``statement_without_subject`` findings). The render and critic prompts read the whole
 ontology chapter; this pass instead gets a compact TERM SHEET -- the
 quantity/observation/condition-shaped classes and the unit individuals of the
 unit's ontology snapshot -- plus the unit's existing catalog-typed subjects,
 so a recovered measurement can attach to what is already there instead of
 minting a duplicate. Chapter order matches the render/critic templates:
 preamble -> conformance -> term sheet (in place of the ontology chapter) ->
-task -> guidelines -> user instruction -> text -> missing measurements.
+task -> guidelines -> user instruction -> text -> missing measurements ->
+subject gaps.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 
 from rdflib import OWL, RDF, RDFS, URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import LLMGraphFormat
+from ontocast.onto.model import FactsUnitFinding
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.tool.facts_validation.terms import SubjectContract
 from ontocast.util.numeric_inventory import NumericInventory, unit_surface_index
 
 from .common import system_preamble_semantic
@@ -41,8 +45,9 @@ template_prompt = """
 
 # TASK
 
-The facts graph already extracted from this unit is missing measurements the
-source text states. Propose insert-only fixes that add them.
+The facts graph already extracted from this unit has gaps: measurements the
+source text states that are missing, or statements that name nothing they are
+about. Propose insert-only fixes that close them.
 
 {completion_instruction}
 
@@ -51,6 +56,8 @@ source text states. Propose insert-only fixes that add them.
 {text_chapter}
 
 {missing_measurements_chapter}
+
+{subject_gaps_chapter}
 
 {output_instruction}
 
@@ -89,6 +96,14 @@ exactly as it is; propose nothing beyond what recovers a listed measurement.
 
 6. Declare every namespace prefix your fixes use that is not already bound
    in the chapters above.
+
+7. For each statement under SUBJECT GAPS, add the one triple linking it to
+   what the text says it is about, using a listed subject property in the
+   direction it runs. The subject is the instance the sentence measures or
+   describes; when the sentence does not repeat it, it is the instance the
+   surrounding text is about. Prefer a listed candidate; mint a new `cd:`
+   subject only for a thing the text names. Leave a statement whose subject
+   the text does not give.
 """
 
 _OUTPUT_INSTRUCTION_TURTLE = """\n\n
@@ -276,6 +291,70 @@ def build_catalog_subjects_chapter(
         if label:
             row += f'  rdfs:label "{label}"'
         lines.append(row)
+    return "\n".join(lines) + "\n"
+
+
+def build_subject_gaps_chapter(
+    fact_graph: RDFGraph,
+    gaps: Sequence[FactsUnitFinding],
+    contract: SubjectContract | None,
+    *,
+    limit: int = 30,
+) -> str:
+    """The SUBJECT GAPS chapter: statements linked to nothing, and their options.
+
+    Lists each statement (type, label, its literal values), the candidate
+    subjects the findings suggest (type and label), and the properties that
+    link a statement to its subject.
+
+    Args:
+        fact_graph: The unit's current facts graph.
+        gaps: ``statement_without_subject`` findings.
+        contract: The catalog's subject properties, each direction.
+        limit: Cap on listed statements and on listed candidates.
+
+    Returns:
+        The chapter text, or "" when there is no gap.
+    """
+    if not gaps:
+        return ""
+
+    def describe(node: URIRef) -> str:
+        types = ", ".join(
+            sorted(
+                _qname(fact_graph, t)
+                for t in fact_graph.objects(node, RDF.type)
+                if isinstance(t, URIRef)
+            )
+        )
+        label = next((str(o) for o in fact_graph.objects(node, RDFS.label)), "")
+        row = f"  {_qname(fact_graph, node)}"
+        if types:
+            row += f"  a {types}"
+        if label:
+            row += f'  rdfs:label "{label}"'
+        return row
+
+    lines = [
+        "\n\n# SUBJECT GAPS",
+        "Statements that state a value but name nothing they are about:",
+    ]
+    candidates: list[str] = []
+    for finding in list(gaps)[:limit]:
+        lines.append(describe(URIRef(finding.subject)))
+        candidates.extend(c for c in finding.suggestions if c not in candidates)
+    if candidates:
+        lines.append("\nCandidate subjects in the graph:")
+        lines.extend(describe(URIRef(c)) for c in candidates[:limit])
+    if contract is not None:
+        lines.append("\nSubject properties, from the statement to its subject:")
+        lines.extend(
+            f"  {_qname(fact_graph, URIRef(p))}" for p in sorted(contract.forward)
+        )
+        lines.append("Subject properties, from the subject to the statement:")
+        lines.extend(
+            f"  {_qname(fact_graph, URIRef(p))}" for p in sorted(contract.inverse)
+        )
     return "\n".join(lines) + "\n"
 
 

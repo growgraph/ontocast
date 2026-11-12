@@ -193,8 +193,9 @@ def unit_loop_flow(
     gate, at one pass, spends none on a unit with no mandatory finding. The
     facts phase adds two things the ontology phase does not have. A critic that
     returns no critique leaves the loop unpatched and unreviewed. And an
-    optional insert-only completion stage runs after the critic loop, however
-    that loop ended -- except when every render failed.
+    insert-only gap stage runs after the critic loop, however that loop ended
+    -- except when every render failed -- calling the model only for a unit
+    with a missed measurement or a statement that names no subject.
 
     Args:
         phase: ``"facts"`` or ``"ontology"``.
@@ -239,7 +240,7 @@ def unit_loop_flow(
     facts_nodes = (
         FlowNode(
             "completion",
-            "Completion passes<br/>0 … FACTS_COMPLETION_PASSES<br/>(insert-only)",
+            "Gap passes, on a gap only<br/>0 … FACTS_COMPLETION_PASSES<br/>(insert-only)",
         ),
     )
     facts_edges = (

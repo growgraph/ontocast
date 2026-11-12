@@ -305,9 +305,10 @@ def test_drop_cascades_through_triples_blank_nodes_and_reifiers() -> None:
     blank_before = _value_blank_nodes(graph)
     assert len(blank_before) == 3
 
-    _, dropped = drop_untyped_instances(graph, [CD])
+    records = drop_untyped_instances(graph, [CD])
 
-    assert dropped == [str(ghost)]
+    assert [record.source for record in records] == [str(ghost)]
+    assert records[0].triple_count
     assert (ghost, None, None) not in graph
     assert (None, None, ghost) not in graph
     # The typed neighbours keep everything that does not mention the ghost.
@@ -330,9 +331,7 @@ def test_drop_is_a_no_op_on_a_typed_graph() -> None:
     )
     size = len(graph)
 
-    _, dropped = drop_untyped_instances(graph, [CD])
-
-    assert dropped == []
+    assert drop_untyped_instances(graph, [CD]) == []
     assert len(graph) == size
 
 

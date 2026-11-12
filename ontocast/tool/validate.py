@@ -8,7 +8,7 @@ import logging
 from collections import defaultdict, deque
 
 from pydantic import BaseModel, ConfigDict, Field
-from rdflib import OWL, RDF, RDFS, XSD, Graph, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, XSD, BNode, Graph, Literal, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 
@@ -100,6 +100,7 @@ def partition_object_property_literal_triples(
                             "context, got a string literal"
                         ),
                         expected_range=declared_range,
+                        subject_is_blank=isinstance(subject, BNode),
                     )
                 )
                 continue

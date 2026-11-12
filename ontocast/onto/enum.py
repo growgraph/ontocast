@@ -122,6 +122,12 @@ class RetrievalMetric(StrEnum):
     FACTS_REPAIR_DELETE_ONLY = "facts_repair_delete_only"
     FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
     FACTS_MANDATORY_RESIDUAL = "facts_mandatory_residual"
+    #: Statements and values linked to nothing in the units' renders, and
+    #: those left after the gap pass (``statement_without_subject``).
+    FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED = (
+        "facts_statements_without_subject_rendered"
+    )
+    FACTS_STATEMENTS_WITHOUT_SUBJECT = "facts_statements_without_subject"
     FACTS_CRITIC_CALLS = "facts_critic_calls"
     FACTS_CRITIC_FIXES_APPLIED = "facts_critic_fixes_applied"
     FACTS_CRITIC_FIXES_RESIDUAL = "facts_critic_fixes_residual"
@@ -165,12 +171,6 @@ class RetrievalMetric(StrEnum):
     FACTS_COREFERENCE_PAIRS = "facts_coreference_pairs"
     FACTS_COREFERENCE_SAME = "facts_coreference_same"
     FACTS_COREFERENCE_DIFFERENT = "facts_coreference_different"
-    #: Link pass: instances isolated after the gate, the links the model
-    #: proposed for them, those added, and the rejected ones by reason.
-    FACTS_LINK_ISOLATED = "facts_link_isolated"
-    FACTS_LINK_PROPOSED = "facts_link_proposed"
-    FACTS_LINK_ADDED = "facts_link_added"
-    FACTS_LINK_REJECTIONS_BY_REASON = "facts_link_rejections_by_reason"
 
     # Validation gate. Written identically by both entry paths.
     VALIDATED_WITHOUT_ONTOLOGY_CONTEXT = "validated_without_ontology_context"
@@ -199,7 +199,7 @@ class RetrievalMetric(StrEnum):
     FACTS_LINKS_REMOVED = "facts_links_removed"
     #: Connected groups of instances in the served facts, the document node
     #: joining what it links, and instances linked to nothing (those left hold
-    #: a value of their own). Both describe the graph after the link pass.
+    #: a value of their own). Both describe the served graph.
     FACTS_COMPONENTS = "facts_components"
     FACTS_ISOLATED = "facts_isolated"
     #: Labels two or more served instances share: the duplicates aggregation
@@ -346,7 +346,6 @@ class WorkflowNode(StrEnum):
     MERGE_FACTS = "Merge Facts"
     RESOLVE_COREFERENCE = "Resolve Coreference"
     VALIDATE_FACTS = "Validate Facts"
-    LINK_FACTS = "Link Facts"
     PLAN_EXTERNAL_EVIDENCE = "Plan External Evidence"
     FETCH_EXTERNAL_EVIDENCE = "Fetch External Evidence"
     STRUCTURAL_CHECK = "Structural Check"
@@ -365,7 +364,6 @@ class LLMPhase(StrEnum):
     FACTS_CRITIC = "facts_critic"
     FACTS_COMPLETION = "facts_completion"
     FACTS_COREFERENCE = "facts_coreference"
-    FACTS_LINK = "facts_link"
     ONTOLOGY_IDENTITY = "ontology_identity"
     ONTOLOGY_PLAN = "ontology_plan"
     ONTOLOGY_RENDER = "ontology_render"
@@ -377,23 +375,6 @@ class LLMPhase(StrEnum):
     UNIT_SUMMARY = "unit_summary"
     SECTION_CLASSIFICATION = "section_classification"
     UNLABELED = "unlabeled"
-
-
-class FactsLinkRejection(StrEnum):
-    """Why the link pass refused a proposed link; the first failed check names it."""
-
-    UNKNOWN_ENTITY = "unknown_entity"
-    NO_ISOLATED_ENDPOINT = "no_isolated_endpoint"
-    SELF_LINK = "self_link"
-    UNKNOWN_PROPERTY = "unknown_property"
-    NOT_OBJECT_PROPERTY = "not_object_property"
-    DOMAIN_MISMATCH = "domain_mismatch"
-    RANGE_MISMATCH = "range_mismatch"
-    VALUE_ENDPOINT = "value_endpoint"
-    FUNCTIONAL_TAKEN = "functional_taken"
-    EVIDENCE_MISSING = "evidence_missing"
-    EVIDENCE_UNRELATED = "evidence_unrelated"
-    DUPLICATE = "duplicate"
 
 
 class VectorStoreBackend(StrEnum):

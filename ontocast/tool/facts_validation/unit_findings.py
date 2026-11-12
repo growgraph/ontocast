@@ -22,11 +22,17 @@ from ontocast.onto.rdfgraph import (
     RDFGraph,
     RejectedLiteralTriple,
 )
+from ontocast.onto.scaffolding import scaffolding_nodes
 from ontocast.onto.well_known import well_known_terms, well_known_vocabulary
 from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
+from ontocast.tool.facts_validation.connectivity import (
+    isolated_instances,
+    states_a_value,
+)
 from ontocast.tool.facts_validation.terms import (
     _FORBIDDEN_NAMESPACES,
     _STANDARD_NAMESPACES,
+    SubjectContract,
     ValidationPolicy,
     _alias_candidates,
     _catalog_term_roles,
@@ -40,6 +46,7 @@ from ontocast.tool.facts_validation.terms import (
     collect_catalog_terms,
     collect_declared_namespaces,
     expand_vocabulary_terms,
+    fact_instances,
     types_compatible,
     untyped_instances,
 )
@@ -304,6 +311,93 @@ def untyped_instance_findings(
             )
         )
     return findings
+
+
+def statement_without_subject_findings(
+    graph: RDFGraph,
+    fact_namespaces: Sequence[str],
+    contract: SubjectContract | None,
+    *,
+    max_candidates: int = 12,
+) -> list[FactsUnitFinding]:
+    """Report every statement or value in the unit that names no subject.
+
+    An instance of a statement class (an observation) that states a value
+    (:func:`~ontocast.tool.facts_validation.connectivity.states_a_value`)
+    names its subject only through a subject property: a ``forward`` one from
+    it, or an ``inverse`` one to it. A link to its observed property or its
+    procedure is not that. An instance of a value class names its subject by
+    being linked to any other instance, in either direction. An instance of
+    another class stating its own values is a fact about itself and is not
+    reported.
+
+    Args:
+        graph: Rendered facts graph for one unit.
+        fact_namespaces: Namespaces holding minted instances.
+        contract: The catalog's statement and value classes and subject
+            properties; ``None`` reports nothing.
+        max_candidates: Most candidate subjects suggested per finding.
+
+    Returns:
+        list: One mandatory finding per such instance, ordered by IRI; its
+        suggestions are the unit's instances that could be the subject.
+    """
+    if contract is None:
+        return []
+    statements = {URIRef(iri) for iri in contract.statement_classes}
+    values = {URIRef(iri) for iri in contract.value_classes}
+    forward = [URIRef(iri) for iri in contract.forward]
+    inverse = [URIRef(iri) for iri in contract.inverse]
+    scaffolding = scaffolding_nodes(graph)
+    isolated = isolated_instances(graph, fact_namespaces)
+    instances = sorted(
+        (
+            node
+            for node in fact_instances(graph, fact_namespaces)
+            if isinstance(node, URIRef)
+        ),
+        key=str,
+    )
+
+    def names_subject(node: URIRef) -> bool:
+        return any((node, prop, None) in graph for prop in forward) or any(
+            (None, prop, node) in graph for prop in inverse
+        )
+
+    lapsed: list[URIRef] = []
+    for node in instances:
+        types = set(graph.objects(node, RDF.type))
+        if not types & (statements | values):
+            continue
+        if not states_a_value(graph, node, scaffolding):
+            continue
+        if types & statements:
+            if not names_subject(node):
+                lapsed.append(node)
+        elif node in isolated:
+            lapsed.append(node)
+    if not lapsed:
+        return []
+    candidates = [
+        str(node)
+        for node in instances
+        if not set(graph.objects(node, RDF.type)) & (statements | values)
+    ][:max_candidates]
+    return [
+        FactsUnitFinding(
+            kind=FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT,
+            message=(
+                f"<{node}> states a value but names nothing it is about. Link "
+                "it to the instance the text says was measured or described "
+                "(its feature of interest, or the property the ontology gives "
+                "for it), in the direction the property runs; mint that "
+                "instance if the text names it and it is missing."
+            ),
+            subject=str(node),
+            suggestions=candidates,
+        )
+        for node in lapsed
+    ]
 
 
 def _closed_range_suggestions(
@@ -726,6 +820,7 @@ def collect_unit_findings(
     policy: ValidationPolicy | None = None,
     is_citation_metadata: bool = False,
     is_non_content: bool = False,
+    subject_contract: SubjectContract | None = None,
     full_catalog_terms: set[str] | None = None,
 ) -> list[FactsUnitFinding]:
     """Assemble all deterministic findings for one rendered unit graph.
@@ -733,7 +828,8 @@ def collect_unit_findings(
     Mandatory: quarantined literals (with closed-range individual
     suggestions), forbidden-namespace terms (``example.org``), doc-namespace
     predicates, unresolved catalog near-misses, predicates asserted on a
-    subject whose type contradicts their ``rdfs:domain``, instances with no
+    subject whose type contradicts their ``rdfs:domain``, statements and
+    values that name no subject (``subject_contract``), instances with no
     concrete type, and value nodes whose only numeric content sits in a
     label. Advisory by default: numeric
     mentions of the source text absent from the graph, as two findings --
@@ -978,6 +1074,11 @@ def collect_unit_findings(
         untyped_instance_findings(graph, ontology_graph, normalized_fact_namespaces)
     )
     if not is_citation_metadata and not is_non_content:
+        findings.extend(
+            statement_without_subject_findings(
+                graph, normalized_fact_namespaces, subject_contract
+            )
+        )
         findings.extend(
             _domain_adherence_findings(
                 graph,

@@ -20,60 +20,32 @@ from collections.abc import Sequence
 from datetime import date, datetime
 
 from rdflib import RDF, RDFS, BNode, Literal, URIRef
-from rdflib.namespace import DCTERMS, PROV, SDO, SOSA, TIME, XSD
+from rdflib.namespace import TIME, XSD
 from rdflib.term import Node
 
 from ontocast.onto.model import FactsGateRepairKind, GraphRepairRecord
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.well_known import (
+    well_known_datatype_ranges,
+    well_known_temporal_properties,
+)
+from ontocast.onto.xsd_lexical import CALENDAR_DATATYPES
 from ontocast.tool.facts_validation.terms import fact_instances, superclass_closure
 
 #: Datatypes that state a date or a time; a node holding one is dated.
-DATE_DATATYPES: frozenset[URIRef] = frozenset(
-    {
-        XSD.date,
-        XSD.dateTime,
-        XSD.dateTimeStamp,
-        XSD.gYearMonth,
-        XSD.gYear,
-    }
-)
+DATE_DATATYPES: frozenset[URIRef] = CALENDAR_DATATYPES
 
 #: Properties of the well-known vocabularies whose object is a time.
 _TEMPORAL_PROPERTIES: frozenset[URIRef] = frozenset(
-    {
-        SOSA.phenomenonTime,
-        SOSA.resultTime,
-        PROV.atTime,
-        PROV.startedAtTime,
-        PROV.endedAtTime,
-        PROV.generatedAtTime,
-        PROV.invalidatedAtTime,
-        TIME.hasTime,
-        TIME.hasBeginning,
-        TIME.hasEnd,
-        TIME.inside,
-        DCTERMS.date,
-        DCTERMS.created,
-        DCTERMS.issued,
-        DCTERMS.modified,
-        SDO.startDate,
-        SDO.endDate,
-        SDO.datePublished,
-        SDO.dateCreated,
-        SDO.dateModified,
-        URIRef("http://schema.org/startDate"),
-        URIRef("http://schema.org/endDate"),
-        URIRef("http://schema.org/datePublished"),
-        URIRef("http://schema.org/dateCreated"),
-        URIRef("http://schema.org/dateModified"),
-    }
+    URIRef(iri) for iri in well_known_temporal_properties()
 )
 
-#: OWL-Time's value property per datatype, for a node typed ``time:Instant``.
+#: OWL-Time's value property per datatype, for a node typed ``time:Instant``:
+#: the inverse of its published ranges.
 _INSTANT_PROPERTY: dict[URIRef, URIRef] = {
-    XSD.date: TIME.inXSDDate,
-    XSD.gYearMonth: TIME.inXSDgYearMonth,
-    XSD.gYear: TIME.inXSDgYear,
+    URIRef(datatype): URIRef(prop)
+    for prop, datatype in well_known_datatype_ranges().items()
+    if prop.startswith(str(TIME))
 }
 
 _MONTHS: dict[str, int] = {

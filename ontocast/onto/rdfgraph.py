@@ -453,6 +453,13 @@ class RejectedLiteralTriple(BaseModel):
     reason: str | None = None
     expected_range: str | None = None
     expected_datatype: str | None = None
+    #: The subject is a blank node, its id in ``subject``.
+    subject_is_blank: bool = False
+    #: Valid values the subject already held on the predicate when the text
+    #: was set aside; only a value added since resolves it.
+    standing_values: tuple[str, ...] = ()
+    #: Put back on its subject as ``rdfs:comment`` when the unit left its loop.
+    written_back: bool = False
 
 
 def _format_term_for_turtle(term: str) -> str:
@@ -1212,6 +1219,7 @@ class RDFGraph(Graph):
                         predicate=str(predicate),
                         object_lexical=str(obj),
                         datatype=str(obj.datatype),
+                        subject_is_blank=isinstance(subject, BNode),
                     )
                 )
                 continue

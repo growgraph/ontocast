@@ -129,10 +129,16 @@ def test_drop_removes_silent_instances_and_loose_values_with_their_reifiers() ->
     )
     quoted_before = len(_quoted(graph))
 
-    _, dropped, values = drop_unlinked_instances(graph, [CD], DOC)
+    records = drop_unlinked_instances(graph, [CD], DOC)
 
-    assert dropped == [str(_cd("mention"))]
-    assert values == 1
+    # The mention, then the loose value, each with what went with it.
+    assert [(record.source, record.target) for record in records][0] == (
+        str(_cd("mention")),
+        "mention",
+    )
+    assert records[1].target == "loose"
+    assert len(records) == 2
+    assert all(record.triple_count for record in records)
     assert (_cd("mention"), None, None) not in graph
     assert (None, RDFS.label, Literal("loose")) not in graph
     # The statement's value stays.

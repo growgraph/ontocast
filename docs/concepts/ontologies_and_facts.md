@@ -195,14 +195,26 @@ The model is instructed to:
 - extract statements: mint an entity only when a statement is about it (it is
   linked to another entity or holds a value), never for a bare mention;
 - write a structured value (a quantity, a range, a bound) as a blank node, the
-  object of the property that carries it, never as an entity of its own.
+  object of the property that carries it, never as an entity of its own;
+- name what every observation is about: an observation (of `sosa:Observation`,
+  `sosa:Actuation`, `sosa:Sampling` or a class of your catalog under one) is
+  linked to its subject, `sosa:hasFeatureOfInterest` or your catalog's property
+  for the same link, even when the sentence leaves the subject to its context.
+  Declare your catalog's property as a sub-property of
+  `sosa:hasFeatureOfInterest` (or of its inverse `sosa:isFeatureOfInterestOf`,
+  or as an inverse of either) for it to count.
+
+An observation or a value that names no subject is a `statement_without_subject`
+finding in its part; the gap pass asks the model for the link
+(`FACTS_COMPLETION_PASSES`), and `facts_statements_without_subject` counts what
+is left.
 
 The served graph holds statements only. After merging, an entity linked to
 nothing and holding no value is dropped, and so is a value no statement
 carries (`facts_unlinked_dropped`). A value written as an entity of its own,
-typed with a value class, and linked to nothing is dropped too, after the link
-pass has had its chance to attach it. Any other instance still linked to
-nothing is kept and listed in the run manifest (`facts_isolated`).
+typed with a value class, and linked to nothing is dropped too. Any other
+instance still linked to nothing is kept and listed in the run manifest
+(`facts_isolated`).
 
 A **value class** is one whose instances are values, never facts on their own:
 `qudt:QuantityValue`, schema.org's `StructuredValue`, `QuantitativeValue`,

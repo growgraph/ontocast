@@ -107,6 +107,7 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
             numeric_coverage_mandatory="off",
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
+            subject_contract=lambda: None,
         ),
     )
 
@@ -156,7 +157,7 @@ def _poison_sensitive_findings(state, _atomic) -> list[FactsUnitFinding]:
 async def test_a_pass_produces_only_additions(monkeypatch) -> None:
     state = _unit_state()
 
-    async def fake_complete(_state, _atomic, _inventory):
+    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
         return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -185,7 +186,7 @@ async def test_a_regressing_insert_is_rolled_back(monkeypatch) -> None:
     state = _unit_state()
     poison = f'<{_SUBJECT}> <{_POISON}> "bad" .'
 
-    async def fake_complete(_state, _atomic, _inventory):
+    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
         return [_fix(poison)]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -212,7 +213,7 @@ async def test_only_add_fixes_are_kept(monkeypatch) -> None:
     """
     state = _unit_state()
 
-    async def fake_complete(_state, _atomic, _inventory):
+    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
         return [
             _fix(_mev_insert()),
             TripleFix(
@@ -240,7 +241,7 @@ async def test_n_measurements_recovered_counts_precisely(monkeypatch) -> None:
     """One of two missing measurements is addressed; the count reflects that."""
     state = _unit_state(text="a shift of 96 meV and a gap of 12 nm")
 
-    async def fake_complete(_state, _atomic, _inventory):
+    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
         return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -259,7 +260,7 @@ async def test_it_stops_early_once_measurements_are_covered(monkeypatch) -> None
     state = _unit_state()
     calls = {"n": 0}
 
-    async def fake_complete(_state, _atomic, _inventory):
+    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
         calls["n"] += 1
         return [_fix(_mev_insert())]
 
@@ -294,6 +295,7 @@ def _facts_tools(*, completion_passes: int) -> object:
             facts_completion_passes=completion_passes,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
+            subject_contract=lambda: None,
         ),
     )
     return SimpleNamespace(get_atomic_tools=lambda: atomic)
@@ -366,6 +368,7 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
                     ontology_critic_passes=0,
                     catalog_terms=lambda: set(),
                     catalog_roles=lambda: CatalogRoles(),
+                    subject_contract=lambda: None,
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),

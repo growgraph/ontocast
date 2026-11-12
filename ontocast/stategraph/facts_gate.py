@@ -18,7 +18,7 @@ other entry path.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from itertools import combinations
 
 from rdflib import RDF, RDFS, BNode, Literal, URIRef
@@ -53,6 +53,7 @@ from ontocast.tool.facts_validation import (
     facts_connectivity,
     instance_links,
     isolated_instances,
+    isolated_report,
     links_lost,
     materialize_entailed_types,
     record_facts_gate_metrics,
@@ -71,6 +72,8 @@ logger = logging.getLogger(__name__)
 
 #: How many dropped instance IRIs the state keeps; the metric holds the count.
 _UNTYPED_DROPPED_STATE_CAP = 200
+#: Isolated instances listed in the manifest; the count is ``facts_isolated``.
+_ISOLATED_STATE_CAP = 200
 
 #: Finding kinds the un-merge repair can actually act on. Scoring the loop on
 #: *all* errors let SHACL findings -- which un-merging cannot fix -- decide
@@ -251,7 +254,7 @@ def _remove_orphaned_blank_nodes(
 
 def drop_untyped_instances(
     graph: RDFGraph, fact_namespaces: Sequence[str]
-) -> tuple[RDFGraph, list[str]]:
+) -> list[GraphRepairRecord]:
     """Remove every instance that has no concrete type, with its triples.
 
     Runs on the aggregated graph so a type asserted in any unit counts. An
@@ -267,20 +270,23 @@ def drop_untyped_instances(
         fact_namespaces: Namespaces holding minted instances.
 
     Returns:
-        Tuple of (the same graph, dropped instance IRIs ordered by IRI).
+        One ``untyped_dropped`` record per instance, ordered by IRI.
     """
-    untyped = untyped_instances(graph, fact_namespaces)
-    _remove_instances(graph, untyped)
-    if untyped:
+    records = _drop_recorded(
+        graph,
+        untyped_instances(graph, fact_namespaces),
+        FactsGateRepairKind.UNTYPED_DROPPED,
+    )
+    if records:
         logger.info(
-            "Dropped %d untyped instance(s) from the aggregated facts", len(untyped)
+            "Dropped %d untyped instance(s) from the aggregated facts", len(records)
         )
-    return graph, [str(instance) for instance in untyped]
+    return records
 
 
 def drop_unlinked_instances(
     graph: RDFGraph, fact_namespaces: Sequence[str], document: URIRef | None
-) -> tuple[RDFGraph, list[str], int]:
+) -> list[GraphRepairRecord]:
     """Remove every instance that states nothing, and every value no statement carries.
 
     Served facts are statements: an instance linked to no other instance nor
@@ -296,21 +302,55 @@ def drop_unlinked_instances(
         document: The document node; a link to it counts.
 
     Returns:
-        Tuple of (the same graph, dropped instance IRIs ordered by IRI, the
-        number of carrierless values dropped).
+        One ``unlinked_dropped`` record per instance, then per carrierless
+        value (its source the blank node).
     """
-    silent = sorted(silent_instances(graph, fact_namespaces, document), key=str)
-    _remove_instances(graph, silent)
-    orphaned, _ = _remove_orphaned_blank_nodes(graph, carrierless_values(graph))
-    drop_reifiers_mentioning(graph, orphaned)
-    if silent or orphaned:
+    records = _drop_recorded(
+        graph,
+        silent_instances(graph, fact_namespaces, document),
+        FactsGateRepairKind.UNLINKED_DROPPED,
+    )
+    silent = len(records)
+    for value in sorted(carrierless_values(graph), key=str):
+        if (value, None, None) not in graph:
+            continue
+        label = graph.value(value, RDFS.label)
+        orphaned, triple_count = _remove_orphaned_blank_nodes(graph, {value})
+        drop_reifiers_mentioning(graph, orphaned)
+        records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.UNLINKED_DROPPED,
+                source=str(value),
+                target=str(label) if label is not None else "",
+                triple_count=triple_count,
+            )
+        )
+    if records:
         logger.info(
             "Dropped %d instance(s) stating nothing and %d value(s) with no "
             "carrier from the aggregated facts",
-            len(silent),
-            len(orphaned),
+            silent,
+            len(records) - silent,
         )
-    return graph, [str(instance) for instance in silent], len(orphaned)
+    return records
+
+
+def _drop_recorded(
+    graph: RDFGraph, instances: Iterable[URIRef], kind: FactsGateRepairKind
+) -> list[GraphRepairRecord]:
+    """Remove ``instances`` one by one, each with a record: label and triples."""
+    records: list[GraphRepairRecord] = []
+    for instance in sorted(instances, key=str):
+        label = graph.value(instance, RDFS.label)
+        records.append(
+            GraphRepairRecord(
+                kind=kind,
+                source=str(instance),
+                target=str(label) if label is not None else "",
+                triple_count=_remove_instances(graph, [instance]),
+            )
+        )
+    return records
 
 
 def drop_detached_values(
@@ -328,10 +368,9 @@ def drop_detached_values(
     whatever numbers it holds, so it is not a fact. A value linked to
     anything, in either direction, is kept.
 
-    ``isolated`` is the gate's list as the link pass left it: computed before
-    values were named, so a value's own parts, named under it since, are not
-    links. Its parts go with it: the instances and blank nodes it reaches that
-    nothing else points at.
+    ``isolated`` is computed before values are named, so a value's parts are
+    still blank nodes under it. Its parts go with it: the instances and blank
+    nodes it reaches that nothing else points at.
 
     Args:
         graph: Served facts graph, mutated in place.
@@ -341,7 +380,7 @@ def drop_detached_values(
 
     Returns:
         One ``unlinked_dropped`` record per dropped value, ordered by IRI: its
-        label (else its IRI) as target, and the triples removed with it.
+        label as target, and the triples removed with it.
     """
     detached = sorted(
         (
@@ -354,22 +393,15 @@ def drop_detached_values(
     records: list[GraphRepairRecord] = []
     for value in detached:
         parts = _owned_parts(graph, [value], fact_namespaces)
-        removed = {value, *parts}
-        triple_count = sum(
-            1
-            for s, _, o in graph
-            if s in removed or (o in removed and s not in removed)
-        )
         label = graph.value(value, RDFS.label)
         records.append(
             GraphRepairRecord(
                 kind=FactsGateRepairKind.UNLINKED_DROPPED,
                 source=str(value),
-                target=str(label) if label is not None else str(value),
-                triple_count=triple_count,
+                target=str(label) if label is not None else "",
+                triple_count=_remove_instances(graph, [value, *sorted(parts, key=str)]),
             )
         )
-        _remove_instances(graph, [value, *sorted(parts, key=str)])
     if records:
         logger.info(
             "Dropped %d value(s) linked to nothing from the served facts",
@@ -414,11 +446,16 @@ def _owned_parts(
     return {node for node in owned if isinstance(node, URIRef)}
 
 
-def _remove_instances(graph: RDFGraph, instances: Sequence[URIRef]) -> None:
+def _remove_instances(graph: RDFGraph, instances: Sequence[URIRef]) -> int:
     """Remove every triple naming ``instances``, the blank nodes only those
-    triples reached, and the reifiers quoting any removed statement."""
+    triples reached, and the reifiers quoting any removed statement.
+
+    Returns:
+        The number of triples removed, reifiers excluded.
+    """
     if not instances:
-        return
+        return 0
+    removed = 0
     orphan_candidates: set[BNode] = set()
     removed_nodes: set[Node] = set(instances)
     for instance in instances:
@@ -426,13 +463,17 @@ def _remove_instances(graph: RDFGraph, instances: Sequence[URIRef]) -> None:
             *graph.triples((instance, None, None)),
             *graph.triples((None, None, instance)),
         ]:
+            if triple not in graph:
+                continue
             graph.remove(triple)
+            removed += 1
             for term in (triple[0], triple[2]):
                 if isinstance(term, BNode):
                     orphan_candidates.add(term)
-    orphaned, _ = _remove_orphaned_blank_nodes(graph, orphan_candidates)
+    orphaned, orphan_triples = _remove_orphaned_blank_nodes(graph, orphan_candidates)
     removed_nodes |= orphaned
     drop_reifiers_mentioning(graph, removed_nodes)
+    return removed + orphan_triples
 
 
 def run_facts_gate(
@@ -684,29 +725,36 @@ def run_facts_gate(
     state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_INFERRED] = len(
         untyped_before - set(untyped_instances(state.aggregated_facts, fact_namespaces))
     )
-    _, untyped_dropped = drop_untyped_instances(state.aggregated_facts, fact_namespaces)
-    untyped_records = [
-        GraphRepairRecord(
-            kind=FactsGateRepairKind.UNTYPED_DROPPED, source=iri, target=""
-        )
-        for iri in untyped_dropped
+    untyped_records = drop_untyped_instances(state.aggregated_facts, fact_namespaces)
+    state.facts_untyped_dropped = [record.source for record in untyped_records][
+        :_UNTYPED_DROPPED_STATE_CAP
     ]
-    state.facts_untyped_dropped = untyped_dropped[:_UNTYPED_DROPPED_STATE_CAP]
     state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_DROPPED] = len(
-        untyped_dropped
+        untyped_records
     )
-    _, unlinked_dropped, values_dropped = drop_unlinked_instances(
+    unlinked_records = drop_unlinked_instances(
         state.aggregated_facts, fact_namespaces, state.doc_iri
     )
-    untyped_records.extend(
-        GraphRepairRecord(
-            kind=FactsGateRepairKind.UNLINKED_DROPPED, source=iri, target=""
+    # A value is part of the statement that carries it: one isolated with no
+    # carrier is not a fact, whatever numbers it holds. Values are still
+    # blank nodes under their carriers here, so a carried value is linked.
+    unlinked_records.extend(
+        drop_detached_values(
+            state.aggregated_facts,
+            sorted(
+                str(node)
+                for node in isolated_instances(
+                    state.aggregated_facts, fact_namespaces, state.doc_iri
+                )
+            ),
+            tools.get_atomic_tools().value_classes(),
+            fact_namespaces,
         )
-        for iri in unlinked_dropped
     )
-    state.retrieval_metrics[RetrievalMetric.FACTS_UNLINKED_DROPPED] = (
-        len(unlinked_dropped) + values_dropped
+    state.retrieval_metrics[RetrievalMetric.FACTS_UNLINKED_DROPPED] = len(
+        unlinked_records
     )
+    untyped_records.extend(unlinked_records)
 
     state.retrieval_metrics[RetrievalMetric.FACTS_LINKS_REMOVED] = links_lost(
         links_before, state.aggregated_facts
@@ -716,14 +764,11 @@ def run_facts_gate(
     )
     state.retrieval_metrics[RetrievalMetric.FACTS_COMPONENTS] = connectivity.components
     state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED] = connectivity.isolated
-    # Handed to the link pass: once values are named below, an instance holding
-    # one looks linked to it and can no longer be found isolated.
-    state.facts_isolated_instances = sorted(
-        str(node)
-        for node in isolated_instances(
-            state.aggregated_facts, fact_namespaces, state.doc_iri
-        )
-    )
+    # Kept in the served facts and listed: what is still linked to nothing.
+    state.facts_isolated_report = isolated_report(
+        state.aggregated_facts,
+        isolated_instances(state.aggregated_facts, fact_namespaces, state.doc_iri),
+    )[:_ISOLATED_STATE_CAP]
     state.retrieval_metrics[RetrievalMetric.FACTS_TWIN_LABELS] = len(
         twin_labels(state.aggregated_facts, fact_namespaces, state.doc_iri)
     )

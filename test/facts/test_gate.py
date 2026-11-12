@@ -779,8 +779,8 @@ def test_build_cross_unit_object_pairs_ignores_literals() -> None:
     assert build_cross_unit_object_pairs([unit], {}) == []
 
 
-def test_the_gate_hands_its_isolated_instances_to_the_link_pass(monkeypatch) -> None:
-    """An instance holding a structured value stays isolated once values are named."""
+def test_the_gate_lists_an_isolated_statement_it_keeps(monkeypatch) -> None:
+    """An instance holding a structured value but linked to nothing is kept and listed."""
     tools = _fake_tools(_normal_form_aggregator(monkeypatch))
     state = AgentState()
     state.current_domain = "https://x.org"
@@ -802,6 +802,8 @@ cd:limit a q:Rule ; rdfs:label "age limit" ; q:amount [ q:value 23 ] .
     make_merge_facts_node(tools)(state)
     make_validate_facts_node(tools)(state)
 
-    isolated = state.facts_isolated_instances
-    assert [iri.rsplit("/", 1)[-1] for iri in isolated] == ["limit"]
+    isolated = state.facts_isolated_report
+    assert [(item.iri.rsplit("/", 1)[-1], item.kind) for item in isolated] == [
+        ("limit", "holds_value")
+    ]
     assert len(isolated) == state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED]

@@ -150,6 +150,7 @@ Before finalizing output, verify:
 - Did you use `rdfs:Class` or `rdf:Property` anywhere as an instance type? If yes, replace it with its meaningful domain-specific concept class.
 - For each `cd:` instance not linked to any other instance: does the text state a relation you missed? Add it only if the text states it (rule 3b); never invent one. If it is linked to nothing and holds no value, remove it (rule 3).
 - Is every structured value a blank node, the object of the property that carries it (rule 8)?
+- Does every observation name the instance it is about (rule 3c)? If not, link it.
 """
 
 facts_literal_rules_turtle = """\
@@ -243,7 +244,9 @@ _VOCABULARY_PRECEDENCE_OPEN = """2. VOCABULARY PRECEDENCE (open vocabulary): use
 # One rule for both modes: a mode narrows the terms, never the measurements.
 # Every stated quantity has a carrier -- the observation form below needs only
 # an observation class and a result property, which SOSA always offers.
-_QUANTITATIVE_COMPLETENESS = """3a. QUANTITATIVE COMPLETENESS: extract EVERY quantitative statement in the text — every measured value, duration, condition, concentration, ratio, threshold, and uncertainty, including a dimensionless ratio or a parameter of a model. Every one can be expressed: carry the value with the property the provided ontology offers for it, and where it offers none, state the quantity as an observation — the ontology's observation class, else `sosa:Observation` — whose result is the value node itself (`sosa:hasResult`, or the ontology's result property, pointing straight at the typed value — never at a separate result node that holds the value), whose observed property names what was measured, and whose feature of interest (`sosa:hasFeatureOfInterest`, or the ontology's property for it) is the instance the text says was measured — mint that instance when the text names it. A number attached to a stated quantity is a fact and must reach the graph with its verbatim value and unit; a bare citation, page, figure, or equation token is typography and must not (rule 4). Completeness of the measured content is judged, so silently skipping a stated measurement is a defect, not a simplification."""
+_QUANTITATIVE_COMPLETENESS = """3a. QUANTITATIVE COMPLETENESS: extract EVERY quantitative statement in the text — every measured value, duration, condition, concentration, ratio, threshold, and uncertainty, including a dimensionless ratio or a parameter of a model. Every one can be expressed: carry the value with the property the provided ontology offers for it, and where it offers none, state the quantity as an observation — the ontology's observation class, else `sosa:Observation` — whose result is the value node itself (`sosa:hasResult`, or the ontology's result property, pointing straight at the typed value — never at a separate result node that holds the value), whose observed property names what was measured, and whose feature of interest is the instance the text says was measured (rule 3c). A number attached to a stated quantity is a fact and must reach the graph with its verbatim value and unit; a bare citation, page, figure, or equation token is typography and must not (rule 4). Completeness of the measured content is judged, so silently skipping a stated measurement is a defect, not a simplification."""
+
+_SUBJECT = """3c. EVERY STATEMENT NAMES ITS SUBJECT: an observation — of the ontology's observation class or of any class under it — and any value that is not the object of the property carrying it, is a fact only together with what it is about. Link each one to that instance: `sosa:hasFeatureOfInterest` from the observation, or the ontology's property for the same link, in the direction it runs. The subject is the instance the sentence measures or describes; when the sentence does not repeat it, it is the instance the surrounding text is about — the thing under discussion that the measurement belongs to. That link is stated by the text, not guessed. Mint the subject when the text names it and it is not yet in the graph. An observation that names no subject is a defect."""
 
 _CONNECT = """3b. CONNECT WHAT THE TEXT CONNECTS: when the text relates two instances — one is part of, belongs to, takes part in, measures, or describes the other — assert that link with a property of the provided ontology, or, when it has none for that relation, {fallback} (rule 2). A `cd:` instance left with only its type, label and literal values often means a stated relation was missed; look for it. Assert only relations the text states or directly entails: never invent or guess a link. An instance the text relates to nothing these vocabularies can express, and that holds no value, is a mention (rule 3) — leave it out. When the text mentions one thing in several places, use one `cd:` IRI for it throughout this extraction instead of minting one per mention."""
 
@@ -304,7 +307,7 @@ def format_vocabulary_rules(
             vacuous=_NO_VACUOUS_TYPE,
         ),
         "quantitative_completeness_rule": _QUANTITATIVE_COMPLETENESS,
-        "connect_rule": _CONNECT.format(fallback=f"with {fallback}"),
+        "connect_rule": _CONNECT.format(fallback=f"with {fallback}") + "\n" + _SUBJECT,
         "typing_rule": _TYPING.format(fallback=f"from {fallback}"),
         "carrier_fallback_clause": _CARRIER.format(carrier=carrier),
     }

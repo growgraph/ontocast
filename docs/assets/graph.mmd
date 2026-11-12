@@ -26,7 +26,6 @@ graph TD;
 	Merge\20Facts(Merge Facts)
 	Resolve\20Coreference(Resolve Coreference)
 	Validate\20Facts(Validate Facts)
-	Link\20Facts(Link Facts)
 	Structural\20Check(Structural Check)
 	Consistency\20Critic(Consistency Critic)
 	Serialize(Serialize)
@@ -36,7 +35,6 @@ graph TD;
 	Consistency\20Critic -.-> Render\20Facts;
 	Consistency\20Critic -.-> Serialize;
 	Convert\20to\20Text --> Chunk\20Text;
-	Link\20Facts --> Serialize;
 	Merge\20Facts --> Resolve\20Coreference;
 	Normalize\20Ontology\20Updates --> Structural\20Check;
 	Plan\20Ontology --> Update\20Ontology;
@@ -45,7 +43,7 @@ graph TD;
 	Resolve\20Home\20Ontology --> Plan\20Ontology;
 	Structural\20Check --> Consistency\20Critic;
 	Update\20Ontology --> Normalize\20Ontology\20Updates;
-	Validate\20Facts --> Link\20Facts;
+	Validate\20Facts --> Serialize;
 	__start__ --> Convert\20to\20Text;
 	Serialize --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2

@@ -18,8 +18,10 @@ from ontocast.tool.facts_validation.connectivity import (
     facts_connectivity,
     instance_links,
     isolated_instances,
+    isolated_report,
     links_lost,
     silent_instances,
+    states_a_value,
     twin_labels,
 )
 from ontocast.tool.facts_validation.critic_patch import (
@@ -48,6 +50,7 @@ from ontocast.tool.facts_validation.literal_repair import (
     repair_property_aliases,
     resolve_code_literals,
     temporal_range_mismatches,
+    typed_literal,
     unresolved_quarantine,
     write_back_temporal_quarantine,
 )
@@ -82,8 +85,10 @@ __all__ = [
     "facts_connectivity",
     "instance_links",
     "isolated_instances",
+    "isolated_report",
     "links_lost",
     "silent_instances",
+    "states_a_value",
     "twin_labels",
     "CompiledFixes",
     "CriticPatchPolicy",
@@ -113,6 +118,7 @@ __all__ = [
     "literal_ranges",
     "partition_literals_outside_temporal_ranges",
     "temporal_range_mismatches",
+    "typed_literal",
     "unresolved_quarantine",
     "write_back_temporal_quarantine",
     "promote_degenerate_bounds",

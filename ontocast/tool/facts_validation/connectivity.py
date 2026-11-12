@@ -2,7 +2,9 @@
 
 :func:`facts_connectivity` counts the connected components of the served
 graph and the instances linked to nothing; :func:`isolated_instances` and
-:func:`silent_instances` name them; :func:`twin_labels` names the labels
+:func:`silent_instances` name them, :func:`states_a_value` says whether an
+instance states anything, :func:`isolated_report` lists the isolated ones;
+:func:`twin_labels` names the labels
 several instances share; :func:`instance_links` and :func:`links_lost` count
 the links the gate's repairs removed.
 """
@@ -17,6 +19,7 @@ from rdflib.namespace import OWL, RDF, RDFS
 from rdflib.term import Node
 
 from ontocast.onto.annotation import is_annotation
+from ontocast.onto.model import FactsIsolatedInstance
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.scaffolding import is_scaffolding, scaffolding_nodes
 from ontocast.tool.facts_validation.terms import fact_instances
@@ -121,31 +124,6 @@ def facts_connectivity(
     )
 
 
-def value_parts(graph: RDFGraph, node: Node) -> list[Node]:
-    """The parts of ``node``'s values: blank nodes, and IRIs named under it.
-
-    A statement-first value is a blank node or an IRI ``<node>.<property>``;
-    it belongs to ``node``, not to the graph at large. Blank nodes are
-    followed down, so a structured value's own parts are included.
-    """
-    prefix = f"{node}." if isinstance(node, URIRef) else None
-    parts: list[Node] = []
-    frontier: list[Node] = [node]
-    while frontier:
-        for predicate, obj in graph.predicate_objects(frontier.pop()):
-            if predicate == RDF.type or obj in parts:
-                continue
-            if isinstance(obj, BNode) or (
-                prefix is not None
-                and isinstance(obj, URIRef)
-                and str(obj).startswith(prefix)
-            ):
-                parts.append(obj)
-                if isinstance(obj, BNode):
-                    frontier.append(obj)
-    return parts
-
-
 def isolated_instances(
     graph: RDFGraph, fact_namespaces: Sequence[str], document: URIRef | None = None
 ) -> set[URIRef]:
@@ -161,33 +139,64 @@ def isolated_instances(
     return {node for node in instances if sizes[find(node)] == 1}
 
 
+def states_a_value(
+    graph: RDFGraph, node: Node, scaffolding: set[Node] | None = None
+) -> bool:
+    """Whether ``node`` states a value of its own.
+
+    A value is a blank-node object (a structured value, before values are
+    named) or a literal on a property that is not an annotation
+    (:func:`~ontocast.onto.annotation.is_annotation`). Typing, ``owl:sameAs``
+    and provenance scaffolding state nothing. What states no value is a type
+    and a name: a mention, not a fact.
+    """
+    scaffolding = scaffolding if scaffolding is not None else scaffolding_nodes(graph)
+    for triple in graph.triples((node, None, None)):
+        _, predicate, obj = triple
+        if predicate in _NON_LINKS or is_scaffolding(triple, scaffolding):
+            continue
+        if isinstance(obj, BNode) or (
+            isinstance(obj, Literal) and not is_annotation(predicate)
+        ):
+            return True
+    return False
+
+
 def silent_instances(
     graph: RDFGraph, fact_namespaces: Sequence[str], document: URIRef | None = None
 ) -> set[URIRef]:
-    """Isolated instances that state nothing: no value of their own either.
-
-    A value is a blank-node object (a structured value) or a literal on a
-    property that is not an annotation (:func:`~ontocast.onto.annotation.is_annotation`).
-    What is left is a type and a name: a mention, not a fact.
-    """
+    """Isolated instances that state nothing (:func:`states_a_value`)."""
     scaffolding = scaffolding_nodes(graph)
-
-    def states_a_value(instance: URIRef) -> bool:
-        for triple in graph.triples((instance, None, None)):
-            _, predicate, obj = triple
-            if predicate in _NON_LINKS or is_scaffolding(triple, scaffolding):
-                continue
-            if isinstance(obj, BNode) or (
-                isinstance(obj, Literal) and not is_annotation(predicate)
-            ):
-                return True
-        return False
-
     return {
         instance
         for instance in isolated_instances(graph, fact_namespaces, document)
-        if not states_a_value(instance)
+        if not states_a_value(graph, instance, scaffolding)
     }
+
+
+def isolated_report(
+    graph: RDFGraph, isolated: Iterable[URIRef]
+) -> list[FactsIsolatedInstance]:
+    """The isolated instances, ordered by IRI, each with its label and kind.
+
+    ``holds_value`` when it states a value (:func:`states_a_value`): a
+    statement whose subject the graph never names. ``other`` when it states
+    none.
+    """
+    scaffolding = scaffolding_nodes(graph)
+    report: list[FactsIsolatedInstance] = []
+    for node in sorted(isolated, key=str):
+        label = graph.value(node, RDFS.label)
+        report.append(
+            FactsIsolatedInstance(
+                iri=str(node),
+                label=str(label) if label is not None else "",
+                kind="holds_value"
+                if states_a_value(graph, node, scaffolding)
+                else "other",
+            )
+        )
+    return report
 
 
 def twin_labels(
@@ -225,7 +234,9 @@ __all__ = [
     "facts_connectivity",
     "instance_links",
     "isolated_instances",
+    "isolated_report",
     "links_lost",
     "silent_instances",
+    "states_a_value",
     "twin_labels",
 ]

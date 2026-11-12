@@ -11,7 +11,7 @@ write ones that help.
 |---|---|---|
 | `ontology_user_instruction` | The call that names the document's home ontology, the ontology render and its critic | Say which concepts and relations the ontology should model |
 | `ontology_selection_user_instruction` | The call that picks an ontology for each part, in `selected_single_ontology` mode | Say which ontology to prefer when several could fit |
-| `facts_user_instruction` | The facts render, its critic, the completion pass, coreference resolution and the link pass | Say which facts to extract and how to report them |
+| `facts_user_instruction` | The facts render, its critic, the gap pass and coreference resolution | Say which facts to extract and how to report them |
 
 When web search is enabled, the ontology or facts instruction also seeds its
 search queries.

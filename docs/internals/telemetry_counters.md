@@ -47,7 +47,7 @@ clock, recorded by the `_timed` wrapper in `ontocast/stategraph/create.py`:
 `Convert to Text`, `Chunk Text`, `Resolve Home Ontology`, `Plan Ontology`,
 `Update Ontology`, `Normalize Ontology Updates`, `Structural Check`,
 `Consistency Critic`, `Render Facts`, `Merge Facts`, `Resolve Coreference`,
-`Validate Facts`, `Link Facts`, `Serialize`.
+`Validate Facts`, `Serialize`.
 
 The two fan-out nodes, `Update Ontology` and `Render Facts`, add keys written
 in `ontocast/stategraph/node_factories.py`:
@@ -166,13 +166,14 @@ Facts fan-out, written in `ontocast/stategraph/node_factories.py`:
 |---|---|
 | `facts_anchor_count`, `facts_anchor_units` | Distinct anchor ontologies, and units assigned one |
 | `facts_findings_residual`, `facts_mandatory_residual` | Findings left on the facts units after their loops, all and mandatory |
+| `facts_statements_without_subject_rendered`, `facts_statements_without_subject` | `statement_without_subject` findings: on the units' renders, and left after the critic and gap passes |
 | `facts_critic_calls`, `facts_critic_accepted` | Facts critic calls, and those whose verdict let the unit leave the loop |
 | `facts_critic_fixes_applied`, `facts_critic_fixes_residual`, `facts_critic_fixes_noop` | Fixes that reached the graph, fixes left for judgement, and fixes that removed exactly what they added |
 | `facts_critic_fixes_rolled_back`, `facts_critic_patches_rolled_back` | Fixes undone for leaving the unit worse, and passes in which that happened |
 | `facts_critic_fixes_junk_refused` | Inserts refused for minting a placeholder node |
 | `facts_critic_fixes_unresolved_prefix` | Fixes naming a prefix nothing declares |
 | `facts_critic_units_unreviewed`, `facts_critic_units_skipped` | Units whose critic call failed, and units not sent to the critic |
-| `facts_completion_calls`, `facts_completion_triples_inserted`, `facts_completion_measurements_recovered` | The completion pass: calls, triples that stayed, and missed measurements found |
+| `facts_completion_calls`, `facts_completion_triples_inserted`, `facts_completion_measurements_recovered` | The gap pass: calls, triples that stayed, and missed measurements found. Each pass's loop attempt also records `n_subjects_linked` |
 
 Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 `ontocast/stategraph/facts_gate.py` and `ontocast/tool/facts_validation/gate.py`:
@@ -183,17 +184,16 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | `facts_merge_rejections_by_reason` | Those refusals by reason (`same_unit`, `sibling`, `literal_conflict`, `functional_iri_conflict`, `initials_conflict`, `role`, `type`, `lexical`, `cluster_veto`); a pair refused for several reasons counts under each |
 | `facts_merge_repair_passes`, `facts_merge_vetoes`, `facts_merge_repairs_rejected` | The un-merge repair: passes kept, merge pairs vetoed, passes reverted |
 | `facts_coreference_pairs`, `facts_coreference_same`, `facts_coreference_different` | Coreference resolution: pairs put to the model, and those it judged one entity or two |
-| `facts_link_isolated`, `facts_link_proposed`, `facts_link_added`, `facts_link_rejections_by_reason` | The link pass: instances isolated after the gate, links the model proposed, those added, and the rejected ones by reason (`unknown_entity`, `no_isolated_endpoint`, `self_link`, `unknown_property`, `not_object_property`, `domain_mismatch`, `range_mismatch`, `value_endpoint`, `functional_taken`, `evidence_missing`, `evidence_unrelated`, `duplicate`). Present only when the pass made a call |
 | `validated_without_ontology_context` | `true` when the facts were validated with an empty ontology context |
 | `facts_validation_findings`, `facts_validation_errors` | Findings after validation, and those of error severity |
 | `facts_shacl_violations_before`, `facts_shacl_violations_after` | SHACL violations around the automatic repair. Present only when the repair ran |
 | `facts_shacl_repairs`, `facts_shacl_autofix_passes`, `facts_shacl_autofix_reverted` | Repairs applied, passes kept, and whether a pass was reverted. Present only when the repair ran |
 | `facts_untyped_inferred` | Instances untyped after aggregation that the gate typed from the domains and ranges of their links, against the whole ontology context |
 | `facts_untyped_dropped` | Instances dropped at the gate for carrying no concrete `rdf:type` after aggregation; their IRIs are `AgentState.facts_untyped_dropped` |
-| `facts_unlinked_dropped` | Instances dropped at the gate for stating nothing (linked to no other instance nor the document, no value of their own), plus values no statement carries, plus value-typed instances still linked to nothing after the link pass |
+| `facts_unlinked_dropped` | Instances dropped at the gate for stating nothing (linked to no other instance nor the document, no value of their own), plus values no statement carries, plus value-typed instances linked to nothing; each drop is a `facts_gate_repairs` record with its label and the triples removed |
 | `facts_date_values_added` | Nodes standing for a date (object of a temporal property, typed with an OWL-Time class, or labelled with a whole date) that held only a label, given the typed ISO 8601 value the label names |
 | `facts_links_removed` | Links between instances that the gate's SHACL prune and untyped drop removed |
-| `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance (each holds a value of its own); both after the link pass. The instances themselves are listed in the run manifest's `facts_isolated` (IRI, label, `holds_value` or `other`) |
+| `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance (each holds a value of its own), in the served graph. The instances themselves are listed in the run manifest's `facts_isolated` (IRI, label, `holds_value` or `other`) |
 | `facts_twin_labels` | Labels that two or more served instances share: duplicates aggregation left, or distinct things with one name |
 | `structural_ontology_components_max` | The highest connected-component count among the ontologies the structural check examined |
 | `consistency_conflicts` | Conflicts the consistency critic reported |

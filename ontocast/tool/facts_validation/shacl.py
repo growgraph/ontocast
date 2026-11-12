@@ -29,7 +29,7 @@ from ontocast.onto.rdfgraph import (
     retarget_reifiers,
 )
 from ontocast.tool.facts_validation.literal_repair import (
-    _literal_parses_as,
+    typed_literal,
 )
 from ontocast.tool.facts_validation.terms import (
     ValidationPolicy,
@@ -418,13 +418,12 @@ def _shacl_repairs_for(
             and shape is not None
         ):
             target = shapes_graph.value(shape, SH.datatype)
-            lexical = str(violation.value).strip()
-            if (
-                isinstance(target, URIRef)
-                and violation.value.datatype != target
-                and _literal_parses_as(lexical, target)
-            ):
-                retyped = Literal(lexical, datatype=target)
+            retyped = (
+                typed_literal(str(violation.value), target)
+                if isinstance(target, URIRef) and violation.value.datatype != target
+                else None
+            )
+            if retyped is not None:
                 removed = (violation.focus, violation.path, violation.value)
                 replacement = (violation.focus, violation.path, retyped)
                 removals.append(removed)

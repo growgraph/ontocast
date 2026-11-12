@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from difflib import SequenceMatcher
@@ -29,7 +30,6 @@ from ontocast.onto.rdfgraph import (
 )
 from ontocast.onto.well_known import (
     is_well_known_term,
-    well_known_datatype_ranges,
     well_known_role,
 )
 from ontocast.onto.xsd_lexical import TEMPORAL_DATATYPES, is_valid_temporal_lexical
@@ -87,35 +87,55 @@ def literal_ranges(
     """Each predicate with one declared retypable datatype range, with it.
 
     Read from the unit's ``ontology_graph``, the whole catalog
-    (``catalog_roles``) and the well-known vocabularies, so a property the
-    unit's snapshot did not retrieve is still known. A predicate declared with
-    two different datatypes anywhere is left out: no single value fits both.
-    Ranges inherited through ``rdfs:subPropertyOf`` are not followed.
+    (``catalog_roles``, memoised there with the well-known vocabularies'
+    ranges) and the well-known vocabularies, so a property the unit's snapshot
+    did not retrieve is still known. A predicate declared with two different
+    datatypes anywhere is left out: no single value fits both. Ranges
+    inherited through ``rdfs:subPropertyOf`` are not followed.
     """
-    declared: dict[str, set[str]] = {}
-    sources: list[tuple[str, str]] = list(well_known_datatype_ranges().items())
-    if catalog_roles is not None:
-        sources.extend(
-            (predicate, datatype)
-            for predicate, datatypes in catalog_roles.datatype_ranges.items()
-            for datatype in datatypes
-        )
+    roles = catalog_roles if catalog_roles is not None else CatalogRoles()
+    declared = {prop: set(found) for prop, found in roles.declared_ranges().items()}
     if ontology_graph is not None:
-        sources.extend(
-            (str(predicate), str(range_iri))
-            for predicate, range_iri in ontology_graph.subject_objects(RDFS.range)
-            if isinstance(predicate, URIRef)
-            and isinstance(range_iri, URIRef)
-            and str(range_iri).startswith(str(XSD))
-        )
-    for predicate, datatype in sources:
-        declared.setdefault(predicate, set()).add(datatype)
+        for predicate, range_iri in ontology_graph.subject_objects(RDFS.range):
+            if (
+                isinstance(predicate, URIRef)
+                and isinstance(range_iri, URIRef)
+                and str(range_iri).startswith(str(XSD))
+            ):
+                declared.setdefault(str(predicate), set()).add(str(range_iri))
     return {
         URIRef(predicate): URIRef(next(iter(datatypes)))
         for predicate, datatypes in declared.items()
         if len(datatypes) == 1
         and URIRef(next(iter(datatypes))) in _RETYPABLE_RANGE_DATATYPES
     }
+
+
+_INTEGER_LEXICAL = re.compile(r"[+-]?[0-9]+")
+_DECIMAL_LEXICAL = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
+_DOUBLE_LEXICAL = re.compile(
+    r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+)
+
+
+def _numeric_fits(lexical: str, datatype: URIRef) -> bool:
+    """Whether ``lexical`` is a finite number of ``datatype`` as XSD writes it.
+
+    An integer type takes no fraction and keeps its sign constraint; a number
+    in prose such as ``NaN``, ``Infinity`` or ``1_0`` is no value of any.
+    """
+    if datatype in (XSD.integer, XSD.nonNegativeInteger, XSD.positiveInteger):
+        if not _INTEGER_LEXICAL.fullmatch(lexical):
+            return False
+        value = int(lexical)
+        if datatype == XSD.nonNegativeInteger:
+            return value >= 0
+        if datatype == XSD.positiveInteger:
+            return value > 0
+        return True
+    if datatype == XSD.decimal:
+        return bool(_DECIMAL_LEXICAL.fullmatch(lexical))
+    return bool(_DOUBLE_LEXICAL.fullmatch(lexical))
 
 
 # A date with no zone: the one form widened to midnight on a date-time range.
@@ -134,7 +154,7 @@ def _typed_value(lexical: str, datatype: URIRef) -> Literal | None:
     names exactly; ``"June 2021"`` names no day, so it is no date.
     """
     if datatype in _NUMERIC_RANGE_DATATYPES:
-        if canonical_number(lexical) is None:
+        if not _numeric_fits(lexical, datatype):
             return None
         return Literal(lexical, datatype=datatype)
     candidates = [lexical]
@@ -244,6 +264,15 @@ def temporal_range_mismatches(
         datatype = temporal_ranges.get(predicate)
         if datatype is None or _fits_range(str(obj).strip(), datatype):
             continue
+        standing = tuple(
+            sorted(
+                str(value)
+                for value in graph.objects(subject, predicate)
+                if isinstance(value, Literal)
+                and value.datatype == datatype
+                and RDFGraph._is_valid_typed_literal(value)
+            )
+        )
         found.append(
             (
                 (subject, predicate, obj),
@@ -252,6 +281,8 @@ def temporal_range_mismatches(
                     predicate=str(predicate),
                     object_lexical=str(obj),
                     datatype=str(obj.datatype or ""),
+                    subject_is_blank=isinstance(subject, BNode),
+                    standing_values=standing,
                     reason=(
                         "this text is not a value of the property's datatype; "
                         "write a value of that datatype, or state the text with "
@@ -288,9 +319,8 @@ def partition_literals_outside_temporal_ranges(
     return clean, [record for _, record in found]
 
 
-def _quarantined_subject(graph: RDFGraph, item: RejectedLiteralTriple) -> Node:
-    iri = URIRef(item.subject)
-    return iri if (iri, None, None) in graph else BNode(item.subject)
+def _quarantined_subject(item: RejectedLiteralTriple) -> Node:
+    return BNode(item.subject) if item.subject_is_blank else URIRef(item.subject)
 
 
 def _states_text(graph: RDFGraph, subject: Node, text: str) -> bool:
@@ -301,12 +331,17 @@ def _states_text(graph: RDFGraph, subject: Node, text: str) -> bool:
 
 
 def _replaces(obj: Node, item: RejectedLiteralTriple) -> bool:
-    """Whether ``obj`` is a value of the kind ``item`` was set aside for lacking."""
+    """Whether ``obj`` is a value of the kind ``item`` was set aside for lacking.
+
+    A date, time or duration counts only when it was not already standing on
+    the predicate when the text was set aside.
+    """
     if item.expected_datatype:
         return (
             isinstance(obj, Literal)
             and str(obj.datatype) == item.expected_datatype
             and RDFGraph._is_valid_typed_literal(obj)
+            and str(obj) not in item.standing_values
         )
     if item.reason:
         return isinstance(obj, URIRef | BNode)
@@ -322,14 +357,16 @@ def unresolved_quarantine(
 ) -> list[RejectedLiteralTriple]:
     """The quarantined triples ``graph`` has not since made good.
 
-    One is resolved when its subject now states its predicate with a value of
-    the kind it was set aside for lacking (an IRI for an object property, a
-    valid literal of the expected or declared datatype), or states its text
-    under any predicate.
+    One is resolved when it was written back, when its subject now states its
+    predicate with a new value of the kind it was set aside for lacking (an
+    IRI for an object property, a valid literal of the expected or declared
+    datatype), or when the subject states its text under another predicate.
     """
     unresolved: list[RejectedLiteralTriple] = []
     for item in items:
-        subject = _quarantined_subject(graph, item)
+        if item.written_back:
+            continue
+        subject = _quarantined_subject(item)
         if _states_text(graph, subject, item.object_lexical):
             continue
         if any(
@@ -341,28 +378,40 @@ def unresolved_quarantine(
     return unresolved
 
 
+def _in_graph(graph: RDFGraph, node: Node) -> bool:
+    return (node, None, None) in graph or (None, None, node) in graph
+
+
 def write_back_temporal_quarantine(
     graph: RDFGraph, items: Sequence[RejectedLiteralTriple]
-) -> list[GraphRepairRecord]:
+) -> tuple[list[GraphRepairRecord], list[RejectedLiteralTriple]]:
     """Put back, as ``rdfs:comment``, date text the unit still holds aside.
 
     A text set aside for not being a value of a date, time or duration
     datatype -- written plain on such a range, or typed with such a datatype
-    it is not a value of -- is kept verbatim on its subject unless the subject
-    already states it, so nothing is lost and no false date is stated.
-    Quarantined strings on object properties and bad numbers are not written
-    back.
+    it is not a value of -- and not since resolved (:func:`unresolved_quarantine`)
+    is kept verbatim on its subject, so nothing is lost and no false date is
+    stated. A subject the graph no longer names, in either position, gets
+    nothing: a comment would make a node of a comment alone. Quarantined strings on object properties
+    and bad numbers are not written back.
 
     Returns:
-        One ``quarantine_as_comment`` record per text written back.
+        One ``quarantine_as_comment`` record per text written back, and
+        ``items`` with those marked ``written_back``.
     """
+    pending = set(unresolved_quarantine(graph, items))
     records: list[GraphRepairRecord] = []
+    marked: list[RejectedLiteralTriple] = []
     for item in items:
         datatype = item.expected_datatype or item.datatype
-        if URIRef(datatype) not in _TEMPORAL_RANGE_DATATYPES:
-            continue
-        subject = _quarantined_subject(graph, item)
-        if _states_text(graph, subject, item.object_lexical):
+        subject = _quarantined_subject(item)
+        if (
+            item not in pending
+            or not datatype
+            or URIRef(datatype) not in _TEMPORAL_RANGE_DATATYPES
+            or not _in_graph(graph, subject)
+        ):
+            marked.append(item)
             continue
         graph.add((subject, RDFS.comment, Literal(item.object_lexical)))
         records.append(
@@ -372,7 +421,8 @@ def write_back_temporal_quarantine(
                 target=item.subject,
             )
         )
-    return records
+        marked.append(item.model_copy(update={"written_back": True}))
+    return records, marked
 
 
 def repair_literal_type_objects(
@@ -1081,34 +1131,46 @@ def _not_a_failed_cast(record: logging.LogRecord) -> bool:
     return not record.getMessage().startswith("Failed to convert Literal lexical")
 
 
+_QUIET_LOCK = threading.Lock()
+_QUIET_DEPTH = 0
+
+
 @contextmanager
 def _quiet_rdflib_casts() -> Generator[None]:
     """Filter rdflib's warning and traceback for a lexical form that does not parse.
 
     Building a literal is how a lexical form is tried here, so a failure is an
-    answer, not an error.
+    answer, not an error. Re-entrant and thread-safe: the filter stays while
+    any caller is inside.
     """
+    global _QUIET_DEPTH
     rdflib_term = logging.getLogger("rdflib.term")
-    rdflib_term.addFilter(_not_a_failed_cast)
+    with _QUIET_LOCK:
+        if _QUIET_DEPTH == 0:
+            rdflib_term.addFilter(_not_a_failed_cast)
+        _QUIET_DEPTH += 1
     try:
         yield
     finally:
-        rdflib_term.removeFilter(_not_a_failed_cast)
+        with _QUIET_LOCK:
+            _QUIET_DEPTH -= 1
+            if _QUIET_DEPTH == 0:
+                rdflib_term.removeFilter(_not_a_failed_cast)
 
 
-def _literal_parses_as(lexical: str, datatype: URIRef) -> bool:
-    """True when ``lexical`` is a well-formed literal of ``datatype``.
+def typed_literal(lexical: str, datatype: URIRef) -> Literal | None:
+    """``lexical`` as a well-formed literal of ``datatype``, or ``None``.
 
-    Date, time and duration datatypes are judged in rdflib's normal form
-    against their XSD lexical spaces; the others by whether rdflib reads a
-    value from the form.
+    The one constructor the retypes share. A number, date, time or duration is
+    judged by its XSD lexical space (see :func:`_typed_value`); another
+    datatype by whether rdflib reads a value from the form.
     """
+    lexical = lexical.strip()
+    if datatype in _RETYPABLE_RANGE_DATATYPES:
+        return _typed_value(lexical, datatype)
     with _quiet_rdflib_casts():
         value = Literal(lexical, datatype=datatype)
-    temporal = is_valid_temporal_lexical(str(value), datatype)
-    if temporal is not None:
-        return temporal
-    return value.value is not None
+    return value if value.value is not None else None
 
 
 def dedupe_literal_variants(

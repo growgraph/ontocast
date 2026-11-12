@@ -63,6 +63,7 @@ def _atomic() -> AtomicToolBox:
             acceptance_policy=None,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
+            subject_contract=lambda: None,
         ),
     )
 

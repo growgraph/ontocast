@@ -18,7 +18,11 @@ from ontocast.tool.facts_validation import (
     FactsAcceptancePolicy,
     ValidationPolicy,
 )
-from ontocast.tool.facts_validation.terms import CatalogRoles, value_class_base
+from ontocast.tool.facts_validation.terms import (
+    CatalogRoles,
+    SubjectContract,
+    value_class_base,
+)
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_validation.shape import CatalogSurfaceIndex
 
@@ -302,7 +306,23 @@ class AtomicToolBox:
             for namespace, prefix in standard_namespace_prefixes().items()
         }
         bindings.update(self.prefix_table().parse_map())
-        return self.catalog_roles().value_classes(
+        return self.catalog_roles().classes_under(
+            value_class_base(self.quantity_fallback_vocabulary, bindings)
+        )
+
+    def subject_contract(self) -> SubjectContract:
+        """What makes a statement name its subject, over the bound catalog.
+
+        The statement classes (an observation is about its feature of
+        interest), the value classes (:meth:`value_classes`), and the
+        properties linking a statement and its subject in each direction.
+        """
+        bindings = {
+            prefix: namespace
+            for namespace, prefix in standard_namespace_prefixes().items()
+        }
+        bindings.update(self.prefix_table().parse_map())
+        return self.catalog_roles().subject_contract(
             value_class_base(self.quantity_fallback_vocabulary, bindings)
         )
 

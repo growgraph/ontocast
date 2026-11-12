@@ -17,14 +17,7 @@ from rdflib.term import Node
 
 from ontocast.onto.rdfgraph import RDFGraph, retarget_reifiers
 from ontocast.onto.scaffolding import scaffolding_nodes
-
-
-def _local_name(iri: str) -> str:
-    for separator in ("#", "/"):
-        _, sep, local = iri.rpartition(separator)
-        if sep and local:
-            return local
-    return iri
+from ontocast.tool.facts_validation.terms import _local_name
 
 
 def _content_key(graph: RDFGraph, node: BNode) -> tuple[tuple[str, str], ...]:

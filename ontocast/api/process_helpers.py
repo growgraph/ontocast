@@ -15,7 +15,6 @@ from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
 from ontocast.config.snapshot import config_snapshot
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
@@ -37,7 +36,6 @@ from ontocast.onto.run_meter import (
 )
 from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph.facts_gate import run_facts_gate
-from ontocast.stategraph.facts_link import run_link_pass
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.llm import LLMConfigurationError
@@ -798,9 +796,7 @@ async def persist_unit_pipeline_outputs(
             document_metadata=_effective_document_metadata(state),
             doc_namespace=state.doc_namespace,
         ).graph
-        await finish_unit_pipeline_facts(
-            state, ontology_graph, tools, [facts_result.content_unit]
-        )
+        await finish_unit_pipeline_facts(state, ontology_graph, tools)
     await asyncio.to_thread(serialize_agent_state, state, tools)
 
 
@@ -823,18 +819,16 @@ async def finish_unit_pipeline_facts(
     state: AgentState,
     ontology_graph: RDFGraph,
     tools: ToolBox,
-    units: list[ContentUnit],
 ) -> None:
-    """The gate, then the link pass, for the single-unit path.
+    """The validation gate, for the single-unit path.
 
-    The document graph reaches them at VALIDATE_FACTS and LINK_FACTS; the unit
-    pipeline does not run the graph, so both single-unit callers -- the CLI
+    The document graph reaches it at VALIDATE_FACTS; the unit pipeline does
+    not run the graph, so both single-unit callers -- the CLI
     ``--use-unit-pipeline`` batch path and the ``/process_unit`` route -- call
     this after aggregation. Without it they would ship facts with no
     functional-violation, coreference or SHACL check at all.
     """
     await asyncio.to_thread(validate_unit_pipeline_facts, state, ontology_graph, tools)
-    await run_link_pass(state, tools, ontology_graph, units)
 
 
 def _merge_workflow_state_into_agent_state(

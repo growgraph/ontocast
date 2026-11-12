@@ -1,23 +1,20 @@
-"""A value linked to nothing is not a fact: it is dropped after the link pass."""
+"""A value linked to nothing is not a fact: the validation gate drops it."""
 
 from __future__ import annotations
-
-from types import SimpleNamespace
-from typing import Any
 
 import pytest
 from rdflib import URIRef
 
 from ontocast.config.settings import FactsValidationConfig
 from ontocast.onto.content_unit import ContentUnit, OutputType
-from ontocast.onto.enum import RetrievalMetric
-from ontocast.onto.model import FactsGateRepairKind, FactsLinkProposal
-from ontocast.onto.prefixes import PrefixTable
+from ontocast.onto.model import FactsGateRepairKind
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.state import AgentState
+from ontocast.stategraph.facts_gate import drop_detached_values
 from ontocast.tool.agg.rewriter import add_reified_provenance
-from ontocast.tool.agg.value_names import name_values
-from ontocast.tool.facts_validation.connectivity import isolated_instances
+from ontocast.tool.facts_validation.connectivity import (
+    isolated_instances,
+    isolated_report,
+)
 from ontocast.tool.facts_validation.terms import CatalogRoles, value_class_base
 
 pytestmark = pytest.mark.unit
@@ -80,118 +77,50 @@ def _unit() -> ContentUnit:
     return ContentUnit(text=TEXT, index=0, doc_iri=URIRef(DOC), type=OutputType.FACTS)
 
 
-def _gated_state(unit: ContentUnit) -> AgentState:
-    """The state as the gate leaves it: isolated instances found, then values named."""
+def _value_classes() -> frozenset[str]:
+    roles = CatalogRoles.of([_ontology()])
+    return roles.classes_under(
+        value_class_base(FactsValidationConfig().quantity_fallback_vocabulary, {})
+    )
+
+
+def test_values_linked_to_nothing_are_dropped_with_their_parts() -> None:
+    """As the gate sees the graph: before values are named, carried ones are blank."""
     graph = RDFGraph()
     graph.parse(data=FACTS, format="turtle")
     for s, p, o in list(graph):
-        add_reified_provenance(graph, s, p, o, URIRef(unit.iri_absolute))
-    state = AgentState()
-    state.current_domain = "https://x.org"
-    state.doc_hid = "1"
-    state.aggregated_facts = graph
-    state.facts_isolated_instances = sorted(
-        str(node) for node in isolated_instances(graph, [D], URIRef(DOC))
-    )
-    metrics = state.retrieval_metrics
-    metrics[RetrievalMetric.FACTS_ISOLATED] = len(state.facts_isolated_instances)
-    metrics[RetrievalMetric.FACTS_COMPONENTS] = 6
-    metrics[RetrievalMetric.FACTS_UNLINKED_DROPPED] = 1
-    name_values(graph)
-    return state
-
-
-def _tools(**settings: Any) -> Any:
-    facts_validation = FactsValidationConfig(**settings)
-    roles = CatalogRoles.of([_ontology()])
-    value_classes = roles.value_classes(
-        value_class_base(facts_validation.quantity_fallback_vocabulary, {})
-    )
-    return SimpleNamespace(
-        prefix_table=lambda: PrefixTable({}, {}),
-        get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: value_classes),
-        config=SimpleNamespace(
-            get_tool_config=lambda: SimpleNamespace(facts_validation=facts_validation)
-        ),
-    )
-
-
-def _subjects(graph: RDFGraph) -> set[str]:
-    return {str(s) for s in graph.subjects() if isinstance(s, URIRef)}
-
-
-@pytest.mark.anyio
-async def test_values_linked_to_nothing_are_dropped_with_their_parts() -> None:
-    from ontocast.stategraph.facts_link import run_link_pass
-
-    unit = _unit()
-    state = _gated_state(unit)
-    assert set(state.facts_isolated_instances) == {
+        add_reified_provenance(graph, s, p, o, URIRef(_unit().iri_absolute))
+    isolated = sorted(str(node) for node in isolated_instances(graph, [D], URIRef(DOC)))
+    assert set(isolated) == {
         D + "laser",
         D + "pulseEnergy",
         D + "probeRange",
         D + "lonelyLaser",
     }
 
-    await run_link_pass(state, _tools(link_pass=False), _ontology(), [unit])
+    records = drop_detached_values(graph, isolated, _value_classes(), [D])
 
-    served = _subjects(state.aggregated_facts)
+    served = {str(s) for s in graph.subjects() if isinstance(s, URIRef)}
     # Isolated values go, the subclass closure finding the energy and the
-    # interval values, and so do the bounds named under the interval.
+    # interval values, and the bounds under the interval go with it.
     assert D + "pulseEnergy" not in served
-    assert not {s for s in served if s.startswith(D + "probeRange")}
+    assert D + "probeRange" not in served
     # An isolated instance that is not a value holds a statement about itself.
     assert D + "lonelyLaser" in served
     # A value linked to anything is kept: by a carrier, or out to an activity.
-    assert D + "laser.hasPulseEnergy" in served
+    assert list(graph.objects(URIRef(D + "laser"), URIRef(Q + "hasPulseEnergy")))
     assert D + "measuredValue" in served
-    assert state.facts_isolated_instances == [D + "laser", D + "lonelyLaser"]
-    metrics = state.retrieval_metrics
-    assert metrics[RetrievalMetric.FACTS_UNLINKED_DROPPED] == 3
-    assert metrics[RetrievalMetric.FACTS_ISOLATED] == 2
-    assert metrics[RetrievalMetric.FACTS_COMPONENTS] == 4
-    assert [(r.kind, r.source) for r in state.facts_gate_repairs] == [
-        (FactsGateRepairKind.UNLINKED_DROPPED, D + "probeRange"),
-        (FactsGateRepairKind.UNLINKED_DROPPED, D + "pulseEnergy"),
+    assert [(r.kind, r.source, r.target) for r in records] == [
+        (FactsGateRepairKind.UNLINKED_DROPPED, D + "probeRange", "2.1-2.5 eV"),
+        (FactsGateRepairKind.UNLINKED_DROPPED, D + "pulseEnergy", "2.41 eV"),
     ]
+    assert all(record.triple_count for record in records)
     # No statement about a dropped node survives, nor a reifier quoting one.
     for node in (D + "pulseEnergy", D + "probeRange"):
-        assert not list(state.aggregated_facts.triples((None, None, URIRef(node))))
+        assert not list(graph.triples((None, None, URIRef(node))))
         assert not [
-            triple
-            for _, triple in state.aggregated_facts.reifications
-            if URIRef(node) in triple
+            triple for _, triple in graph.reifications if URIRef(node) in triple
         ]
-
-
-@pytest.mark.anyio
-async def test_a_value_the_link_pass_attaches_is_kept(monkeypatch) -> None:
-    from ontocast.agent import link_facts
-    from ontocast.stategraph.facts_link import run_link_pass
-
-    async def propose(state, tools, candidates, graph, ontology_graph):
-        entities = candidates.entities()
-        return [
-            FactsLinkProposal(
-                subject=entities.index(D + "laser") + 1,
-                property="q:hasPulseEnergy",
-                object=entities.index(D + "pulseEnergy") + 1,
-                evidence="The laser delivered pulses of 2.41 eV",
-            )
-        ]
-
-    monkeypatch.setattr(link_facts, "propose_links", propose)
-    unit = _unit()
-    state = _gated_state(unit)
-
-    await run_link_pass(state, _tools(link_pass=True), _ontology(), [unit])
-
-    pulse = URIRef(D + "pulseEnergy")
-    assert (URIRef(D + "laser"), URIRef(Q + "hasPulseEnergy"), pulse) in (
-        state.aggregated_facts
-    )
-    assert D + "pulseEnergy" in _subjects(state.aggregated_facts)
-    assert D + "probeRange" not in _subjects(state.aggregated_facts)
 
 
 _BOOKS = "https://ex.org/books#"
@@ -218,7 +147,7 @@ def test_value_classes_come_from_the_whole_catalog_and_the_configuration() -> No
     )
     roles = CatalogRoles.of([amounts, fees])
 
-    value_classes = roles.value_classes(
+    value_classes = roles.classes_under(
         value_class_base({"value_class": "bk:Amount"}, {"bk": _BOOKS})
     )
 
@@ -229,20 +158,17 @@ def test_value_classes_come_from_the_whole_catalog_and_the_configuration() -> No
 
 
 def test_the_isolated_report_says_what_each_island_holds() -> None:
-    from ontocast.stategraph.facts_link import isolated_report
-
     graph = RDFGraph()
     graph.parse(
         data=f"""@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
         @prefix q: <{Q}> . @prefix d: <{D}> .
         d:reading a q:Activity ; rdfs:label "pump power reading" ;
-            q:hasResult d:reading.hasResult .
-        d:reading.hasResult a q:Energy ; rdfs:label "3 kW" .
+            q:hasResult [ a q:Energy ; rdfs:label "3 kW" ] .
         d:venue a q:Laser ; rdfs:label "the venue" .""",
         format="turtle",
     )
 
-    report = isolated_report(graph, [D + "reading", D + "venue"])
+    report = isolated_report(graph, [URIRef(D + "venue"), URIRef(D + "reading")])
 
     assert [(r.iri, r.label, r.kind) for r in report] == [
         (D + "reading", "pump power reading", "holds_value"),

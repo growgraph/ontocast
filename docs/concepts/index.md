@@ -158,15 +158,9 @@ ontology. It runs when `RENDER_MODE` is `facts` or `ontology_and_facts`.
    the same subject (a range whose bounds were merged), and, with shapes
    loaded, SHACL violations. A finding that points to a wrong
    merge undoes that merge. See [Validation and
-   SHACL](../guides/validation.md).
-7. **Link.** An instance the merged graph leaves linked to nothing, though
-   it holds a value, is shown to the model with the passage that mentions it,
-   in one call per document. Only links the passage states, between listed
-   instances and with listed properties, are proposed; code checks each one
-   and adds the valid ones. With no isolated instance, no call is made
-   ([`FACTS_LINK_PASS`](../reference/configuration/facts-validation.md#facts_link_pass),
-   on by default). Instances still linked to nothing are kept and listed in the
-   run manifest.
+   SHACL](../guides/validation.md). A value linked to nothing is dropped, with
+   a record; any other instance still linked to nothing is kept and listed in
+   the run manifest.
 
 ## Serialize
 
@@ -211,8 +205,10 @@ Inside each block, every unit runs the same short loop:
   (on by default) and
   [`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes)
   (off by default; at one pass, spent only on a part with a mandatory finding).
-- **Completion passes** (facts only, off by default) ask the model for
-  measurements the render missed, adding facts and never removing any; see
+- **Gap passes** (facts only, one by default) run only on a part with a gap:
+  a measurement the render missed, or an observation that names nothing it is
+  about. A small call (no ontology chapter) adds the missing facts or links and
+  never removes any; see
   [`FACTS_COMPLETION_PASSES`](../reference/configuration/facts-validation.md#facts_completion_passes).
 
 So at the defaults, an ontology unit costs one call and a facts unit usually

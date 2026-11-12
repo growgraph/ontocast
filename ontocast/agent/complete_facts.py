@@ -1,8 +1,10 @@
-"""Insert-only facts completion agent.
+"""Insert-only facts gap agent.
 
-Runs after the facts render/critic loop, only when the numeric-coverage
-inventory still lists measurements the render missed (see
-:func:`ontocast.tool.facts_validation.unit_findings.unit_numeric_inventory`).
+Runs after the facts render/critic loop, only when the unit has a gap: the
+numeric-coverage inventory still lists measurements the render missed (see
+:func:`ontocast.tool.facts_validation.unit_findings.unit_numeric_inventory`),
+or a statement or value is linked to nothing (``statement_without_subject``
+findings).
 Mirrors :mod:`ontocast.agent.criticise_facts` in shape -- one LLM call parsed
 into :class:`~ontocast.onto.model.TripleFix` fixes -- but proposes insertions
 instead of judging what is already there.
@@ -15,18 +17,20 @@ worse is rolled back exactly the way a bad critic fix would be.
 """
 
 import logging
+from collections.abc import Sequence
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import LLMPhase
-from ontocast.onto.model import FactsCompletionReport, TripleFix
+from ontocast.onto.model import FactsCompletionReport, FactsUnitFinding, TripleFix
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import text_template, user_template
 from ontocast.prompt.complete_facts import (
     build_catalog_subjects_chapter,
     build_missing_measurements_chapter,
+    build_subject_gaps_chapter,
     build_term_sheet,
     completion_instruction,
     output_instruction_for,
@@ -72,6 +76,7 @@ def _build_prompt() -> PromptTemplate:
             "user_instruction",
             "text_chapter",
             "missing_measurements_chapter",
+            "subject_gaps_chapter",
             "output_instruction",
             "format_instructions",
         ],
@@ -82,8 +87,9 @@ async def complete_facts(
     state: UnitFactsState,
     atomic: AtomicToolBox,
     inventory: NumericInventory,
+    subject_gaps: Sequence[FactsUnitFinding] = (),
 ) -> list[TripleFix]:
-    """Propose insert-only fixes recovering measurements the render missed.
+    """Propose insert-only fixes closing the unit's gaps.
 
     Args:
         state: The unit's current facts state. Read-only here -- the unit
@@ -91,15 +97,16 @@ async def complete_facts(
         atomic: Toolbox for the LLM call and the unit's quantity vocabulary.
         inventory: The unit's missing-measurement inventory, already computed
             by the caller so the completion pass and the NUMERIC_COVERAGE
-            finding agree on what is missing. An empty inventory short-
-            circuits with no call.
+            finding agree on what is missing.
+        subject_gaps: The unit's ``statement_without_subject`` findings.
+            With no gap of either kind there is no call.
 
     Returns:
         Proposed fixes, action ``ADD`` only. Anything else the model returns
         is dropped defensively rather than trusted -- this pass is
         insert-only by contract, not by the model's cooperation.
     """
-    if not inventory.measurements:
+    if not inventory.measurements and not subject_gaps:
         return []
 
     llm_tool = await atomic.get_llm_tool(state.budget_tracker)
@@ -119,6 +126,9 @@ async def complete_facts(
         fact_graph, collect_catalog_terms(ontology_graph)
     )
     missing_measurements_chapter = build_missing_measurements_chapter(inventory)
+    subject_gaps_chapter = build_subject_gaps_chapter(
+        fact_graph, subject_gaps, atomic.subject_contract() if subject_gaps else None
+    )
 
     user_instruction = (
         user_template.format(user_instruction=state.facts_user_instruction)
@@ -136,6 +146,7 @@ async def complete_facts(
         "user_instruction": user_instruction,
         "text_chapter": text_chapter,
         "missing_measurements_chapter": missing_measurements_chapter,
+        "subject_gaps_chapter": subject_gaps_chapter,
         "output_instruction": output_instruction_for(profile.format),
         "format_instructions": profile.format_instructions(
             FactsCompletionReport, web_search_enabled=False

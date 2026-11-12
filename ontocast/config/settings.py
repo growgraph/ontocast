@@ -3033,40 +3033,18 @@ class FactsValidationConfig(BaseSettings):
             "0 reviews every unit."
         ),
     )
-    link_pass: bool = Field(
-        default=True,
-        description=(
-            "After the validation gate, one LLM call per document that still "
-            "has isolated instances (linked to no other instance). The model "
-            "may propose only links its passage states, between a listed "
-            "isolated instance and a listed instance, with a listed property;"
-            " code checks each against the source text (the quoted evidence "
-            "must occur there and name both ends), the property's kind, "
-            "domain and range and its functional constraint, and adds only "
-            "valid links, with provenance; a structured value is reached only "
-            "through a property whose domain or range is shown to fit it. "
-            "Instances still isolated afterwards are kept and listed in the "
-            "run manifest."
-        ),
-    )
-    link_pass_max_isolated: int = Field(
-        default=20,
-        ge=1,
-        description=(
-            "Most isolated instances one link pass shows the model, earliest "
-            "in the document first."
-        ),
-    )
     completion_passes: int = Field(
-        default=0,
+        default=1,
         ge=0,
         description=(
-            "Insert-only completion passes per facts unit, in LLM calls, run "
-            "after the critic loop when numbers written with a unit are still"
-            " missing from the graph. A pass sees a term sheet, the unit's "
-            "typed subjects, the text and the missing measurements, and each "
-            "subject it adds is kept or rolled back by the same regression "
-            "check as a critic fix. 0 disables it."
+            "Insert-only gap passes per facts unit, in LLM calls, run after "
+            "the critic loop only when the unit has a gap: numbers written "
+            "with a unit missing from the graph, or statements and values "
+            "linked to nothing (statement_without_subject findings). A pass "
+            "sees a term sheet, the unit's typed subjects, the text and the "
+            "gaps, not the ontology chapter; each fix it adds is kept or "
+            "rolled back by the same regression check as a critic fix. A "
+            "unit with no gap costs nothing. 0 disables it."
         ),
     )
     shacl_max_triples: int = Field(

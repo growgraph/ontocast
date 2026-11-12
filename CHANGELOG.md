@@ -22,11 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - End-of-document clean-up of the ontology delta: IRIs under `example.org`/`.com`/`.net` outside `CURRENT_DOMAIN` (`example_namespace_dropped`), one datatype range per property (`datatype_ranges_normalized`), `Thing` as range, domain or second parent (`vacuous_upper_terms_dropped`).
 - The same clean-up drops terms newly declared outside the home namespace (`minted_outside_home_dropped`) and subjects that are not terms or SKOS concepts: facts, individuals, undeclared subjects (`non_term_subjects_dropped`). It runs before consolidation.
 - `home_ontology` in the run manifest: the document's home ontology (`iri`, `ontology_id`, `namespace`, `extends`).
-- Link pass (`Link Facts` node, `FACTS_LINK_PASS`, on by default; `FACTS_LINK_PASS_MAX_ISOLATED`): after validation, one call per document with isolated instances proposes links their passages state; code checks the ends, the property's kind, domain, range and functional constraint and the quoted evidence, which must name both ends in its sentence or the next one either side (`evidence_unrelated`); an isolated statement is located and named by its own labels or by its values' labels, never by a bare number, reaches a value only through a domain or range shown to fit it, and adds only valid links, with provenance. LLM phase `facts_link`; metrics `facts_link_*`; `facts_isolated` and `facts_components` describe the graph after it. Also on `/process_unit`. The instances still linked to nothing are kept and listed in the run manifest (`facts_isolated`).
+- `statement_without_subject` unit finding (mandatory): an observation that states a value with no subject property from or to it (`sosa:hasFeatureOfInterest`, `sosa:isFeatureOfInterestOf`, and the catalog's sub-properties and inverses of either), or a value linked to no other instance of its part. Statement classes are SOSA's `Observation`, `Actuation` and `Sampling` and every catalog class under one. Metrics `facts_statements_without_subject_rendered` and `facts_statements_without_subject`.
+- Rule 3c in the facts prompt: every observation names what it is about, in the direction its property runs, and the final checklist checks it. The term sheet lists `sosa:hasFeatureOfInterest`, `sosa:observedProperty` and `sosa:hasResult` beside a catalog's observation classes.
 
 ### Changed
 
 - Rule 3a: an observation's result is the value node itself, not a separate result node holding the value, and its feature of interest is the instance the text says was measured.
+- `FACTS_COMPLETION_PASSES` defaults to 1 and the pass becomes the gap pass: it runs only on a unit with a missed measurement or a `statement_without_subject` finding, and also asks for the missing subject links. A unit with no gap makes no call.
+- The gate drops value-typed instances linked to nothing before values are named, and every gate drop (`untyped_dropped`, `unlinked_dropped`) records the node's label and the triples removed; `facts_isolated` (manifest) lists what is left.
 
 - A proposed new home ontology is overridden by the catalog ontology whose terms the text names at least five times (`home_new_overridden`).
 - At `ONTOLOGY_CRITIC_PASSES=1` the ontology critic is called only for a unit with a mandatory deterministic finding; 2 or more review every unit. The default stays 0 (no ontology critic).
@@ -51,11 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Datatype ranges for retyping are read from the whole catalog and from the published ranges of PROV-O, SOSA and OWL-Time, not only the unit's retrieved context; a property declared with two datatypes is not retyped.
 - A calendar text naming exactly one value of a date range (`"29 June 2021"` on `xsd:date`) is retyped to it.
 - Critic and completion patches get the same retyping and date check as a render.
-- A quarantined triple no longer counts as a finding once the unit's graph states a valid value for it or keeps its text.
+- A quarantined triple no longer counts as a finding once the unit's graph states a new valid value for it or keeps its text; a blank-node subject is recorded as one, and text whose subject is gone is not written onto a new node.
+- No number outside its datatype is retyped onto a numeric range (`3.5` on `xsd:integer`, `NaN`, `Infinity`, `1_0`), and date, time and duration forms are checked after collapsing whitespace.
+- Retrieval keeps no hit scored at or below zero, so a channel with many such ties (atoms with no neighbourhood) is no longer fetched whole.
 - Checking a literal against a datatype no longer logs an rdflib traceback.
 - A predicate that exists nowhere (not a catalog term, not a real well-known term) but spells the exact local name of one catalog property in another namespace is rewritten to that property (`property_alias` repair); a real term of a well-known vocabulary is never rewritten.
 
-- A value the model writes as an entity of its own and links to nothing is dropped after the link pass, like a blank-node value with no carrier. Value classes are `qudt:QuantityValue`, schema.org's structured values, the configured `value_class`, and every catalog class under one of them.
+- A value the model writes as an entity of its own and links to nothing is dropped at the gate, like a blank-node value with no carrier. Value classes are `qudt:QuantityValue`, schema.org's structured values, the configured `value_class`, and every catalog class under one of them.
 
 - An ontology whose description is longer than 2000 characters loads; a catalog listing shows its start.
 

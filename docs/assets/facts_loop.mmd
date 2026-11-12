@@ -28,7 +28,7 @@ flowchart TD;
 	done([Return unit state])
 	exhausted([Return (retries exhausted)])
 	skip_critic{citation metadata, or fewer than<br/>FACTS_CRITIC_MIN_TRIPLES triples?}
-	completion[Completion passes<br/>0 … FACTS_COMPLETION_PASSES<br/>(insert-only)]
+	completion[Gap passes, on a gap only<br/>0 … FACTS_COMPLETION_PASSES<br/>(insert-only)]
 	start --> ctx;
 	ctx --> render_loop;
 	render_loop --> render_facts;

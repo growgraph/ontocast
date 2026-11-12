@@ -25,39 +25,6 @@ and stay in force when the gate re-aggregates. [Entity
 disambiguation](../concepts/entity_disambiguation.md#coreference-the-guards-cannot-settle)
 describes it.
 
-After the gate, `LINK_FACTS` (and the same pass on `/process_unit`) makes one
-call per document that still has isolated instances (`FACTS_LINK_PASS`, on by
-default): each is shown with the passage of its source unit that names it, by
-one of its labels or literals or by the label of one of its values (the mention
-as written; a bare number names nothing), with up to eight instances it may
-link to (never a value named under another instance, which is part of it) and
-the object properties whose domain and range fit; the model proposes only links
-the passage states. Code keeps a proposal only when both ends are listed and
-one is isolated, the property is a listed object property, the declared domain
-and range admit the ends, a value (an instance of a value class, below) is
-reached only through a domain or range shown to fit it, a functional property
-is still free, the quoted evidence occurs in a source unit of the isolated end,
-and both ends are named in the sentence that holds the evidence or the one on
-either side (`evidence_unrelated` otherwise). Each kept link is added with a
-reifier deriving it from that unit; nothing is removed. The links are not
-re-checked by the gate. Metrics: `facts_link_isolated`, `facts_link_proposed`,
-`facts_link_added`, `facts_link_rejections_by_reason`; the links are on
-`AgentState.facts_links_added`.
-
-Then, whether the pass ran or not, every instance still isolated whose type
-is a value class is dropped with the parts only it points at
-(`drop_detached_values`): a value linked to nothing has lost its statement. A
-value linked to anything, in either direction, is kept. The value classes are
-the well-known ones (`qudt:QuantityValue`; schema.org's `StructuredValue`,
-`QuantitativeValue`, `PropertyValue`, `MonetaryAmount`), the configured
-`FACTS_QUANTITY_FALLBACK_VOCABULARY` `value_class`, and every class the whole
-catalog places under one of them. Records are kind `unlinked_dropped`, with the
-value's label and the triples removed; `facts_unlinked_dropped` counts them;
-`facts_isolated` and `facts_components` are rewritten. The instances still
-isolated are listed in the run manifest (`facts_isolated`: IRI, label, and
-`holds_value` or `other`), and kept. Validation findings describe the graph the
-gate validated.
-
 No layer withholds output. A unit that leaves the loop without being accepted
 keeps its graph: the reduce merges it and logs it as salvaged from a
 non-converged loop. The gate serves the facts it repaired, with the remaining
@@ -92,8 +59,8 @@ policies.
     4. compiles the critique into one patch per fix, screens it, and applies
        the fixes one at a time (no call);
     5. re-derives acceptance from the patched graph.
-4. **Completion passes** (facts only), when enabled and measurements are still
-   missing.
+4. **Gap passes** (facts only), when the unit still misses a measurement or
+   holds a statement that names nothing it is about.
 
 A pass ends the loop early when it kept no fix and either rolled one back or
 left no mandatory finding: the next pass would see the same graph and the same
@@ -113,7 +80,8 @@ the unit leaves the loop marked failed at the critique stage.
   skip is recorded as `critic_skipped` and bills no call.
 - **`ONTOLOGY_CRITIC_PASSES`** defaults to 0. The ontology loop then costs one
   call per unit, and its findings are collected once at the end for telemetry.
-- **`FACTS_COMPLETION_PASSES`** defaults to 0 ([below](#completion-passes)).
+- **`FACTS_COMPLETION_PASSES`** defaults to 1 ([below](#gap-passes)); a unit
+  with no gap makes no call.
 
 All four are documented in the [facts-validation](../reference/configuration/facts-validation.md)
 and [ontology-validation](../reference/configuration/ontology-validation.md)
@@ -204,6 +172,7 @@ fix. Every kind is mandatory except numeric coverage:
 | `unknown_term` | A term under `example.org`, a predicate or class minted in the facts namespace, or a term missing from a closed catalog namespace |
 | `literal_type_object` | An `rdf:type` written as a string that layer 1 could not resolve |
 | `domain_violation` | A predicate asserted on a subject whose stated type contradicts the predicate's `rdfs:domain` |
+| `statement_without_subject` | An instance that states a value but names nothing it is about. For a statement class (`sosa:Observation`, `sosa:Actuation`, `sosa:Sampling`, or a catalog class under one): no subject property from it (`sosa:hasFeatureOfInterest`) nor to it (`sosa:isFeatureOfInterestOf`), counting the catalog's sub-properties and inverses of either; a link to its observed property is not a subject. For a value class: linked to no other instance of the unit. An instance of another class stating its own values is a fact about itself and is not reported. Suggestions are the unit's other instances. Not raised on citation or non-content units; counted per document as `facts_statements_without_subject_rendered` (on the renders) and `facts_statements_without_subject` (after the passes) |
 | `untyped_instance` | A facts-namespace IRI in subject or IRI-object position with no `rdf:type` naming a concrete class: one outside the facts namespaces that is neither a metaclass (`owl:Class`, `rdf:Property`, `owl:NamedIndividual`, …) nor vacuous (`owl:Thing`, `rdfs:Resource`, `schema:Thing`). Blank nodes and the chunk and document nodes are not instances. Suggestions are the domain and range classes of the predicates the instance carries, then catalog classes sharing a name token with its label |
 | `domain_adherence` | Too few of the render's schema terms come from the ontology context (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, judged from `FACTS_DOMAIN_ADHERENCE_MIN_TERMS` terms up); not judged on citation or non-content units |
 | `scalar_as_bounds` | One value written into two single-valued numeric properties of one node |
@@ -337,22 +306,29 @@ unit's output. `facts_critic_accepted` counts the critic calls that accepted.
 The ontology critic also records, as `incumbent_accepted` on each attempt, what
 a score rule (`success`, or a score above 90) would have decided.
 
-### Completion passes
+### Gap passes
 
 The critic judges whether what was rendered is right, not whether something is
-missing. `FACTS_COMPLETION_PASSES` adds insert-only passes after the critic
-loop, run only while the numeric inventory still lists a measurement (a number
-with its unit) absent from the graph. Each pass:
+missing. `FACTS_COMPLETION_PASSES` (default 1) adds insert-only passes after the
+critic loop, run only while the unit has a gap: the numeric inventory still
+lists a measurement (a number with its unit) absent from the graph, or a
+`statement_without_subject` finding holds. A unit with no gap makes no call.
+Each pass:
 
 - shows the model a term sheet (the unit's quantity, observation and condition
   classes and unit individuals) instead of the full ontology chapter, plus the
   unit's existing catalog-typed subjects, so a recovered measurement attaches
   to a node that is already there;
+- lists the missing measurements, and the statements that name nothing with
+  the unit's candidate subjects and the properties that link a statement to
+  its subject (`sosa:hasFeatureOfInterest`, its inverse, and the context's
+  sub-properties and inverses of either);
 - keeps only `ADD` fixes, whatever else the model returns;
 - applies them through the same one-at-a-time regression check as critic
   fixes.
 
-The passes stop as soon as nothing is missing.
+The passes stop as soon as no gap is left. Each records the measurements it
+recovered and the statements it gave a subject on its loop attempt.
 
 ## Layer 3: the post-merge gate
 
@@ -417,8 +393,16 @@ The passes stop as soon as nothing is missing.
    that states nothing (`drop_unlinked_instances`: linked to no other
    instance nor the document, with no value of its own, only a type and
    names) is removed the same way, and so is every blank-node value no
-   statement carries; records are kind `unlinked_dropped`, and the
-   `facts_unlinked_dropped` metric counts both. Before these drops, a node
+   statement carries; then every instance of a value class linked to nothing
+   (`drop_detached_values`: a value written as an entity of its own that no
+   statement carries) with the parts only it points at. The value classes are
+   the well-known ones (`qudt:QuantityValue`; schema.org's `StructuredValue`,
+   `QuantitativeValue`, `PropertyValue`, `MonetaryAmount`), the configured
+   `FACTS_QUANTITY_FALLBACK_VOCABULARY` `value_class`, and every class the
+   whole catalog places under one of them. Records are kind
+   `unlinked_dropped`, each with the dropped node's label and the triples
+   removed, as are the `untyped_dropped` ones; the `facts_unlinked_dropped`
+   metric counts all three. Before these drops, a node
    standing for a date that holds only a label (the object of a temporal
    property, a node typed with an OWL-Time class, or one labelled with a whole
    date or month) gets the typed ISO 8601 value its label names: through the
@@ -434,9 +418,9 @@ The passes stop as soon as nothing is missing.
    what it links but is not an instance; typing, `owl:sameAs` and the
    pipeline's provenance link nothing, while a domain property links in any
    vocabulary, PROV-O included). An isolated instance left holds a value of its
-   own; the gate hands these to the link pass (`facts_isolated_instances`),
-   which rewrites `facts_isolated` and `facts_components` for the graph it
-   serves. `facts_twin_labels` counts the labels two or more instances share.
+   own and is kept; the run manifest lists each (`facts_isolated`: IRI, label,
+   and `holds_value` or `other`). `facts_twin_labels` counts the labels two or
+   more instances share.
    Then each blank-node value is named under its carrier
    (`<carrier>.<property>`), with the reifiers of its statements repointed.
 7. **Summary**: `facts_conformance`, `facts_validation_findings` and

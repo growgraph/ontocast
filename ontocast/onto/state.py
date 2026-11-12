@@ -28,7 +28,6 @@ from ontocast.onto.model import (
     BasePydanticModel,
     CoreferenceCandidate,
     FactsIsolatedInstance,
-    FactsLinkRecord,
     FactsValidationFinding,
     GraphRepairRecord,
     LoopAttempt,
@@ -924,31 +923,13 @@ class AgentState(BasePydanticModel):
         ),
     )
 
-    facts_isolated_instances: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Fact-namespace instances the validation gate left linked to no "
-            "other instance nor the document, sorted; the link pass reads "
-            "them, and leaves those it could not link."
-        ),
-    )
-
     facts_isolated_report: list[FactsIsolatedInstance] = Field(
         default_factory=list,
         description=(
-            "The instances still linked to nothing after the link pass, with "
-            "their label and kind; kept in the served facts, not deleted. "
+            "The instances the served facts link to nothing, with their "
+            "label and kind; kept in the served facts, not deleted. "
             "Capped at 200; the full count is the facts_isolated retrieval "
             "metric."
-        ),
-    )
-
-    facts_links_added: list[FactsLinkRecord] = Field(
-        default_factory=list,
-        description=(
-            "Links the link pass added, each with the unit whose text states "
-            "it. Capped at 200; the full count is the facts_link_added "
-            "retrieval metric."
         ),
     )
 

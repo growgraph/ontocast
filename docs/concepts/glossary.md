@@ -12,9 +12,10 @@ The terms these pages use, each with the page that explains it.
     `/ontologies`, or created by earlier runs. Every ontology context is taken
     from it. See [Ontologies and facts](ontologies_and_facts.md#the-catalog).
 
-**Completion pass**
-:   An optional extra call, after the critic, that asks the model for
-    measurements the render missed. It only adds facts. See [How OntoCast
+**Completion pass** (gap pass)
+:   A small call after the critic, made only for a part with a gap: a
+    measurement the render missed, or an observation that names nothing it is
+    about. It only adds facts and links. See [How OntoCast
     works](index.md#the-per-unit-loop).
 
 **Consolidation**
@@ -31,12 +32,6 @@ The terms these pages use, each with the page that explains it.
 **Coreference resolution**
 :   At most one LLM call per document, after the merge, that decides the entity pairs
     the merge could not settle (`AGG_LLM_COREFERENCE`). See [How OntoCast
-    works](index.md#the-facts-block).
-
-**Link pass**
-:   At most one LLM call per document, after validation and on by default, that proposes links
-    for instances linked to nothing, from the passages that mention them; code
-    checks each link before adding it (`FACTS_LINK_PASS`). See [How OntoCast
     works](index.md#the-facts-block).
 
 **Critic**

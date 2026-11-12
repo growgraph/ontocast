@@ -59,6 +59,7 @@ def _atomic() -> AtomicToolBox:
             ontology_critic_passes=1,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
+            subject_contract=lambda: None,
             ontology_patch_policy=CriticPatchPolicy(),
             ontology_acceptance_policy=None,
             ontology_max_class_depth=6,

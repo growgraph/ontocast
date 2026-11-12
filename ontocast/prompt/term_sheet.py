@@ -30,6 +30,10 @@ from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 
 from ontocast.onto.prefixes import NOTE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.well_known import (
+    well_known_statement_classes,
+    well_known_statement_properties,
+)
 
 #: Rendered in this order, each under its own heading. Individuals come last:
 #: they are the longest section on a unit-bearing catalog and the least
@@ -269,4 +273,33 @@ def build_ontology_term_sheet(graph: RDFGraph) -> str:
         lines.append(f"\n## {heading}")
         for term in terms:
             lines.extend(term_line(graph, term, kind=kind))
+    if _has_statement_class(graph, classes):
+        lines.append("\n## Properties every statement above takes  (well-known)")
+        for iri, label in sorted(well_known_statement_properties().items()):
+            lines.append(f'  {qname_for(graph, URIRef(iri))}  "{label}"')
     return "\n".join(lines)
+
+
+def _has_statement_class(graph: RDFGraph, classes: list[URIRef]) -> bool:
+    """Whether a class of the sheet is, or is under, a well-known statement class.
+
+    A statement (an observation) is a fact only with its subject, and the
+    properties naming it come from a well-known vocabulary the catalog may
+    not restate; the sheet lists them so they are terms it shows.
+    """
+    anchors = {URIRef(iri) for iri in well_known_statement_classes()}
+    seen: set[URIRef] = set()
+    frontier = [cls for cls in classes]
+    while frontier:
+        cls = frontier.pop()
+        if cls in anchors:
+            return True
+        if cls in seen:
+            continue
+        seen.add(cls)
+        frontier.extend(
+            parent
+            for parent in graph.objects(cls, RDFS.subClassOf)
+            if isinstance(parent, URIRef)
+        )
+    return False

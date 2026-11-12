@@ -663,26 +663,8 @@ class CoreferenceReport(BaseModel):
     verdicts: list[CoreferenceVerdict] = Field(default_factory=list)
 
 
-class FactsLinkProposal(BaseModel):
-    """One link the passage states between two numbered entities."""
-
-    subject: int = Field(description="Number of the entity the link starts from.")
-    property: str = Field(description="A property exactly as listed under PROPERTIES.")
-    object: int = Field(description="Number of the entity the link points to.")
-    evidence: str = Field(
-        max_length=300,
-        description="The words of the passage that state the link, copied exactly.",
-    )
-
-
-class FactsLinkReport(BaseModel):
-    """Links proposed for the isolated entities; an empty list means none."""
-
-    links: list[FactsLinkProposal] = Field(default_factory=list)
-
-
 class FactsIsolatedInstance(BaseModel):
-    """An instance the served facts still link to nothing, after the link pass.
+    """An instance the served facts link to nothing, kept and listed.
 
     ``kind`` is read from structure, not vocabulary: ``holds_value`` when it
     carries a value or a non-annotation literal (a statement with no subject,
@@ -692,16 +674,6 @@ class FactsIsolatedInstance(BaseModel):
     iri: str
     label: str = ""
     kind: Literal["holds_value", "other"]
-
-
-class FactsLinkRecord(BaseModel):
-    """A link the link pass added, with the unit whose text states it."""
-
-    subject: str
-    predicate: str
-    object: str
-    unit: str
-    evidence: str
 
 
 class OntologyIdentityProposal(BaseModel):
@@ -983,6 +955,10 @@ class FactsUnitFindingKind(StrEnum):
     #: A fact-namespace instance with no ``rdf:type`` naming a concrete class
     #: outside the fact namespaces (a metaclass or ``owl:Thing`` is no type).
     UNTYPED_INSTANCE = "untyped_instance"
+    #: An instance of a statement or value class (an observation, a quantity
+    #: value) that states a value but is linked to no other instance: a
+    #: value of nothing until it names what it is about.
+    STATEMENT_WITHOUT_SUBJECT = "statement_without_subject"
     #: The render used no term from the ontology it was given. Not a
     #: property of any single triple, so no other kind can express it.
     DOMAIN_ADHERENCE = "domain_adherence"
@@ -1296,6 +1272,13 @@ class LoopAttempt(BaseModel):
         description=(
             "Completion pass only: missed measurements the numeric inventory "
             "no longer lists after the inserts that stayed."
+        ),
+    )
+    n_subjects_linked: int = Field(
+        default=0,
+        description=(
+            "Completion pass only: statement_without_subject findings that no "
+            "longer hold after the inserts that stayed."
         ),
     )
     patch_delete_capped: bool = Field(

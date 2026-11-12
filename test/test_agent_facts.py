@@ -73,6 +73,7 @@ def _build_tools() -> AtomicToolBox:
             property_alias_min_ratio=0.85,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
+            subject_contract=lambda: None,
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,

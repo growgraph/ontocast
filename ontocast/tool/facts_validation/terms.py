@@ -26,7 +26,13 @@ from ontocast.onto.scaffolding import (
     is_scaffolding,
     scaffolding_nodes,
 )
-from ontocast.onto.well_known import well_known_namespaces, well_known_value_classes
+from ontocast.onto.well_known import (
+    well_known_datatype_ranges,
+    well_known_namespaces,
+    well_known_statement_classes,
+    well_known_subject_links,
+    well_known_value_classes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -393,6 +399,25 @@ _HIERARCHY_PREDICATES = (
 )
 
 
+class SubjectContract(BaseModel):
+    """What makes a statement name its subject, over the whole catalog.
+
+    Attributes:
+        statement_classes: Classes whose instances are statements about
+            something else (an observation), with every catalog class under one.
+        value_classes: Classes whose instances are values, likewise.
+        forward: Properties running from a statement to its subject.
+        inverse: Properties running from a subject to a statement.
+    """
+
+    model_config = {"frozen": True}
+
+    statement_classes: frozenset[str] = frozenset()
+    value_classes: frozenset[str] = frozenset()
+    forward: frozenset[str] = frozenset()
+    inverse: frozenset[str] = frozenset()
+
+
 class CatalogRoles:
     """What the whole catalog says each term is, read once per catalog state.
 
@@ -420,7 +445,9 @@ class CatalogRoles:
         self.classes = classes
         self.hierarchy = hierarchy if hierarchy is not None else RDFGraph()
         self.datatype_ranges = datatype_ranges or {}
-        self._value_classes: dict[frozenset[str], frozenset[str]] = {}
+        self._declared_ranges: dict[str, frozenset[str]] | None = None
+        self._subject_links: tuple[frozenset[str], frozenset[str]] | None = None
+        self._classes_under: dict[frozenset[str], frozenset[str]] = {}
 
     @classmethod
     def of(cls, graphs: typing.Iterable[RDFGraph]) -> "CatalogRoles":
@@ -433,7 +460,11 @@ class CatalogRoles:
             known_properties, known_classes = _catalog_term_roles(graph)
             properties |= known_properties
             classes |= known_classes
-            for predicate in _HIERARCHY_PREDICATES:
+            for predicate in (
+                *_HIERARCHY_PREDICATES,
+                RDFS.subPropertyOf,
+                OWL.inverseOf,
+            ):
                 for triple in graph.triples((None, predicate, None)):
                     hierarchy.add(triple)
             for subject, range_iri in graph.subject_objects(RDFS.range):
@@ -448,14 +479,78 @@ class CatalogRoles:
             {iri: frozenset(found) for iri, found in ranges.items()},
         )
 
-    def value_classes(self, base: frozenset[str]) -> frozenset[str]:
+    def declared_ranges(self) -> dict[str, frozenset[str]]:
+        """Each property's declared XSD ranges: the catalog's and the well-known.
+
+        Read once per catalog state; a unit adds only its snapshot's.
+        """
+        if self._declared_ranges is None:
+            merged: dict[str, set[str]] = {}
+            for prop, datatype in well_known_datatype_ranges().items():
+                merged.setdefault(prop, set()).add(datatype)
+            for prop, datatypes in self.datatype_ranges.items():
+                merged.setdefault(prop, set()).update(datatypes)
+            self._declared_ranges = {
+                prop: frozenset(found) for prop, found in merged.items()
+            }
+        return self._declared_ranges
+
+    def subject_links(self) -> tuple[frozenset[str], frozenset[str]]:
+        """The properties linking a statement and its subject, each direction.
+
+        The well-known ones, every catalog sub-property of one, and every
+        catalog inverse of one in the other direction.
+
+        Returns:
+            ``(forward, inverse)``: statement -> subject, subject -> statement.
+        """
+        if self._subject_links is None:
+            forward, inverse = (set(found) for found in well_known_subject_links())
+            changed = True
+            while changed:
+                before = len(forward) + len(inverse)
+                for side, other in ((forward, inverse), (inverse, forward)):
+                    for prop in list(side):
+                        node = URIRef(prop)
+                        side |= {
+                            str(s)
+                            for s in self.hierarchy.subjects(RDFS.subPropertyOf, node)
+                            if isinstance(s, URIRef)
+                        }
+                        other |= {
+                            str(term)
+                            for term in (
+                                *self.hierarchy.subjects(OWL.inverseOf, node),
+                                *self.hierarchy.objects(node, OWL.inverseOf),
+                            )
+                            if isinstance(term, URIRef)
+                        }
+                changed = len(forward) + len(inverse) != before
+            self._subject_links = (frozenset(forward), frozenset(inverse))
+        return self._subject_links
+
+    def subject_contract(self, value_base: frozenset[str]) -> SubjectContract:
+        """The :class:`SubjectContract` of this catalog.
+
+        Args:
+            value_base: The value classes to anchor on (:func:`value_class_base`).
+        """
+        forward, inverse = self.subject_links()
+        return SubjectContract(
+            statement_classes=self.classes_under(well_known_statement_classes()),
+            value_classes=self.classes_under(value_base),
+            forward=forward,
+            inverse=inverse,
+        )
+
+    def classes_under(self, base: frozenset[str]) -> frozenset[str]:
         """``base`` and every catalog class whose supertypes meet it.
 
         Args:
-            base: Classes of structured values: the well-known ones and the
-                deployment's configured value class.
+            base: Anchor classes, such as the classes of structured values
+                (:func:`value_class_base`) or of statements.
         """
-        found = self._value_classes.get(base)
+        found = self._classes_under.get(base)
         if found is None:
             candidates = self.classes | {
                 str(s) for s in self.hierarchy.subjects(RDFS.subClassOf, None)
@@ -466,7 +561,7 @@ class CatalogRoles:
                 if {str(c) for c in superclass_closure(URIRef(iri), self.hierarchy)}
                 & base
             }
-            self._value_classes[base] = found
+            self._classes_under[base] = found
         return found
 
 

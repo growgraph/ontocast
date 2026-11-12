@@ -88,6 +88,7 @@ def _tools(critic_passes: int = 1) -> ToolBox:
                     facts_completion_passes=0,
                     catalog_terms=lambda: set(),
                     catalog_roles=lambda: CatalogRoles(),
+                    subject_contract=lambda: None,
                 ),
             ),
         ),

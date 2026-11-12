@@ -23,6 +23,7 @@ from ontocast.onto.enum import (
 from ontocast.onto.identity import is_owned_ontology
 from ontocast.onto.iri_policy import normalize_namespace_iri, split_namespace_local
 from ontocast.onto.model import (
+    FactsUnitFindingKind,
     OntologyUnitFinding,
     UnitFailure,
 )
@@ -48,7 +49,6 @@ from ontocast.stategraph.context_resolver import (
     build_unioned_document_ontology_context,
 )
 from ontocast.stategraph.facts_gate import run_facts_gate, stored_pairs
-from ontocast.stategraph.facts_link import run_link_pass
 from ontocast.stategraph.helpers import (
     all_unit_patch_source_iris,
     drop_all_deletes,
@@ -885,6 +885,8 @@ def make_render_facts_node(tools: ToolBox):
         # so the residual has "units" as its denominator.
         findings_residual = 0
         mandatory_residual = 0
+        subject_gaps_rendered = 0
+        subject_gaps_left = 0
         critic_fixes_applied = 0
         critic_fixes_residual = 0
         critic_fixes_noop = 0
@@ -905,6 +907,12 @@ def make_render_facts_node(tools: ToolBox):
             findings_residual += len(result.deterministic_findings)
             mandatory_residual += sum(
                 1 for finding in result.deterministic_findings if finding.mandatory
+            )
+            subject_gaps_rendered += result.statements_without_subject_rendered
+            subject_gaps_left += sum(
+                1
+                for finding in result.deterministic_findings
+                if finding.kind == FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT
             )
             critic_fixes_applied += result.critic_fixes_applied
             critic_fixes_residual += result.critic_fixes_residual
@@ -1006,6 +1014,12 @@ def make_render_facts_node(tools: ToolBox):
         )
         state.retrieval_metrics[RetrievalMetric.FACTS_MANDATORY_RESIDUAL] = (
             mandatory_residual
+        )
+        state.retrieval_metrics[
+            RetrievalMetric.FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED
+        ] = subject_gaps_rendered
+        state.retrieval_metrics[RetrievalMetric.FACTS_STATEMENTS_WITHOUT_SUBJECT] = (
+            subject_gaps_left
         )
         # The critic's own ledger. `node_visits` counting CRITICISE_FACTS lived
         # on the per-unit state copy and died with it, so the number of critic
@@ -1271,22 +1285,6 @@ def make_validate_facts_node(tools: ToolBox):
         return state
 
     return validate_facts
-
-
-def make_link_facts_node(tools: ToolBox):
-    async def link_facts(state: AgentState) -> AgentState:
-        """Link the instances the gate left isolated, where the text states how.
-
-        Delegates to :func:`~ontocast.stategraph.facts_link.run_link_pass`,
-        which the single-unit entry path shares.
-        """
-        if not state.facts_units or len(state.aggregated_facts) == 0:
-            return state
-        ontology_graph, _ = _facts_aggregation_inputs(state)
-        await run_link_pass(state, tools, ontology_graph, state.facts_units)
-        return state
-
-    return link_facts
 
 
 def record_unused_minted_classes(state: AgentState) -> None:
