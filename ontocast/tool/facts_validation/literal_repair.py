@@ -24,6 +24,7 @@ from ontocast.onto.model import (
 )
 from ontocast.onto.rdfgraph import (
     RDFGraph,
+    RejectedLiteralTriple,
 )
 from ontocast.onto.well_known import is_well_known_term, well_known_role
 from ontocast.tool.facts_validation.terms import (
@@ -86,6 +87,34 @@ _RETYPABLE_RANGE_DATATYPES = (
     | set(_GREGORIAN_RANGE_PATTERNS)
 )
 
+# The ranges a text is checked against for being a value at all: a failed
+# parse proves it is no date, where a number in prose is left to the numeric
+# checks.
+_DATE_LIKE_RANGE_DATATYPES = _PARSE_CHECKED_RANGE_DATATYPES | set(
+    _GREGORIAN_RANGE_PATTERNS
+)
+
+
+def _retypable_ranges(ontology_graph: RDFGraph) -> dict[URIRef, URIRef]:
+    """Each predicate whose ``rdfs:range`` is a retypable datatype, with it."""
+    return {
+        predicate: range_iri
+        for predicate, range_iri in ontology_graph.subject_objects(RDFS.range)
+        if isinstance(predicate, URIRef)
+        and isinstance(range_iri, URIRef)
+        and range_iri in _RETYPABLE_RANGE_DATATYPES
+    }
+
+
+def _fits_range(lexical: str, datatype: URIRef) -> bool:
+    """Whether ``lexical`` is a well-formed value of a retypable ``datatype``."""
+    if datatype in _NUMERIC_RANGE_DATATYPES:
+        return canonical_number(lexical) is not None
+    gregorian = _GREGORIAN_RANGE_PATTERNS.get(datatype)
+    if gregorian is not None:
+        return gregorian.match(lexical) is not None
+    return _literal_parses_as(lexical, datatype)
+
 
 def normalize_literals_against_schema(
     graph: RDFGraph, ontology_graph: RDFGraph | None
@@ -107,14 +136,7 @@ def normalize_literals_against_schema(
     """
     if ontology_graph is None:
         return 0
-    declared_ranges: dict[URIRef, URIRef] = {}
-    for predicate, range_iri in ontology_graph.subject_objects(RDFS.range):
-        if (
-            isinstance(predicate, URIRef)
-            and isinstance(range_iri, URIRef)
-            and range_iri in _RETYPABLE_RANGE_DATATYPES
-        ):
-            declared_ranges[predicate] = range_iri
+    declared_ranges = _retypable_ranges(ontology_graph)
 
     if not declared_ranges:
         return 0
@@ -140,14 +162,7 @@ def normalize_literals_against_schema(
         if not source_admissible:
             continue
         lexical = str(obj).strip()
-        gregorian = _GREGORIAN_RANGE_PATTERNS.get(target_datatype)
-        if numeric_target:
-            parses = canonical_number(lexical) is not None
-        elif gregorian is not None:
-            parses = gregorian.match(lexical) is not None
-        else:
-            parses = _literal_parses_as(lexical, target_datatype)
-        if not parses:
+        if not _fits_range(lexical, target_datatype):
             continue
         replacements.append(
             (
@@ -160,6 +175,63 @@ def normalize_literals_against_schema(
         graph.remove(old)
         graph.add(new)
     return len(replacements)
+
+
+def partition_literals_outside_date_ranges(
+    graph: RDFGraph, ontology_graph: RDFGraph | None
+) -> tuple[RDFGraph, list[RejectedLiteralTriple]]:
+    """Set aside text on a date-like range that is not a value of it.
+
+    Run after :func:`normalize_literals_against_schema`, so a text that is a
+    date has already been retyped: what is left untyped, ``xsd:string`` or
+    language-tagged on a predicate whose ``rdfs:range`` is a date-like
+    datatype (``xsd:date``, ``dateTime``, ``duration``, ``gYear``,
+    ``gYearMonth``) is not one -- a recurrence or a phrase where a date
+    belongs. Such triples are quarantined for the critic, like a string on an
+    object property. Numeric ranges are left to the numeric checks.
+
+    Returns:
+        Tuple of (clean graph, quarantined triples).
+    """
+    if ontology_graph is None:
+        return graph, []
+    date_ranges = {
+        predicate: datatype
+        for predicate, datatype in _retypable_ranges(ontology_graph).items()
+        if datatype in _DATE_LIKE_RANGE_DATATYPES
+    }
+    rejected: list[RejectedLiteralTriple] = []
+    set_aside: set[tuple[Node, Node, Node]] = set()
+    for subject, predicate, obj in graph:
+        if not isinstance(obj, Literal) or obj.datatype not in (None, XSD.string):
+            continue
+        datatype = date_ranges.get(predicate)
+        if datatype is None or _fits_range(str(obj).strip(), datatype):
+            continue
+        set_aside.add((subject, predicate, obj))
+        rejected.append(
+            RejectedLiteralTriple(
+                subject=str(subject),
+                predicate=str(predicate),
+                object_lexical=str(obj),
+                datatype=str(obj.datatype or ""),
+                reason=(
+                    f"the range of this property is {graph.qname(datatype)} and "
+                    "this text is not one; write a value of that datatype, or "
+                    "state the text with a property that takes text"
+                ),
+            )
+        )
+    if not rejected:
+        return graph, []
+    clean = RDFGraph()
+    for prefix, namespace_uri in graph.namespaces():
+        if prefix:
+            clean.bind(prefix, namespace_uri)
+    for triple in graph:
+        if triple not in set_aside:
+            clean.add(triple)
+    return clean, rejected
 
 
 def repair_literal_type_objects(
@@ -864,9 +936,23 @@ def promote_degenerate_bounds(
     return promoted
 
 
+def _not_a_failed_cast(record: logging.LogRecord) -> bool:
+    return not record.getMessage().startswith("Failed to convert Literal lexical")
+
+
 def _literal_parses_as(lexical: str, datatype: URIRef) -> bool:
-    """True when ``lexical`` is a well-formed literal of ``datatype``."""
-    return Literal(lexical, datatype=datatype).value is not None
+    """True when ``lexical`` is a well-formed literal of ``datatype``.
+
+    A probe: rdflib's warning and traceback for a lexical form that does not
+    parse are filtered out while it runs, since a ``False`` here is an answer,
+    not an error.
+    """
+    rdflib_term = logging.getLogger("rdflib.term")
+    rdflib_term.addFilter(_not_a_failed_cast)
+    try:
+        return Literal(lexical, datatype=datatype).value is not None
+    finally:
+        rdflib_term.removeFilter(_not_a_failed_cast)
 
 
 def dedupe_literal_variants(

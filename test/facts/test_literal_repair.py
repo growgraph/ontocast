@@ -7,8 +7,10 @@ predicates, doc-namespace predicates, and string epistemic qualifiers
 against a closed individual range.
 """
 
+import logging
+
 import pytest
-from rdflib import RDF, Literal, URIRef
+from rdflib import RDF, RDFS, Literal, URIRef
 from rdflib.namespace import XSD
 
 from ontocast.onto.model import (
@@ -20,6 +22,7 @@ from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.tool.facts_validation import (
     collect_unit_findings,
     normalize_literals_against_schema,
+    partition_literals_outside_date_ranges,
     repair_literal_type_objects,
     repair_property_aliases,
 )
@@ -84,6 +87,60 @@ def test_normalize_literals_retypes_untyped_numeric() -> None:
     }
     assert all(str(dt).endswith("decimal") for _, dt in values)
     assert {value for value, _ in values} == {"230", "96"}
+
+
+def test_a_date_range_probe_is_silent_and_keeps_text_that_is_no_date(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ontology = RDFGraph()
+    started = URIRef("https://ex.org/events#startedAt")
+    ontology.add((started, RDFS.range, XSD.dateTime))
+    graph = RDFGraph()
+    subject = URIRef(f"{FACTS}review")
+    graph.add((subject, started, Literal("every 5 years")))
+    graph.add((subject, started, Literal("2021-06-29T00:00:00")))
+    with caplog.at_level(logging.WARNING):
+        retyped = normalize_literals_against_schema(graph, ontology)
+    assert retyped == 1
+    assert Literal("every 5 years") in set(graph.objects(subject, started))
+    assert not [r for r in caplog.records if r.name == "rdflib.term"]
+
+
+def test_text_that_is_no_date_on_a_date_range_is_set_aside_for_the_critic() -> None:
+    ev = "https://ex.org/events#"
+    started, note, count = (URIRef(ev + n) for n in ("startedAt", "note", "count"))
+    ontology = RDFGraph()
+    ontology.add((started, RDFS.range, XSD.dateTime))
+    ontology.add((note, RDFS.range, XSD.string))
+    ontology.add((count, RDFS.range, XSD.decimal))
+    subject = URIRef(f"{FACTS}review")
+    graph = RDFGraph()
+    graph.add((subject, started, Literal("every 5 years or more often")))
+    graph.add((subject, started, Literal("every year", lang="en")))
+    graph.add((subject, started, Literal("2021-06-29T00:00:00")))
+    graph.add((subject, note, Literal("every 5 years")))
+    graph.add((subject, count, Literal("about five")))
+    normalize_literals_against_schema(graph, ontology)
+
+    clean, rejected = partition_literals_outside_date_ranges(graph, ontology)
+
+    assert {item.object_lexical for item in rejected} == {
+        "every 5 years or more often",
+        "every year",
+    }
+    assert all("xsd:dateTime" in (item.reason or "") for item in rejected)
+    assert set(clean.objects(subject, started)) == {
+        Literal("2021-06-29T00:00:00", datatype=XSD.dateTime)
+    }
+    assert (subject, note, Literal("every 5 years")) in clean
+    assert (subject, count, Literal("about five")) in clean
+
+
+def test_no_ontology_sets_nothing_aside() -> None:
+    graph = RDFGraph()
+    graph.add((URIRef(f"{FACTS}a"), URIRef("https://ex.org/events#at"), Literal("x")))
+    clean, rejected = partition_literals_outside_date_ranges(graph, None)
+    assert clean is graph and rejected == []
 
 
 def test_a_real_well_known_term_is_never_an_alias() -> None:

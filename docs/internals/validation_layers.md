@@ -169,10 +169,13 @@ machine can decide without the model:
 | Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. Critic and completion patches get the same repair |
 | Degenerate bounds | Equal lower and upper bounds become one value, when the quantity fallback vocabulary names `numeric_value`, `lower_bound` and `upper_bound` |
 
-Two kinds of triple are then **quarantined**, removed from the graph and shown
-to the critic for repair: typed literals whose lexical form is invalid for the
-datatype, and string literals on a property whose range is a class
-(`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`).
+Three kinds of triple are then **quarantined**, removed from the graph and
+shown to the critic for repair: typed literals whose lexical form is invalid
+for the datatype; string literals on a property whose range is a class
+(`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`); and text on a property whose range is
+`xsd:date`, `dateTime`, `duration`, `gYear` or `gYearMonth` that is not a value
+of it, such as a recurrence where a date belongs. Text that is a date was
+retyped by the repair above.
 
 Type and compact-IRI coercions, predicate rewrites, code resolutions and entailed types are recorded as
 `GraphRepairRecord`s and returned per unit as `facts_repairs`, so a consumer can

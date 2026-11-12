@@ -49,6 +49,7 @@ from ontocast.tool.facts_validation import (
     expand_vocabulary_terms,
     materialize_entailed_types,
     normalize_literals_against_schema,
+    partition_literals_outside_date_ranges,
     promote_degenerate_bounds_from_vocabulary,
     repair_compact_iri_literals,
     repair_literal_type_objects,
@@ -442,6 +443,10 @@ async def render_facts_fresh(
                 clean_graph, ontology_context_graph
             )
             rejected = rejected + op_rejected
+        clean_graph, date_rejected = partition_literals_outside_date_ranges(
+            clean_graph, ontology_context_graph
+        )
+        rejected = rejected + date_rejected
         state.content_unit.graph = clean_graph
         state.quarantined_literal_triples = rejected
         if rejected:
