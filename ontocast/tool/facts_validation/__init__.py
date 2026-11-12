@@ -37,15 +37,19 @@ from ontocast.tool.facts_validation.gate import (
 )
 from ontocast.tool.facts_validation.literal_repair import (
     dedupe_literal_variants,
+    literal_ranges,
     materialize_entailed_types,
     normalize_literals_against_schema,
-    partition_literals_outside_date_ranges,
+    partition_literals_outside_temporal_ranges,
     promote_degenerate_bounds,
     promote_degenerate_bounds_from_vocabulary,
     repair_compact_iri_literals,
     repair_literal_type_objects,
     repair_property_aliases,
     resolve_code_literals,
+    temporal_range_mismatches,
+    unresolved_quarantine,
+    write_back_temporal_quarantine,
 )
 from ontocast.tool.facts_validation.shacl import (
     ShaclRepairResult,
@@ -106,7 +110,11 @@ __all__ = [
     "material_defects",
     "materialize_entailed_types",
     "normalize_literals_against_schema",
-    "partition_literals_outside_date_ranges",
+    "literal_ranges",
+    "partition_literals_outside_temporal_ranges",
+    "temporal_range_mismatches",
+    "unresolved_quarantine",
+    "write_back_temporal_quarantine",
     "promote_degenerate_bounds",
     "promote_degenerate_bounds_from_vocabulary",
     "record_facts_gate_metrics",

@@ -161,7 +161,7 @@ machine can decide without the model:
 
 | Repair | What it does |
 |---|---|
-| Numeric retyping | An untyped number on a property with a numeric range gets that datatype |
+| Datatype retyping | An untyped number on a property with a numeric range gets that datatype. Text on a property whose range is a date, time or duration datatype gets it when the text is a value of it as XSD writes it, or a calendar text naming exactly one such value (`"29 June 2021"` on an `xsd:date` range); an ISO date with no zone on an `xsd:dateTime` range is that day at midnight, as parsing a typed literal makes it. A range is read from the unit's context, the whole catalog and the published ranges of PROV-O, SOSA and OWL-Time; a property declared with two datatypes is not retyped |
 | `rdf:type` literal coercion | A type written as a string becomes the class IRI when it resolves unambiguously |
 | Compact-IRI literal coercion | A plain string such as `"unit:NanoM"` on another predicate becomes the IRI, when its prefix is bound and either the schema says the predicate takes an IRI or the IRI is a catalog or fallback-vocabulary term. Critic and completion patches get the same repair before they are judged |
 | Near-miss predicate rewrite | A predicate that exists nowhere (not a catalog term, not a real term of a well-known vocabulary) is rewritten to the one catalog property, across the whole catalog, in another namespace with exactly its local name (a slipped prefix, also into a well-known namespace); otherwise, in a namespace the catalog declares terms in, to the one catalog term of its own namespace whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
@@ -171,11 +171,20 @@ machine can decide without the model:
 
 Three kinds of triple are then **quarantined**, removed from the graph and
 shown to the critic for repair: typed literals whose lexical form is invalid
-for the datatype; string literals on a property whose range is a class
+for the datatype (dates, times and durations by their XSD lexical spaces);
+string literals on a property whose range is a class
 (`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`); and text on a property whose range is
-`xsd:date`, `dateTime`, `duration`, `gYear` or `gYearMonth` that is not a value
-of it, such as a recurrence where a date belongs. Text that is a date was
-retyped by the repair above.
+a date, time or duration datatype that is not a value of it, such as a
+recurrence where a date belongs. Critic and completion patches get the same
+retyping and the same date check, so a patch that writes such text again adds a
+mandatory finding and is rolled back.
+
+A quarantined triple stops counting as a finding once the unit's graph makes it
+good: its subject states the property with a value of the kind it lacked, or
+states its text under any property. Date text still quarantined when the unit
+leaves its loop, as it always is with `FACTS_CRITIC_PASSES=0`, is put back on
+its subject verbatim as `rdfs:comment` (repair kind `quarantine_as_comment`),
+so no text is lost and no false date is stated.
 
 Type and compact-IRI coercions, predicate rewrites, code resolutions and entailed types are recorded as
 `GraphRepairRecord`s and returned per unit as `facts_repairs`, so a consumer can

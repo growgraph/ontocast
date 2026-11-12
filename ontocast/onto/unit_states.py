@@ -388,11 +388,15 @@ class UnitFactsState(UnitState[ContentUnit]):
         return len(self.content_unit.graph)
 
     def snapshot_for_rollback(self) -> object:
-        return self.content_unit.graph.copy()
+        # The quarantine travels with the graph: a patch's repairs may add to it.
+        return self.content_unit.graph.copy(), list(self.quarantined_literal_triples)
 
     def restore(self, token: object) -> None:
-        assert isinstance(token, RDFGraph)
-        self.content_unit.graph = token
+        assert isinstance(token, tuple)
+        graph, quarantined = token
+        assert isinstance(graph, RDFGraph)
+        self.content_unit.graph = graph
+        self.quarantined_literal_triples = list(quarantined)
         self.facts_updates = []
 
 

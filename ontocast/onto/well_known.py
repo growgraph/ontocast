@@ -18,7 +18,7 @@ from functools import cache
 from importlib import resources
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from rdflib.namespace import (
     CSVW,
     DC,
@@ -53,6 +53,9 @@ class WellKnownVocabulary(BaseModel):
         terms: Local names of its terms, or ``None`` when it is admitted by
             namespace (no term list is bundled).
         value_classes: Local names of its classes of structured values.
+        datatype_ranges: Local name of a property -> local name of the XSD
+            datatype its published ``rdfs:range`` declares, for the date and
+            time properties the facts repairs check literals against.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -62,6 +65,7 @@ class WellKnownVocabulary(BaseModel):
     namespaces: tuple[str, ...]
     terms: frozenset[str] | None
     value_classes: frozenset[str] = frozenset()
+    datatype_ranges: dict[str, str] = Field(default_factory=dict)
 
     def has_term(self, local_name: str) -> bool:
         """Whether ``local_name`` is a term of this vocabulary."""
@@ -85,6 +89,7 @@ def _vocabulary(
     also: tuple[str, ...] = (),
     extra: tuple[str, ...] = (),
     value_classes: tuple[str, ...] = (),
+    datatype_ranges: dict[str, str] | None = None,
 ) -> WellKnownVocabulary:
     return WellKnownVocabulary(
         prefix=prefix,
@@ -92,6 +97,7 @@ def _vocabulary(
         namespaces=(str(namespace._NS), *also),
         terms=_defined_terms(namespace, *extra),
         value_classes=frozenset(value_classes),
+        datatype_ranges=datatype_ranges or {},
     )
 
 
@@ -136,10 +142,35 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
     _vocabulary("skos", "SKOS", SKOS),
     _vocabulary("dcterms", "DCMI Metadata Terms", DCTERMS),
     _vocabulary("dc", "Dublin Core elements", DC),
-    _vocabulary("prov", "PROV-O", PROV),
-    _vocabulary("sosa", "SOSA", SOSA),
+    _vocabulary(
+        "prov",
+        "PROV-O",
+        PROV,
+        datatype_ranges={
+            name: "dateTime"
+            for name in (
+                "atTime",
+                "startedAtTime",
+                "endedAtTime",
+                "generatedAtTime",
+                "invalidatedAtTime",
+            )
+        },
+    ),
+    _vocabulary("sosa", "SOSA", SOSA, datatype_ranges={"resultTime": "dateTime"}),
     _vocabulary("ssn", "SSN", SSN),
-    _vocabulary("time", "OWL-Time", TIME),
+    _vocabulary(
+        "time",
+        "OWL-Time",
+        TIME,
+        datatype_ranges={
+            "inXSDDate": "date",
+            "inXSDDateTime": "dateTime",
+            "inXSDDateTimeStamp": "dateTimeStamp",
+            "inXSDgYear": "gYear",
+            "inXSDgYearMonth": "gYearMonth",
+        },
+    ),
     _vocabulary("csvw", "CSVW", CSVW),
     _vocabulary("dcat", "DCAT", DCAT),
     _vocabulary("org", "the Organization Ontology", ORG),
@@ -289,6 +320,20 @@ def well_known_value_classes() -> frozenset[str]:
     )
 
 
+@cache
+def well_known_datatype_ranges() -> dict[str, str]:
+    """Property IRI -> XSD datatype IRI, as the well-known vocabularies publish them.
+
+    Only the date and time properties are listed. Treat as read-only.
+    """
+    return {
+        namespace + name: str(XSD) + datatype
+        for vocabulary in WELL_KNOWN_VOCABULARIES
+        for namespace in vocabulary.namespaces
+        for name, datatype in vocabulary.datatype_ranges.items()
+    }
+
+
 def well_known_prompt_list() -> str:
     """The vocabularies as the facts prompt names them: ``prefix:`` and IRI."""
     return ", ".join(
@@ -306,6 +351,7 @@ __all__ = [
     "well_known_namespaces",
     "well_known_prompt_list",
     "well_known_terms",
+    "well_known_datatype_ranges",
     "well_known_value_classes",
     "well_known_vocabulary",
 ]

@@ -22,7 +22,7 @@ from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.tool.facts_validation import (
     collect_unit_findings,
     normalize_literals_against_schema,
-    partition_literals_outside_date_ranges,
+    partition_literals_outside_temporal_ranges,
     repair_literal_type_objects,
     repair_property_aliases,
 )
@@ -122,13 +122,13 @@ def test_text_that_is_no_date_on_a_date_range_is_set_aside_for_the_critic() -> N
     graph.add((subject, count, Literal("about five")))
     normalize_literals_against_schema(graph, ontology)
 
-    clean, rejected = partition_literals_outside_date_ranges(graph, ontology)
+    clean, rejected = partition_literals_outside_temporal_ranges(graph, ontology)
 
     assert {item.object_lexical for item in rejected} == {
         "every 5 years or more often",
         "every year",
     }
-    assert all("xsd:dateTime" in (item.reason or "") for item in rejected)
+    assert all(item.expected_datatype == str(XSD.dateTime) for item in rejected)
     assert set(clean.objects(subject, started)) == {
         Literal("2021-06-29T00:00:00", datatype=XSD.dateTime)
     }
@@ -139,7 +139,7 @@ def test_text_that_is_no_date_on_a_date_range_is_set_aside_for_the_critic() -> N
 def test_no_ontology_sets_nothing_aside() -> None:
     graph = RDFGraph()
     graph.add((URIRef(f"{FACTS}a"), URIRef("https://ex.org/events#at"), Literal("x")))
-    clean, rejected = partition_literals_outside_date_ranges(graph, None)
+    clean, rejected = partition_literals_outside_temporal_ranges(graph, None)
     assert clean is graph and rejected == []
 
 

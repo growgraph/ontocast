@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
+from contextlib import contextmanager
 from difflib import SequenceMatcher
 
 from rdflib import RDF, RDFS, BNode, Literal, URIRef
@@ -26,7 +27,13 @@ from ontocast.onto.rdfgraph import (
     RDFGraph,
     RejectedLiteralTriple,
 )
-from ontocast.onto.well_known import is_well_known_term, well_known_role
+from ontocast.onto.well_known import (
+    is_well_known_term,
+    well_known_datatype_ranges,
+    well_known_role,
+)
+from ontocast.onto.xsd_lexical import TEMPORAL_DATATYPES, is_valid_temporal_lexical
+from ontocast.tool.facts_validation.date_values import parse_date_label
 from ontocast.tool.facts_validation.terms import (
     _COMPACT_IRI,
     _VACUOUS_TYPES,
@@ -61,70 +68,107 @@ _NUMERIC_RANGE_DATATYPES = {
     XSD.positiveInteger,
 }
 
-# Datatypes whose rdflib value parser actually rejects a wrong lexical form, so
-# ``_literal_parses_as`` is evidence. Deliberately excluded, each measured:
-#   xsd:string / xsd:anyURI -- every lexical form parses;
-#   xsd:boolean -- Literal("2019", datatype=xsd:boolean).value is False, not None;
-#   xsd:time    -- "2019" parses as 20:19, so a time range would mangle years.
-# Admitting any of those lets one sloppy range declaration rewrite unrelated
-# literals on that predicate, including correctly typed ones.
-_PARSE_CHECKED_RANGE_DATATYPES = {XSD.date, XSD.dateTime, XSD.duration}
+# The date, time and duration datatypes, decided by their XSD lexical spaces
+# (:func:`~ontocast.onto.xsd_lexical.is_valid_temporal_lexical`), not by
+# rdflib's lax ISO parsers. A text that fails is no value of the type, so these
+# are also the ranges text is set aside on; a number in prose is left to the
+# numeric checks. Other datatypes are not retyped: every lexical form is an
+# ``xsd:string`` or ``xsd:anyURI``, and rdflib reads ``"2019"`` as a boolean,
+# so admitting them lets one sloppy range declaration rewrite unrelated literals.
+_TEMPORAL_RANGE_DATATYPES = set(TEMPORAL_DATATYPES)
 
-# The gregorian datatypes have no rdflib value parser at all -- ``.value`` is
-# always None -- so they need explicit lexical validation or they could never be
-# retyped, which is precisely the "xsd:gYear range receiving a string" case this
-# widening exists for. Patterns are the XSD lexical spaces, timezone included.
-_GREGORIAN_RANGE_PATTERNS = {
-    XSD.gYear: re.compile(r"^-?\d{4,}(Z|[+-]\d{2}:\d{2})?$"),
-    XSD.gYearMonth: re.compile(r"^-?\d{4,}-\d{2}(Z|[+-]\d{2}:\d{2})?$"),
-}
-
-# Ranges a declared ``rdfs:range`` may retype a literal *to*. An allowlist, not
-# "any XSD datatype" -- see the two sets above for why.
-_RETYPABLE_RANGE_DATATYPES = (
-    _NUMERIC_RANGE_DATATYPES
-    | _PARSE_CHECKED_RANGE_DATATYPES
-    | set(_GREGORIAN_RANGE_PATTERNS)
-)
-
-# The ranges a text is checked against for being a value at all: a failed
-# parse proves it is no date, where a number in prose is left to the numeric
-# checks.
-_DATE_LIKE_RANGE_DATATYPES = _PARSE_CHECKED_RANGE_DATATYPES | set(
-    _GREGORIAN_RANGE_PATTERNS
-)
+# Ranges a declared ``rdfs:range`` may retype a literal *to*.
+_RETYPABLE_RANGE_DATATYPES = _NUMERIC_RANGE_DATATYPES | _TEMPORAL_RANGE_DATATYPES
 
 
-def _retypable_ranges(ontology_graph: RDFGraph) -> dict[URIRef, URIRef]:
-    """Each predicate whose ``rdfs:range`` is a retypable datatype, with it."""
+def literal_ranges(
+    ontology_graph: RDFGraph | None, catalog_roles: CatalogRoles | None = None
+) -> dict[URIRef, URIRef]:
+    """Each predicate with one declared retypable datatype range, with it.
+
+    Read from the unit's ``ontology_graph``, the whole catalog
+    (``catalog_roles``) and the well-known vocabularies, so a property the
+    unit's snapshot did not retrieve is still known. A predicate declared with
+    two different datatypes anywhere is left out: no single value fits both.
+    Ranges inherited through ``rdfs:subPropertyOf`` are not followed.
+    """
+    declared: dict[str, set[str]] = {}
+    sources: list[tuple[str, str]] = list(well_known_datatype_ranges().items())
+    if catalog_roles is not None:
+        sources.extend(
+            (predicate, datatype)
+            for predicate, datatypes in catalog_roles.datatype_ranges.items()
+            for datatype in datatypes
+        )
+    if ontology_graph is not None:
+        sources.extend(
+            (str(predicate), str(range_iri))
+            for predicate, range_iri in ontology_graph.subject_objects(RDFS.range)
+            if isinstance(predicate, URIRef)
+            and isinstance(range_iri, URIRef)
+            and str(range_iri).startswith(str(XSD))
+        )
+    for predicate, datatype in sources:
+        declared.setdefault(predicate, set()).add(datatype)
     return {
-        predicate: range_iri
-        for predicate, range_iri in ontology_graph.subject_objects(RDFS.range)
-        if isinstance(predicate, URIRef)
-        and isinstance(range_iri, URIRef)
-        and range_iri in _RETYPABLE_RANGE_DATATYPES
+        URIRef(predicate): URIRef(next(iter(datatypes)))
+        for predicate, datatypes in declared.items()
+        if len(datatypes) == 1
+        and URIRef(next(iter(datatypes))) in _RETYPABLE_RANGE_DATATYPES
     }
 
 
-def _fits_range(lexical: str, datatype: URIRef) -> bool:
-    """Whether ``lexical`` is a well-formed value of a retypable ``datatype``."""
+# A date with no zone: the one form widened to midnight on a date-time range.
+_ZONELESS_DATE = re.compile(r"-?[0-9]{4,}-[0-9]{2}-[0-9]{2}")
+
+
+def _typed_value(lexical: str, datatype: URIRef) -> Literal | None:
+    """``lexical`` as a well-formed literal of a retypable ``datatype``, or ``None``.
+
+    A date, time or duration must be a value of ``datatype`` in its XSD lexical
+    space as written: rdflib's readers are laxer (``"2019"`` reads as the
+    ``xsd:time`` 20:19). One widening matches what parsing does to a typed
+    literal: an ISO date with no zone on an ``xsd:dateTime`` range is that day
+    at midnight.
+    A calendar text (``"29 June 2021"``) is first read as the ISO value it
+    names exactly; ``"June 2021"`` names no day, so it is no date.
+    """
     if datatype in _NUMERIC_RANGE_DATATYPES:
-        return canonical_number(lexical) is not None
-    gregorian = _GREGORIAN_RANGE_PATTERNS.get(datatype)
-    if gregorian is not None:
-        return gregorian.match(lexical) is not None
-    return _literal_parses_as(lexical, datatype)
+        if canonical_number(lexical) is None:
+            return None
+        return Literal(lexical, datatype=datatype)
+    candidates = [lexical]
+    named = parse_date_label(lexical, allow_year=True)
+    if named is not None:
+        candidates.append(str(named))
+    for candidate in candidates:
+        if datatype == XSD.dateTime and _ZONELESS_DATE.fullmatch(candidate):
+            candidate = f"{candidate}T00:00:00"
+        if is_valid_temporal_lexical(candidate, datatype):
+            # As written: rdflib's normal form can move a zone into the hour.
+            with _quiet_rdflib_casts():
+                return Literal(candidate, datatype=datatype, normalize=False)
+    return None
+
+
+def _fits_range(lexical: str, datatype: URIRef) -> bool:
+    """Whether ``lexical`` is a value of a retypable ``datatype``."""
+    return _typed_value(lexical, datatype) is not None
 
 
 def normalize_literals_against_schema(
-    graph: RDFGraph, ontology_graph: RDFGraph | None
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    catalog_roles: CatalogRoles | None = None,
 ) -> int:
-    """Retype literals whose predicate declares a compatible ``rdfs:range``.
+    """Retype literals whose predicate declares a compatible datatype range.
 
     Fixes the ``qudt:numericValue 230`` vs ``"230"^^xsd:decimal`` drift at parse
-    time, and the same drift for the date-like datatypes: when the schema
-    declares a range in :data:`_RETYPABLE_RANGE_DATATYPES` and the lexical form
-    parses as that datatype, the literal is rewritten with it.
+    time, and the same drift for the date, time and duration datatypes: when
+    the range (:func:`literal_ranges`) is in :data:`_RETYPABLE_RANGE_DATATYPES`
+    and the lexical form is a value of it, the literal is rewritten with it. A
+    calendar text that names exactly one value of the range (``"29 June
+    2021"`` on an ``xsd:date`` range) is rewritten to that value.
 
     A literal is only retyped from an untyped, ``xsd:string``, or numeric source
     -- a string range must never be able to clobber a correctly typed value --
@@ -134,10 +178,7 @@ def normalize_literals_against_schema(
     Returns:
         Number of retyped literals.
     """
-    if ontology_graph is None:
-        return 0
-    declared_ranges = _retypable_ranges(ontology_graph)
-
+    declared_ranges = literal_ranges(ontology_graph, catalog_roles)
     if not declared_ranges:
         return 0
 
@@ -161,15 +202,10 @@ def normalize_literals_against_schema(
             )
         if not source_admissible:
             continue
-        lexical = str(obj).strip()
-        if not _fits_range(lexical, target_datatype):
+        value = _typed_value(str(obj).strip(), target_datatype)
+        if value is None:
             continue
-        replacements.append(
-            (
-                (subject, predicate, obj),
-                (subject, predicate, Literal(lexical, datatype=target_datatype)),
-            )
-        )
+        replacements.append(((subject, predicate, obj), (subject, predicate, value)))
 
     for old, new in replacements:
         graph.remove(old)
@@ -177,53 +213,71 @@ def normalize_literals_against_schema(
     return len(replacements)
 
 
-def partition_literals_outside_date_ranges(
-    graph: RDFGraph, ontology_graph: RDFGraph | None
-) -> tuple[RDFGraph, list[RejectedLiteralTriple]]:
-    """Set aside text on a date-like range that is not a value of it.
+def temporal_range_mismatches(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    catalog_roles: CatalogRoles | None = None,
+) -> list[tuple[tuple[Node, Node, Node], RejectedLiteralTriple]]:
+    """Text on a date, time or duration range that is not a value of it.
 
-    Run after :func:`normalize_literals_against_schema`, so a text that is a
-    date has already been retyped: what is left untyped, ``xsd:string`` or
-    language-tagged on a predicate whose ``rdfs:range`` is a date-like
-    datatype (``xsd:date``, ``dateTime``, ``duration``, ``gYear``,
-    ``gYearMonth``) is not one -- a recurrence or a phrase where a date
-    belongs. Such triples are quarantined for the critic, like a string on an
-    object property. Numeric ranges are left to the numeric checks.
+    Run after :func:`normalize_literals_against_schema`, so a text that is such
+    a value has already been retyped: what is left untyped, ``xsd:string`` or
+    language-tagged on a predicate whose range (:func:`literal_ranges`) is a
+    temporal datatype is not one -- a recurrence or a phrase where a date
+    belongs. Numeric ranges are left to the numeric checks.
+
+    Returns:
+        Each such triple with its quarantine record (``expected_datatype``
+        names the range).
+    """
+    temporal_ranges = {
+        predicate: datatype
+        for predicate, datatype in literal_ranges(ontology_graph, catalog_roles).items()
+        if datatype in _TEMPORAL_RANGE_DATATYPES
+    }
+    if not temporal_ranges:
+        return []
+    found: list[tuple[tuple[Node, Node, Node], RejectedLiteralTriple]] = []
+    for subject, predicate, obj in graph:
+        if not isinstance(obj, Literal) or obj.datatype not in (None, XSD.string):
+            continue
+        datatype = temporal_ranges.get(predicate)
+        if datatype is None or _fits_range(str(obj).strip(), datatype):
+            continue
+        found.append(
+            (
+                (subject, predicate, obj),
+                RejectedLiteralTriple(
+                    subject=str(subject),
+                    predicate=str(predicate),
+                    object_lexical=str(obj),
+                    datatype=str(obj.datatype or ""),
+                    reason=(
+                        "this text is not a value of the property's datatype; "
+                        "write a value of that datatype, or state the text with "
+                        "a property that takes text"
+                    ),
+                    expected_datatype=str(datatype),
+                ),
+            )
+        )
+    return found
+
+
+def partition_literals_outside_temporal_ranges(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    catalog_roles: CatalogRoles | None = None,
+) -> tuple[RDFGraph, list[RejectedLiteralTriple]]:
+    """Split off :func:`temporal_range_mismatches`, quarantined for the critic.
 
     Returns:
         Tuple of (clean graph, quarantined triples).
     """
-    if ontology_graph is None:
+    found = temporal_range_mismatches(graph, ontology_graph, catalog_roles)
+    if not found:
         return graph, []
-    date_ranges = {
-        predicate: datatype
-        for predicate, datatype in _retypable_ranges(ontology_graph).items()
-        if datatype in _DATE_LIKE_RANGE_DATATYPES
-    }
-    rejected: list[RejectedLiteralTriple] = []
-    set_aside: set[tuple[Node, Node, Node]] = set()
-    for subject, predicate, obj in graph:
-        if not isinstance(obj, Literal) or obj.datatype not in (None, XSD.string):
-            continue
-        datatype = date_ranges.get(predicate)
-        if datatype is None or _fits_range(str(obj).strip(), datatype):
-            continue
-        set_aside.add((subject, predicate, obj))
-        rejected.append(
-            RejectedLiteralTriple(
-                subject=str(subject),
-                predicate=str(predicate),
-                object_lexical=str(obj),
-                datatype=str(obj.datatype or ""),
-                reason=(
-                    f"the range of this property is {graph.qname(datatype)} and "
-                    "this text is not one; write a value of that datatype, or "
-                    "state the text with a property that takes text"
-                ),
-            )
-        )
-    if not rejected:
-        return graph, []
+    set_aside = {triple for triple, _ in found}
     clean = RDFGraph()
     for prefix, namespace_uri in graph.namespaces():
         if prefix:
@@ -231,7 +285,94 @@ def partition_literals_outside_date_ranges(
     for triple in graph:
         if triple not in set_aside:
             clean.add(triple)
-    return clean, rejected
+    return clean, [record for _, record in found]
+
+
+def _quarantined_subject(graph: RDFGraph, item: RejectedLiteralTriple) -> Node:
+    iri = URIRef(item.subject)
+    return iri if (iri, None, None) in graph else BNode(item.subject)
+
+
+def _states_text(graph: RDFGraph, subject: Node, text: str) -> bool:
+    return any(
+        isinstance(obj, Literal) and str(obj) == text
+        for obj in graph.objects(subject, None)
+    )
+
+
+def _replaces(obj: Node, item: RejectedLiteralTriple) -> bool:
+    """Whether ``obj`` is a value of the kind ``item`` was set aside for lacking."""
+    if item.expected_datatype:
+        return (
+            isinstance(obj, Literal)
+            and str(obj.datatype) == item.expected_datatype
+            and RDFGraph._is_valid_typed_literal(obj)
+        )
+    if item.reason:
+        return isinstance(obj, URIRef | BNode)
+    return (
+        isinstance(obj, Literal)
+        and obj.datatype is not None
+        and RDFGraph._is_valid_typed_literal(obj)
+    )
+
+
+def unresolved_quarantine(
+    graph: RDFGraph, items: Sequence[RejectedLiteralTriple]
+) -> list[RejectedLiteralTriple]:
+    """The quarantined triples ``graph`` has not since made good.
+
+    One is resolved when its subject now states its predicate with a value of
+    the kind it was set aside for lacking (an IRI for an object property, a
+    valid literal of the expected or declared datatype), or states its text
+    under any predicate.
+    """
+    unresolved: list[RejectedLiteralTriple] = []
+    for item in items:
+        subject = _quarantined_subject(graph, item)
+        if _states_text(graph, subject, item.object_lexical):
+            continue
+        if any(
+            _replaces(obj, item)
+            for obj in graph.objects(subject, URIRef(item.predicate))
+        ):
+            continue
+        unresolved.append(item)
+    return unresolved
+
+
+def write_back_temporal_quarantine(
+    graph: RDFGraph, items: Sequence[RejectedLiteralTriple]
+) -> list[GraphRepairRecord]:
+    """Put back, as ``rdfs:comment``, date text the unit still holds aside.
+
+    A text set aside for not being a value of a date, time or duration
+    datatype -- written plain on such a range, or typed with such a datatype
+    it is not a value of -- is kept verbatim on its subject unless the subject
+    already states it, so nothing is lost and no false date is stated.
+    Quarantined strings on object properties and bad numbers are not written
+    back.
+
+    Returns:
+        One ``quarantine_as_comment`` record per text written back.
+    """
+    records: list[GraphRepairRecord] = []
+    for item in items:
+        datatype = item.expected_datatype or item.datatype
+        if URIRef(datatype) not in _TEMPORAL_RANGE_DATATYPES:
+            continue
+        subject = _quarantined_subject(graph, item)
+        if _states_text(graph, subject, item.object_lexical):
+            continue
+        graph.add((subject, RDFS.comment, Literal(item.object_lexical)))
+        records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.QUARANTINE_AS_COMMENT,
+                source=f"<{item.predicate}> {item.object_lexical!r}",
+                target=item.subject,
+            )
+        )
+    return records
 
 
 def repair_literal_type_objects(
@@ -940,19 +1081,34 @@ def _not_a_failed_cast(record: logging.LogRecord) -> bool:
     return not record.getMessage().startswith("Failed to convert Literal lexical")
 
 
-def _literal_parses_as(lexical: str, datatype: URIRef) -> bool:
-    """True when ``lexical`` is a well-formed literal of ``datatype``.
+@contextmanager
+def _quiet_rdflib_casts() -> Generator[None]:
+    """Filter rdflib's warning and traceback for a lexical form that does not parse.
 
-    A probe: rdflib's warning and traceback for a lexical form that does not
-    parse are filtered out while it runs, since a ``False`` here is an answer,
-    not an error.
+    Building a literal is how a lexical form is tried here, so a failure is an
+    answer, not an error.
     """
     rdflib_term = logging.getLogger("rdflib.term")
     rdflib_term.addFilter(_not_a_failed_cast)
     try:
-        return Literal(lexical, datatype=datatype).value is not None
+        yield
     finally:
         rdflib_term.removeFilter(_not_a_failed_cast)
+
+
+def _literal_parses_as(lexical: str, datatype: URIRef) -> bool:
+    """True when ``lexical`` is a well-formed literal of ``datatype``.
+
+    Date, time and duration datatypes are judged in rdflib's normal form
+    against their XSD lexical spaces; the others by whether rdflib reads a
+    value from the form.
+    """
+    with _quiet_rdflib_casts():
+        value = Literal(lexical, datatype=datatype)
+    temporal = is_valid_temporal_lexical(str(value), datatype)
+    if temporal is not None:
+        return temporal
+    return value.value is not None
 
 
 def dedupe_literal_variants(

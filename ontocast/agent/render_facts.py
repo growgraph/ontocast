@@ -49,7 +49,7 @@ from ontocast.tool.facts_validation import (
     expand_vocabulary_terms,
     materialize_entailed_types,
     normalize_literals_against_schema,
-    partition_literals_outside_date_ranges,
+    partition_literals_outside_temporal_ranges,
     promote_degenerate_bounds_from_vocabulary,
     repair_compact_iri_literals,
     repair_literal_type_objects,
@@ -96,7 +96,9 @@ def _normalize_and_repair_graph(
         Tuple of (repaired graph, applied-repair records for provenance).
     """
     started = time.perf_counter()
-    retyped = normalize_literals_against_schema(graph, ontology_context_graph)
+    retyped = normalize_literals_against_schema(
+        graph, ontology_context_graph, tools.catalog_roles()
+    )
     type_repaired, _type_findings, type_records = repair_literal_type_objects(graph)
     vocabulary_terms = expand_vocabulary_terms(
         tools.quantity_fallback_vocabulary, graph, ontology_context_graph
@@ -443,10 +445,10 @@ async def render_facts_fresh(
                 clean_graph, ontology_context_graph
             )
             rejected = rejected + op_rejected
-        clean_graph, date_rejected = partition_literals_outside_date_ranges(
-            clean_graph, ontology_context_graph
+        clean_graph, temporal_rejected = partition_literals_outside_temporal_ranges(
+            clean_graph, ontology_context_graph, tools.catalog_roles()
         )
-        rejected = rejected + date_rejected
+        rejected = rejected + temporal_rejected
         state.content_unit.graph = clean_graph
         state.quarantined_literal_triples = rejected
         if rejected:

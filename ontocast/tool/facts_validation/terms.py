@@ -404,6 +404,9 @@ class CatalogRoles:
         properties: Terms the catalog states are properties.
         classes: Terms the catalog states are classes.
         hierarchy: The catalog's subclass statements, for closures.
+        datatype_ranges: Each property's declared ``rdfs:range`` IRIs in the
+            XSD namespace, across every graph; more than one means the catalog
+            contradicts itself.
     """
 
     def __init__(
@@ -411,10 +414,12 @@ class CatalogRoles:
         properties: frozenset[str] = frozenset(),
         classes: frozenset[str] = frozenset(),
         hierarchy: RDFGraph | None = None,
+        datatype_ranges: dict[str, frozenset[str]] | None = None,
     ) -> None:
         self.properties = properties
         self.classes = classes
         self.hierarchy = hierarchy if hierarchy is not None else RDFGraph()
+        self.datatype_ranges = datatype_ranges or {}
         self._value_classes: dict[frozenset[str], frozenset[str]] = {}
 
     @classmethod
@@ -423,6 +428,7 @@ class CatalogRoles:
         properties: set[str] = set()
         classes: set[str] = set()
         hierarchy = RDFGraph()
+        ranges: dict[str, set[str]] = {}
         for graph in graphs:
             known_properties, known_classes = _catalog_term_roles(graph)
             properties |= known_properties
@@ -430,12 +436,16 @@ class CatalogRoles:
             for predicate in _HIERARCHY_PREDICATES:
                 for triple in graph.triples((None, predicate, None)):
                     hierarchy.add(triple)
+            for subject, range_iri in graph.subject_objects(RDFS.range):
+                if isinstance(subject, URIRef) and str(range_iri).startswith(str(XSD)):
+                    ranges.setdefault(str(subject), set()).add(str(range_iri))
         # A term typed both ways across files is contradictory; trust neither.
         ambiguous = properties & classes
         return cls(
             frozenset(properties - ambiguous),
             frozenset(classes - ambiguous),
             hierarchy,
+            {iri: frozenset(found) for iri, found in ranges.items()},
         )
 
     def value_classes(self, base: frozenset[str]) -> frozenset[str]:

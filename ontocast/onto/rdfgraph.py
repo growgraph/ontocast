@@ -34,6 +34,7 @@ from ontocast.onto.reification import (
     ox_triple,
 )
 from ontocast.onto.util import is_rdflib_default_namespace
+from ontocast.onto.xsd_lexical import is_valid_temporal_lexical
 from ontocast.util.hash import render_text_hash
 
 logger = logging.getLogger(__name__)
@@ -436,9 +437,11 @@ def extract_known_prefixes(
 class RejectedLiteralTriple(BaseModel):
     """A triple quarantined during LLM ingest because its object literal is invalid.
 
-    Covers two cases: the literal's lexical form fails XSD validation for its
-    declared ``datatype``, or a literal sits on a predicate whose schema declares
-    an IRI object (``reason``/``expected_range`` are set for the latter).
+    Covers three cases: the literal's lexical form fails XSD validation for its
+    declared ``datatype``; a literal sits on a predicate whose schema declares
+    an IRI object (``reason``/``expected_range`` are set); or a text sits on a
+    predicate whose range is a date, time or duration datatype it is not a
+    value of (``reason``/``expected_datatype`` are set).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -449,6 +452,7 @@ class RejectedLiteralTriple(BaseModel):
     datatype: str = ""
     reason: str | None = None
     expected_range: str | None = None
+    expected_datatype: str | None = None
 
 
 def _format_term_for_turtle(term: str) -> str:
@@ -472,6 +476,10 @@ def _quarantine_hint(item: RejectedLiteralTriple) -> str:
     hint = item.reason
     if item.expected_range:
         hint += f" (expected IRI with range <{item.expected_range}>)"
+    if item.expected_datatype:
+        hint += (
+            f" (expected a literal of {_datatype_to_compact(item.expected_datatype)})"
+        )
     return hint
 
 
@@ -1182,7 +1190,8 @@ class RDFGraph(Graph):
             except ValueError:
                 return False
 
-        return True
+        temporal = is_valid_temporal_lexical(lexical, datatype)
+        return True if temporal is None else temporal
 
     @classmethod
     def partition_invalid_typed_literals(

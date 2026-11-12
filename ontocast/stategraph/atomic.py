@@ -67,8 +67,12 @@ from ontocast.tool.facts_validation import (
     expand_vocabulary_terms,
     material_defects,
     materialize_entailed_types,
+    normalize_literals_against_schema,
     repair_compact_iri_literals,
+    temporal_range_mismatches,
     unit_numeric_inventory,
+    unresolved_quarantine,
+    write_back_temporal_quarantine,
 )
 from ontocast.tool.facts_validation.critic_patch import (
     CriticPatchPolicy,
@@ -151,15 +155,24 @@ def _repair_facts_patch(
 
     Patches are parsed outside the render, so they miss its parse-time repairs;
     a bare-string IRI they insert would otherwise read as a missing property,
-    and a node they add would miss the type its predicates entail.
+    a node they add would miss the type its predicates entail, an untyped
+    number would stay untyped, and text on a date property would pass. Such
+    text is quarantined as the render quarantines it, which raises the
+    mandatory count and so rolls the patch back.
     """
     graph = unit_state.content_unit.graph
     context = ontology_access_for_unit_facts(unit_state).effective_ontology_for_prompt()
+    roles = atomic.catalog_roles()
     known = atomic.catalog_terms() | expand_vocabulary_terms(
         atomic.quantity_fallback_vocabulary, graph, context.graph
     )
+    normalize_literals_against_schema(graph, context.graph, roles)
     _, records = repair_compact_iri_literals(graph, context.graph, known)
     _, entailed = materialize_entailed_types(graph, context.graph)
+    for triple, record in temporal_range_mismatches(graph, context.graph, roles):
+        graph.remove(triple)
+        if record not in unit_state.quarantined_literal_triples:
+            unit_state.quarantined_literal_triples.append(record)
     return [*records, *entailed]
 
 
@@ -236,7 +249,11 @@ def _collect_facts_findings(
     return collect_unit_findings(
         graph=unit_state.content_unit.graph,
         ontology_graph=unit_state.ontology_snapshot.graph,
-        quarantined=unit_state.quarantined_literal_triples,
+        # A quarantined triple the graph has since made good no longer holds
+        # the unit back; the full list stays on the state as the record.
+        quarantined=unresolved_quarantine(
+            unit_state.content_unit.graph, unit_state.quarantined_literal_triples
+        ),
         extraction_text=unit_state.content_unit.extraction_text,
         fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
         full_catalog_terms=full_catalog_terms,
@@ -1287,6 +1304,20 @@ async def run_unit_loop(
             await _run_completion_passes(
                 unit_state, atomic, phase, render_attempt=render_attempt
             )
+
+        if isinstance(unit_state, UnitFactsState):
+            written_back = write_back_temporal_quarantine(
+                unit_state.content_unit.graph,
+                unresolved_quarantine(
+                    unit_state.content_unit.graph,
+                    unit_state.quarantined_literal_triples,
+                ),
+            )
+            if written_back:
+                unit_state.applied_repairs.extend(written_back)
+                unit_state.deterministic_findings = phase.collect_findings(
+                    unit_state, atomic
+                )
 
         mandatory = sum(
             1 for finding in unit_state.deterministic_findings if finding.mandatory

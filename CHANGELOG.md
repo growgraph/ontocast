@@ -46,7 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The retrieved ontology context is the same in every run for the same text and catalog: each retrieval lane ranks its hits by score, then IRI and atom id, and over-fetches until a run of equal scores at the cut is seen whole.
-- Text on a property whose range is a date-like datatype (`xsd:date`, `dateTime`, `duration`, `gYear`, `gYearMonth`) that is not a value of it is quarantined for the facts critic instead of kept as a plain string; checking it no longer logs an rdflib traceback.
+- Text on a property whose range is a date, time or duration datatype that is not a value of it is quarantined for the facts critic instead of kept as a plain string; what is still quarantined when the unit leaves its loop is kept on its subject as `rdfs:comment` (repair kind `quarantine_as_comment`).
+- Typed date, time and duration literals are checked against their XSD lexical spaces, so one rdflib cannot read (`"June 2021"^^xsd:dateTime`) is quarantined instead of stored ill-typed.
+- Datatype ranges for retyping are read from the whole catalog and from the published ranges of PROV-O, SOSA and OWL-Time, not only the unit's retrieved context; a property declared with two datatypes is not retyped.
+- A calendar text naming exactly one value of a date range (`"29 June 2021"` on `xsd:date`) is retyped to it.
+- Critic and completion patches get the same retyping and date check as a render.
+- A quarantined triple no longer counts as a finding once the unit's graph states a valid value for it or keeps its text.
+- Checking a literal against a datatype no longer logs an rdflib traceback.
 - A predicate that exists nowhere (not a catalog term, not a real well-known term) but spells the exact local name of one catalog property in another namespace is rewritten to that property (`property_alias` repair); a real term of a well-known vocabulary is never rewritten.
 
 - A value the model writes as an entity of its own and links to nothing is dropped after the link pass, like a blank-node value with no carrier. Value classes are `qudt:QuantityValue`, schema.org's structured values, the configured `value_class`, and every catalog class under one of them.
