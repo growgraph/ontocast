@@ -104,7 +104,8 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `rdf/turtle_repair` | `ontocast/onto/rdfgraph.py` | Turtle payloads that parsed only after repair (truncated statement, unknown prefix, update-query wrapper) |
 | `rdf/jsonld_rdflib_fallback` | `ontocast/onto/rdfgraph.py` | JSON-LD payloads that failed URDNA2015 normalization and were parsed by rdflib instead |
 | `repair/compact_iri_literal` | `ontocast/tool/facts_validation/literal_repair.py` | Compact IRIs written as plain strings on an IRI-valued position and coerced back to IRIs: in facts renders and their critic and completion patches, and on the schema predicates of ontology renders |
-| `repair/entailed_type` | `ontocast/tool/facts_validation/literal_repair.py` | `rdf:type` triples added from a predicate's `rdfs:domain` or `rdfs:range`, in renders and in critic and completion patches |
+| `repair/entailed_type` | `ontocast/tool/facts_validation/literal_repair.py` | `rdf:type` triples added from a predicate's `rdfs:domain` or `rdfs:range`, or on an untyped node from the one class its links list, in renders and in critic and completion patches |
+| `repair/triple_reversed` | `ontocast/tool/facts_validation/literal_repair.py` | Triples turned around in a facts render because both ends contradicted the predicate's domain and range as written and fit them swapped |
 | `llm/ontology_selection` | `ontocast/agent/select_ontology_catalog.py` | Ontology selection calls, one per unit in `selected_single_ontology` mode |
 | `chapter/text_chars_before` | `ontocast/agent/render_facts.py` | Summed length of capped text literals before the text caps |
 | `chapter/text_chars_after` | `ontocast/agent/render_facts.py` | The same after the caps |
@@ -166,6 +167,7 @@ Facts fan-out, written in `ontocast/stategraph/node_factories.py`:
 |---|---|
 | `facts_anchor_count`, `facts_anchor_units` | Distinct anchor ontologies, and units assigned one |
 | `facts_findings_residual`, `facts_mandatory_residual` | Findings left on the facts units after their loops, all and mandatory |
+| `facts_mandatory_residual_by_kind` | The mandatory ones counted per finding kind |
 | `facts_statements_without_subject_rendered`, `facts_statements_without_subject` | `statement_without_subject` findings: on the units' renders, and left after the critic and gap passes |
 | `facts_critic_calls`, `facts_critic_accepted` | Facts critic calls, and those whose verdict let the unit leave the loop |
 | `facts_critic_fixes_applied`, `facts_critic_fixes_residual`, `facts_critic_fixes_noop` | Fixes that reached the graph, fixes left for judgement, and fixes that removed exactly what they added |

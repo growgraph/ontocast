@@ -387,3 +387,114 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
 
     assert result.status != Status.FAILED
     assert not [a for a in result.attempt_log if a.kind == "completion"]
+
+
+def test_the_existing_subjects_chapter_does_not_depend_on_triple_order() -> None:
+    """A subject with two catalog types and two labels renders the same text
+    whichever order the graph yields them in, so a replay hits the cache."""
+    from ontocast.prompt.complete_facts import build_catalog_subjects_chapter
+
+    ex = "https://ex.org/onto#"
+    city = URIRef("https://ex.org/facts/city")
+    terms = {ex + "Location", ex + "Feature"}
+
+    def chapter(type_order: list[str], label_order: list[str]) -> str:
+        graph = RDFGraph()
+        graph.bind("ex", ex)
+        for cls in type_order:
+            graph.add((city, RDF.type, URIRef(ex + cls)))
+        for label in label_order:
+            graph.add((city, RDFS.label, Literal(label)))
+        return build_catalog_subjects_chapter(graph, terms)
+
+    first = chapter(["Location", "Feature"], ["Lytton", "Lytton, BC"])
+    assert first == chapter(["Feature", "Location"], ["Lytton, BC", "Lytton"])
+    assert "a ex:Feature, ex:Location" in first
+
+
+# -- the prompt: a recovered value is a fact -------------------------------------
+
+
+def _gap_term_sheet(*, vocabulary: dict[str, str], contract) -> str:
+    from ontocast.prompt.complete_facts import build_term_sheet
+
+    return build_term_sheet(
+        _quantity_ontology(), (), value_terms=vocabulary, contract=contract
+    )
+
+
+def test_the_guidelines_keep_an_unlisted_unit_as_text_and_ask_for_a_subject() -> None:
+    from ontocast.prompt.complete_facts import completion_instruction
+
+    text = " ".join(completion_instruction.split())
+    assert "keep the unit token as text on the value node" in text
+    assert "never a unit IRI the TERM SHEET does not list" in text
+    assert "A value node nothing points to is not a fact" in text
+
+
+def test_the_term_sheet_lists_the_configured_value_terms_and_subject_links() -> None:
+    from ontocast.tool.facts_validation.terms import SubjectContract
+
+    contract = SubjectContract(
+        forward=frozenset({"https://ex.org/v#about"}),
+        inverse=frozenset({"https://ex.org/v#hasReading"}),
+    )
+    sheet = _gap_term_sheet(
+        vocabulary={
+            "value_class": "https://ex.org/v#Amount",
+            "numeric_value": "https://ex.org/v#number",
+        },
+        contract=contract,
+    )
+    assert "value_class: https://ex.org/v#Amount" in sheet
+    assert "numeric_value: https://ex.org/v#number" in sheet
+    assert "  unit:" not in sheet
+    forward, inverse = sheet.split("from the subject to the statement")
+    assert "<https://ex.org/v#about>" in forward
+    assert "<https://ex.org/v#hasReading>" in inverse
+
+
+@pytest.mark.parametrize("fmt", ["turtle", "jsonld"])
+def test_the_output_example_is_a_statement_that_names_its_subject(fmt) -> None:
+    """The example is the form the unit validator keeps: no free-standing value."""
+    import json
+
+    from rdflib import BNode
+
+    from ontocast.onto.enum import LLMGraphFormat
+    from ontocast.prompt.complete_facts import output_instruction_for
+
+    instruction = output_instruction_for(LLMGraphFormat(fmt))
+    example = instruction.split("Example: ", 1)[1].strip()
+    payload = json.loads(example)
+    graph = RDFGraph()
+    if fmt == "turtle":
+        graph.parse(
+            data="@prefix cd: <https://ex.org/f/> . @prefix onto: <https://ex.org/o#> ."
+            "@prefix qudt: <http://qudt.org/schema/qudt/> ."
+            "@prefix unit: <http://qudt.org/vocab/unit/> ."
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> ."
+            "@prefix xsd: <http://www.w3.org/2001/XMLSchema#> ." + payload,
+            format="turtle",
+        )
+    else:
+        node = json.loads(payload)
+        node["@context"] = {
+            **node.get("@context", {}),
+            "cd": "https://ex.org/f/",
+            "onto": "https://ex.org/o#",
+            "unit": "http://qudt.org/vocab/unit/",
+            "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+            "xsd": "http://www.w3.org/2001/XMLSchema#",
+        }
+        graph.parse(data=json.dumps(node), format="json-ld")
+
+    values = {s for s in graph.subjects() if isinstance(s, BNode)}
+    assert values, "the value is a blank node"
+    assert all((None, None, value) in graph for value in values)
+    named = {s for s in graph.subjects() if isinstance(s, URIRef)}
+    assert any(
+        isinstance(o, URIRef) and str(o).startswith("https://ex.org/f/")
+        for s in named
+        for o in graph.objects(s)
+    ), "the statement links to a cd: subject"

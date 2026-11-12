@@ -121,14 +121,17 @@ async def complete_facts(
     fact_graph = state.content_unit.graph
 
     unit_properties = _unit_role_property(atomic, ontology_graph, fact_graph)
-    term_sheet = build_term_sheet(ontology_graph, unit_properties)
+    term_sheet = build_term_sheet(
+        ontology_graph,
+        unit_properties,
+        value_terms=atomic.quantity_fallback_vocabulary,
+        contract=atomic.subject_contract(),
+    )
     catalog_subjects_chapter = build_catalog_subjects_chapter(
         fact_graph, collect_catalog_terms(ontology_graph)
     )
     missing_measurements_chapter = build_missing_measurements_chapter(inventory)
-    subject_gaps_chapter = build_subject_gaps_chapter(
-        fact_graph, subject_gaps, atomic.subject_contract() if subject_gaps else None
-    )
+    subject_gaps_chapter = build_subject_gaps_chapter(fact_graph, subject_gaps)
 
     user_instruction = (
         user_template.format(user_instruction=state.facts_user_instruction)

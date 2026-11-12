@@ -24,7 +24,10 @@ from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
-from ontocast.prompt.complete_facts import build_subject_gaps_chapter
+from ontocast.prompt.complete_facts import (
+    build_subject_gaps_chapter,
+    build_term_sheet,
+)
 from ontocast.prompt.facts_guidelines import (
     DEFAULT_QUANTITY_FALLBACK_VOCABULARY,
     format_facts_operational_guidelines,
@@ -271,14 +274,29 @@ async def test_a_fix_that_adds_a_mandatory_finding_is_rolled_back(
     assert state.attempt_log[-1].n_fixes_rolled_back == 1
 
 
-def test_the_gap_chapter_lists_statements_candidates_and_subject_properties() -> None:
+def test_the_gap_chapter_lists_statements_and_candidates() -> None:
     graph = _facts(_LAPSED)
     findings = statement_without_subject_findings(graph, [CD], CONTRACT)
-    chapter = build_subject_gaps_chapter(graph, findings, CONTRACT)
+    chapter = build_subject_gaps_chapter(graph, findings)
     assert "# SUBJECT GAPS" in chapter
     assert '"thickness"' in chapter and '"film"' in chapter
-    assert "hasFeatureOfInterest" in chapter
-    assert build_subject_gaps_chapter(graph, [], CONTRACT) == ""
+    assert build_subject_gaps_chapter(graph, []) == ""
+
+
+def test_the_gap_term_sheet_lists_the_subject_properties() -> None:
+    sheet = build_term_sheet(RDFGraph(), contract=CONTRACT)
+    assert "hasFeatureOfInterest" in sheet and "hasObservation" in sheet
+    assert "Properties a statement takes" not in sheet
+
+
+def test_the_gap_term_sheet_shows_statement_properties_beside_a_statement_class() -> (
+    None
+):
+    catalog = RDFGraph()
+    catalog.bind("sosa", SOSA)
+    catalog.add((SOSA.Observation, RDF.type, OWL.Class))
+    sheet = build_term_sheet(catalog, contract=CONTRACT)
+    assert 'sosa:hasResult  "has result"' in sheet
 
 
 # -- the prompt -----------------------------------------------------------------

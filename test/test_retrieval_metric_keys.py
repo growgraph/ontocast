@@ -37,6 +37,7 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_LLM_REPAIR_RENDERS_FAILED": "facts_llm_repair_renders_failed",
     "FACTS_REPAIR_DELETE_ONLY": "facts_repair_delete_only",
     "FACTS_MANDATORY_RESIDUAL": "facts_mandatory_residual",
+    "FACTS_MANDATORY_RESIDUAL_BY_KIND": "facts_mandatory_residual_by_kind",
     "FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED": (
         "facts_statements_without_subject_rendered"
     ),

@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from difflib import SequenceMatcher
 
 from rdflib import RDF, RDFS, BNode, Literal, URIRef
-from rdflib.namespace import XSD
+from rdflib.namespace import OWL, XSD
 from rdflib.term import Node
 
 from ontocast.onto.model import (
@@ -28,6 +28,7 @@ from ontocast.onto.rdfgraph import (
     RDFGraph,
     RejectedLiteralTriple,
 )
+from ontocast.onto.reification import Triple
 from ontocast.onto.well_known import (
     is_well_known_term,
     well_known_role,
@@ -41,6 +42,7 @@ from ontocast.tool.facts_validation.terms import (
     _alias_candidates,
     _catalog_term_roles,
     _declared_domains,
+    _described_classes,
     _local_name,
     _name_tokens,
     _namespace_of,
@@ -51,7 +53,9 @@ from ontocast.tool.facts_validation.terms import (
     declared_class_ranges,
     expand_vocabulary_terms,
     resolve_unique_surface,
+    sole_listed_classes,
     superclass_closure,
+    types_compatible,
 )
 from ontocast.tool.llm import record_active_count
 from ontocast.tool.validate import _predicate_expects_iri_object
@@ -574,6 +578,12 @@ def materialize_entailed_types(
     the ``DOMAIN_VIOLATION`` finding's to report, and materialising the
     domain there would hide it.
 
+    An IRI still untyped after that takes the class a link lists through
+    ``schema:domainIncludes`` / ``schema:rangeIncludes``, when the property
+    lists exactly one class and declares no ``rdfs`` counterpart, and all of
+    the node's links agree on it. A listed class never joins an asserted type
+    and never types a blank node.
+
     Args:
         graph: Facts graph, repaired in place.
         ontology_graph: Ontology context declaring domains and ranges.
@@ -585,7 +595,9 @@ def materialize_entailed_types(
         return 0, []
     domains = _declared_domains(ontology_graph)
     ranges = declared_class_ranges(ontology_graph)
-    if not domains and not ranges:
+    listed_domains = sole_listed_classes(ontology_graph, "domainIncludes", domains)
+    listed_ranges = sole_listed_classes(ontology_graph, "rangeIncludes", ranges)
+    if not (domains or ranges or listed_domains or listed_ranges):
         return 0, []
 
     closures: dict[URIRef, set[URIRef]] = {}
@@ -624,6 +636,31 @@ def materialize_entailed_types(
             if admissible(obj, entailed):
                 additions.setdefault((obj, entailed), predicate)
 
+    # A node still untyped takes the one class its links list, when they agree.
+    listed: dict[URIRef, dict[URIRef, URIRef]] = {}
+    entailed_nodes = {node for node, _ in additions}
+    for subject, predicate, obj in graph:
+        if not isinstance(predicate, URIRef):
+            continue
+        for node, table in ((subject, listed_domains), (obj, listed_ranges)):
+            cls = table.get(predicate)
+            if (
+                cls is not None
+                and isinstance(node, URIRef)
+                and node not in entailed_nodes
+                and admissible(node, cls)
+                and not any(
+                    value not in _VACUOUS_TYPES
+                    for value in graph.objects(node, RDF.type)
+                )
+            ):
+                classes = listed.setdefault(node, {})
+                classes[cls] = min(classes.get(cls, predicate), predicate)
+    for node, classes in listed.items():
+        if len(classes) == 1:
+            ((cls, predicate),) = classes.items()
+            additions[(node, cls)] = predicate
+
     applied: list[GraphRepairRecord] = []
     for (node, entailed), predicate in sorted(
         additions.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
@@ -641,6 +678,84 @@ def materialize_entailed_types(
         logger.info("Materialised entailed type <%s> on <%s>", entailed, node)
     if applied:
         record_active_count("repair/entailed_type", len(applied))
+    return len(applied), applied
+
+
+def repair_reversed_triples(
+    graph: RDFGraph, ontology_graph: RDFGraph | None
+) -> tuple[int, list[GraphRepairRecord]]:
+    """Turn around a triple the context shows was written backwards.
+
+    ``x p y`` becomes ``y p x`` when ``p`` declares an ``rdfs:domain`` and an
+    ``rdfs:range``, both ends are typed IRIs, ``x`` contradicts the domain and
+    ``y`` the range as written, and swapped both fit. One end fitting, or a
+    type the context cannot place, leaves the triple as it is: the subject
+    may be mistyped, or the property wrong, and neither is a direction. A
+    symmetric property is never turned. A reifier follows its statement.
+
+    Args:
+        graph: Facts graph, repaired in place.
+        ontology_graph: Ontology context declaring domains and ranges.
+
+    Returns:
+        Tuple of (number of triples turned, applied-repair records).
+    """
+    if ontology_graph is None or not len(ontology_graph):
+        return 0, []
+    domains = _declared_domains(ontology_graph)
+    ranges = declared_class_ranges(ontology_graph)
+    directed = {
+        predicate
+        for predicate in domains.keys() & ranges.keys()
+        if (predicate, RDF.type, OWL.SymmetricProperty) not in ontology_graph
+    }
+    if not directed:
+        return 0, []
+    described = _described_classes(ontology_graph)
+    closures: dict[URIRef, set[URIRef]] = {}
+
+    def fits(node: URIRef, declared: set[URIRef]) -> bool | None:
+        asserted = {
+            value
+            for value in graph.objects(node, RDF.type)
+            if isinstance(value, URIRef) and value not in _VACUOUS_TYPES
+        }
+        return types_compatible(
+            asserted, declared, ontology_graph, described=described, closures=closures
+        )
+
+    reversed_: dict[Triple, Triple] = {}
+    for subject, predicate, obj in graph:
+        if not isinstance(predicate, URIRef) or predicate not in directed:
+            continue
+        if not isinstance(subject, URIRef) or not isinstance(obj, URIRef):
+            continue
+        domain, range_ = domains[predicate], ranges[predicate]
+        if (
+            fits(subject, domain) is False
+            and fits(obj, range_) is False
+            and fits(obj, domain) is True
+            and fits(subject, range_) is True
+        ):
+            reversed_[(subject, predicate, obj)] = (obj, predicate, subject)
+
+    applied: list[GraphRepairRecord] = []
+    for written in sorted(reversed_, key=lambda t: tuple(str(term) for term in t)):
+        turned = reversed_[written]
+        graph.remove(written)
+        graph.add(turned)
+        applied.append(
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.TRIPLE_REVERSED,
+                source=f"{written[0]} {written[1]}",
+                target=str(written[2]),
+            )
+        )
+        logger.info("Turned around <%s> <%s> <%s>", *written)
+    if applied:
+        if graph.has_reifications:
+            graph.reifications.retarget(reversed_)
+        record_active_count("repair/triple_reversed", len(applied))
     return len(applied), applied
 
 

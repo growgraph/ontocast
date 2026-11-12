@@ -394,6 +394,14 @@ def _is_initial(text: str, unit: str, end: int) -> bool:
     )
 
 
+#: A calendar decade ("the 2040s"): a four-digit round year with ``s`` glued on.
+_DECADE = re.compile(r"\d{3}0s")
+
+
+def _is_decade(text: str, start: int, end: int) -> bool:
+    return _DECADE.fullmatch(text, start, end) is not None
+
+
 def _context(text: str, start: int, end: int) -> str:
     window = text[max(0, start - CONTEXT_CHARS) : min(len(text), end + CONTEXT_CHARS)]
     return " ".join(window.split())
@@ -440,7 +448,11 @@ def unit_adjacent_numbers(
             continue
         numbers_start = match.start("numbers")
         end = match.start("token") + len(unit)
-        if _is_label_number(text, numbers_start) or _is_initial(text, unit, end):
+        if (
+            _is_label_number(text, numbers_start)
+            or _is_initial(text, unit, end)
+            or _is_decade(text, numbers_start, end)
+        ):
             continue
         for number in _NUMBER_RE.finditer(match.group("numbers")):
             start = numbers_start + number.start()

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import typing
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from difflib import SequenceMatcher
 
 from pydantic import BaseModel
@@ -642,6 +642,49 @@ def declared_class_ranges(ontology_graph: RDFGraph) -> dict[URIRef, set[URIRef]]
             continue
         ranges.setdefault(predicate, set()).add(range_iri)
     return ranges
+
+
+_SCHEMA_ORG = ("http://schema.org/", "https://schema.org/")
+
+
+def sole_listed_classes(
+    ontology_graph: RDFGraph, link: str, declared: Mapping[URIRef, set[URIRef]]
+) -> dict[URIRef, URIRef]:
+    """Predicate -> the one class its ``schema:<link>`` lists.
+
+    ``schema:rangeIncludes`` and ``schema:domainIncludes`` list alternatives,
+    so they entail nothing in general; a predicate listing exactly one named
+    class, and declaring no ``rdfs`` counterpart, leaves one reading.
+
+    Args:
+        ontology_graph: Ontology context.
+        link: ``"rangeIncludes"`` or ``"domainIncludes"``.
+        declared: The predicate's ``rdfs:range`` (resp. ``rdfs:domain``)
+            classes; a predicate present here is left out.
+
+    Returns:
+        The sole listed class per predicate; datatypes are never a class.
+    """
+    datatypes = {
+        subject
+        for subject in ontology_graph.subjects(RDF.type, RDFS.Datatype)
+        if isinstance(subject, URIRef)
+    }
+    listed: dict[URIRef, set[URIRef]] = {}
+    for namespace in _SCHEMA_ORG:
+        for predicate, _, cls in ontology_graph.triples(
+            (None, URIRef(namespace + link), None)
+        ):
+            if isinstance(predicate, URIRef) and isinstance(cls, URIRef):
+                listed.setdefault(predicate, set()).add(cls)
+    return {
+        predicate: next(iter(classes))
+        for predicate, classes in listed.items()
+        if len(classes) == 1
+        and predicate not in declared
+        and not (classes & datatypes)
+        and not str(next(iter(classes))).startswith(str(XSD))
+    }
 
 
 def types_compatible(

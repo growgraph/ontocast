@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections import Counter
 from collections.abc import AsyncGenerator, Collection, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, TypeVar
@@ -885,6 +886,7 @@ def make_render_facts_node(tools: ToolBox):
         # so the residual has "units" as its denominator.
         findings_residual = 0
         mandatory_residual = 0
+        mandatory_by_kind: Counter[str] = Counter()
         subject_gaps_rendered = 0
         subject_gaps_left = 0
         critic_fixes_applied = 0
@@ -907,6 +909,11 @@ def make_render_facts_node(tools: ToolBox):
             findings_residual += len(result.deterministic_findings)
             mandatory_residual += sum(
                 1 for finding in result.deterministic_findings if finding.mandatory
+            )
+            mandatory_by_kind.update(
+                str(finding.kind)
+                for finding in result.deterministic_findings
+                if finding.mandatory
             )
             subject_gaps_rendered += result.statements_without_subject_rendered
             subject_gaps_left += sum(
@@ -1014,6 +1021,9 @@ def make_render_facts_node(tools: ToolBox):
         )
         state.retrieval_metrics[RetrievalMetric.FACTS_MANDATORY_RESIDUAL] = (
             mandatory_residual
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_MANDATORY_RESIDUAL_BY_KIND] = (
+            dict(sorted(mandatory_by_kind.items()))
         )
         state.retrieval_metrics[
             RetrievalMetric.FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED

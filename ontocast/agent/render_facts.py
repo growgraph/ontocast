@@ -55,6 +55,7 @@ from ontocast.tool.facts_validation import (
     repair_compact_iri_literals,
     repair_literal_type_objects,
     repair_property_aliases,
+    repair_reversed_triples,
     resolve_code_literals,
 )
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
@@ -119,6 +120,9 @@ def _normalize_and_repair_graph(
     resolved, code_records = resolve_code_literals(
         graph, ontology_context_graph, tools.code_predicates
     )
+    reversed_count, reversed_records = repair_reversed_triples(
+        graph, ontology_context_graph
+    )
     entailed, entailed_records = materialize_entailed_types(
         graph, ontology_context_graph
     )
@@ -129,17 +133,26 @@ def _normalize_and_repair_graph(
         budget_tracker.add_duration(
             "repair/deterministic", time.perf_counter() - started
         )
-    if retyped or rewritten or type_repaired or iri_repaired or resolved or entailed:
+    if (
+        retyped
+        or rewritten
+        or type_repaired
+        or iri_repaired
+        or resolved
+        or reversed_count
+        or entailed
+    ):
         logger.info(
             "Deterministic graph repair: retyped %d literal(s), coerced %d "
             "rdf:type literal(s), coerced %d compact-IRI literal(s), rewrote %d "
-            "alias triple(s), resolved %d code(s), materialised %d entailed "
-            "type(s)",
+            "alias triple(s), resolved %d code(s), turned %d triple(s), "
+            "materialised %d entailed type(s)",
             retyped,
             type_repaired,
             iri_repaired,
             rewritten,
             resolved,
+            reversed_count,
             entailed,
         )
     return graph, [
@@ -147,6 +160,7 @@ def _normalize_and_repair_graph(
         *iri_records,
         *alias_records,
         *code_records,
+        *reversed_records,
         *entailed_records,
     ]
 

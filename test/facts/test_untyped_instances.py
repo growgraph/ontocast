@@ -444,3 +444,71 @@ def test_gate_counts_components_and_isolated_instances() -> None:
     assert state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED] == 1
     assert state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_INFERRED] == 0
     assert state.retrieval_metrics[RetrievalMetric.FACTS_LINKS_REMOVED] == 0
+
+
+# ---------------------------------------------------------------------------
+# A single listed class (schema:rangeIncludes / domainIncludes)
+# ---------------------------------------------------------------------------
+
+_LISTED = """
+ex:Trait a owl:Class .
+ex:Reading a owl:Class .
+ex:Probe a owl:Class .
+ex:observes a owl:ObjectProperty ; schema:rangeIncludes ex:Trait .
+ex:takenBy a owl:ObjectProperty ;
+    schema:rangeIncludes ex:Probe , ex:Device .
+ex:reads a owl:ObjectProperty ; schema:domainIncludes ex:Probe .
+ex:checks a owl:ObjectProperty ;
+    rdfs:range ex:Device ; schema:rangeIncludes ex:Trait .
+"""
+
+
+def _listed_ontology(schema: str = "https://schema.org/") -> RDFGraph:
+    graph = RDFGraph()
+    graph.parse(
+        data=PREFIXES.replace("https://schema.org/", schema) + ONTOLOGY + _LISTED,
+        format="turtle",
+    )
+    return graph
+
+
+@pytest.mark.parametrize("schema", ["https://schema.org/", "http://schema.org/"])
+def test_an_untyped_node_takes_the_one_class_a_property_lists(schema) -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:observes cd:t . cd:p ex:reads cd:r .")
+
+    added, records = materialize_entailed_types(graph, _listed_ontology(schema))
+
+    assert added == 2
+    assert (_cd("t"), RDF.type, URIRef(f"{EX}Trait")) in graph
+    assert (_cd("p"), RDF.type, URIRef(f"{EX}Probe")) in graph
+    assert {record.kind for record in records} == {FactsUnitFindingKind.ENTAILED_TYPE}
+    assert untyped_instances(graph, [CD]) == []
+
+
+def test_two_listed_classes_type_nothing() -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:takenBy cd:p .")
+    assert materialize_entailed_types(graph, _listed_ontology())[0] == 0
+
+
+def test_a_listed_class_never_joins_an_asserted_type() -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:observes cd:t . cd:t a ex:Process .")
+    assert materialize_entailed_types(graph, _listed_ontology())[0] == 0
+
+
+def test_a_declared_range_wins_over_a_listed_class() -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:checks cd:d .")
+
+    materialize_entailed_types(graph, _listed_ontology())
+
+    assert set(graph.objects(_cd("d"), RDF.type)) == {URIRef(f"{EX}Device")}
+
+
+def test_listed_classes_that_disagree_type_nothing() -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:observes cd:x . cd:x ex:reads cd:r .")
+    assert (_cd("x"), RDF.type, None) not in graph
+    assert materialize_entailed_types(graph, _listed_ontology())[0] == 0
+
+
+def test_a_listed_class_never_types_a_blank_node() -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:observes [ rdfs:label 'colour' ] .")
+    assert materialize_entailed_types(graph, _listed_ontology())[0] == 0

@@ -947,6 +947,10 @@ class FactsUnitFindingKind(StrEnum):
     #: ``rdfs:domain`` or ``rdfs:range``, materialised on the node.
     #: Repair-only: never raised as a finding.
     ENTAILED_TYPE = "entailed_type"
+    #: A triple both of whose ends contradict its predicate's domain and
+    #: range as written and fit them swapped, turned around.
+    #: Repair-only: never raised as a finding.
+    TRIPLE_REVERSED = "triple_reversed"
     NUMERIC_COVERAGE = "numeric_coverage"
     LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"

@@ -134,7 +134,8 @@ machine can decide without the model:
 | Compact-IRI literal coercion | A plain string such as `"unit:NanoM"` on another predicate becomes the IRI, when its prefix is bound and either the schema says the predicate takes an IRI or the IRI is a catalog or fallback-vocabulary term. Critic and completion patches get the same repair before they are judged |
 | Near-miss predicate rewrite | A predicate that exists nowhere (not a catalog term, not a real term of a well-known vocabulary) is rewritten to the one catalog property, across the whole catalog, in another namespace with exactly its local name (a slipped prefix, also into a well-known namespace); otherwise, in a namespace the catalog declares terms in, to the one catalog term of its own namespace whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
 | Code resolution | A node carrying a code from `FACTS_CODE_PREDICATES` (such as `qudt:ucumCode "d"`) but no link to the coded individual gains that link, when exactly one catalog individual declares the code. The linking property comes from the schema's domain and range, or else from how the graph already links such nodes |
-| Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. Critic and completion patches get the same repair |
+| Reversed triples | `x p y` becomes `y p x` when `p` declares an `rdfs:domain` and an `rdfs:range`, both ends are typed IRIs, `x` contradicts the domain and `y` the range as written, and swapped both fit. One end fitting, an untyped end, a type the context does not place, or a symmetric property leaves the triple as written. Records are kind `triple_reversed` |
+| Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. An IRI still untyped takes the class a link lists through `schema:domainIncludes` or `schema:rangeIncludes`, when the property lists exactly one class, declares no `rdfs` counterpart, and all of the node's links agree. Critic and completion patches get the same repair |
 | Degenerate bounds | Equal lower and upper bounds become one value, when the quantity fallback vocabulary names `numeric_value`, `lower_bound` and `upper_bound` |
 
 A rendered triple naming an IRI that no `<...>` can hold (a space, a quote, a
@@ -323,14 +324,19 @@ lists a measurement (a number with its unit) absent from the graph, or a
 `statement_without_subject` finding holds. A unit with no gap makes no call.
 Each pass:
 
-- shows the model a term sheet (the unit's quantity, observation and condition
-  classes and unit individuals) instead of the full ontology chapter, plus the
-  unit's existing catalog-typed subjects, so a recovered measurement attaches
-  to a node that is already there;
+- shows the model a term sheet instead of the full ontology chapter: the
+  unit's quantity, observation and condition classes and unit individuals, the
+  terms of the quantity fallback vocabulary, the properties a statement takes
+  when the sheet lists a statement class, and the properties that link a
+  statement to its subject (`sosa:hasFeatureOfInterest`, its inverse, and the
+  context's sub-properties and inverses of either);
+- shows the unit's existing catalog-typed subjects, so a recovered measurement
+  attaches to a node that is already there;
 - lists the missing measurements, and the statements that name nothing with
-  the unit's candidate subjects and the properties that link a statement to
-  its subject (`sosa:hasFeatureOfInterest`, its inverse, and the context's
-  sub-properties and inverses of either);
+  the unit's candidate subjects;
+- asks for each recovered measurement as a statement about a subject, never a
+  value on its own, with a unit the term sheet does not list kept as text on
+  the value node;
 - keeps only `ADD` fixes, whatever else the model returns;
 - applies them through the same one-at-a-time regression check as critic
   fixes.

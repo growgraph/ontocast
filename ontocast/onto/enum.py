@@ -122,6 +122,7 @@ class RetrievalMetric(StrEnum):
     FACTS_REPAIR_DELETE_ONLY = "facts_repair_delete_only"
     FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
     FACTS_MANDATORY_RESIDUAL = "facts_mandatory_residual"
+    FACTS_MANDATORY_RESIDUAL_BY_KIND = "facts_mandatory_residual_by_kind"
     #: Statements and values linked to nothing in the units' renders, and
     #: those left after the gap pass (``statement_without_subject``).
     FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED = (
