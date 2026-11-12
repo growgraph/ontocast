@@ -13,6 +13,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
+from ontocast.agent.update_common import drop_malformed_iris
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, LLMPhase, Status, WorkflowNode
 from ontocast.onto.model import (
@@ -431,6 +432,7 @@ async def render_facts_fresh(
             web_search_enabled,
         )
         render_report.semantic_graph.sanitize_prefixes_namespaces()
+        state.applied_repairs.extend(drop_malformed_iris(render_report.semantic_graph))
         clean_graph, rejected = finalize_llm_graph(render_report.semantic_graph)
         ontology_context_graph = access.effective_ontology_for_prompt().graph
         clean_graph, repair_records = _normalize_and_repair_graph(

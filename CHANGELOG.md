@@ -48,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A measurement counts as present in the graph when any node, blank or named, states its number (value or bound) with its unit, as an IRI or kept as text on that node; the gap pass no longer re-adds values a render already wrote.
+- A unit IRI the ontology context does not hold is `unknown_term`, so a patch that links one is rolled back.
+- An IRI that cannot be written in `<...>` (a space, a quote, a brace) no longer fails a unit or reaches the output: a rendered triple naming one is dropped (repair kind `malformed_iri_dropped`), and a critic or gap-pass fix naming one is refused as unparseable.
 - The retrieved ontology context is the same in every run for the same text and catalog: each retrieval lane ranks its hits by score, then IRI and atom id, and over-fetches until a run of equal scores at the cut is seen whole.
 - Text on a property whose range is a date, time or duration datatype that is not a value of it is quarantined for the facts critic instead of kept as a plain string; what is still quarantined when the unit leaves its loop is kept on its subject as `rdfs:comment` (repair kind `quarantine_as_comment`).
 - Typed date, time and duration literals are checked against their XSD lexical spaces, so one rdflib cannot read (`"June 2021"^^xsd:dateTime`) is quarantined instead of stored ill-typed.

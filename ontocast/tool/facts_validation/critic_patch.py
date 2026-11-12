@@ -43,11 +43,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from rdflib import RDF, BNode, Graph, URIRef
+from rdflib import RDF, BNode, Graph, Literal, URIRef
 from rdflib.term import Node
 
 from ontocast.onto.annotation import is_annotation
 from ontocast.onto.blank_structures import structure_closure
+from ontocast.onto.iri_policy import is_iriref_text
 from ontocast.onto.model import TripleFix
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
@@ -453,6 +454,20 @@ def _has_unexpanded_terms(parsed: Graph) -> bool:
     return False
 
 
+def _has_malformed_iri(parsed: Graph) -> bool:
+    """Whether any IRI, datatypes included, is one no ``IRIREF`` can hold.
+
+    rdflib reads ``<a b>`` with only a warning; the update that would carry it
+    into the unit graph cannot be written, so the payload is unparseable.
+    """
+    for triple in parsed:
+        for term in triple:
+            iri = term.datatype if isinstance(term, Literal) else term
+            if isinstance(iri, URIRef) and not is_iriref_text(str(iri)):
+                return True
+    return False
+
+
 @dataclass(frozen=True)
 class _ParsedPayload:
     """A payload's triples, or the reason there are none."""
@@ -492,7 +507,8 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
 
     Returns:
         The parsed triples, or why there are none: an empty result for an
-        unparseable or statement-less payload, ``unresolved_prefix`` for one
+        unparseable or statement-less payload (an IRI no ``IRIREF`` can hold
+        counts as unparseable), ``unresolved_prefix`` for one
         whose terms could not be expanded to IRIs, ``quarantined_literal``
         for one typing a literal its lexical form cannot hold.
     """
@@ -510,7 +526,7 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
             return _ParsedPayload()
         # A JSON body that yields no statement -- a bare literal, or a node
         # reference with no predicates -- is not a patch, whatever it meant.
-        if not len(parsed):
+        if not len(parsed) or _has_malformed_iri(parsed):
             return _ParsedPayload()
         if _has_unexpanded_terms(parsed):
             return _ParsedPayload(unresolved_prefix=True)
@@ -530,6 +546,8 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
         except Exception:
             continue
         if len(parsed):
+            if _has_malformed_iri(parsed):
+                return _ParsedPayload()
             if _has_unexpanded_terms(parsed):
                 return _ParsedPayload(unresolved_prefix=True)
             if _has_quarantined_literal(parsed):

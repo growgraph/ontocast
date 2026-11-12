@@ -137,6 +137,12 @@ machine can decide without the model:
 | Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. Critic and completion patches get the same repair |
 | Degenerate bounds | Equal lower and upper bounds become one value, when the quantity fallback vocabulary names `numeric_value`, `lower_bound` and `upper_bound` |
 
+A rendered triple naming an IRI that no `<...>` can hold (a space, a quote, a
+brace) is dropped before anything else, in facts and ontology renders alike
+(repair kind `malformed_iri_dropped`, one record per IRI). Such a name is
+garbled, not a term: it could be written into neither a SPARQL update nor
+Turtle. A critic or gap-pass fix naming one is refused as unparseable.
+
 Three kinds of triple are then **quarantined**, removed from the graph and
 shown to the critic for repair: typed literals whose lexical form is invalid
 for the datatype (dates, times and durations by their XSD lexical spaces);
@@ -154,7 +160,7 @@ leaves its loop, as it always is with `FACTS_CRITIC_PASSES=0`, is put back on
 its subject verbatim as `rdfs:comment` (repair kind `quarantine_as_comment`),
 so no text is lost and no false date is stated.
 
-Type and compact-IRI coercions, predicate rewrites, code resolutions and entailed types are recorded as
+Type and compact-IRI coercions, predicate rewrites, code resolutions, entailed types and malformed-IRI drops are recorded as
 `GraphRepairRecord`s and returned per unit as `facts_repairs`, so a consumer can
 tell a machine rewrite from what the model asserted. Ambiguity is never
 resolved by guessing: two catalog terms claiming one code means no repair.
@@ -169,7 +175,7 @@ fix. Every kind is mandatory except numeric coverage:
 | Finding | What it catches |
 |---|---|
 | `quarantined_literal` | A quarantined triple, with the catalog individuals of the property's range as suggestions |
-| `unknown_term` | A term under `example.org`, a predicate or class minted in the facts namespace, or a term missing from a closed catalog namespace |
+| `unknown_term` | A term under `example.org`, a predicate or class minted in the facts namespace, a term missing from a closed catalog namespace, or a unit (the object of the unit property of `FACTS_QUANTITY_FALLBACK_VOCABULARY`) that the ontology context does not hold |
 | `literal_type_object` | An `rdf:type` written as a string that layer 1 could not resolve |
 | `domain_violation` | A predicate asserted on a subject whose stated type contradicts the predicate's `rdfs:domain` |
 | `statement_without_subject` | An instance that states a value but names nothing it is about. For a statement class (`sosa:Observation`, `sosa:Actuation`, `sosa:Sampling`, or a catalog class under one): no subject property from it (`sosa:hasFeatureOfInterest`) nor to it (`sosa:isFeatureOfInterestOf`), counting the catalog's sub-properties and inverses of either; a link to its observed property is not a subject. For a value class: linked to no other instance of the unit. An instance of another class stating its own values is a fact about itself and is not reported. Suggestions are the unit's other instances. Not raised on citation or non-content units; counted per document as `facts_statements_without_subject_rendered` (on the renders) and `facts_statements_without_subject` (after the passes) |
@@ -178,7 +184,7 @@ fix. Every kind is mandatory except numeric coverage:
 | `scalar_as_bounds` | One value written into two single-valued numeric properties of one node |
 | `label_only_number` | A value node with a unit but no numeric literal, whose number sits only in its label |
 | `unit_symbol_case_mismatch` | A unit whose symbol matches the text only after case folding, while another catalog unit matches it exactly |
-| `numeric_coverage` | Numbers in the source text missing from the graph, split into measurements (number with unit) and bare numbers. Advisory unless `FACTS_NUMERIC_COVERAGE_MANDATORY` says otherwise; `FACTS_NUMERIC_IDENTIFIER_GUARD` keeps digit groups of identifiers out |
+| `numeric_coverage` | Numbers in the source text missing from the graph, split into measurements (number with unit) and bare numbers. A measurement is present when one node, blank or named, states the number outside an annotation (as a value or a bound) together with its unit, as a unit IRI or as the unit's token kept in a literal on that node. Advisory unless `FACTS_NUMERIC_COVERAGE_MANDATORY` says otherwise; `FACTS_NUMERIC_IDENTIFIER_GUARD` keeps digit groups of identifiers out |
 
 The critic is told to resolve every mandatory finding by rewriting the
 statement in place, never by deleting it.
@@ -204,7 +210,9 @@ property is never offered as a class or the reverse.
 
 A well-known term must exist in its vocabulary, checked against rdflib's
 bundled term lists, and the QUDT schema and vCard lists that ship with OntoCast
-(QUDT units and quantity kinds are admitted by namespace).
+(QUDT units and quantity kinds are admitted by namespace). A unit namespace
+is open, so a unit linked through the unit property must also appear in the
+ontology context; otherwise the render keeps the unit's token as text.
 One it does not have is `unknown_term` in both modes, with the vocabulary's
 near-misses as suggestions; an ontology render that mints one gets
 `foreign_namespace`.

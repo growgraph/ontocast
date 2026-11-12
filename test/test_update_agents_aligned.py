@@ -189,7 +189,7 @@ def test_insert_hook_never_sees_the_delete_side() -> None:
         insert_graph=_graph(GOOD_TTL),
         delete_graph=_graph(STALE_TTL),
     )
-    update, _ = finalize_update_report(report, insert_hook=hook)
+    update, _, _ = finalize_update_report(report, insert_hook=hook)
 
     assert len(seen) == 1
     assert seen[0] is report.insert_graph
@@ -250,3 +250,40 @@ def test_insert_only_mode_gives_the_critic_no_delete_allowance() -> None:
     assert tools.ontology_insert_only is True
     assert tools.ontology_patch_policy.max_delete_share == 0.0
     assert tools.ontology_patch_policy.min_deletes == 0
+
+
+#: An IRI no SPARQL ``IRIREF`` can hold. rdflib reads it with a warning; the
+#: update compiled from it cannot be parsed.
+MALFORMED_IRI_TTL = """
+@prefix ex: <https://example.com/ns#> .
+@prefix bad: <https://example.com/qual quantity/> .
+ex:item a bad:Thing ; ex:note "kept" .
+"""
+
+
+def test_a_triple_naming_a_malformed_iri_is_dropped_with_a_record() -> None:
+    from ontocast.agent.update_common import finalize_update_report
+    from ontocast.onto.model import FactsGateRepairKind
+
+    report = GraphUpdateRenderReport(
+        insert_graph=_graph(MALFORMED_IRI_TTL),
+        delete_graph=_graph(MALFORMED_IRI_TTL),
+    )
+    update, _, dropped = finalize_update_report(report)
+
+    target = RDFGraph()
+    for query in update.generate_sparql_queries():
+        target.update(query)
+    assert len(target) == 1, "only the well-formed note survives"
+    assert [(r.kind, r.source, r.triple_count) for r in dropped] == [
+        (
+            FactsGateRepairKind.MALFORMED_IRI_DROPPED,
+            "https://example.com/qual quantity/Thing",
+            1,
+        ),
+        (
+            FactsGateRepairKind.MALFORMED_IRI_DROPPED,
+            "https://example.com/qual quantity/Thing",
+            1,
+        ),
+    ]

@@ -113,7 +113,6 @@ def test_missing_measurement_needs_matching_unit() -> None:
         "shifts of 96 meV and 96 K",
         graph,
         ontology_graph=ontology,
-        numeric_value_properties={f"{QUDT}numericValue"},
         unit_properties={f"{QUDT}unit"},
     )
     assert [(m.value, m.unit) for m in inventory.measurements] == [("96", "meV")]
@@ -320,3 +319,80 @@ def test_unit_surface_index_reads_unit_individuals_and_is_memoised() -> None:
     assert unit_surface_index(onto, {f"{QUDT}unit"}) is index, "memoised per graph"
     assert unit_surfaces_in_ontology(onto, {f"{QUDT}unit"}) == {"sun", "cycles"}
     assert unit_surface_index(None) == {}
+
+
+# ---------------------------------------------------------------------------
+# What covers a measurement: the value node, its bounds, its unit
+# ---------------------------------------------------------------------------
+
+_QUDT = "http://qudt.org/schema/qudt/"
+_QQ = "https://ex.org/qq#"
+
+
+def _covering(body: str) -> list[tuple[str, str]]:
+    """Measurements of a fixed text still missing from a graph of ``body``."""
+    from ontocast.util.numeric_inventory import missing_numeric_inventory
+
+    graph = RDFGraph()
+    graph.parse(
+        data=f"""@prefix qudt: <{_QUDT}> . @prefix qq: <{_QQ}> .
+        @prefix unit: <http://qudt.org/vocab/unit/> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        <http://x/obs> <http://x/result> {body} .""",
+        format="turtle",
+    )
+    ontology = RDFGraph()
+    ontology.parse(
+        data=f"""@prefix qudt: <{_QUDT}> . @prefix unit: <http://qudt.org/vocab/unit/> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        qudt:unit rdfs:range qudt:Unit . qudt:Unit a owl:Class .
+        unit:DEG_C a qudt:Unit ; rdfs:label "°C" .""",
+        format="turtle",
+    )
+    inventory = missing_numeric_inventory(
+        "an increase of about 1.3 °C (0.8 to 1.7 °C) over 1000 years",
+        graph,
+        ontology_graph=ontology,
+        unit_properties={f"{_QUDT}unit"},
+    )
+    return [(m.value, m.unit) for m in inventory.measurements]
+
+
+def test_a_blank_value_node_with_its_unit_covers_its_number() -> None:
+    assert ("1.3", "°C") not in _covering(
+        "[ qudt:numericValue 1.3 ; qudt:unit unit:DEG_C ]"
+    )
+
+
+def test_bounds_on_the_value_node_are_covered_with_its_number() -> None:
+    body = (
+        "[ qudt:numericValue 1.3 ; qq:lowerBound 0.8 ; qq:upperBound 1.7 ; "
+        "qudt:unit unit:DEG_C ]"
+    )
+    assert _covering(body) == [("1000", "years")]
+
+
+def test_a_unit_kept_as_text_on_the_value_node_covers_its_numbers() -> None:
+    """The fallback for a unit with no individual in the context: its token."""
+    body = (
+        "[ qudt:numericValue 1.3 ; qq:lowerBound 0.8 ; qq:upperBound 1.7 ; "
+        'rdfs:comment "unit: °C" ]'
+    )
+    assert _covering(body) == [("1000", "years")]
+
+
+def test_a_unit_text_naming_another_unit_does_not_cover() -> None:
+    assert ("1.3", "°C") in _covering(
+        '[ qudt:numericValue 1.3 ; rdfs:comment "unit: K" ]'
+    )
+
+
+def test_a_number_only_in_text_does_not_cover() -> None:
+    assert ("1.3", "°C") in _covering('[ rdfs:label "about 1.3 °C" ]')
+
+
+def test_a_node_holding_only_bounds_covers_them() -> None:
+    body = '[ qq:lowerBound 0.8 ; qq:upperBound 1.7 ; rdfs:label "0.8 to 1.7 °C" ]'
+    assert ("0.8", "°C") not in _covering(body)
+    assert ("1.7", "°C") not in _covering(body)

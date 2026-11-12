@@ -1121,6 +1121,9 @@ class FactsGateRepairKind(StrEnum):
     #: A text set aside for not being a date, time or duration value, put
     #: back on its subject as ``rdfs:comment`` when the unit left its loop.
     QUARANTINE_AS_COMMENT = "quarantine_as_comment"
+    #: A rendered triple naming an IRI no SPARQL ``IRIREF`` can hold (a
+    #: space, a quote, a brace), dropped at parse time; one record per IRI.
+    MALFORMED_IRI_DROPPED = "malformed_iri_dropped"
 
 
 class GraphRepairRecord(BaseModel):

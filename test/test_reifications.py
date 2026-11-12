@@ -250,3 +250,13 @@ def test_sparql_update_carries_the_statements_not_the_provenance() -> None:
 def test_serialize_rdf_term_raises_on_a_tuple() -> None:
     with pytest.raises(TypeError, match="Cannot serialize"):
         GraphUpdate()._serialize_rdf_term(cast(Node, (S, P, VALUE)))
+
+
+def test_serialize_rdf_term_raises_on_an_iri_no_iriref_can_hold() -> None:
+    with pytest.raises(ValueError, match="IRIREF"):
+        GraphUpdate()._serialize_rdf_term(URIRef("https://ex.org/a b"))
+
+
+def test_serialize_rdf_term_does_not_trim_an_iri_into_another() -> None:
+    with pytest.raises(ValueError, match="IRIREF"):
+        GraphUpdate()._serialize_rdf_term(URIRef("https://ex.org/a "))

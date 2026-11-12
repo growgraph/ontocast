@@ -41,6 +41,13 @@ def is_opaque_local_name(local: str) -> bool:
 _IRIREF_FORBIDDEN = frozenset('<>"{}|^`\\')
 
 
+def is_iriref_text(text: str) -> bool:
+    """Whether ``text``, exactly as given, can sit inside a SPARQL ``<...>``."""
+    return bool(text) and not any(
+        char in _IRIREF_FORBIDDEN or ord(char) <= 0x20 for char in text
+    )
+
+
 def as_sparql_iriref(value: str) -> str | None:
     """Render an IRI for a SPARQL ``IRIREF`` slot, or ``None`` if it cannot be one.
 
@@ -55,11 +62,7 @@ def as_sparql_iriref(value: str) -> str | None:
         is empty or contains a codepoint ``IRIREF`` forbids.
     """
     text = strip_iri_brackets(value).strip()
-    if not text:
-        return None
-    if any(char in _IRIREF_FORBIDDEN or ord(char) <= 0x20 for char in text):
-        return None
-    return f"<{text}>"
+    return f"<{text}>" if is_iriref_text(text) else None
 
 
 def _resolve_context(namespace: str, context: URIContext) -> URIContext:

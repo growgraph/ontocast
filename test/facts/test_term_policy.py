@@ -46,6 +46,7 @@ qq:QualifiedValue a owl:Class ;
 qq:numericLowerBound a owl:DatatypeProperty ; rdfs:range xsd:decimal .
 qq:numericUpperBound a owl:DatatypeProperty ; rdfs:range xsd:decimal .
 qq:lowerBoundInclusive a owl:DatatypeProperty ; rdfs:range xsd:boolean .
+qq:eV a qudt:Unit ; rdfs:label "eV" .
 """
 
 FACTS = f"""
@@ -58,7 +59,7 @@ FACTS = f"""
 cd:v1 a qq:QualifiedValue ;
     rdfs:label "PL peak: 2.25 eV"@en ;
     qudt:numericValue "2.25"^^xsd:decimal ;
-    qudt:unit cd:ev .
+    qudt:unit qq:eV .
 """
 
 VOCAB = {

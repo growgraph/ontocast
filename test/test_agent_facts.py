@@ -226,6 +226,41 @@ async def test_render_facts_fresh_coerces_invalid_typed_literal_at_ingest(
 
 
 @pytest.mark.anyio
+async def test_render_facts_fresh_drops_a_triple_naming_a_malformed_iri(
+    monkeypatch,
+) -> None:
+    async def fake_call_llm_with_retry(**kwargs):
+        rendered_graph = RDFGraph()
+        rendered_graph.parse(
+            data="""@prefix ex: <https://example.com/ns#> .
+            @prefix bad: <https://example.com/qual quantity/> .
+            ex:item a bad:Thing ; ex:note "kept" .""",
+            format="turtle",
+        )
+        return FactsRenderReport(
+            semantic_graph=rendered_graph,
+            ontology_relevance_score=95,
+            triples_generation_score=94,
+        )
+
+    monkeypatch.setattr(
+        render_facts_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
+
+    state = UnitFactsState(
+        content_unit=_build_content_unit(with_graph=False),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+    )
+    result = await render_facts_module.render_facts_fresh(state, tools=_build_tools())
+
+    assert result.status == Status.SUCCESS
+    assert [str(p) for p in result.content_unit.graph.predicates()] == [
+        "https://example.com/ns#note"
+    ]
+    assert [r.kind for r in result.applied_repairs] == ["malformed_iri_dropped"]
+
+
+@pytest.mark.anyio
 async def test_criticise_facts_prompt_includes_graph_format_instruction(
     monkeypatch,
 ) -> None:

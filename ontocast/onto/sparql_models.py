@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from rdflib import BNode, Literal, Node, URIRef
 
 from ontocast.onto.constants import COMMON_PREFIXES
+from ontocast.onto.iri_policy import is_iriref_text
 from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.rdfgraph import RDFGraph, copy_triples
 
@@ -105,6 +106,13 @@ class GraphUpdate(BaseModel):
                         prefixes[prefix] = str(uri)
 
                 prefixes.update(op.prefixes)
+                # A binding no IRIREF can hold breaks the whole query, and no
+                # term it could expand survives the render's parse-time drop.
+                prefixes = {
+                    prefix: uri
+                    for prefix, uri in prefixes.items()
+                    if is_iriref_text(uri)
+                }
 
                 if prefixes:
                     prefix_declarations = []
@@ -280,6 +288,17 @@ class GraphUpdate(BaseModel):
         # collision, not an abbreviation.
         return local != "" and not any(char in local for char in ":/#[]?@")
 
+    @staticmethod
+    def _iriref(iri: URIRef) -> str:
+        """``<iri>``, or a ``ValueError`` naming an IRI no ``IRIREF`` can hold.
+
+        Emitted as is, such an IRI fails the whole update at parse time with
+        an error that points at the operation rather than at the IRI.
+        """
+        if not is_iriref_text(str(iri)):
+            raise ValueError(f"Cannot write {str(iri)!r} as a SPARQL IRIREF")
+        return f"<{iri}>"
+
     def _serialize_rdf_term(self, term: Node, prefixes: Set[str] = frozenset()) -> str:
         """Serialize an RDF term to its SPARQL string representation.
 
@@ -289,6 +308,7 @@ class GraphUpdate(BaseModel):
                 only these are honoured as abbreviations.
 
         Raises:
+            ValueError: If ``term`` is an IRI no ``IRIREF`` can hold.
             TypeError: If ``term`` is not a term SPARQL can express. Callers
                 filter with :meth:`_serializable_triples` first; falling back to
                 ``str(term)`` here used to bury a Python repr inside the query,
@@ -297,7 +317,7 @@ class GraphUpdate(BaseModel):
         if isinstance(term, URIRef):
             if self._is_declared_prefixed_name(str(term), prefixes):
                 return str(term)
-            return f"<{term}>"
+            return self._iriref(term)
         elif isinstance(term, BNode):
             return f"_:{term}"
         elif isinstance(term, Literal):
@@ -314,7 +334,7 @@ class GraphUpdate(BaseModel):
             if term.language:
                 return f"{lexical}@{term.language}"
             if term.datatype:
-                return f"{lexical}^^<{term.datatype}>"
+                return f"{lexical}^^{self._iriref(term.datatype)}"
             return lexical
         else:
             raise TypeError(

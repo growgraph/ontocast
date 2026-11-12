@@ -106,17 +106,11 @@ def unit_numeric_inventory(
         graph,
         ontology_graph,
     )
-    numeric_value_properties = expand_vocabulary_terms(
-        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "numeric_value"),
-        graph,
-        ontology_graph,
-    )
     return missing_numeric_inventory(
         extraction_text,
         graph,
         unit_surfaces=unit_surfaces_in_ontology(ontology_graph, unit_properties),
         ontology_graph=ontology_graph,
-        numeric_value_properties=numeric_value_properties,
         unit_properties=unit_properties,
         ignore_identifier_fragments=policy.numeric_identifier_guard,
         limit=limit,
@@ -498,6 +492,50 @@ def _label_only_number_findings(
 _LABEL_NUMBER_PATTERN = re.compile(
     r"(?<![\w.])(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?![\w])"
 )
+
+
+def _unit_outside_context_findings(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    context_terms: set[str],
+    policy: ValidationPolicy,
+) -> list[FactsUnitFinding]:
+    """Flag a unit IRI the ontology context does not hold.
+
+    A unit namespace is open -- any local name reads as a term of it -- so a
+    unit written from memory passes every vocabulary check, often under a
+    name the vocabulary does not have. The context is the only list of real
+    units the model was shown; one it lacks is kept as text on the value
+    node instead. Mandatory, so a patch that adds one is rolled back.
+    """
+    if not context_terms:
+        return []
+    unit_properties = expand_vocabulary_terms(
+        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "unit"),
+        graph,
+        ontology_graph,
+    )
+    outside = sorted(
+        {
+            str(unit)
+            for prop in unit_properties
+            for unit in graph.objects(None, URIRef(prop))
+            if isinstance(unit, URIRef) and str(unit) not in context_terms
+        }
+    )
+    return [
+        FactsUnitFinding(
+            kind=FactsUnitFindingKind.UNKNOWN_TERM,
+            message=(
+                f"<{unit}> is not a unit of the ontology context; use a unit "
+                "individual the context lists, or, when none fits, keep the "
+                "unit's token as text on the value node (rdfs:comment) and "
+                "drop the unit link."
+            ),
+            predicate=unit,
+        )
+        for unit in outside
+    ]
 
 
 def _unit_symbol_case_findings(
@@ -1057,6 +1095,11 @@ def collect_unit_findings(
                 )
             )
 
+    findings.extend(
+        _unit_outside_context_findings(
+            graph, ontology_graph, catalog_terms | known_terms, policy
+        )
+    )
     findings.extend(
         _scalar_as_bounds_findings(graph, ontology_graph, normalized_fact_namespaces)
     )

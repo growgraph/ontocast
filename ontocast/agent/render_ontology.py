@@ -451,9 +451,10 @@ async def render_ontology_update(
                 len(render_report.delete_graph),
             )
             render_report.delete_graph = RDFGraph()
-        graph_update, rejected = finalize_update_report(
+        graph_update, rejected, dropped = finalize_update_report(
             render_report, insert_hook=repair_schema_iri_literals
         )
+        state.applied_repairs.extend(dropped)
         state.quarantined_literal_triples = rejected
         log_quarantine("Ontology", rejected)
         state.ontology_updates.append(graph_update)
