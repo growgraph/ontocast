@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
-from rdflib import RDF, RDFS, BNode, Literal, URIRef
+from rdflib import RDFS, Literal, URIRef
 
 from ontocast.agent import link_facts
 from ontocast.onto.annotation import is_annotation
@@ -24,7 +24,10 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import drop_detached_values
 from ontocast.tool.agg.rewriter import add_reified_provenance
-from ontocast.tool.facts_validation.connectivity import facts_connectivity
+from ontocast.tool.facts_validation.connectivity import (
+    facts_connectivity,
+    value_parts,
+)
 from ontocast.tool.facts_validation.linking import (
     select_link_candidates,
     validate_link_proposals,
@@ -89,12 +92,9 @@ def isolated_report(
     for iri in isolated:
         node = URIRef(iri)
         label = graph.value(node, RDFS.label)
-        holds = any(
-            isinstance(obj, BNode)
-            or (isinstance(obj, URIRef) and str(obj).startswith(f"{iri}."))
-            or (isinstance(obj, Literal) and not is_annotation(predicate))
+        holds = bool(value_parts(graph, node)) or any(
+            isinstance(obj, Literal) and not is_annotation(predicate)
             for predicate, obj in graph.predicate_objects(node)
-            if predicate != RDF.type
         )
         report.append(
             FactsIsolatedInstance(

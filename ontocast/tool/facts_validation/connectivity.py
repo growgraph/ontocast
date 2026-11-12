@@ -121,6 +121,31 @@ def facts_connectivity(
     )
 
 
+def value_parts(graph: RDFGraph, node: Node) -> list[Node]:
+    """The parts of ``node``'s values: blank nodes, and IRIs named under it.
+
+    A statement-first value is a blank node or an IRI ``<node>.<property>``;
+    it belongs to ``node``, not to the graph at large. Blank nodes are
+    followed down, so a structured value's own parts are included.
+    """
+    prefix = f"{node}." if isinstance(node, URIRef) else None
+    parts: list[Node] = []
+    frontier: list[Node] = [node]
+    while frontier:
+        for predicate, obj in graph.predicate_objects(frontier.pop()):
+            if predicate == RDF.type or obj in parts:
+                continue
+            if isinstance(obj, BNode) or (
+                prefix is not None
+                and isinstance(obj, URIRef)
+                and str(obj).startswith(prefix)
+            ):
+                parts.append(obj)
+                if isinstance(obj, BNode):
+                    frontier.append(obj)
+    return parts
+
+
 def isolated_instances(
     graph: RDFGraph, fact_namespaces: Sequence[str], document: URIRef | None = None
 ) -> set[URIRef]:

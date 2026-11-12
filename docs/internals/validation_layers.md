@@ -28,7 +28,8 @@ describes it.
 After the gate, `LINK_FACTS` (and the same pass on `/process_unit`) makes one
 call per document that still has isolated instances (`FACTS_LINK_PASS`, on by
 default): each is shown with the passage of its source unit that names it,
-with up to eight instances it may link to and the object properties whose
+by one of its labels or literals or by the label of one of its values (the
+mention as written; a bare number names nothing), with up to eight instances it may link to and the object properties whose
 domain and range fit; the model proposes only links the passage states. Code
 keeps a proposal only when both ends are listed and one is isolated, the
 property is a listed object property, the declared domain and range admit the

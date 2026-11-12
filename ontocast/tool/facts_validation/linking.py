@@ -36,7 +36,7 @@ from ontocast.tool.agg.signatures import (
     harvest_max_one_predicates,
     normalize_string_value,
 )
-from ontocast.tool.facts_validation.connectivity import instance_links
+from ontocast.tool.facts_validation.connectivity import instance_links, value_parts
 from ontocast.tool.facts_validation.terms import (
     _declared_domains,
     _described_classes,
@@ -56,6 +56,7 @@ _MAX_PASSAGE = 600
 #: Shortest label or value that locates a passage or a target in it.
 _MIN_NEEDLE = 3
 _WORD = re.compile(r"\w+")
+_NUMBER = re.compile(r"[-+]?[\d.,]+(?:[eE][-+]?\d+)?")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n\s*\n")
 
 _CLASS_TYPES = frozenset({OWL.Class, RDFS.Class})
@@ -134,14 +135,32 @@ def _types(graph: RDFGraph, node: URIRef) -> set[URIRef]:
 
 
 def _needles(graph: RDFGraph, node: URIRef) -> list[str]:
-    """Labels and literal values of ``node`` long enough to find in text."""
-    values = [
-        str(obj)
-        for predicate, obj in graph.predicate_objects(node)
-        if isinstance(obj, Literal) and not is_annotation(predicate)
+    """Words that name ``node`` in text, long enough to find.
+
+    Its labels and literal values, and the labels of its values' parts: a
+    statement's own label is often a paraphrase, while its value's label is
+    the mention as written. A bare number is no needle; it occurs inside
+    other numbers.
+    """
+    texts = [
+        *_labels(graph, node),
+        *(
+            str(obj)
+            for predicate, obj in graph.predicate_objects(node)
+            if isinstance(obj, Literal) and not is_annotation(predicate)
+        ),
+        *(
+            str(label)
+            for part in value_parts(graph, node)
+            for label in graph.objects(part, RDFS.label)
+        ),
     ]
     return sorted(
-        {text for text in [*_labels(graph, node), *values] if len(text) >= _MIN_NEEDLE}
+        {
+            text
+            for text in texts
+            if len(text.strip()) >= _MIN_NEEDLE and not _NUMBER.fullmatch(text.strip())
+        }
     )
 
 

@@ -475,3 +475,77 @@ def test_evidence_must_come_from_where_both_ends_are_named() -> None:
 
     assert accepted == []
     assert rejected == {FactsLinkRejection.EVIDENCE_UNRELATED: 1}
+
+
+COUNT_ONTOLOGY = f"""
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix q:    <{Q}> .
+q:Count a owl:Class .
+q:countAt a owl:ObjectProperty ; rdfs:domain q:Count ; rdfs:range q:Tournament .
+"""
+
+COUNT_FACTS = f"""
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix q: <{Q}> .
+@prefix d: <{D}> .
+
+d:springCup a q:Tournament ; rdfs:label "Spring Cup" .
+d:crowd a q:Count ; rdfs:label "attendance figure of the event" ;
+    q:countValue d:crowd.countValue .
+d:crowd.countValue rdfs:label "12,000 spectators" ; q:number "12000"^^xsd:integer .
+"""
+
+
+def test_a_statement_is_found_by_its_value_as_written_when_its_label_is_not() -> None:
+    """The value's label is the mention as written; the statement's is a paraphrase."""
+    unit = _unit(
+        "A crowd of 12,000 spectators watched the Spring Cup. Tickets sold out."
+    )
+    graph = _served(unit, COUNT_FACTS)
+    ontology = _ontology()
+    ontology.parse(
+        data="@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> ." + COUNT_ONTOLOGY,
+        format="turtle",
+    )
+
+    candidates = select_link_candidates(
+        graph, [D + "crowd"], [unit], ontology, [D], max_isolated=5
+    )
+
+    assert candidates is not None
+    assert "12,000 spectators watched" in candidates.passages[D + "crowd"]
+    cup = candidates.entities().index(D + "springCup") + 1
+    accepted, rejected = validate_link_proposals(
+        [_proposal(1, "q:countAt", cup, "12,000 spectators watched the Spring Cup")],
+        candidates,
+        graph,
+        ontology,
+        [unit],
+        value_classes=VALUE_CLASSES,
+    )
+    assert [(link.subject, link.object) for link in accepted] == [
+        (D + "crowd", D + "springCup")
+    ]
+    assert rejected == {}
+
+
+def test_a_bare_number_does_not_locate_a_statement() -> None:
+    """A number alone occurs inside other numbers, so it names nothing."""
+    unit = _unit("In 120005 the Spring Cup moved. Tickets sold out.")
+    graph = _served(
+        unit,
+        COUNT_FACTS.replace("12,000 spectators", "12000"),
+    )
+    ontology = _ontology()
+    ontology.parse(
+        data="@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> ." + COUNT_ONTOLOGY,
+        format="turtle",
+    )
+
+    assert (
+        select_link_candidates(
+            graph, [D + "crowd"], [unit], ontology, [D], max_isolated=5
+        )
+        is None
+    )
