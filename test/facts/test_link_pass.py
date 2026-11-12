@@ -493,7 +493,7 @@ COUNT_FACTS = f"""
 d:springCup a q:Tournament ; rdfs:label "Spring Cup" .
 d:crowd a q:Count ; rdfs:label "attendance figure of the event" ;
     q:countValue d:crowd.countValue .
-d:crowd.countValue rdfs:label "12,000 spectators" ; q:number "12000"^^xsd:integer .
+d:crowd.countValue a q:Quantity ; rdfs:label "12,000 spectators" ; q:number "12000"^^xsd:integer .
 """
 
 
@@ -515,6 +515,8 @@ def test_a_statement_is_found_by_its_value_as_written_when_its_label_is_not() ->
 
     assert candidates is not None
     assert "12,000 spectators watched" in candidates.passages[D + "crowd"]
+    # Its own value is part of it, not something it may link to.
+    assert D + "crowd.countValue" not in candidates.targets
     cup = candidates.entities().index(D + "springCup") + 1
     accepted, rejected = validate_link_proposals(
         [_proposal(1, "q:countAt", cup, "12,000 spectators watched the Spring Cup")],

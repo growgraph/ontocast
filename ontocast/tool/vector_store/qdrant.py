@@ -34,6 +34,7 @@ from ontocast.tool.vector_store.core import (
     OntologySearchHit,
     OntologySearchHitsByChannel,
     VectorStoreManager,
+    top_hits,
 )
 from ontocast.tool.vector_store.embedding import FastembedBm25SparseTool
 from ontocast.tool.vector_store.lexical_trigger import LexicalTriggerIndex
@@ -821,31 +822,43 @@ class QdrantVectorStoreManager(VectorStoreManager):
             filter_version=filter_version,
             filter_hash=filter_hash,
         )
-        core_hits = self._query_named_vector(
-            vector_name=CORE_VECTOR_NAME,
-            vector=core_vector,
-            limit=eff_top_k,
-            search_filter=search_filter,
+        core_typed_hits = top_hits(
+            lambda limit: self._points_to_hits(
+                self._query_named_vector(
+                    vector_name=CORE_VECTOR_NAME,
+                    vector=core_vector,
+                    limit=limit,
+                    search_filter=search_filter,
+                )
+            ),
+            eff_top_k,
         )
-        neighborhood_hits = self._query_named_vector(
-            vector_name=NEIGHBORHOOD_VECTOR_NAME,
-            vector=neighborhood_vector,
-            limit=eff_top_k,
-            search_filter=search_filter,
+        neighborhood_typed_hits = top_hits(
+            lambda limit: self._points_to_hits(
+                self._query_named_vector(
+                    vector_name=NEIGHBORHOOD_VECTOR_NAME,
+                    vector=neighborhood_vector,
+                    limit=limit,
+                    search_filter=search_filter,
+                ),
+                apply_neighborhood_empty_penalty=True,
+            ),
+            eff_top_k,
         )
-        bm25_hits_raw: list[Any] = []
+        bm25_typed_hits: list[OntologySearchHit] = []
         if bm25_query_vector is not None:
-            bm25_hits_raw = self._query_named_vector(
-                vector_name=BM25_VECTOR_NAME,
-                vector=bm25_query_vector,
-                limit=effective_bm25_top_k(self.store_config, top_k),
-                search_filter=search_filter,
+            sparse = bm25_query_vector
+            bm25_typed_hits = top_hits(
+                lambda limit: self._points_to_hits(
+                    self._query_named_vector(
+                        vector_name=BM25_VECTOR_NAME,
+                        vector=sparse,
+                        limit=limit,
+                        search_filter=search_filter,
+                    )
+                ),
+                effective_bm25_top_k(self.store_config, top_k),
             )
-        core_typed_hits = self._points_to_hits(core_hits)
-        neighborhood_typed_hits = self._points_to_hits(
-            neighborhood_hits, apply_neighborhood_empty_penalty=True
-        )
-        bm25_typed_hits = self._points_to_hits(bm25_hits_raw)
         if self.store_config.dedup_query_hits_by_iri:
             core_typed_hits = dedupe_hits_by_identity(
                 core_typed_hits, store_config=self.store_config

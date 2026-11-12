@@ -27,19 +27,20 @@ describes it.
 
 After the gate, `LINK_FACTS` (and the same pass on `/process_unit`) makes one
 call per document that still has isolated instances (`FACTS_LINK_PASS`, on by
-default): each is shown with the passage of its source unit that names it,
-by one of its labels or literals or by the label of one of its values (the
-mention as written; a bare number names nothing), with up to eight instances it may link to and the object properties whose
-domain and range fit; the model proposes only links the passage states. Code
-keeps a proposal only when both ends are listed and one is isolated, the
-property is a listed object property, the declared domain and range admit the
-ends, a value (an instance of a value class, below) is reached only through a
-domain or range shown to fit it, a functional property is still free, the
-quoted evidence occurs in a source unit of the isolated end, and both ends are
-named in the sentence that holds the evidence or the one on either side
-(`evidence_unrelated` otherwise). Each kept link is added with a reifier
-deriving it from that unit; nothing is removed. The links are not re-checked
-by the gate. Metrics: `facts_link_isolated`, `facts_link_proposed`,
+default): each is shown with the passage of its source unit that names it, by
+one of its labels or literals or by the label of one of its values (the mention
+as written; a bare number names nothing), with up to eight instances it may
+link to (never a value named under another instance, which is part of it) and
+the object properties whose domain and range fit; the model proposes only links
+the passage states. Code keeps a proposal only when both ends are listed and
+one is isolated, the property is a listed object property, the declared domain
+and range admit the ends, a value (an instance of a value class, below) is
+reached only through a domain or range shown to fit it, a functional property
+is still free, the quoted evidence occurs in a source unit of the isolated end,
+and both ends are named in the sentence that holds the evidence or the one on
+either side (`evidence_unrelated` otherwise). Each kept link is added with a
+reifier deriving it from that unit; nothing is removed. The links are not
+re-checked by the gate. Metrics: `facts_link_isolated`, `facts_link_proposed`,
 `facts_link_added`, `facts_link_rejections_by_reason`; the links are on
 `AgentState.facts_links_added`.
 

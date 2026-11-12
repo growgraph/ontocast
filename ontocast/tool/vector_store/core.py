@@ -5,6 +5,7 @@ from __future__ import annotations
 import abc
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from pydantic import Field, field_validator
@@ -118,6 +119,34 @@ class OntologySearchHit(BasePydanticModel):
 
     atom: GraphAtom
     score: float = Field(description="Channel-specific retrieval score.")
+
+
+def top_hits(
+    fetch: Callable[[int], list[OntologySearchHit]], limit: int
+) -> list[OntologySearchHit]:
+    """The best ``limit`` hits of one channel, in one total order.
+
+    A store returns equal scores in no fixed order and may cut inside a run
+    of them, and rank fusion downstream turns that order into different fused
+    scores. So hits are ordered by score, then IRI, then atom id, and the
+    store is asked for twice as many until the score at the cut is seen to
+    end before the last hit fetched.
+
+    Args:
+        fetch: Returns the store's top hits for a given limit.
+        limit: How many hits to keep.
+    """
+    if limit <= 0:
+        return []
+    asked = 2 * limit
+    while True:
+        hits = sorted(
+            fetch(asked),
+            key=lambda hit: (-hit.score, hit.atom.iri or "", hit.atom.atom_id),
+        )
+        if len(hits) < asked or hits[limit - 1].score != hits[-1].score:
+            return hits[:limit]
+        asked *= 2
 
 
 class OntologySearchHitsByChannel(BasePydanticModel):

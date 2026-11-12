@@ -26,6 +26,7 @@ from ontocast.tool.vector_store.core import (
     OntologySearchHit,
     OntologySearchHitsByChannel,
     VectorStoreManager,
+    top_hits,
 )
 from ontocast.tool.vector_store.embedding import FastembedBm25SparseTool
 from ontocast.tool.vector_store.lexical_trigger import LexicalTriggerIndex
@@ -542,24 +543,29 @@ class LanceDBVectorStoreManager(VectorStoreManager):
             filter_version=filter_version,
             filter_hash=filter_hash,
         )
-        core_hits = self._search_dense_channel(
-            core_vector,
-            vector_column="core_vector",
-            limit=eff_top_k,
-            where=where,
+        core_hits = top_hits(
+            lambda limit: self._search_dense_channel(
+                core_vector, vector_column="core_vector", limit=limit, where=where
+            ),
+            eff_top_k,
         )
-        neighborhood_hits = self._search_dense_channel(
-            neighborhood_vector,
-            vector_column="neighborhood_vector",
-            limit=eff_top_k,
-            where=where,
+        neighborhood_hits = top_hits(
+            lambda limit: self._search_dense_channel(
+                neighborhood_vector,
+                vector_column="neighborhood_vector",
+                limit=limit,
+                where=where,
+            ),
+            eff_top_k,
         )
         bm25_hits: list[OntologySearchHit] = []
         if bm25_query is not None:
-            bm25_hits = self._search_bm25_channel(
-                bm25_query,
-                limit=effective_bm25_top_k(self.store_config, top_k),
-                where=where,
+            query = bm25_query
+            bm25_hits = top_hits(
+                lambda limit: self._search_bm25_channel(
+                    query, limit=limit, where=where
+                ),
+                effective_bm25_top_k(self.store_config, top_k),
             )
         if self.store_config.dedup_query_hits_by_iri:
             core_hits = dedupe_hits_by_identity(

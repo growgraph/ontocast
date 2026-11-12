@@ -278,9 +278,13 @@ def select_link_candidates(
     for subject, _, obj in instance_links(graph, fact_namespaces):
         degree[str(subject)] += 1
         degree[str(obj)] += 1
+    instances = fact_instances(graph, fact_namespaces)
+    # A value named under its carrier is part of it, never a link target:
+    # its label is in the passage that located the carrier.
+    parts = {part for node in instances for part in value_parts(graph, node)}
     pool = sorted(
         str(node)
-        for node in fact_instances(graph, fact_namespaces)
+        for node in instances - parts
         if _labels(graph, node) and _types(graph, node)
     )
     pool_labels = {

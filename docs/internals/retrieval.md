@@ -196,6 +196,13 @@ sets a different depth for the sparse lane. The lanes fail differently: dense
 lanes drift to topical near-misses, the sparse lane to unrelated text sharing a
 token, so the depth at which each stops helping differs.
 
+A lane's hits are ranked in one total order: score, then IRI, then atom id.
+Stores return equal scores in no fixed order and may cut inside a run of them,
+so each lane asks its store for twice its depth, and again for twice that,
+until the score at the cut ends before the last hit returned. The same query
+over the same index therefore yields the same hits, and so the same context,
+in every run.
+
 The lanes are combined by weighted reciprocal rank. A hit at rank *r* in a
 lane adds `weight / (constant + r)` to the atom's fused score. The weights,
 [`VECTOR_STORE_FUSION_CORE_WEIGHT`](../reference/configuration/ontology-retrieval.md#vector_store_fusion_core_weight),

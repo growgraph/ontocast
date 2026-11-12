@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The retrieved ontology context is the same in every run for the same text and catalog: each retrieval lane ranks its hits by score, then IRI and atom id, and over-fetches until a run of equal scores at the cut is seen whole.
 - A predicate that exists nowhere (not a catalog term, not a real well-known term) but spells the exact local name of one catalog property in another namespace is rewritten to that property (`property_alias` repair); a real term of a well-known vocabulary is never rewritten.
 
 - A value the model writes as an entity of its own and links to nothing is dropped after the link pass, like a blank-node value with no carrier. Value classes are `qudt:QuantityValue`, schema.org's structured values, the configured `value_class`, and every catalog class under one of them.
