@@ -107,8 +107,8 @@ def run_shacl(
 
     RDFS inference is the default for the same reason. SHACL resolves class
     targets through ``rdfs:subClassOf`` on its own, but property paths carry no
-    entailment: a shape on ``obs:hasResult`` does not see the
-    ``life:hasStorageResult`` the renderer emitted, and reports the more
+    entailment: a shape on ``ex:hasResult`` does not see the
+    ``ex:hasFinalResult`` the renderer emitted, and reports the more
     specific statement as a missing one, so turning inference off raises the
     violation count rather than lowering it.
 

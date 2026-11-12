@@ -1,13 +1,12 @@
 import asyncio
 import logging
-import re
 import time
 from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, Field
-from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
 from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
@@ -19,6 +18,7 @@ from ontocast.onto.enum import (
 from ontocast.onto.model import OntologyPlan
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology_snapshot import OntologySnapshot
+from ontocast.onto.prefixes import CURIE_IN_TEXT, NOTE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     EmptyOntologyContextError,
@@ -70,12 +70,6 @@ def snapshot_context_terms(graph: RDFGraph, writable_iris: Sequence[str]) -> set
     return terms
 
 
-#: The note predicates the term sheet prints (``prompt/term_sheet.py``).
-_NOTE_PREDICATES = (SKOS.scopeNote, SKOS.definition, RDFS.comment)
-
-#: A compact IRI written inside prose: ``prefix:Local``, not part of a URL.
-_COMPACT_IRI_IN_TEXT = re.compile(r"(?<![\w/#:.])([A-Za-z][\w-]*):([A-Za-z_][\w-]*)")
-
 #: Admission rounds: an admitted term can join a further shape, whose own terms
 #: are then named. The catalog is finite; this only bounds the work.
 _ADMISSION_ROUNDS = 3
@@ -88,11 +82,11 @@ def _note_terms(graph: RDFGraph) -> set[str]:
         {prefix: str(namespace) for prefix, namespace in graph.namespaces() if prefix}
     )
     named: set[str] = set()
-    for predicate in _NOTE_PREDICATES:
+    for predicate in NOTE_PREDICATES:
         for note in graph.objects(None, predicate):
             if not isinstance(note, Literal):
                 continue
-            for prefix, local in _COMPACT_IRI_IN_TEXT.findall(str(note)):
+            for prefix, local in CURIE_IN_TEXT.findall(str(note)):
                 namespace = prefixes.get(prefix)
                 if namespace:
                     named.add(f"{namespace}{local}")

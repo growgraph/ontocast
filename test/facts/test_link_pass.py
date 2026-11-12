@@ -16,6 +16,7 @@ from ontocast.onto.model import FactsLinkProposal
 from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
+from ontocast.onto.well_known import well_known_value_classes
 from ontocast.tool.agg.rewriter import add_reified_provenance
 from ontocast.tool.facts_validation.linking import (
     LinkCandidates,
@@ -25,6 +26,8 @@ from ontocast.tool.facts_validation.linking import (
 )
 
 pytestmark = pytest.mark.unit
+
+VALUE_CLASSES = well_known_value_classes()
 
 DOC = "https://x.org/doc/1"
 D = DOC + "/"
@@ -162,6 +165,7 @@ def test_a_stated_link_is_accepted_with_its_unit() -> None:
         graph,
         _ontology(),
         [unit],
+        value_classes=VALUE_CLASSES,
     )
 
     assert [(a.subject, a.predicate, a.object) for a in accepted] == [
@@ -220,7 +224,12 @@ def test_each_check_rejects_with_its_reason(make: Any, reason: str) -> None:
     }
 
     accepted, rejected = validate_link_proposals(
-        [make(numbers)], candidates, graph, _ontology(), [unit]
+        [make(numbers)],
+        candidates,
+        graph,
+        _ontology(),
+        [unit],
+        value_classes=VALUE_CLASSES,
     )
 
     assert accepted == []
@@ -237,7 +246,12 @@ def test_a_repeated_link_is_a_duplicate_and_a_taken_functional_property_is_refus
     link = _proposal(1, "q:editionOf", cup, "first edition of the Spring Cup")
 
     _, rejected = validate_link_proposals(
-        [link, link], candidates, graph, _ontology(), [unit]
+        [link, link],
+        candidates,
+        graph,
+        _ontology(),
+        [unit],
+        value_classes=VALUE_CLASSES,
     )
     assert rejected == {FactsLinkRejection.DUPLICATE: 1}
 
@@ -247,7 +261,7 @@ def test_a_repeated_link_is_a_duplicate_and_a_taken_functional_property_is_refus
         format="turtle",
     )
     _, rejected = validate_link_proposals(
-        [link, link], candidates, graph, functional, [unit]
+        [link, link], candidates, graph, functional, [unit], value_classes=VALUE_CLASSES
     )
     assert rejected == {FactsLinkRejection.FUNCTIONAL_TAKEN: 1}
 
@@ -267,6 +281,7 @@ def _tools(**settings: Any) -> Any:
     facts_validation = FactsValidationConfig(**settings)
     return SimpleNamespace(
         prefix_table=lambda: PrefixTable({}, {}),
+        get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: VALUE_CLASSES),
         config=SimpleNamespace(
             get_tool_config=lambda: SimpleNamespace(facts_validation=facts_validation)
         ),
@@ -314,7 +329,7 @@ async def test_the_pass_adds_a_valid_link_with_provenance(monkeypatch) -> None:
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("isolated", "settings"),
-    [([], {"link_pass": True}), ([D + "edition1971"], {})],
+    [([], {"link_pass": True}), ([D + "edition1971"], {"link_pass": False})],
 )
 async def test_no_call_without_isolated_instances_or_with_the_pass_off(
     monkeypatch, isolated: list[str], settings: dict[str, Any]
@@ -411,6 +426,7 @@ d:hallArea a <http://qudt.org/schema/qudt/QuantityValue> ; rdfs:label "ten acres
         graph,
         _ontology(),
         [unit],
+        value_classes=VALUE_CLASSES,
     )
 
     assert accepted == []
@@ -429,7 +445,33 @@ def test_a_bare_local_name_matching_one_listed_property_is_accepted() -> None:
         graph,
         _ontology(),
         [unit],
+        value_classes=VALUE_CLASSES,
     )
 
     assert [a.predicate for a in accepted] == [Q + "editionOf"]
     assert not rejected
+
+
+def test_evidence_must_come_from_where_both_ends_are_named() -> None:
+    """A real quote from a sentence that names neither end proves no link."""
+    unit = _unit(
+        "The 1971 edition was the first edition of the Spring Cup. "
+        "The Spring Cup is held at Harbour Hall. "
+        "Prices rose that year. Parking was scarce. "
+        "Tickets sold out."
+    )
+    graph = _served(unit)
+    candidates = _candidates(graph, unit)
+    cup = candidates.entities().index(D + "springCup") + 1
+
+    accepted, rejected = validate_link_proposals(
+        [_proposal(1, "q:editionOf", cup, "Tickets sold out")],
+        candidates,
+        graph,
+        _ontology(),
+        [unit],
+        value_classes=VALUE_CLASSES,
+    )
+
+    assert accepted == []
+    assert rejected == {FactsLinkRejection.EVIDENCE_UNRELATED: 1}

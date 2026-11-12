@@ -30,23 +30,23 @@ from test.ontology_helpers import stamped_ontology
 
 pytestmark = pytest.mark.unit
 
-EX = "https://example.org/mat#"
+EX = "https://example.org/inv#"
 
 CATALOG = f"""
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix mat:  <{EX}> .
+@prefix inv:  <{EX}> .
 
 <https://example.org/mat> a owl:Ontology .
 
-mat:Portion a owl:Class ; rdfs:label "material portion" ;
-    rdfs:comment "A measured amount of a material; see mat:hasSupplier." .
-mat:hasAmount a owl:DatatypeProperty ; rdfs:label "has amount" ;
-    rdfs:domain mat:Portion ;
-    rdfs:comment "Amount of the portion, as stated in a recipe." .
-mat:hasSupplier a owl:DatatypeProperty ; rdfs:label "has supplier" ;
-    rdfs:domain mat:Portion .
-mat:Unrelated a owl:Class ; rdfs:label "unrelated" .
+inv:Lot a owl:Class ; rdfs:label "stock lot" ;
+    rdfs:comment "A counted quantity of an item; see inv:hasSupplier." .
+inv:hasAmount a owl:DatatypeProperty ; rdfs:label "has amount" ;
+    rdfs:domain inv:Lot ;
+    rdfs:comment "Amount of the lot, as stated in an order." .
+inv:hasSupplier a owl:DatatypeProperty ; rdfs:label "has supplier" ;
+    rdfs:domain inv:Lot .
+inv:Unrelated a owl:Class ; rdfs:label "unrelated" .
 """
 
 
@@ -56,17 +56,17 @@ def _manager() -> OntologyManager:
     return manager
 
 
-def _snapshot_with_portion_only() -> UnitOntologyContext:
+def _snapshot_with_lot_only() -> UnitOntologyContext:
     graph = RDFGraph()
     graph.bind("mat", EX)
-    portion = URIRef(EX + "Portion")
-    graph.add((portion, RDF.type, URIRef("http://www.w3.org/2002/07/owl#Class")))
-    graph.add((portion, RDFS.label, Literal("material portion")))
+    lot = URIRef(EX + "Lot")
+    graph.add((lot, RDF.type, URIRef("http://www.w3.org/2002/07/owl#Class")))
+    graph.add((lot, RDFS.label, Literal("stock lot")))
     graph.add(
         (
-            portion,
+            lot,
             RDFS.comment,
-            Literal("A measured amount of a material; see mat:hasSupplier."),
+            Literal("A counted quantity of an item; see inv:hasSupplier."),
         )
     )
     snapshot = OntologySnapshot.from_graph(
@@ -90,34 +90,34 @@ def test_term_definitions_copy_what_defines_a_term() -> None:
     graph = _manager().term_definitions([EX + "hasAmount", "https://nowhere.org/x"])
 
     amount = URIRef(EX + "hasAmount")
-    assert graph.value(amount, RDFS.domain) == URIRef(EX + "Portion")
+    assert graph.value(amount, RDFS.domain) == URIRef(EX + "Lot")
     assert graph.value(amount, RDFS.label) == Literal("has amount")
     assert {str(s) for s in graph.subjects()} == {EX + "hasAmount"}
-    assert dict(graph.namespaces()).get("mat") == URIRef(EX)
+    assert dict(graph.namespaces()).get("inv") == URIRef(EX)
 
 
 def test_a_shape_path_and_a_note_mention_are_admitted() -> None:
-    ctx = _snapshot_with_portion_only()
+    ctx = _snapshot_with_lot_only()
     tracker = BudgetTracker()
 
     admitted = admit_named_catalog_terms(
         ctx,
-        _tools(_manager(), {EX + "Portion", EX + "hasAmount"}),
+        _tools(_manager(), {EX + "Lot", EX + "hasAmount"}),
         budget_tracker=tracker,
     )
 
     subjects = {str(s) for s in admitted.snapshot.graph.subjects()}
-    # hasAmount: a path the chapter names. hasSupplier: quoted by Portion's note.
+    # hasAmount: a path the chapter names. hasSupplier: quoted by Lot's note.
     assert {EX + "hasAmount", EX + "hasSupplier"} <= subjects
     assert EX + "Unrelated" not in subjects
     assert tracker.counters["ctx/admitted_named_terms"] == 2
     # The shared document context is never changed in place.
-    assert {str(s) for s in ctx.snapshot.graph.subjects()} == {EX + "Portion"}
+    assert {str(s) for s in ctx.snapshot.graph.subjects()} == {EX + "Lot"}
     assert admitted.snapshot.partial is True
 
 
 def test_a_term_outside_the_catalog_is_not_admitted() -> None:
-    ctx = _snapshot_with_portion_only()
+    ctx = _snapshot_with_lot_only()
     ctx.snapshot.graph.remove((None, RDFS.comment, None))
 
     admitted = admit_named_catalog_terms(
@@ -166,9 +166,9 @@ def test_planned_reuses_are_admitted_from_the_catalog_and_the_plan() -> None:
             "Relates a competition to an event that forms part of it.",
         ),
         _reuse(EX + "hasAmount", "datatype_property", "has amount"),
-        _reuse(EX + "Portion", "class", "material portion"),
+        _reuse(EX + "Lot", "class", "stock lot"),
     )
-    ctx = _snapshot_with_portion_only()
+    ctx = _snapshot_with_lot_only()
     tracker = BudgetTracker()
 
     admitted = admit_planned_terms(
@@ -181,15 +181,15 @@ def test_planned_reuses_are_admitted_from_the_catalog_and_the_plan() -> None:
     assert graph.value(node, RDFS.label) == Literal("sub event")
     assert "forms part of it" in str(graph.value(node, RDFS.comment))
     # A catalog term comes with its catalog definition, not the plan's.
-    assert graph.value(URIRef(EX + "hasAmount"), RDFS.domain) == URIRef(EX + "Portion")
+    assert graph.value(URIRef(EX + "hasAmount"), RDFS.domain) == URIRef(EX + "Lot")
     assert dict(graph.namespaces()).get("schema") == URIRef("https://schema.org/")
-    # Portion was already defined; only the two missing terms are counted.
+    # Lot was already defined; only the two missing terms are counted.
     assert tracker.counters["ctx/admitted_planned_terms"] == 2
-    assert {str(s) for s in ctx.snapshot.graph.subjects()} == {EX + "Portion"}
+    assert {str(s) for s in ctx.snapshot.graph.subjects()} == {EX + "Lot"}
 
 
 def test_minted_terms_and_a_missing_plan_add_nothing() -> None:
-    ctx = _snapshot_with_portion_only()
+    ctx = _snapshot_with_lot_only()
     minted = OntologyPlanTerm.model_validate(
         {
             "kind": "class",
@@ -213,7 +213,7 @@ async def test_a_unit_resolving_its_own_context_admits_the_planned_reuses(
     from ontocast.stategraph import atomic
     from ontocast.stategraph.unit_context import UnitLoopContext
 
-    resolved = _snapshot_with_portion_only()
+    resolved = _snapshot_with_lot_only()
 
     async def resolve(*_args: Any, **_kwargs: Any) -> UnitOntologyContext:
         return resolved

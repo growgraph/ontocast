@@ -35,6 +35,7 @@ from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy, FactsAcceptancePolicy
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.ontology_validation import CatalogSurfaceIndex
 from ontocast.toolbox import ToolBox
@@ -272,6 +273,7 @@ async def test_loop_collects_findings_even_when_no_critic_runs(
                     validation_policy=None,
                     ontology_critic_passes=ontology_critic_passes,
                     catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
@@ -372,6 +374,7 @@ async def _run_ontology_loop(
                     validation_policy=None,
                     ontology_critic_passes=critic_passes,
                     catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),

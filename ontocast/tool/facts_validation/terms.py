@@ -26,7 +26,7 @@ from ontocast.onto.scaffolding import (
     is_scaffolding,
     scaffolding_nodes,
 )
-from ontocast.onto.well_known import well_known_namespaces
+from ontocast.onto.well_known import well_known_namespaces, well_known_value_classes
 
 logger = logging.getLogger(__name__)
 
@@ -382,45 +382,108 @@ def superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIRe
     return seen
 
 
-#: Well-known classes of structured values: a value belongs to the statement
-#: that carries it, so it is never a fact on its own.
-VALUE_CLASSES: frozenset[URIRef] = frozenset(
-    {
-        URIRef(namespace + name)
-        for namespace in ("https://schema.org/", "http://schema.org/")
-        for name in (
-            "StructuredValue",
-            "QuantitativeValue",
-            "PropertyValue",
-            "MonetaryAmount",
-        )
-    }
-    | {URIRef("http://qudt.org/schema/qudt/QuantityValue")}
+#: Statements that place a class in the hierarchy; the catalog-wide hierarchy
+#: graph keeps only these, so a closure over it equals one over the catalog.
+_HIERARCHY_PREDICATES = (
+    RDFS.subClassOf,
+    OWL.equivalentClass,
+    OWL.intersectionOf,
+    RDF.first,
+    RDF.rest,
 )
 
 
-def is_value_node(
-    graph: RDFGraph,
-    node: Node,
-    ontology_graph: RDFGraph,
-    closures: dict[URIRef, set[URIRef]],
-) -> bool:
-    """Whether a type of ``node`` reaches a class of :data:`VALUE_CLASSES`.
+class CatalogRoles:
+    """What the whole catalog says each term is, read once per catalog state.
+
+    A unit sees a retrieved snapshot; the role of a term (property or class)
+    and a class's place in the hierarchy are read from every held ontology, so
+    a term the snapshot omits is still known for what it is.
+
+    Attributes:
+        properties: Terms the catalog states are properties.
+        classes: Terms the catalog states are classes.
+        hierarchy: The catalog's subclass statements, for closures.
+    """
+
+    def __init__(
+        self,
+        properties: frozenset[str] = frozenset(),
+        classes: frozenset[str] = frozenset(),
+        hierarchy: RDFGraph | None = None,
+    ) -> None:
+        self.properties = properties
+        self.classes = classes
+        self.hierarchy = hierarchy if hierarchy is not None else RDFGraph()
+        self._value_classes: dict[frozenset[str], frozenset[str]] = {}
+
+    @classmethod
+    def of(cls, graphs: typing.Iterable[RDFGraph]) -> "CatalogRoles":
+        """The roles and hierarchy stated across ``graphs``."""
+        properties: set[str] = set()
+        classes: set[str] = set()
+        hierarchy = RDFGraph()
+        for graph in graphs:
+            known_properties, known_classes = _catalog_term_roles(graph)
+            properties |= known_properties
+            classes |= known_classes
+            for predicate in _HIERARCHY_PREDICATES:
+                for triple in graph.triples((None, predicate, None)):
+                    hierarchy.add(triple)
+        # A term typed both ways across files is contradictory; trust neither.
+        ambiguous = properties & classes
+        return cls(
+            frozenset(properties - ambiguous),
+            frozenset(classes - ambiguous),
+            hierarchy,
+        )
+
+    def value_classes(self, base: frozenset[str]) -> frozenset[str]:
+        """``base`` and every catalog class whose supertypes meet it.
+
+        Args:
+            base: Classes of structured values: the well-known ones and the
+                deployment's configured value class.
+        """
+        found = self._value_classes.get(base)
+        if found is None:
+            candidates = self.classes | {
+                str(s) for s in self.hierarchy.subjects(RDFS.subClassOf, None)
+            }
+            found = frozenset(base) | {
+                iri
+                for iri in candidates
+                if {str(c) for c in superclass_closure(URIRef(iri), self.hierarchy)}
+                & base
+            }
+            self._value_classes[base] = found
+        return found
+
+
+def value_class_base(
+    configured: dict[str, str] | None, bindings: dict[str, str]
+) -> frozenset[str]:
+    """The well-known value classes plus the deployment's configured one.
 
     Args:
-        graph: The facts graph holding ``node``'s types.
-        node: The node to test.
-        ontology_graph: The ontology context the subclass closure walks.
-        closures: Cache of :func:`superclass_closure` results, filled in place.
+        configured: ``FACTS_QUANTITY_FALLBACK_VOCABULARY``; its ``value_class``
+            role, a CURIE or an IRI, names the deployment's value class.
+        bindings: Prefix -> namespace, to expand a CURIE.
     """
-    for type_iri in graph.objects(node, RDF.type):
-        if not isinstance(type_iri, URIRef):
-            continue
-        if type_iri not in closures:
-            closures[type_iri] = superclass_closure(type_iri, ontology_graph)
-        if closures[type_iri] & VALUE_CLASSES:
-            return True
-    return False
+    base = set(well_known_value_classes())
+    term = (configured or {}).get("value_class", "")
+    if term.startswith(("http://", "https://")):
+        base.add(term)
+    elif term:
+        prefix, _, local = term.partition(":")
+        if local and prefix in bindings:
+            base.add(bindings[prefix] + local)
+    return frozenset(base)
+
+
+def is_value_node(graph: RDFGraph, node: Node, value_classes: frozenset[str]) -> bool:
+    """Whether a type of ``node`` is a value class (see :meth:`CatalogRoles.value_classes`)."""
+    return any(str(t) in value_classes for t in graph.objects(node, RDF.type))
 
 
 def _described_classes(ontology_graph: RDFGraph) -> set[URIRef]:

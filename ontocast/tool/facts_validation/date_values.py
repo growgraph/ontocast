@@ -6,9 +6,11 @@ compare or order. The render is told so; this pass makes it hold in code. A
 node is taken to stand for a date when it is the object of a temporal property,
 is typed with an OWL-Time class, or carries a label that is a whole calendar
 date or month. When its label parses as a date and it carries no date-typed
-literal, the parsed value is added -- through OWL-Time's ``inXSD*`` property for
-a ``time:Instant``, else ``rdf:value``. Nothing is removed, and a label that
-does not parse is left as it is.
+literal, the parsed value is added: through the one catalog property whose
+domain fits the node and whose range is the value's datatype, else OWL-Time's
+``inXSD*`` property for a ``time:Instant``, else ``rdf:value``. Nothing is
+removed, and a label that does not parse is left as it is. Month names are
+read in English.
 """
 
 from __future__ import annotations
@@ -203,6 +205,30 @@ def _temporal_type(
     return temporal, instant
 
 
+def _date_property(
+    node: Node, datatype: URIRef, graph: RDFGraph, ontology_graph: RDFGraph
+) -> URIRef | None:
+    """The one context property that holds a ``datatype`` date of ``node``'s kind.
+
+    A datatype property whose range is ``datatype`` and whose domain is one of
+    the node's types or their superclasses. ``None`` when no property, or more
+    than one, fits.
+    """
+    kinds: set[URIRef] = set()
+    for type_iri in graph.objects(node, RDF.type):
+        if isinstance(type_iri, URIRef):
+            kinds |= superclass_closure(type_iri, ontology_graph) | {type_iri}
+    fitting = {
+        predicate
+        for predicate in ontology_graph.subjects(RDFS.range, datatype)
+        if isinstance(predicate, URIRef)
+        and any(
+            domain in kinds for domain in ontology_graph.objects(predicate, RDFS.domain)
+        )
+    }
+    return next(iter(fitting)) if len(fitting) == 1 else None
+
+
 def _is_dated(node: Node, graph: RDFGraph) -> bool:
     return any(
         isinstance(obj, Literal) and obj.datatype in DATE_DATATYPES
@@ -258,8 +284,11 @@ def add_date_values(
         )
         if value is None:
             continue
+        datatype = URIRef(str(value.datatype))
         predicate = (
-            _INSTANT_PROPERTY.get(value.datatype, RDF.value) if instant else RDF.value
+            _date_property(node, datatype, graph, ontology_graph)
+            or (_INSTANT_PROPERTY.get(datatype) if instant else None)
+            or RDF.value
         )
         graph.add((node, predicate, value))
         records.append(

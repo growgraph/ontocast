@@ -27,6 +27,7 @@ from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.model import (
     BasePydanticModel,
     CoreferenceCandidate,
+    FactsIsolatedInstance,
     FactsLinkRecord,
     FactsValidationFinding,
     GraphRepairRecord,
@@ -929,6 +930,16 @@ class AgentState(BasePydanticModel):
             "Fact-namespace instances the validation gate left linked to no "
             "other instance nor the document, sorted; the link pass reads "
             "them, and leaves those it could not link."
+        ),
+    )
+
+    facts_isolated_report: list[FactsIsolatedInstance] = Field(
+        default_factory=list,
+        description=(
+            "The instances still linked to nothing after the link pass, with "
+            "their label and kind; kept in the served facts, not deleted. "
+            "Capped at 200; the full count is the facts_isolated retrieval "
+            "metric."
         ),
     )
 

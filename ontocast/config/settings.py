@@ -3034,17 +3034,19 @@ class FactsValidationConfig(BaseSettings):
         ),
     )
     link_pass: bool = Field(
-        default=False,
+        default=True,
         description=(
             "After the validation gate, one LLM call per document that still "
             "has isolated instances (linked to no other instance). The model "
             "may propose only links its passage states, between a listed "
             "isolated instance and a listed instance, with a listed property;"
-            " code checks each against the source text, the property's kind, "
+            " code checks each against the source text (the quoted evidence "
+            "must occur there and name both ends), the property's kind, "
             "domain and range and its functional constraint, and adds only "
             "valid links, with provenance; a structured value is reached only "
             "through a property whose domain or range is shown to fit it. "
-            "Nothing is removed or changed."
+            "Instances still isolated afterwards are kept and listed in the "
+            "run manifest."
         ),
     )
     link_pass_max_isolated: int = Field(

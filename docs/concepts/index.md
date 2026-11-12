@@ -165,7 +165,8 @@ ontology. It runs when `RENDER_MODE` is `facts` or `ontology_and_facts`.
    instances and with listed properties, are proposed; code checks each one
    and adds the valid ones. With no isolated instance, no call is made
    ([`FACTS_LINK_PASS`](../reference/configuration/facts-validation.md#facts_link_pass),
-   off by default).
+   on by default). Instances still linked to nothing are kept and listed in the
+   run manifest.
 
 ## Serialize
 

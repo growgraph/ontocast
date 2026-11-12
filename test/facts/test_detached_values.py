@@ -18,6 +18,7 @@ from ontocast.onto.state import AgentState
 from ontocast.tool.agg.rewriter import add_reified_provenance
 from ontocast.tool.agg.value_names import name_values
 from ontocast.tool.facts_validation.connectivity import isolated_instances
+from ontocast.tool.facts_validation.terms import CatalogRoles, value_class_base
 
 pytestmark = pytest.mark.unit
 
@@ -102,8 +103,13 @@ def _gated_state(unit: ContentUnit) -> AgentState:
 
 def _tools(**settings: Any) -> Any:
     facts_validation = FactsValidationConfig(**settings)
+    roles = CatalogRoles.of([_ontology()])
+    value_classes = roles.value_classes(
+        value_class_base(facts_validation.quantity_fallback_vocabulary, {})
+    )
     return SimpleNamespace(
         prefix_table=lambda: PrefixTable({}, {}),
+        get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: value_classes),
         config=SimpleNamespace(
             get_tool_config=lambda: SimpleNamespace(facts_validation=facts_validation)
         ),
@@ -127,7 +133,7 @@ async def test_values_linked_to_nothing_are_dropped_with_their_parts() -> None:
         D + "lonelyLaser",
     }
 
-    await run_link_pass(state, _tools(), _ontology(), [unit])
+    await run_link_pass(state, _tools(link_pass=False), _ontology(), [unit])
 
     served = _subjects(state.aggregated_facts)
     # Isolated values go, the subclass closure finding the energy and the
@@ -186,3 +192,59 @@ async def test_a_value_the_link_pass_attaches_is_kept(monkeypatch) -> None:
     )
     assert D + "pulseEnergy" in _subjects(state.aggregated_facts)
     assert D + "probeRange" not in _subjects(state.aggregated_facts)
+
+
+_BOOKS = "https://ex.org/books#"
+
+
+def test_value_classes_come_from_the_whole_catalog_and_the_configuration() -> None:
+    """A deployment's own value class counts, and so does a subclass declared
+    in another catalog file than the class it refines."""
+    amounts = RDFGraph()
+    amounts.parse(
+        data=f"""@prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix bk: <{_BOOKS}> .
+        bk:Amount a owl:Class .""",
+        format="turtle",
+    )
+    fees = RDFGraph()
+    fees.parse(
+        data=f"""@prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix bk: <{_BOOKS}> .
+        bk:Fee a owl:Class ; rdfs:subClassOf bk:Amount .
+        bk:Ledger a owl:Class .""",
+        format="turtle",
+    )
+    roles = CatalogRoles.of([amounts, fees])
+
+    value_classes = roles.value_classes(
+        value_class_base({"value_class": "bk:Amount"}, {"bk": _BOOKS})
+    )
+
+    assert {_BOOKS + "Amount", _BOOKS + "Fee"} <= value_classes
+    assert _BOOKS + "Ledger" not in value_classes
+    # The well-known value classes always count.
+    assert "http://qudt.org/schema/qudt/QuantityValue" in value_classes
+
+
+def test_the_isolated_report_says_what_each_island_holds() -> None:
+    from ontocast.stategraph.facts_link import isolated_report
+
+    graph = RDFGraph()
+    graph.parse(
+        data=f"""@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix q: <{Q}> . @prefix d: <{D}> .
+        d:reading a q:Activity ; rdfs:label "pump power reading" ;
+            q:hasResult d:reading.hasResult .
+        d:reading.hasResult a q:Energy ; rdfs:label "3 kW" .
+        d:venue a q:Laser ; rdfs:label "the venue" .""",
+        format="turtle",
+    )
+
+    report = isolated_report(graph, [D + "reading", D + "venue"])
+
+    assert [(r.iri, r.label, r.kind) for r in report] == [
+        (D + "reading", "pump power reading", "holds_value"),
+        (D + "venue", "the venue", "other"),
+    ]

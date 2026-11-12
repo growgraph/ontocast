@@ -21,7 +21,7 @@ import logging
 from collections.abc import Sequence
 from itertools import combinations
 
-from rdflib import RDF, BNode, Literal, URIRef
+from rdflib import RDF, RDFS, BNode, Literal, URIRef
 from rdflib.term import Node
 
 from ontocast.onto.constants import DEFAULT_IRI
@@ -316,16 +316,17 @@ def drop_unlinked_instances(
 def drop_detached_values(
     graph: RDFGraph,
     isolated: Sequence[str],
-    ontology_graph: RDFGraph,
+    value_classes: frozenset[str],
     fact_namespaces: Sequence[str],
-) -> list[str]:
+) -> list[GraphRepairRecord]:
     """Remove every isolated instance typed as a value, with the parts it owns.
 
-    A value belongs to the statement that carries it; its type reaches a class
-    of :data:`~ontocast.tool.facts_validation.terms.VALUE_CLASSES` through the
-    ontology's subclass closure. One linked to no instance nor the document
-    has lost its statement, whatever numbers it holds, so it is not a fact.
-    A value linked to anything, in either direction, is kept.
+    A value belongs to the statement that carries it; its type is one of
+    ``value_classes`` (see
+    :meth:`~ontocast.tool.facts_validation.terms.CatalogRoles.value_classes`).
+    One linked to no instance nor the document has lost its statement,
+    whatever numbers it holds, so it is not a fact. A value linked to
+    anything, in either direction, is kept.
 
     ``isolated`` is the gate's list as the link pass left it: computed before
     values were named, so a value's own parts, named under it since, are not
@@ -335,29 +336,46 @@ def drop_detached_values(
     Args:
         graph: Served facts graph, mutated in place.
         isolated: IRIs of the instances linked to nothing.
-        ontology_graph: The ontology context the subclass closure walks.
+        value_classes: The classes whose instances are values.
         fact_namespaces: Namespaces holding minted instances.
 
     Returns:
-        The dropped value IRIs, ordered by IRI.
+        One ``unlinked_dropped`` record per dropped value, ordered by IRI: its
+        label (else its IRI) as target, and the triples removed with it.
     """
-    closures: dict[URIRef, set[URIRef]] = {}
     detached = sorted(
         (
             URIRef(iri)
             for iri in isolated
-            if is_value_node(graph, URIRef(iri), ontology_graph, closures)
+            if is_value_node(graph, URIRef(iri), value_classes)
         ),
         key=str,
     )
-    if not detached:
-        return []
-    parts = _owned_parts(graph, detached, fact_namespaces)
-    _remove_instances(graph, [*detached, *sorted(parts, key=str)])
-    logger.info(
-        "Dropped %d value(s) linked to nothing from the served facts", len(detached)
-    )
-    return [str(value) for value in detached]
+    records: list[GraphRepairRecord] = []
+    for value in detached:
+        parts = _owned_parts(graph, [value], fact_namespaces)
+        removed = {value, *parts}
+        triple_count = sum(
+            1
+            for s, _, o in graph
+            if s in removed or (o in removed and s not in removed)
+        )
+        label = graph.value(value, RDFS.label)
+        records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.UNLINKED_DROPPED,
+                source=str(value),
+                target=str(label) if label is not None else str(value),
+                triple_count=triple_count,
+            )
+        )
+        _remove_instances(graph, [value, *sorted(parts, key=str)])
+    if records:
+        logger.info(
+            "Dropped %d value(s) linked to nothing from the served facts",
+            len(records),
+        )
+    return records
 
 
 def _owned_parts(

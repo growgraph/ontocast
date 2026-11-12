@@ -32,6 +32,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: A catalog listing shows the start of a description: one line per ontology,
+#: not the author's whole text.
+_DESCRIBE_MAX_CHARS = 600
+
 #: Semantic version label, MAJOR.MINOR.PATCH. A label, never an identity: the
 #: identity of a version is its version IRI.
 SemanticVersion = Annotated[
@@ -379,11 +383,14 @@ class Ontology(OntologyPropertiesWithLineage):
         return graph
 
     def describe(self) -> str:
-        """A short human-readable description."""
+        """A short human-readable description; a long description is cut."""
+        description = self.description or ""
+        if len(description) > _DESCRIBE_MAX_CHARS:
+            description = description[: _DESCRIBE_MAX_CHARS - 1].rstrip() + "…"
         return (
             f"Ontology id: {self.ontology_id}\n"
             f"Prefix: {self.prefix}\n"
-            f"Description: {self.description}\n"
+            f"Description: {description}\n"
             f"Ontology IRI: {self.iri}\n"
         )
 

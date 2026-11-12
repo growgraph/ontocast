@@ -25,9 +25,11 @@ from ontocast.onto.model import (
 from ontocast.onto.rdfgraph import (
     RDFGraph,
 )
+from ontocast.onto.well_known import is_well_known_term, well_known_role
 from ontocast.tool.facts_validation.terms import (
     _COMPACT_IRI,
     _VACUOUS_TYPES,
+    CatalogRoles,
     _alias_candidates,
     _catalog_term_roles,
     _declared_domains,
@@ -442,24 +444,20 @@ def _select_alias_target(
     return best
 
 
-def _same_name_elsewhere(
-    alias: URIRef, terms: set[str], known_classes: set[str]
-) -> str | None:
-    """The one catalog term in another namespace spelled exactly like ``alias``.
+def _same_name_elsewhere(alias: URIRef, properties: set[str]) -> str | None:
+    """The one catalog property in another namespace spelled exactly like ``alias``.
 
-    A catalog name written under the wrong catalog prefix (``a:usesMethod`` for
-    ``b:usesMethod``) means that term: the name is exact, only the prefix
-    slipped. Two such terms are ambiguous, so neither is taken; a class never
-    replaces a predicate.
+    A property name written under the wrong prefix (``a:usedMethod`` for
+    ``b:usedMethod``) means that property: the name is exact, only the prefix
+    slipped. Two such properties are ambiguous, so neither is taken; only a
+    term the catalog states is a property can replace a predicate.
     """
     namespace = _namespace_of(str(alias))
     local = _local_name(str(alias))
     matches = {
         term
-        for term in terms
-        if term not in known_classes
-        and _namespace_of(term) != namespace
-        and _local_name(term) == local
+        for term in properties
+        if _namespace_of(term) != namespace and _local_name(term) == local
     }
     return next(iter(matches)) if len(matches) == 1 else None
 
@@ -471,14 +469,18 @@ def repair_property_aliases(
     min_ratio: float = 0.95,
     exempt_terms: set[str] | None = None,
     full_catalog_terms: set[str] | None = None,
+    catalog_roles: CatalogRoles | None = None,
 ) -> tuple[int, list[FactsUnitFinding], list[GraphRepairRecord]]:
     """Rewrite near-miss predicates in catalog namespaces; report ambiguity.
 
-    A predicate whose namespace belongs to the ontology context but which is
-    not itself a catalog term is a near-miss (``qqval:lowerBound`` for
-    ``qqval:hasLowerBound``). When exactly one catalog property in another
-    namespace has its very local name, the prefix slipped and that property is
-    the target. Otherwise the rewrite fires only when
+    A predicate that is not a catalog term and not a real term of a
+    well-known vocabulary (:func:`~ontocast.onto.well_known.is_well_known_term`)
+    exists nowhere. When exactly one catalog property (``catalog_roles``, the
+    whole catalog, else the snapshot) in another namespace has its very local
+    name, the prefix slipped and that property is the target; this holds for
+    a predicate in a catalog namespace or a well-known one. A predicate in a
+    namespace the catalog declares terms in is otherwise a near-miss
+    (``ex:lowerBound`` for ``ex:hasLowerBound``), and the rewrite fires only when
     exactly one candidate *qualifies*: its name tokens contain the alias's,
     the alias's contain its, or the two spell the same once case and
     separators are folded. Several qualifying candidates are a tie that the
@@ -488,8 +490,8 @@ def repair_property_aliases(
     and rewriting across that gap substitutes one property for another.
     Anything else becomes a mandatory finding carrying the top suggestions.
 
-    Only namespaces the catalog *declares* terms in are eligible (see
-    :func:`collect_declared_namespaces`); ``exempt_terms`` (expanded fallback
+    Only namespaces the catalog *declares* terms in are eligible for the
+    near-miss rewrite (see :func:`collect_declared_namespaces`); ``exempt_terms`` (expanded fallback
     vocabulary) are never treated as near-misses, and neither is a predicate
     in ``full_catalog_terms``: a term the whole catalog declares is real even
     when this unit's snapshot did not retrieve it, and the snapshot's
@@ -511,23 +513,42 @@ def repair_property_aliases(
     findings: list[FactsUnitFinding] = []
     applied: list[GraphRepairRecord] = []
     rewritten = 0
-    predicates = {
+    nowhere = {
         predicate
         for predicate in graph.predicates()
         if isinstance(predicate, URIRef)
         and str(predicate) not in catalog_terms
         and str(predicate) not in exempt
         and str(predicate) not in known_elsewhere
-        and _namespace_of(str(predicate)) in declared_namespaces
+        and is_well_known_term(str(predicate)) is not True
     }
-    _, known_classes = _catalog_term_roles(ontology_graph)
-    for alias in sorted(predicates, key=str):
-        candidates = _alias_candidates(
-            alias, graph, catalog_terms, ontology_graph=ontology_graph
+    snapshot_properties, _ = _catalog_term_roles(ontology_graph)
+    # A well-known property the catalog only references is a property too.
+    properties = (
+        set(snapshot_properties)
+        | (set(catalog_roles.properties) if catalog_roles is not None else set())
+        | {
+            term
+            for term in catalog_terms | known_elsewhere
+            if well_known_role(term) == "property"
+        }
+    )
+    for alias in sorted(nowhere, key=str):
+        near_miss = _namespace_of(str(alias)) in declared_namespaces
+        if not near_miss and is_well_known_term(str(alias)) is None:
+            continue
+        candidates = (
+            _alias_candidates(
+                alias, graph, catalog_terms, ontology_graph=ontology_graph
+            )
+            if near_miss
+            else []
         )
-        target = _same_name_elsewhere(
-            alias, catalog_terms | known_elsewhere, known_classes
-        ) or _select_alias_target(str(alias), candidates, min_ratio)
+        target = _same_name_elsewhere(alias, properties) or (
+            _select_alias_target(str(alias), candidates, min_ratio)
+            if near_miss
+            else None
+        )
         if target is not None:
             replacement = URIRef(target)
             alias_triples = 0
@@ -545,6 +566,8 @@ def repair_property_aliases(
                 )
             )
             logger.info("Repaired property alias %s -> %s", alias, replacement)
+            continue
+        if not near_miss:
             continue
         findings.append(
             FactsUnitFinding(

@@ -23,7 +23,7 @@ from ontocast.onto.enum import OntologyAssemblyMode
 from ontocast.onto.model import FactsCritiqueReport, FactsRenderReport
 from ontocast.onto.ontology_access import build_llm_prefix_map
 from ontocast.onto.ontology_snapshot import OntologySnapshot
-from ontocast.onto.prefixes import PrefixTable, build_prefix_table
+from ontocast.onto.prefixes import CURIE_IN_TEXT, PrefixTable, build_prefix_table
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.facts_guidelines import DEFAULT_QUANTITY_FALLBACK_VOCABULARY
@@ -32,30 +32,29 @@ from ontocast.prompt.shapes_contract import (
     format_conformance_chapter,
 )
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from ontocast.tool.ontology_validation.catalog_terms import (
     catalog_prefixes,
     catalog_terms,
     format_term_sheet,
 )
-from test.ontology.test_prefix_table import LIFE, MAT, OBS, UNIT, _catalog
+from test.ontology.test_prefix_table import AST, EVT, REG, UNIT, _catalog
 
 pytestmark = pytest.mark.unit
 
 SHAPES_TTL = f"""
 @prefix sh:    <http://www.w3.org/ns/shacl#> .
-@prefix lifec: <{LIFE}> .
-@prefix obs:   <{OBS}> .
+@prefix evl: <{EVT}> .
+@prefix reg:   <{REG}> .
 @prefix ex:    <https://ex.org/shapes#> .
-ex:AgingShape a sh:NodeShape ;
-    sh:targetClass lifec:AgingProcess ;
+ex:IncidentShape a sh:NodeShape ;
+    sh:targetClass evl:Incident ;
     sh:property [
-        sh:path lifec:hasDuration ;
-        sh:message "An aging process states lifec:hasDuration, not an obs:Process condition." ;
+        sh:path evl:hasSpan ;
+        sh:message "An incident states evl:hasSpan, not an reg:Event condition." ;
     ] .
 """
 
-#: A CURIE in running text: what :mod:`ontocast.onto.prefixes` rewrites.
-_CURIE = re.compile(r"(?<![\w:/#<.-])([A-Za-z][\w.-]*):([A-Za-z_][\w.-]*)")
 #: A prefix declared beside its namespace: "`p:` (<ns>)" or "`p:` <ns>".
 _DECLARED = re.compile(r"`([A-Za-z][\w.-]*):`\s*\(?<([^>]+)>")
 
@@ -65,7 +64,7 @@ def prefixes_by_namespace(
 ) -> dict[str, set[str]]:
     """Namespace -> every prefix the prompt writes it with."""
     found: dict[str, set[str]] = {}
-    for prefix, _ in _CURIE.findall(prompt):
+    for prefix, _ in CURIE_IN_TEXT.findall(prompt):
         namespace = parse_map.get(prefix)
         if namespace is not None:
             found.setdefault(namespace, set()).add(prefix)
@@ -112,6 +111,7 @@ def _tools(table: PrefixTable) -> AtomicToolBox:
             object_property_literal_check=True,
             property_alias_min_ratio=0.85,
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY),
@@ -140,8 +140,8 @@ async def test_facts_render_and_critic_prompts_show_one_prefix_per_namespace(
     rendered = RDFGraph()
     rendered.parse(
         data=(
-            f"@prefix cd: <{DEFAULT_IRI}/> . @prefix life: <{LIFE}> .\n"
-            "cd:aging a life:AgingProcess ."
+            f"@prefix cd: <{DEFAULT_IRI}/> . @prefix ev: <{EVT}> .\n"
+            "cd:outage a ev:Incident ."
         ),
         format="turtle",
     )
@@ -175,7 +175,7 @@ async def test_facts_render_and_critic_prompts_show_one_prefix_per_namespace(
     snapshot = _context(table)
     state = UnitFactsState(
         content_unit=ContentUnit(
-            text="The films aged for 30 days at 25 °C.",
+            text="The pumps ran for 30 days at 25 °C.",
             index=0,
             doc_iri=URIRef("https://ex.org/doc/d1"),
         ),
@@ -194,11 +194,11 @@ async def test_facts_render_and_critic_prompts_show_one_prefix_per_namespace(
         found = prefixes_by_namespace(prompt, parse_map)
         shared = {ns: p for ns, p in found.items() if len(p) > 1}
         assert not shared, f"{name}: one namespace, several prefixes: {shared}"
-        assert found[LIFE] == {"life"}
-        assert found[OBS] == {"obs"}
+        assert found[EVT] == {"ev"}
+        assert found[REG] == {"reg"}
         assert found[UNIT] == {"unit"}
-        assert found[MAT] == {"mat"}
-        assert "life:hasDuration, not an obs:Process" in prompt
+        assert found[AST] == {"ast"}
+        assert "ev:hasSpan, not an reg:Event" in prompt
 
 
 def test_the_ontology_lane_term_sheet_names_terms_as_the_facts_lane_does() -> None:
@@ -209,16 +209,16 @@ def test_the_ontology_lane_term_sheet_names_terms_as_the_facts_lane_does() -> No
     sheet = format_term_sheet(catalog_terms(catalog), prefixes, 200)
 
     found = prefixes_by_namespace(sheet, prefixes)
-    assert found[LIFE] == {"life"}
-    assert found[MAT] == {"mat"}
+    assert found[EVT] == {"ev"}
+    assert found[AST] == {"ast"}
     assert not {ns: p for ns, p in found.items() if len(p) > 1}
 
 
 @pytest.mark.parametrize(
     "payload",
     [
-        "cd:aging a lc:AgingProcess ; lifecycle:hasDuration cd:span .",
-        "cd:aging a lifec:AgingProcess .",
+        "cd:outage a el:Incident ; eventlog:hasSpan cd:span .",
+        "cd:outage a evl:Incident .",
     ],
 )
 def test_an_alias_the_model_copies_parses_to_its_namespace(payload: str) -> None:
@@ -230,8 +230,8 @@ def test_an_alias_the_model_copies_parses_to_its_namespace(payload: str) -> None
     finally:
         RDFGraph.set_known_prefixes(previous)
 
-    aging = URIRef(f"{DEFAULT_IRI}/aging")
-    assert (aging, RDF.type, URIRef(f"{LIFE}AgingProcess")) in graph
+    outage = URIRef(f"{DEFAULT_IRI}/outage")
+    assert (outage, RDF.type, URIRef(f"{EVT}Incident")) in graph
 
 
 def test_an_alias_parses_in_json_ld_too() -> None:
@@ -245,14 +245,14 @@ def test_an_alias_parses_in_json_ld_too() -> None:
             json.dumps(
                 {
                     "@context": {"cd": f"{DEFAULT_IRI}/"},
-                    "@id": "cd:aging",
-                    "@type": "lc:AgingProcess",
-                    "lifecycle:hasDuration": {"@id": "cd:span"},
+                    "@id": "cd:outage",
+                    "@type": "el:Incident",
+                    "eventlog:hasSpan": {"@id": "cd:span"},
                 }
             )
         )
     finally:
         RDFGraph.set_known_prefixes(previous)
 
-    assert (None, RDF.type, URIRef(f"{LIFE}AgingProcess")) in graph
-    assert (None, URIRef(f"{LIFE}hasDuration"), None) in graph
+    assert (None, RDF.type, URIRef(f"{EVT}Incident")) in graph
+    assert (None, URIRef(f"{EVT}hasSpan"), None) in graph

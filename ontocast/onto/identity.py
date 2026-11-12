@@ -213,7 +213,8 @@ class OntologyIdentity(BaseModel):
     ontology_id: OntologyId
     iri: OntologyIri
     title: str = Field(min_length=1, max_length=200)
-    description: str = Field(default="", max_length=2000)
+    #: An author's description, however long; a listing shows its start.
+    description: str = ""
     namespace: str = Field(default="")
     #: The external ontology this one extends; minted with ``owl:imports`` of it.
     extends: str | None = None

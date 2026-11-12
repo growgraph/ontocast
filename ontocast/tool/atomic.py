@@ -12,12 +12,13 @@ from ontocast.config import (
     WebSearchConfig,
 )
 from ontocast.onto.enum import WorkflowNode
-from ontocast.onto.prefixes import PrefixTable
+from ontocast.onto.prefixes import PrefixTable, standard_namespace_prefixes
 from ontocast.tool.facts_validation import (
     CriticPatchPolicy,
     FactsAcceptancePolicy,
     ValidationPolicy,
 )
+from ontocast.tool.facts_validation.terms import CatalogRoles, value_class_base
 from ontocast.tool.llm import LLMTool
 from ontocast.tool.ontology_validation.shape import CatalogSurfaceIndex
 
@@ -60,6 +61,10 @@ class AtomicOntologyCatalog(Protocol):
 
     def catalog_surface_index(self) -> CatalogSurfaceIndex:
         """Labels and local names of every catalog term, case-insensitive."""
+        ...
+
+    def catalog_roles(self) -> CatalogRoles:
+        """What every catalog term is, and the catalog's class hierarchy."""
         ...
 
 
@@ -278,6 +283,28 @@ class AtomicToolBox:
         if self.ontology_catalog is None:
             return CatalogSurfaceIndex()
         return self.ontology_catalog.catalog_surface_index()
+
+    def catalog_roles(self) -> CatalogRoles:
+        """What the bound catalog says each term is; empty when none is bound."""
+        if self.ontology_catalog is None:
+            return CatalogRoles()
+        return self.ontology_catalog.catalog_roles()
+
+    def value_classes(self) -> frozenset[str]:
+        """Classes whose instances are values, over the bound catalog.
+
+        The well-known value classes and the configured
+        ``FACTS_QUANTITY_FALLBACK_VOCABULARY`` ``value_class``, with every
+        catalog class under one of them.
+        """
+        bindings = {
+            prefix: namespace
+            for namespace, prefix in standard_namespace_prefixes().items()
+        }
+        bindings.update(self.prefix_table().parse_map())
+        return self.catalog_roles().value_classes(
+            value_class_base(self.quantity_fallback_vocabulary, bindings)
+        )
 
     async def get_llm_tool(self, budget_tracker) -> LLMTool:
         """Return a budget-aware LLM tool instance."""

@@ -16,26 +16,26 @@ from test.ontology_helpers import stamped_ontology
 
 pytestmark = pytest.mark.unit
 
-LIFE = "https://ex.org/lifecycle#"
-OBS = "https://ex.org/observation#"
-MAT = "https://ex.org/matter#"
+EVT = "https://ex.org/eventlog#"
+REG = "https://ex.org/registry#"
+AST = "https://ex.org/assets#"
 UNIT = "http://qudt.org/vocab/unit/"
 
-LIFECYCLE_TTL = f"""
-@prefix life: <{LIFE}> .
-@prefix obs:  <{OBS}> .
+EVENTLOG_TTL = f"""
+@prefix ev: <{EVT}> .
+@prefix reg:  <{REG}> .
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-<https://ex.org/lifecycle> a owl:Ontology .
-life:AgingProcess a owl:Class ; rdfs:subClassOf obs:Process .
-life:hasDuration a owl:ObjectProperty ; rdfs:domain obs:Process .
+<https://ex.org/eventlog> a owl:Ontology .
+ev:Incident a owl:Class ; rdfs:subClassOf reg:Event .
+ev:hasSpan a owl:ObjectProperty ; rdfs:domain reg:Event .
 """
-OBSERVATION_TTL = f"""
-@prefix obs: <{OBS}> .
+REGISTRY_TTL = f"""
+@prefix reg: <{REG}> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
-<https://ex.org/observation> a owl:Ontology .
-obs:Process a owl:Class .
-obs:hasProcessCondition a owl:ObjectProperty .
+<https://ex.org/registry> a owl:Ontology .
+reg:Event a owl:Class .
+reg:hasCondition a owl:ObjectProperty .
 """
 UNITS_TTL = f"""
 @prefix unit: <{UNIT}> .
@@ -48,58 +48,58 @@ unit:DEG_C a qudt:Unit ; rdfs:label "degree Celsius" ;
     qudt:hasQuantityKind quantitykind:Temperature .
 unit:NanoM a qudt:Unit ; rdfs:label "nanometre" .
 """
-MATTER_TTL = f"""
-@prefix lc:   <{LIFE}> .
-@prefix mat:  <{MAT}> .
+ASSETS_TTL = f"""
+@prefix el:   <{EVT}> .
+@prefix ast:  <{AST}> .
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-<https://ex.org/matter> a owl:Ontology .
-mat:Sample a owl:Class .
-mat:agedBy a owl:ObjectProperty ; rdfs:range lc:AgingProcess .
+<https://ex.org/assets> a owl:Ontology .
+ast:Asset a owl:Class .
+ast:affectedBy a owl:ObjectProperty ; rdfs:range el:Incident .
 """
 
 
 def _catalog():
     return [
-        stamped_ontology(LIFECYCLE_TTL, ontology_id="lifecycle"),
-        stamped_ontology(OBSERVATION_TTL, ontology_id="observation"),
+        stamped_ontology(EVENTLOG_TTL, ontology_id="eventlog"),
+        stamped_ontology(REGISTRY_TTL, ontology_id="registry"),
         stamped_ontology(UNITS_TTL, ontology_id="units"),
-        stamped_ontology(MATTER_TTL, ontology_id="matter"),
+        stamped_ontology(ASSETS_TTL, ontology_id="assets"),
     ]
 
 
 def test_adoption_shows_author_prefixes_and_standard_ones() -> None:
-    lifecycle, observation, units, matter = _catalog()
+    eventlog, registry, units, assets = _catalog()
 
-    assert (lifecycle.ontology_id, lifecycle.prefix) == ("lifecycle", "life")
-    assert (observation.ontology_id, observation.prefix) == ("observation", "obs")
+    assert (eventlog.ontology_id, eventlog.prefix) == ("eventlog", "ev")
+    assert (registry.ontology_id, registry.prefix) == ("registry", "reg")
     # Terms in a well-known namespace keep its standard prefix, not the id.
     assert units.namespace == UNIT
     assert (units.ontology_id, units.prefix) == ("units", "unit")
-    assert matter.prefix == "mat"
+    assert assets.prefix == "ast"
 
 
 def test_the_table_shows_one_prefix_per_namespace() -> None:
     table = build_prefix_table(_catalog())
 
-    assert table.prefix_for(LIFE) == "life"
-    assert table.prefix_for(OBS) == "obs"
-    assert table.prefix_for(MAT) == "mat"
+    assert table.prefix_for(EVT) == "ev"
+    assert table.prefix_for(REG) == "reg"
+    assert table.prefix_for(AST) == "ast"
     assert table.prefix_for(UNIT) == "unit"
     assert table.prefix_for("http://www.w3.org/ns/sosa/") == "sosa"
     # The id and a borrowing file's prefix are aliases, never shown.
-    assert table.aliases["lifecycle"] == LIFE
-    assert table.aliases["lc"] == LIFE
-    assert "life" not in table.aliases
-    assert table.qname(f"{LIFE}AgingProcess") == "life:AgingProcess"
+    assert table.aliases["eventlog"] == EVT
+    assert table.aliases["el"] == EVT
+    assert "ev" not in table.aliases
+    assert table.qname(f"{EVT}Incident") == "ev:Incident"
     assert table.qname(f"{UNIT}DEG_C") == "unit:DEG_C"
 
 
 def test_the_parse_map_accepts_shown_prefixes_and_aliases() -> None:
     parse = build_prefix_table(_catalog()).parse_map()
 
-    for prefix in ("life", "lifecycle", "lc"):
-        assert parse[prefix] == LIFE
+    for prefix in ("ev", "eventlog", "el"):
+        assert parse[prefix] == EVT
     assert parse["unit"] == UNIT
     assert parse["units"] == UNIT
 
@@ -107,19 +107,19 @@ def test_the_parse_map_accepts_shown_prefixes_and_aliases() -> None:
 def test_an_alias_two_namespaces_claim_is_dropped() -> None:
     other = stamped_ontology(
         """
-        @prefix lc:  <https://ex.org/lightcurve#> .
+        @prefix el:  <https://ex.org/lightcurve#> .
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
         <https://ex.org/lightcurve> a owl:Ontology .
-        lc:Curve a owl:Class .
+        el:Curve a owl:Class .
         """,
         ontology_id="lightcurve",
     )
     table = build_prefix_table([*_catalog(), other])
 
-    # ``lc`` is the light-curve ontology's own prefix, so it is shown there and
-    # is no longer an alias of the lifecycle namespace.
-    assert table.prefix_for("https://ex.org/lightcurve#") == "lc"
-    assert "lc" not in table.aliases
+    # ``el`` is the light-curve ontology's own prefix, so it is shown there and
+    # is no longer an alias of the event-log namespace.
+    assert table.prefix_for("https://ex.org/lightcurve#") == "el"
+    assert "el" not in table.aliases
 
 
 def test_a_clashing_author_prefix_falls_back_to_the_id() -> None:
@@ -151,13 +151,13 @@ def test_a_clashing_author_prefix_falls_back_to_the_id() -> None:
 @pytest.mark.parametrize(
     ("prefix", "namespace", "valid"),
     [
-        ("life", LIFE, True),
-        ("time", LIFE, False),
-        ("time1", LIFE, False),
-        ("ns1", LIFE, False),
-        ("cd", LIFE, False),
+        ("ev", EVT, True),
+        ("time", EVT, False),
+        ("time1", EVT, False),
+        ("ns1", EVT, False),
+        ("cd", EVT, False),
         ("unit", UNIT, True),
-        ("1x", LIFE, False),
+        ("1x", EVT, False),
     ],
 )
 def test_valid_shown_prefix(prefix: str, namespace: str, valid: bool) -> None:
@@ -167,40 +167,37 @@ def test_valid_shown_prefix(prefix: str, namespace: str, valid: bool) -> None:
 def test_rewrite_touches_only_curies_of_known_prefixes() -> None:
     table = build_prefix_table(_catalog())
     text = (
-        "Use lifecycle:hasDuration, not lc:AgingProcess. See "
-        "https://ex.org/lifecycle#AgingProcess at 10:30; cd:x and onto:Trial "
-        "stay; life:hasDuration stays."
+        "Use eventlog:hasSpan, not el:Incident. See "
+        "https://ex.org/eventlog#Incident at 10:30; cd:x and onto:Trial "
+        "stay; ev:hasSpan stays."
     )
 
     rewritten = table.rewrite_curies(text)
 
     assert rewritten == (
-        "Use life:hasDuration, not life:AgingProcess. See "
-        "https://ex.org/lifecycle#AgingProcess at 10:30; cd:x and onto:Trial "
-        "stay; life:hasDuration stays."
+        "Use ev:hasSpan, not ev:Incident. See "
+        "https://ex.org/eventlog#Incident at 10:30; cd:x and onto:Trial "
+        "stay; ev:hasSpan stays."
     )
 
 
 def test_rewrite_reads_the_source_graphs_own_bindings() -> None:
     table = build_prefix_table(_catalog())
 
-    assert (
-        table.rewrite_curies("needs lifec:hasDuration", {"lifec": LIFE})
-        == "needs life:hasDuration"
-    )
+    assert table.rewrite_curies("needs evl:hasSpan", {"evl": EVT}) == "needs ev:hasSpan"
 
 
 def test_normalize_rebinds_and_rewrites_notes() -> None:
     table = build_prefix_table(_catalog())
     graph = RDFGraph()
-    graph.bind("lifecycle", LIFE)
-    term = URIRef(f"{LIFE}AgingProcess")
-    graph.add((term, SKOS.scopeNote, Literal("Pair with lifecycle:hasDuration.")))
+    graph.bind("eventlog", EVT)
+    term = URIRef(f"{EVT}Incident")
+    graph.add((term, SKOS.scopeNote, Literal("Pair with eventlog:hasSpan.")))
 
     table.normalize(graph)
 
-    assert {p for p, ns in graph.namespaces() if str(ns) == LIFE} == {"life"}
-    assert graph.value(term, SKOS.scopeNote) == Literal("Pair with life:hasDuration.")
+    assert {p for p, ns in graph.namespaces() if str(ns) == EVT} == {"ev"}
+    assert graph.value(term, SKOS.scopeNote) == Literal("Pair with ev:hasSpan.")
 
 
 def test_an_empty_table_still_shows_standard_prefixes() -> None:
@@ -216,14 +213,14 @@ async def test_author_and_standard_prefixes_survive_the_store() -> None:
 
     manager = InMemoryTripleStoreManager()
     for ontology in (
-        stamped_ontology(LIFECYCLE_TTL, ontology_id="lifecycle"),
+        stamped_ontology(EVENTLOG_TTL, ontology_id="eventlog"),
         stamped_ontology(UNITS_TTL, ontology_id="units"),
     ):
         await manager.aserialize(ontology)
     fetched = {o.ontology_id: o for o in await manager.afetch_ontologies()}
 
-    lifecycle, units = fetched["lifecycle"], fetched["units"]
-    assert lifecycle.prefix == "life"
+    eventlog, units = fetched["eventlog"], fetched["units"]
+    assert eventlog.prefix == "ev"
     assert units.prefix == "unit"
     bound = {p: str(ns) for p, ns in units.graph.namespaces() if p}
     assert bound["qudt"] == "http://qudt.org/schema/qudt/"

@@ -113,6 +113,33 @@ def test_an_instant_takes_the_owl_time_property() -> None:
     ) in graph
 
 
+def test_the_catalog_property_for_a_date_of_that_kind_is_used() -> None:
+    """A catalog that says how its kind of thing holds a date is followed."""
+    context = _graph(
+        """
+        ex:Hearing a <http://www.w3.org/2002/07/owl#Class> .
+        ex:heldOn a <http://www.w3.org/2002/07/owl#DatatypeProperty> ;
+            rdfs:domain ex:Hearing ; rdfs:range xsd:date .
+        ex:hearingDate a <http://www.w3.org/2002/07/owl#DatatypeProperty> ;
+            rdfs:domain ex:Session ; rdfs:range xsd:date .
+        """
+    )
+    graph = _graph(
+        """
+        cd:case ex:decidedAt cd:hearing .
+        cd:hearing a ex:Hearing ; rdfs:label "3 March 2019" .
+        """
+    )
+
+    add_date_values(graph, context, [CD])
+
+    assert (
+        _cd("hearing"),
+        URIRef(f"{EX}heldOn"),
+        Literal("2019-03-03", datatype=XSD.date),
+    ) in graph
+
+
 def test_a_bare_year_counts_only_in_a_temporal_position() -> None:
     graph = _graph(
         """
@@ -171,6 +198,7 @@ def _fake_tools() -> ToolBox:
             shapes_prompt_contract=lambda: ("", (), False),
             shapes_chapter_terms=lambda context_terms: frozenset(),
             ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
                     facts_validation=facts_validation

@@ -138,7 +138,7 @@ def domain_violation_findings(
     nor a supertype of it, following ``rdfs:subClassOf`` and
     ``owl:equivalentClass`` intersections in both directions. Typing a subject
     with a supertype of the domain (``sosa:Observation`` where the domain is
-    ``obs:QuantitativeObservation``) is consistent: inference specializes it,
+    ``ex:Measurement``) is consistent: inference specializes it,
     it contradicts nothing, and flagging it would bury the real violations.
 
     Args:

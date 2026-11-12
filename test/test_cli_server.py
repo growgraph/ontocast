@@ -342,6 +342,7 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
             shapes_prompt_contract=lambda: ("", (), False),
             shapes_chapter_terms=lambda context_terms: frozenset(),
             ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
             config=Config(),
         ),
     )
@@ -1138,6 +1139,7 @@ def test_process_unit_route_runs_the_validation_gate(
             shapes_prompt_contract=lambda: ("", (), False),
             shapes_chapter_terms=lambda context_terms: frozenset(),
             ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
                     facts_validation=FactsValidationConfig.model_construct()
@@ -1196,7 +1198,10 @@ def test_process_unit_route_runs_each_uploaded_file_separately(
     )
     tools = cast(
         ToolBox,
-        SimpleNamespace(ontology_manager=SimpleNamespace(catalog_terms=lambda: set())),
+        SimpleNamespace(
+            ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
+        ),
     )
     app = create_app(
         tools=tools,

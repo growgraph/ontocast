@@ -35,6 +35,7 @@ from ontocast.onto.model import FactsCritiqueReport, Suggestions, TripleFix
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from test.snapshot_helpers import empty_snapshot
 
 criticise_facts_module = importlib.import_module("ontocast.agent.criticise_facts")
@@ -77,6 +78,7 @@ def _tools() -> AtomicToolBox:
             object_property_literal_check=True,
             property_alias_min_ratio=0.85,
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,

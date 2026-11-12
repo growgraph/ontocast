@@ -203,7 +203,7 @@ def _drop_conflicting_prefix_declarations(body: str, graph: Graph) -> str:
     The Turtle counterpart of the JSON-LD ``@context`` reconciliation in
     :func:`_with_unit_bindings`, and it exists for the same reason: the header
     from :func:`_prefix_header` is *prepended*, and in Turtle a later
-    declaration wins, so a payload that re-declares ``qqval:`` to a namespace
+    declaration wins, so a payload that re-declares ``ex:`` to a namespace
     it half-remembered silently takes every term under that prefix out of the
     catalog. Dropping the line leaves the header's binding in force.
     """

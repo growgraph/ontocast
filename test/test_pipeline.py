@@ -53,6 +53,7 @@ from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.tool.atomic import AtomicToolBox, SearchHit
 from ontocast.tool.facts_validation import CriticPatchPolicy
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.ontology_validation import CatalogSurfaceIndex
 from ontocast.toolbox import ToolBox
@@ -155,6 +156,7 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
                     facts_critic_min_triples=0,
                     facts_completion_passes=0,
                     catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
                 ),
             ),
             ontology_manager=OntologyManager(),
@@ -213,6 +215,7 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
                     validation_policy=None,
                     ontology_critic_passes=1,
                     catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
@@ -736,6 +739,7 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
                     validation_policy=None,
                     ontology_critic_passes=1,
                     catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
@@ -827,6 +831,7 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
                     validation_policy=None,
                     ontology_critic_passes=2,  # the critic as judge: runs on a clean unit
                     catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),

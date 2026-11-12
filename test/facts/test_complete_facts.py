@@ -37,6 +37,7 @@ from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy, ValidationPolicy
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from ontocast.tool.ontology_validation import CatalogSurfaceIndex
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import empty_snapshot
@@ -105,6 +106,7 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
             numeric_coverage_limit=30,
             numeric_coverage_mandatory="off",
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
         ),
     )
 
@@ -291,6 +293,7 @@ def _facts_tools(*, completion_passes: int) -> object:
             facts_critic_min_triples=0,
             facts_completion_passes=completion_passes,
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
         ),
     )
     return SimpleNamespace(get_atomic_tools=lambda: atomic)
@@ -362,6 +365,7 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
                 SimpleNamespace(
                     ontology_critic_passes=0,
                     catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),

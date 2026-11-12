@@ -681,6 +681,19 @@ class FactsLinkReport(BaseModel):
     links: list[FactsLinkProposal] = Field(default_factory=list)
 
 
+class FactsIsolatedInstance(BaseModel):
+    """An instance the served facts still link to nothing, after the link pass.
+
+    ``kind`` is read from structure, not vocabulary: ``holds_value`` when it
+    carries a value or a non-annotation literal (a statement with no subject,
+    such as an observation of nothing), ``other`` when it carries neither.
+    """
+
+    iri: str
+    label: str = ""
+    kind: Literal["holds_value", "other"]
+
+
 class FactsLinkRecord(BaseModel):
     """A link the link pass added, with the unit whose text states it."""
 

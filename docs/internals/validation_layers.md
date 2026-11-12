@@ -26,29 +26,35 @@ disambiguation](../concepts/entity_disambiguation.md#coreference-the-guards-cann
 describes it.
 
 After the gate, `LINK_FACTS` (and the same pass on `/process_unit`) makes one
-call per document that still has isolated instances (`FACTS_LINK_PASS`, off by
+call per document that still has isolated instances (`FACTS_LINK_PASS`, on by
 default): each is shown with the passage of its source unit that names it,
 with up to eight instances it may link to and the object properties whose
 domain and range fit; the model proposes only links the passage states. Code
 keeps a proposal only when both ends are listed and one is isolated, the
 property is a listed object property, the declared domain and range admit the
-ends, a structured value (a QUDT quantity value or a schema.org structured
-value) is reached only through a domain or range shown to fit it, a functional
-property is still free, and the quoted evidence occurs in a source unit of the
-isolated end. Each kept link is added with a reifier
+ends, a value (an instance of a value class, below) is reached only through a
+domain or range shown to fit it, a functional property is still free, the
+quoted evidence occurs in a source unit of the isolated end, and both ends are
+named in the sentence that holds the evidence or the one on either side
+(`evidence_unrelated` otherwise). Each kept link is added with a reifier
 deriving it from that unit; nothing is removed. The links are not re-checked
 by the gate. Metrics: `facts_link_isolated`, `facts_link_proposed`,
 `facts_link_added`, `facts_link_rejections_by_reason`; the links are on
 `AgentState.facts_links_added`.
 
 Then, whether the pass ran or not, every instance still isolated whose type
-reaches a structured-value class (a QUDT quantity value or a schema.org
-structured value, through the ontology's subclass closure) is dropped with the
-parts only it points at (`drop_detached_values`): a value linked to nothing has
-lost its statement. A value linked to anything, in either direction, is kept.
-Records are kind `unlinked_dropped` and `facts_unlinked_dropped` counts them;
-`facts_isolated` and `facts_components` are rewritten. Validation findings
-describe the graph the gate validated.
+is a value class is dropped with the parts only it points at
+(`drop_detached_values`): a value linked to nothing has lost its statement. A
+value linked to anything, in either direction, is kept. The value classes are
+the well-known ones (`qudt:QuantityValue`; schema.org's `StructuredValue`,
+`QuantitativeValue`, `PropertyValue`, `MonetaryAmount`), the configured
+`FACTS_QUANTITY_FALLBACK_VOCABULARY` `value_class`, and every class the whole
+catalog places under one of them. Records are kind `unlinked_dropped`, with the
+value's label and the triples removed; `facts_unlinked_dropped` counts them;
+`facts_isolated` and `facts_components` are rewritten. The instances still
+isolated are listed in the run manifest (`facts_isolated`: IRI, label, and
+`holds_value` or `other`), and kept. Validation findings describe the graph the
+gate validated.
 
 No layer withholds output. A unit that leaves the loop without being accepted
 keeps its graph: the reduce merges it and logs it as salvaged from a
@@ -156,7 +162,7 @@ machine can decide without the model:
 | Numeric retyping | An untyped number on a property with a numeric range gets that datatype |
 | `rdf:type` literal coercion | A type written as a string becomes the class IRI when it resolves unambiguously |
 | Compact-IRI literal coercion | A plain string such as `"unit:NanoM"` on another predicate becomes the IRI, when its prefix is bound and either the schema says the predicate takes an IRI or the IRI is a catalog or fallback-vocabulary term. Critic and completion patches get the same repair before they are judged |
-| Near-miss predicate rewrite | A predicate not in the catalog is rewritten to the one catalog property in another catalog namespace with exactly its local name (a slipped prefix); otherwise to the one catalog term of its own namespace whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
+| Near-miss predicate rewrite | A predicate that exists nowhere (not a catalog term, not a real term of a well-known vocabulary) is rewritten to the one catalog property, across the whole catalog, in another namespace with exactly its local name (a slipped prefix, also into a well-known namespace); otherwise, in a namespace the catalog declares terms in, to the one catalog term of its own namespace whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
 | Code resolution | A node carrying a code from `FACTS_CODE_PREDICATES` (such as `qudt:ucumCode "d"`) but no link to the coded individual gains that link, when exactly one catalog individual declares the code. The linking property comes from the schema's domain and range, or else from how the graph already links such nodes |
 | Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. Critic and completion patches get the same repair |
 | Degenerate bounds | Equal lower and upper bounds become one value, when the quantity fallback vocabulary names `numeric_value`, `lower_bound` and `upper_bound` |
@@ -214,7 +220,8 @@ candidates are offered only by token containment and filtered by role, so a
 property is never offered as a class or the reverse.
 
 A well-known term must exist in its vocabulary, checked against rdflib's
-bundled term lists (vCard and QUDT have none and are admitted by namespace).
+bundled term lists, and the QUDT schema and vCard lists that ship with OntoCast
+(QUDT units and quantity kinds are admitted by namespace).
 One it does not have is `unknown_term` in both modes, with the vocabulary's
 near-misses as suggestions; an ontology render that mints one gets
 `foreign_namespace`.
@@ -400,9 +407,10 @@ The passes stop as soon as nothing is missing.
    `facts_unlinked_dropped` metric counts both. Before these drops, a node
    standing for a date that holds only a label (the object of a temporal
    property, a node typed with an OWL-Time class, or one labelled with a whole
-   date or month) gets the typed ISO 8601 value its label names: through
-   `time:inXSDDate`/`inXSDgYearMonth`/`inXSDgYear` on a `time:Instant`, else
-   `rdf:value`. A label that names no single date (`summer 2021`) is left as
+   date or month) gets the typed ISO 8601 value its label names: through the
+   one context property whose domain fits the node and whose range is the
+   value's datatype, else `time:inXSDDate`/`inXSDgYearMonth`/`inXSDgYear` on a
+   `time:Instant`, else `rdf:value`. Month names are read in English. A label that names no single date (`summer 2021`) is left as
    it is. Records are kind `date_value_added`; the metric is
    `facts_date_values_added`.
 6. **Connectivity**: `facts_links_removed` counts the links between instances

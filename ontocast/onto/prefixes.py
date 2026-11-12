@@ -40,17 +40,18 @@ _PREFIX_NAME = re.compile(r"^[A-Za-z](?:[\w.-]*[\w-])?$")
 _GENERATED_PREFIX = re.compile(r"^(?:ns|default)\d*$")
 #: ``prefix:Local`` in prose. The prefix may not follow a name, ``:``, ``/``,
 #: ``#`` or ``<`` character, so IRIs and times never match; a local name may
-#: not start with ``/``, so ``http://`` never does.
-_CURIE = re.compile(r"(?<![\w:/#<.-])([A-Za-z][\w.-]*):([A-Za-z_][\w.-]*)")
-
-#: Annotation predicates whose text a prompt shows as notes.
-_PROSE_PREDICATES: tuple[URIRef, ...] = (
-    SKOS.scopeNote,
-    SKOS.definition,
-    SKOS.note,
-    SKOS.example,
-    RDFS.comment,
+#: not start with ``/``, so ``http://`` never does, nor end with ``.``, so a
+#: sentence's full stop is not part of it.
+CURIE_IN_TEXT = re.compile(
+    r"(?<![\w:/#<.-])([A-Za-z][\w.-]*):([A-Za-z_](?:[\w.-]*[\w-])?)"
 )
+
+#: The note predicates a term sheet prints, first found first.
+NOTE_PREDICATES: tuple[URIRef, ...] = (SKOS.scopeNote, SKOS.definition, RDFS.comment)
+
+#: Annotation predicates whose text is rewritten to the shown prefixes: the
+#: notes, and the other prose a context may carry.
+_PROSE_PREDICATES: tuple[URIRef, ...] = (*NOTE_PREDICATES, SKOS.note, SKOS.example)
 
 
 @cache
@@ -223,7 +224,7 @@ class PrefixTable:
                 return match.group(0)
             return f"{shown}:{local}"
 
-        return _CURIE.sub(replace, text)
+        return CURIE_IN_TEXT.sub(replace, text)
 
     def normalize(self, graph: Graph) -> None:
         """Make ``graph`` read under this table, in place.

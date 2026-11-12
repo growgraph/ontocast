@@ -212,6 +212,7 @@ def _fake_tools(aggregator, *, shapes=None, **overrides) -> ToolBox:
             shapes_prompt_contract=lambda: ("", (), False),
             shapes_chapter_terms=lambda context_terms: frozenset(),
             ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
                     facts_validation=facts_validation

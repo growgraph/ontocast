@@ -17,6 +17,7 @@ from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from test.snapshot_helpers import snapshot_from_ontology
 
 pytestmark = pytest.mark.unit
@@ -71,6 +72,7 @@ def _build_tools() -> AtomicToolBox:
             # instead of silently reverting the configured ratio.
             property_alias_min_ratio=0.85,
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,

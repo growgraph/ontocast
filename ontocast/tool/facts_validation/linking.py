@@ -14,6 +14,7 @@ quoted evidence occurs in the source text.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Collection, Sequence
 
@@ -54,6 +55,8 @@ _MAX_PROPERTIES = 40
 _MAX_PASSAGE = 600
 #: Shortest label or value that locates a passage or a target in it.
 _MIN_NEEDLE = 3
+_WORD = re.compile(r"\w+")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n\s*\n")
 
 _CLASS_TYPES = frozenset({OWL.Class, RDFS.Class})
 _NON_OBJECT_PROPERTY_TYPES = frozenset({OWL.DatatypeProperty, OWL.AnnotationProperty})
@@ -140,6 +143,40 @@ def _needles(graph: RDFGraph, node: URIRef) -> list[str]:
     return sorted(
         {text for text in [*_labels(graph, node), *values] if len(text) >= _MIN_NEEDLE}
     )
+
+
+def evidence_window(sentences: Sequence[str], evidence: str) -> str:
+    """The normalised sentences around ``evidence``: its own, and one either side.
+
+    A quote states a relation between two things only when both are named
+    where it was taken from; a sentence on either side admits a pronoun or a
+    relation stated across a sentence break. Empty when the quote is in no
+    sentence run of up to three.
+    """
+    for width in (1, 2, 3):
+        for start in range(len(sentences) - width + 1):
+            if evidence in " ".join(sentences[start : start + width]):
+                first = max(0, start - 1)
+                return " ".join(sentences[first : start + width + 1])
+    return ""
+
+
+def mentions(text: str, needles: Sequence[str]) -> bool:
+    """Whether normalised ``text`` names a thing known by ``needles``.
+
+    A needle (a label or a literal value) occurs verbatim, or most of its
+    content words do: a paraphrased label still names its thing when two
+    thirds of its words longer than two letters are there.
+    """
+    words = set(_WORD.findall(text))
+    for needle in needles:
+        flat = normalize_string_value(needle)
+        if flat and flat in text:
+            return True
+        content = [w for w in _WORD.findall(flat) if len(w) > 2]
+        if content and sum(w in words for w in content) * 3 >= 2 * len(content):
+            return True
+    return False
 
 
 def select_link_candidates(
@@ -378,6 +415,8 @@ def validate_link_proposals(
     graph: RDFGraph,
     ontology_graph: RDFGraph,
     units: Sequence[ContentUnit],
+    *,
+    value_classes: frozenset[str],
 ) -> tuple[list[FactsLinkRecord], Counter[FactsLinkRejection]]:
     """Keep the proposals every check admits; count the others by reason.
 
@@ -385,9 +424,11 @@ def validate_link_proposals(
     isolated, two different ends, a listed property (by its listed name, its
     IRI, or a bare local name only one listed property has), an object
     property, a domain and a range that admit the ends (undecidable counts as
-    admitted), a structured value reached only through a domain or range shown
-    to fit it, a functional property still free, evidence found in a source unit of an
-    isolated end, and a link not already stated.
+    admitted), a structured value (a node of one of ``value_classes``) reached
+    only through a domain or range shown to fit it, a functional property still
+    free, evidence found in a source unit of an isolated end, both ends named
+    in the sentences around the evidence (:func:`evidence_window`,
+    :func:`mentions`), and a link not already stated.
 
     Returns:
         The accepted links, in proposal order, and the rejection counts.
@@ -403,6 +444,14 @@ def validate_link_proposals(
     closures: dict[URIRef, set[URIRef]] = {}
     functional = harvest_max_one_predicates(ontology_graph)
     unit_text = {unit.iri_absolute: normalize_string_value(unit.text) for unit in units}
+    unit_sentences = {
+        unit.iri_absolute: [
+            normalize_string_value(sentence)
+            for sentence in _SENTENCE_END.split(unit.text)
+            if sentence.strip()
+        ]
+        for unit in units
+    }
 
     def fits(node: URIRef, declared: set[URIRef] | None) -> bool | None:
         if not declared:
@@ -418,7 +467,7 @@ def validate_link_proposals(
     def is_value(node: URIRef) -> bool:
         # A value belongs to its carrier through a property made for it, so a
         # link may reach one only through a domain or range shown to fit it.
-        return is_value_node(graph, node, ontology_graph, closures)
+        return is_value_node(graph, node, value_classes)
 
     local_names: dict[str, list[str]] = {}
     for iri in candidates.properties.values():
@@ -497,6 +546,13 @@ def validate_link_proposals(
         if unit is None:
             rejected[FactsLinkRejection.EVIDENCE_MISSING] += 1
             continue
+        window = evidence_window(unit_sentences[unit], evidence)
+        if not (
+            mentions(window, _needles(graph, subject_node))
+            and mentions(window, _needles(graph, object_node))
+        ):
+            rejected[FactsLinkRejection.EVIDENCE_UNRELATED] += 1
+            continue
         key = (subject, predicate_iri, obj)
         if key in stated or (subject_node, predicate, object_node) in graph:
             rejected[FactsLinkRejection.DUPLICATE] += 1
@@ -518,6 +574,8 @@ def validate_link_proposals(
 __all__ = [
     "LinkCandidates",
     "is_object_property",
+    "evidence_window",
+    "mentions",
     "select_link_candidates",
     "statement_sources",
     "validate_link_proposals",

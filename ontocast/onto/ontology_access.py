@@ -103,8 +103,8 @@ def build_llm_prefix_map_from_graphs(
     """Collect namespace prefixes for LLM Turtle/JSON-LD ingest repair from graphs.
 
     The catalog's prefix table comes right after the standard prefixes, so a
-    prefix the prompt shows and an alias an author's prose writes (``life:``
-    where the term sheet says ``lifecycle:``, or the reverse) both parse to
+    prefix the prompt shows and an alias an author's prose writes (``ev:``
+    where the term sheet says ``eventlog:``, or the reverse) both parse to
     the namespace they stand for.
     """
     merged = prefix_lookup_for_ingest()

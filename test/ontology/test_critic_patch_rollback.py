@@ -22,6 +22,7 @@ from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.stategraph.atomic import ONTOLOGY_PHASE, _apply_critic_patch
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy
+from ontocast.tool.facts_validation.terms import CatalogRoles
 
 pytestmark = pytest.mark.unit
 
@@ -57,6 +58,7 @@ def _atomic() -> AtomicToolBox:
         SimpleNamespace(
             ontology_critic_passes=1,
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
             ontology_patch_policy=CriticPatchPolicy(),
             ontology_acceptance_policy=None,
             ontology_max_class_depth=6,

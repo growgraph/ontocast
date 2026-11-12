@@ -392,6 +392,7 @@ class FactsLinkRejection(StrEnum):
     VALUE_ENDPOINT = "value_endpoint"
     FUNCTIONAL_TAKEN = "functional_taken"
     EVIDENCE_MISSING = "evidence_missing"
+    EVIDENCE_UNRELATED = "evidence_unrelated"
     DUPLICATE = "duplicate"
 
 

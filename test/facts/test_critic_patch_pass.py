@@ -25,6 +25,7 @@ from ontocast.onto.unit_states import UnitFactsState
 from ontocast.stategraph.atomic import FACTS_PHASE, _apply_critic_patch
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy
+from ontocast.tool.facts_validation.terms import CatalogRoles
 
 pytestmark = pytest.mark.unit
 
@@ -61,6 +62,7 @@ def _atomic() -> AtomicToolBox:
             validation_policy=None,
             acceptance_policy=None,
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
         ),
     )
 

@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ontocast.onto.model import LoopAttempt
+from ontocast.onto.model import FactsIsolatedInstance, LoopAttempt
 from ontocast.onto.section_models import OutlineLabelReport
 from ontocast.onto.state import BudgetTracker
 from ontocast.util.graph_metrics import GraphShapeMetrics
@@ -667,6 +667,14 @@ class RunManifest(BaseModel):
     home_ontology: RunManifestHome | None = Field(
         default=None,
         description="The document's home ontology; None when the ontology lane did not run.",
+    )
+    facts_isolated: list[FactsIsolatedInstance] = Field(
+        default_factory=list,
+        description=(
+            "Instances the served facts link to nothing, after the link pass: "
+            "kept, not deleted, and listed here for review (capped at 200; "
+            "the count is the facts_isolated retrieval metric)."
+        ),
     )
     retrieval_metrics: dict[str, Any] = Field(
         default_factory=dict,

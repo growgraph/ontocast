@@ -286,3 +286,27 @@ def test_no_owl_ontology_does_not_promote_prefix() -> None:
     assert ontology.ontology_id is None
     assert ontology.is_null()
     assert list(ontology.graph.triples((None, RDF.type, OWL.Ontology))) == []
+
+
+def test_an_authored_description_of_any_length_loads(tmp_path) -> None:
+    """A catalog is never refused for its prose; a listing shows its start."""
+    long_text = "A schema for extraction. " * 200
+    path = tmp_path / "long.ttl"
+    path.write_text(
+        f"""@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix ex: <https://ex.org/long#> .
+<https://ex.org/long> a owl:Ontology ; dcterms:description "{long_text}" .
+ex:Thing a owl:Class .
+"""
+    )
+
+    ontology = Ontology.from_file(path)
+
+    assert len(ontology.description or "") > 2000
+    description_line = next(
+        line
+        for line in ontology.describe().splitlines()
+        if line.startswith("Description:")
+    )
+    assert len(description_line) < 700

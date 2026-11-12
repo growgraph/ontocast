@@ -32,6 +32,7 @@ from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import empty_snapshot
 
@@ -86,6 +87,7 @@ def _tools(critic_passes: int = 1) -> ToolBox:
                     facts_critic_min_triples=0,
                     facts_completion_passes=0,
                     catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
                 ),
             ),
         ),

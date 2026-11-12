@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 
+from ontocast.onto.prefixes import NOTE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
 
 #: Rendered in this order, each under its own heading. Individuals come last:
@@ -223,7 +224,7 @@ def term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
     # before the snapshot reaches any chapter format, and clips by content --
     # opening sentence plus any clause saying when the term applies. Bounding
     # it here instead would bound only this one format.
-    note = _first_text(graph, subject, SKOS.scopeNote, SKOS.definition, RDFS.comment)
+    note = _first_text(graph, subject, *NOTE_PREDICATES)
     if note:
         lines.append(f"      note: {note}")
     return lines

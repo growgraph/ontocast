@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `FACTS_VOCABULARY=strict|open`. Both modes use the catalog first, then the built-in well-known vocabularies (RDF, RDFS, OWL, XSD, SKOS, Dublin Core, PROV-O, SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF, schema.org and QUDT) and `FACTS_ADDITIONAL_STANDARD_NAMESPACES`, all named in the prompt. `strict` (the default) stops there: a thing these cannot type or relate is not minted, a term of any other vocabulary is `unknown_term`, and `non_catalog_vocabulary` is an error. `open` also admits any other established vocabulary, as warnings. `FACTS_QUANTITY_FALLBACK_VOCABULARY` takes an optional `carrier` role.
-- A term of a well-known vocabulary must exist in it: one it does not have is `unknown_term` with near-miss suggestions, an error at the gate under `strict`, and `foreign_namespace` when an ontology render mints it. vCard and QUDT are admitted by namespace.
+- A term of a well-known vocabulary must exist in it: one it does not have is `unknown_term` with near-miss suggestions, an error at the gate under `strict`, and `foreign_namespace` when an ontology render mints it. The QUDT schema (every term of its 2.1 and 3.x releases) and vCard term lists ship with the package; QUDT units and quantity kinds are admitted by namespace.
 - Ontology findings `hierarchy_too_deep` (blocking; bound `ONTOLOGY_MAX_CLASS_DEPTH`, default 6), `value_set_siblings`, `catalog_duplicate` (against the whole catalog, with the catalog IRI as candidate) and the advisory `specific_label_leaf`.
 - A minted ontology term left unlabelled gets an `rdfs:label` derived from its local name, without a model call (`ontology/labels_derived`).
 - Ontology plan (`ONTOLOGY_PLAN_ENABLED`, on by default): one call per document, before units render, lists the terms the document adds to its domain; proposals are checked against the whole catalog, and every unit renders against the plan. New node `Plan Ontology` and LLM phase `ontology_plan`.
@@ -22,11 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - End-of-document clean-up of the ontology delta: IRIs under `example.org`/`.com`/`.net` outside `CURRENT_DOMAIN` (`example_namespace_dropped`), one datatype range per property (`datatype_ranges_normalized`), `Thing` as range, domain or second parent (`vacuous_upper_terms_dropped`).
 - The same clean-up drops terms newly declared outside the home namespace (`minted_outside_home_dropped`) and subjects that are not terms or SKOS concepts: facts, individuals, undeclared subjects (`non_term_subjects_dropped`). It runs before consolidation.
 - `home_ontology` in the run manifest: the document's home ontology (`iri`, `ontology_id`, `namespace`, `extends`).
-- Link pass (`Link Facts` node, `FACTS_LINK_PASS`, off by default; `FACTS_LINK_PASS_MAX_ISOLATED`): after validation, one call per document with isolated instances proposes links their passages state; code checks the ends, the property's kind, domain, range and functional constraint and the quoted evidence, reaches a structured value only through a domain or range shown to fit it, and adds only valid links, with provenance. LLM phase `facts_link`; metrics `facts_link_*`; `facts_isolated` and `facts_components` describe the graph after it. Also on `/process_unit`.
+- Link pass (`Link Facts` node, `FACTS_LINK_PASS`, on by default; `FACTS_LINK_PASS_MAX_ISOLATED`): after validation, one call per document with isolated instances proposes links their passages state; code checks the ends, the property's kind, domain, range and functional constraint and the quoted evidence, which must name both ends in its sentence or the next one either side (`evidence_unrelated`), reaches a value only through a domain or range shown to fit it, and adds only valid links, with provenance. LLM phase `facts_link`; metrics `facts_link_*`; `facts_isolated` and `facts_components` describe the graph after it. Also on `/process_unit`. The instances still linked to nothing are kept and listed in the run manifest (`facts_isolated`).
 
 ### Changed
 
-- Rule 3a: an observation's result is the value node itself, not a separate result node holding the value.
+- Rule 3a: an observation's result is the value node itself, not a separate result node holding the value, and its feature of interest is the instance the text says was measured.
 
 - A proposed new home ontology is overridden by the catalog ontology whose terms the text names at least five times (`home_new_overridden`).
 - At `ONTOLOGY_CRITIC_PASSES=1` the ontology critic is called only for a unit with a mandatory deterministic finding; 2 or more review every unit. The default stays 0 (no ontology critic).
@@ -40,14 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Between two entities found in the text, different types no longer block a merge: only an `owl:disjointWith` (or `owl:AllDisjointClasses`) declared on their types or superclasses does. Types that share no class merge on an equal label, initials, a shared key or a coreference verdict, not on a plausible name match. A merge with an individual of the ontology still needs a shared type. Entities sharing a label are compared even when their embeddings place them apart.
 - `facts_merge_rejections_by_reason` (the aggregator's refusals by reason) and `facts_twin_labels` (labels several served instances share) in `retrieval_metrics`.
 - The facts prompt asks for every stated quantity in both vocabulary modes; where no property carries one, it is stated as an observation whose result is the value. `strict` narrows the terms, not the measurements.
-- The facts gate gives a node standing for a date that holds only a label the typed ISO 8601 value its label names (`facts_date_values_added`, repair kind `date_value_added`).
+- The facts gate gives a node standing for a date that holds only a label the typed ISO 8601 value its label names, through the context property whose domain fits the node and whose range is that datatype when exactly one does (`facts_date_values_added`, repair kind `date_value_added`).
 - The facts gate drops entities that state nothing (no link, no value) and values no statement carries (`facts_unlinked_dropped`, repair kind `unlinked_dropped`), then names each value under its carrier, `<carrier>.<property>`.
 
 ### Fixed
 
-- A predicate that writes a catalog property's exact local name under another catalog namespace is rewritten to that property when exactly one has the name (`property_alias` repair).
+- A predicate that exists nowhere (not a catalog term, not a real well-known term) but spells the exact local name of one catalog property in another namespace is rewritten to that property (`property_alias` repair); a real term of a well-known vocabulary is never rewritten.
 
-- A value the model writes as an entity of its own (typed with a quantity-value class) and links to nothing is dropped after the link pass, like a blank-node value with no carrier.
+- A value the model writes as an entity of its own and links to nothing is dropped after the link pass, like a blank-node value with no carrier. Value classes are `qudt:QuantityValue`, schema.org's structured values, the configured `value_class`, and every catalog class under one of them.
+
+- An ontology whose description is longer than 2000 characters loads; a catalog listing shows its start.
 
 - One prefix per namespace in every prompt, parse and export: a well-known namespace keeps its standard prefix, an ontology's own namespace the prefix its author bound, else the `ontology_id`. The author's prefix is kept through adoption and the triple store; other prefixes, the id among them, are aliases that answers may use and that notes and shape messages are shown without.
 - A well-known namespace an ontology's terms use comes back from the triple store under its standard prefix (`qudt:`, `quantitykind:`), not a synthetic `<id>_<name>` one.

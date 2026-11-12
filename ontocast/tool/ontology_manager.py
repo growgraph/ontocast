@@ -22,7 +22,7 @@ from ..onto.ontology_header import OntologyHeader
 from ..onto.prefixes import PrefixTable, build_prefix_table
 from ..onto.rdfgraph import RDFGraph
 from ..onto.util import normalize_ontology_iri
-from .facts_validation.terms import collect_catalog_terms
+from .facts_validation.terms import CatalogRoles, collect_catalog_terms
 from .onto import Tool
 from .ontology_validation.shape import (
     CatalogSurfaceIndex,
@@ -94,7 +94,7 @@ class OntologyManager(Tool):
         self._alias_to_iri: dict[str, str] = {}
         # The catalog's prefix table, per set of extra graphs (the shapes);
         # dropped whenever the catalog changes.
-        self._prefix_tables: dict[tuple[int, ...], PrefixTable] = {}
+        self._prefix_tables: dict[tuple[tuple[str, str], ...], PrefixTable] = {}
         # Content-addressed caches. An entry can never go stale on read: a
         # concurrent writer produces a *new* key, which is a miss, never an
         # incorrect hit. Both are bounded -- they hold whole rdflib graphs, and
@@ -119,6 +119,7 @@ class OntologyManager(Tool):
         self._surface_index_memo: tuple[frozenset[str], CatalogSurfaceIndex] | None = (
             None
         )
+        self._roles_memo: tuple[frozenset[str], CatalogRoles] | None = None
 
     @staticmethod
     def _primary_ontology_id(ontology: Ontology) -> str:
@@ -267,7 +268,15 @@ class OntologyManager(Tool):
             others: Further graphs whose bindings name namespaces, such as the
                 shapes graph, whose prose the prompt shows.
         """
-        key = tuple(id(graph) for graph in others)
+        # The table reads only the other graphs' bindings, so they are the key.
+        key = tuple(
+            sorted(
+                (prefix, str(namespace))
+                for graph in others
+                for prefix, namespace in graph.namespaces()
+                if prefix
+            )
+        )
         table = self._prefix_tables.get(key)
         if table is None:
             table = build_prefix_table(self.ontologies, others)
@@ -587,6 +596,26 @@ class OntologyManager(Tool):
         for graph_uri, ontology in self._graph_cache.items():
             held.setdefault(graph_uri, ontology)
         return held
+
+    def catalog_roles(self) -> CatalogRoles:
+        """What every held ontology says each term is, and the class hierarchy.
+
+        Built over the same set as :meth:`catalog_terms` and memoised the same
+        way. The repairs read it to tell a property from a class, and the facts
+        gate to tell a value class, over the whole catalog rather than a unit's
+        snapshot.
+
+        Returns:
+            CatalogRoles: Shared across units -- treat as read-only.
+        """
+        held = self._held_ontologies()
+        key = frozenset(held)
+        memo = self._roles_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
+        roles = CatalogRoles.of(o.graph for o in held.values())
+        self._roles_memo = (key, roles)
+        return roles
 
     def catalog_surface_index(self) -> CatalogSurfaceIndex:
         """Labels, notations and local names of every held term, case-insensitive.

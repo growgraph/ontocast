@@ -110,6 +110,7 @@ def _normalize_and_repair_graph(
         min_ratio=tools.property_alias_min_ratio,
         exempt_terms=vocabulary_terms,
         full_catalog_terms=catalog_terms,
+        catalog_roles=tools.catalog_roles(),
     )
     resolved, code_records = resolve_code_literals(
         graph, ontology_context_graph, tools.code_predicates

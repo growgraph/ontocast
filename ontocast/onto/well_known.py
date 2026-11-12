@@ -3,14 +3,19 @@
 Every facts vocabulary mode admits them: the W3C and DCMI core, FOAF,
 schema.org and QUDT. A term of one of them must exist in it. Term lists come
 from rdflib's bundled namespace definitions; RDF 1.2 terms rdflib does not
-list yet are added here. vCard and the QUDT vocabularies have no bundled list
-and are admitted by namespace.
+list yet are added here. The QUDT schema and vCard lists ship as data in
+``vocabularies/``. QUDT units and quantity kinds are individuals in their
+thousands, so those two namespaces are admitted without a list.
+
+Some vocabularies also name the classes of structured values (a quantity, an
+amount): a node of such a class belongs to the statement that carries it.
 """
 
 from __future__ import annotations
 
 import re
 from functools import cache
+from importlib import resources
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -47,6 +52,7 @@ class WellKnownVocabulary(BaseModel):
         namespaces: Its namespace IRIs; the first is canonical.
         terms: Local names of its terms, or ``None`` when it is admitted by
             namespace (no term list is bundled).
+        value_classes: Local names of its classes of structured values.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -55,6 +61,7 @@ class WellKnownVocabulary(BaseModel):
     title: str
     namespaces: tuple[str, ...]
     terms: frozenset[str] | None
+    value_classes: frozenset[str] = frozenset()
 
     def has_term(self, local_name: str) -> bool:
         """Whether ``local_name`` is a term of this vocabulary."""
@@ -77,12 +84,41 @@ def _vocabulary(
     *,
     also: tuple[str, ...] = (),
     extra: tuple[str, ...] = (),
+    value_classes: tuple[str, ...] = (),
 ) -> WellKnownVocabulary:
     return WellKnownVocabulary(
         prefix=prefix,
         title=title,
         namespaces=(str(namespace._NS), *also),
         terms=_defined_terms(namespace, *extra),
+        value_classes=frozenset(value_classes),
+    )
+
+
+def _shipped_terms(name: str) -> frozenset[str]:
+    """Local names listed in ``vocabularies/<name>``, one per line, ``#`` comments."""
+    text = resources.files(__package__).joinpath("vocabularies", name).read_text()
+    return frozenset(
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+
+
+def _listed(
+    prefix: str,
+    title: str,
+    namespace: str,
+    terms: str,
+    *,
+    value_classes: tuple[str, ...] = (),
+) -> WellKnownVocabulary:
+    return WellKnownVocabulary(
+        prefix=prefix,
+        title=title,
+        namespaces=(namespace,),
+        terms=_shipped_terms(terms),
+        value_classes=frozenset(value_classes),
     )
 
 
@@ -107,10 +143,27 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
     _vocabulary("csvw", "CSVW", CSVW),
     _vocabulary("dcat", "DCAT", DCAT),
     _vocabulary("org", "the Organization Ontology", ORG),
-    _by_namespace("vcard", "vCard", "http://www.w3.org/2006/vcard/ns#"),
+    _listed("vcard", "vCard", "http://www.w3.org/2006/vcard/ns#", "vcard.txt"),
     _vocabulary("foaf", "FOAF", FOAF),
-    _vocabulary("schema", "schema.org", SDO, also=("http://schema.org/",)),
-    _by_namespace("qudt", "QUDT", "http://qudt.org/schema/qudt/"),
+    _vocabulary(
+        "schema",
+        "schema.org",
+        SDO,
+        also=("http://schema.org/",),
+        value_classes=(
+            "StructuredValue",
+            "QuantitativeValue",
+            "PropertyValue",
+            "MonetaryAmount",
+        ),
+    ),
+    _listed(
+        "qudt",
+        "QUDT",
+        "http://qudt.org/schema/qudt/",
+        "qudt_schema.txt",
+        value_classes=("QuantityValue",),
+    ),
     _by_namespace("unit", "QUDT units", "http://qudt.org/vocab/unit/"),
     _by_namespace(
         "quantitykind", "QUDT quantity kinds", "http://qudt.org/vocab/quantitykind/"
@@ -221,6 +274,21 @@ def well_known_terms(namespace: str) -> set[str]:
     return {namespace + name for name in vocabulary.terms}
 
 
+@cache
+def well_known_value_classes() -> frozenset[str]:
+    """The classes of structured values the well-known vocabularies name, as IRIs.
+
+    A node of one of them (or of a subclass) is a value: it belongs to the
+    statement that carries it and is never a fact on its own.
+    """
+    return frozenset(
+        namespace + name
+        for vocabulary in WELL_KNOWN_VOCABULARIES
+        for namespace in vocabulary.namespaces
+        for name in vocabulary.value_classes
+    )
+
+
 def well_known_prompt_list() -> str:
     """The vocabularies as the facts prompt names them: ``prefix:`` and IRI."""
     return ", ".join(
@@ -238,5 +306,6 @@ __all__ = [
     "well_known_namespaces",
     "well_known_prompt_list",
     "well_known_terms",
+    "well_known_value_classes",
     "well_known_vocabulary",
 ]

@@ -501,6 +501,7 @@ def dump_run_manifest(
             len(serialized_facts) if serialized_facts is not None else 0
         ),
         retrieval_metrics=dict(state.retrieval_metrics),
+        facts_isolated=list(state.facts_isolated_report),
         unit_context_sources=state.unit_context_sources,
         ontology_versions=[
             record.model_dump(mode="json") for record in state.ontology_versions_written

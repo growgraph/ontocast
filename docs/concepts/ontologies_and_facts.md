@@ -200,8 +200,16 @@ The model is instructed to:
 The served graph holds statements only. After merging, an entity linked to
 nothing and holding no value is dropped, and so is a value no statement
 carries (`facts_unlinked_dropped`). A value written as an entity of its own,
-typed with a quantity-value class, and linked to nothing is dropped too, after
-the link pass has had its chance to attach it. Values are never merged with each other;
+typed with a value class, and linked to nothing is dropped too, after the link
+pass has had its chance to attach it. Any other instance still linked to
+nothing is kept and listed in the run manifest (`facts_isolated`).
+
+A **value class** is one whose instances are values, never facts on their own:
+`qudt:QuantityValue`, schema.org's `StructuredValue`, `QuantitativeValue`,
+`PropertyValue` and `MonetaryAmount`, the `value_class` you set in
+`FACTS_QUANTITY_FALLBACK_VOCABULARY`, and every class of your catalog that
+subclasses one of them. To have your own value classes treated as values,
+declare them as subclasses of one of these, or name one as `value_class`. Values are never merged with each other;
 each is named under its carrier, `<carrier>.<property>` (then a number when a
 carrier holds several values on one property), so it has a stable IRI.
 
@@ -228,20 +236,22 @@ namespace IRIs:
 | `csvw` | CSVW | yes |
 | `dcat` | DCAT | yes |
 | `org` | the Organization Ontology | yes |
-| `vcard` | vCard | no |
+| `vcard` | vCard | yes |
 | `foaf` | FOAF | yes |
 | `schema` | schema.org (`https://` and `http://`) | yes |
-| `qudt`, `unit`, `quantitykind` | QUDT | no |
+| `qudt` | QUDT schema | yes |
+| `unit`, `quantitykind` | QUDT units and quantity kinds | no |
 
 The model writes well-known terms from memory, so a term must exist in its
 vocabulary: one it does not have, such as `schema:vulnerableTo`, is an
 `unknown_term` finding with the vocabulary's near-misses as suggestions. A
 vocabulary marked "no" is admitted by namespace, as are your own namespaces.
+The QUDT schema list covers every term its 2.1 and 3.x releases publish.
 
 **`strict`** (the default) stops there. A thing that neither your catalog nor
 these vocabularies can type or relate is not extracted. A stated quantity always
 is: where no property carries it, it is written as an observation whose result
-is the value. A class or property from any other
+is the value and whose feature of interest is the thing measured. A class or property from any other
 vocabulary is an `unknown_term` finding the renderer must rewrite or remove,
 and at the gate `non_catalog_vocabulary` is an error for it. Both checks count
 every term of your catalog, not only the unit's retrieved context. The model
