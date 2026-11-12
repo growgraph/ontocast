@@ -53,9 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A unit IRI the ontology context does not hold is `unknown_term`, so a patch that links one is rolled back.
 - The gap-pass prompt lists every catalog type of a subject, sorted, and picks labels deterministically, so the same graph gives the same prompt and a replay hits the cache.
 - An untyped instance takes the class of the property pointing at it when that property lists exactly one class through `schema:rangeIncludes` or `schema:domainIncludes`, so a link to it is no longer dropped with it.
-- A triple written backwards (both ends contradict the predicate's domain and range, and fit them swapped) is turned around, recorded as `triple_reversed`.
+- A triple written backwards (both ends contradict the predicate's domain and range, and fit them swapped) is turned around, recorded as `triple_reversed`. This repair and type entailment read their axioms from the whole catalog, not only the unit's retrieved context.
 - The gap pass asks for each recovered measurement as a statement about a subject, keeps a unit its term sheet does not list as text, and shows the value terms and subject properties; its prompt never shows a prefix it does not declare.
 - A decade ("the 2040s") is no longer read as a duration in seconds.
+- A value whose own label writes its number with the unit ("0.25°") counts as present, so the gap pass no longer adds it a second time.
 - An IRI that cannot be written in `<...>` (a space, a quote, a brace) no longer fails a unit or reaches the output: a rendered triple naming one is dropped (repair kind `malformed_iri_dropped`), and a critic or gap-pass fix naming one is refused as unparseable.
 - The retrieved ontology context is the same in every run for the same text and catalog: each retrieval lane ranks its hits by score, then IRI and atom id, and over-fetches until a run of equal scores at the cut is seen whole.
 - Text on a property whose range is a date, time or duration datatype that is not a value of it is quarantined for the facts critic instead of kept as a plain string; what is still quarantined when the unit leaves its loop is kept on its subject as `rdfs:comment` (repair kind `quarantine_as_comment`).

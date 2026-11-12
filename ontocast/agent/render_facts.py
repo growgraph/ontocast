@@ -120,12 +120,9 @@ def _normalize_and_repair_graph(
     resolved, code_records = resolve_code_literals(
         graph, ontology_context_graph, tools.code_predicates
     )
-    reversed_count, reversed_records = repair_reversed_triples(
-        graph, ontology_context_graph
-    )
-    entailed, entailed_records = materialize_entailed_types(
-        graph, ontology_context_graph
-    )
+    axioms = tools.catalog_roles().with_axioms(ontology_context_graph)
+    reversed_count, reversed_records = repair_reversed_triples(graph, axioms)
+    entailed, entailed_records = materialize_entailed_types(graph, axioms)
     promote_degenerate_bounds_from_vocabulary(
         graph, ontology_context_graph, tools.quantity_fallback_vocabulary
     )

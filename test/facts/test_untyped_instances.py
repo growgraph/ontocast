@@ -512,3 +512,30 @@ def test_listed_classes_that_disagree_type_nothing() -> None:
 def test_a_listed_class_never_types_a_blank_node() -> None:
     graph = _facts("cd:r a ex:Reading ; ex:observes [ rdfs:label 'colour' ] .")
     assert materialize_entailed_types(graph, _listed_ontology())[0] == 0
+
+
+def test_a_listed_class_the_snapshot_lacks_comes_from_the_whole_catalog() -> None:
+    from ontocast.tool.facts_validation.terms import CatalogRoles
+
+    graph = _facts("cd:r a ex:Reading ; ex:observes cd:t .")
+    context = CatalogRoles.of([_listed_ontology()]).with_axioms(_ontology())
+
+    assert materialize_entailed_types(graph, context)[0] == 1
+    assert (_cd("t"), RDF.type, URIRef(f"{EX}Trait")) in graph
+
+
+def test_the_whole_catalog_never_types_a_catalog_individual() -> None:
+    """A snapshot may drop an individual's own type; the catalog still has it."""
+    from ontocast.tool.facts_validation.terms import CatalogRoles
+
+    catalog = _ontology()
+    catalog.parse(
+        data=PREFIXES + "ex:inUnit a owl:ObjectProperty ; rdfs:range ex:Unit .",
+        format="turtle",
+    )
+    graph = _facts("cd:s ex:inUnit ex:unit_m .")
+    context = CatalogRoles.of([catalog]).with_axioms(RDFGraph())
+
+    materialize_entailed_types(graph, context)
+
+    assert (URIRef(f"{EX}unit_m"), RDF.type, None) not in graph

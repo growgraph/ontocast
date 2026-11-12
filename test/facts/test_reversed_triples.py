@@ -107,3 +107,23 @@ def test_anything_short_of_two_sided_evidence_is_left_alone(body: str) -> None:
 def test_no_context_is_a_no_op() -> None:
     graph = _facts(_TYPED + "cd:org ex:ledBy cd:task .")
     assert repair_reversed_triples(graph, None) == (0, [])
+
+
+def test_axioms_the_snapshot_lacks_are_read_from_the_whole_catalog() -> None:
+    """Retrieval may keep a property's domain and drop its range or a class's place."""
+    from ontocast.tool.facts_validation.terms import CatalogRoles
+
+    snapshot = RDFGraph()
+    snapshot.parse(
+        data=_PREFIXES
+        + "ex:Task a owl:Class . ex:ledBy a owl:ObjectProperty ; rdfs:domain ex:Task .",
+        format="turtle",
+    )
+    graph = _facts(_TYPED + "cd:org ex:ledBy cd:task .")
+    assert repair_reversed_triples(graph, snapshot) == (0, [])
+
+    context = CatalogRoles.of([_ontology()]).with_axioms(snapshot)
+
+    assert repair_reversed_triples(graph, context)[0] == 1
+    assert (TASK, LED_BY, ORG) in graph
+    assert len(snapshot) == 3, "the snapshot itself is left as it was"

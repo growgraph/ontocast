@@ -261,8 +261,10 @@ def measurement_pairs_in_graph(
     of a configured unit property, or, where the context has no unit
     individual to fit, the unit's token kept in a literal on the same node.
     No value property is assumed, so a catalog's own value vocabulary counts
-    as the fallback vocabulary does. A number with no unit on its node, or a
-    number written only in text, does not cover a unit-adjacent mention. Unit IRIs map to
+    as the fallback vocabulary does, and so does a number the node holds that
+    its own text writes with a unit ("0.25°"). A number with no unit on its
+    node, or a number written only in text, does not cover a unit-adjacent
+    mention. Unit IRIs map to
     surfaces through :func:`unit_surface_index`; each surface is expanded
     with :func:`~ontocast.util.measurement_lexicon._lookup_keys` so the same
     case and plural rules that recognise a mention also recognise its
@@ -287,6 +289,7 @@ def measurement_pairs_in_graph(
     for subject in set(graph.subjects()):
         numbers: set[str] = set()
         unit_keys: set[str] = set()
+        texts: list[str] = []
         for _, predicate, obj in graph.triples((subject, None, None)):
             pred = str(predicate)
             if pred in unit_props and isinstance(obj, URIRef):
@@ -300,9 +303,17 @@ def measurement_pairs_in_graph(
                 numbers.add(canonical)
             else:
                 unit_keys.update(_unit_text_keys(str(obj)))
+                texts.append(str(obj))
         for number in numbers:
             for key in unit_keys:
                 pairs.add((number, key))
+        # A label such as "0.25°" states the unit glued to the number the node holds.
+        for text in texts:
+            for mention in unit_adjacent_numbers(text):
+                number = canonical_number(mention.value)
+                if number in numbers:
+                    token = mention.unit.strip().rstrip(".,;:")
+                    pairs.update((number, key) for key in _lookup_keys(token))
     return pairs
 
 

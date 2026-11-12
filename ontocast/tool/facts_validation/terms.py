@@ -388,6 +388,20 @@ def superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIRe
     return seen
 
 
+#: What a term's domain, range and listed classes say, kept catalog-wide so a
+#: repair does not depend on which axioms retrieval kept for a unit.
+_AXIOM_PREDICATES = (
+    RDFS.domain,
+    RDFS.range,
+    *(
+        URIRef(ns + "domainIncludes")
+        for ns in ("http://schema.org/", "https://schema.org/")
+    ),
+    *(
+        URIRef(ns + "rangeIncludes")
+        for ns in ("http://schema.org/", "https://schema.org/")
+    ),
+)
 #: Statements that place a class in the hierarchy; the catalog-wide hierarchy
 #: graph keeps only these, so a closure over it equals one over the catalog.
 _HIERARCHY_PREDICATES = (
@@ -429,6 +443,8 @@ class CatalogRoles:
         properties: Terms the catalog states are properties.
         classes: Terms the catalog states are classes.
         hierarchy: The catalog's subclass statements, for closures.
+        axioms: The catalog's domains, ranges, listed classes and the types
+            of its terms, with the hierarchy.
         datatype_ranges: Each property's declared ``rdfs:range`` IRIs in the
             XSD namespace, across every graph; more than one means the catalog
             contradicts itself.
@@ -440,10 +456,12 @@ class CatalogRoles:
         classes: frozenset[str] = frozenset(),
         hierarchy: RDFGraph | None = None,
         datatype_ranges: dict[str, frozenset[str]] | None = None,
+        axioms: RDFGraph | None = None,
     ) -> None:
         self.properties = properties
         self.classes = classes
         self.hierarchy = hierarchy if hierarchy is not None else RDFGraph()
+        self.axioms = axioms if axioms is not None else RDFGraph()
         self.datatype_ranges = datatype_ranges or {}
         self._declared_ranges: dict[str, frozenset[str]] | None = None
         self._subject_links: tuple[frozenset[str], frozenset[str]] | None = None
@@ -455,8 +473,18 @@ class CatalogRoles:
         properties: set[str] = set()
         classes: set[str] = set()
         hierarchy = RDFGraph()
+        axioms = RDFGraph()
         ranges: dict[str, set[str]] = {}
         for graph in graphs:
+            for predicate in _AXIOM_PREDICATES:
+                for triple in graph.triples((None, predicate, None)):
+                    axioms.add(triple)
+            # Every catalog term's own type: what is a class, a datatype, a
+            # symmetric property, and which IRIs are the catalog's individuals,
+            # which entailment must never type.
+            for triple in graph.triples((None, RDF.type, None)):
+                if isinstance(triple[0], URIRef):
+                    axioms.add(triple)
             known_properties, known_classes = _catalog_term_roles(graph)
             properties |= known_properties
             classes |= known_classes
@@ -477,7 +505,19 @@ class CatalogRoles:
             frozenset(classes - ambiguous),
             hierarchy,
             {iri: frozenset(found) for iri, found in ranges.items()},
+            axioms + hierarchy,
         )
+
+    def with_axioms(self, graph: RDFGraph) -> RDFGraph:
+        """``graph`` together with the catalog's axioms, as a new graph.
+
+        A unit's snapshot may keep a property's domain and drop its range, or a
+        class without its place in the hierarchy; domain and range repairs read
+        this union so the answer does not depend on what retrieval kept.
+        """
+        if not len(self.axioms):
+            return graph
+        return graph + self.axioms
 
     def declared_ranges(self) -> dict[str, frozenset[str]]:
         """Each property's declared XSD ranges: the catalog's and the well-known.

@@ -396,3 +396,15 @@ def test_a_node_holding_only_bounds_covers_them() -> None:
     body = '[ qq:lowerBound 0.8 ; qq:upperBound 1.7 ; rdfs:label "0.8 to 1.7 °C" ]'
     assert ("0.8", "°C") not in _covering(body)
     assert ("1.7", "°C") not in _covering(body)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'rdfs:label "about 1.3°C"',
+        'rdfs:label "at least 1.3 °C" ; rdfs:comment "degrees"',
+    ],
+)
+def test_a_value_whose_own_text_states_it_with_its_unit_covers_it(text: str) -> None:
+    """The unit spelled in other words elsewhere on the node does not matter."""
+    assert ("1.3", "°C") not in _covering(f"[ qudt:numericValue 1.3 ; {text} ]")

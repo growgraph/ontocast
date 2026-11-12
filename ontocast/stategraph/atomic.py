@@ -69,6 +69,7 @@ from ontocast.tool.facts_validation import (
     materialize_entailed_types,
     normalize_literals_against_schema,
     repair_compact_iri_literals,
+    repair_reversed_triples,
     temporal_range_mismatches,
     unit_numeric_inventory,
     unresolved_quarantine,
@@ -168,12 +169,14 @@ def _repair_facts_patch(
     )
     normalize_literals_against_schema(graph, context.graph, roles)
     _, records = repair_compact_iri_literals(graph, context.graph, known)
-    _, entailed = materialize_entailed_types(graph, context.graph)
+    axioms = roles.with_axioms(context.graph)
+    _, turned = repair_reversed_triples(graph, axioms)
+    _, entailed = materialize_entailed_types(graph, axioms)
     for triple, record in temporal_range_mismatches(graph, context.graph, roles):
         graph.remove(triple)
         if record not in unit_state.quarantined_literal_triples:
             unit_state.quarantined_literal_triples.append(record)
-    return [*records, *entailed]
+    return [*records, *turned, *entailed]
 
 
 def _derive_ontology_labels(
