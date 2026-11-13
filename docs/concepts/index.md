@@ -80,8 +80,8 @@ when [`RENDER_MODE`](../reference/configuration/pipeline.md#render_mode) is
 2. **Plan.** One LLM call reads the whole document, within
    [`ONTOLOGY_PLAN_MAX_CHARS`](../reference/configuration/ontology-validation.md#ontology_plan_max_chars),
    and the catalog's terms, and lists the classes and properties the document
-   adds to its domain, each with a parent and a definition, or the existing
-   term to reuse instead. Every proposal is checked against the whole catalog
+   adds to its domain, each with a parent and a definition (a property also
+   with its domain and range), or the existing term to reuse instead. Every proposal is checked against the whole catalog
    without a model: one that names an existing term becomes a reuse, and a
    parent must exist. Turned off by
    [`ONTOLOGY_PLAN_ENABLED`](../reference/configuration/ontology-validation.md#ontology_plan_enabled).
@@ -102,15 +102,17 @@ when [`RENDER_MODE`](../reference/configuration/pipeline.md#render_mode) is
 7. **Consolidate.** Every term the document minted is decided before it is
    written. Checks without a model pick the terms that need a decision:
    candidates, and terms that look like one document's case, a value
-   modelled as a class, an existing catalog term or a variant of another
-   term's name. When there are none, no call is made. Otherwise one LLM call
+   modelled as a class, an existing catalog term, a variant of another
+   term's name, or a property whose domain or range is missing or too
+   general. When there are none, no call is made. Otherwise one LLM call
    per batch of
    [`ONTOLOGY_CONSOLIDATION_MAX_TERMS`](../reference/configuration/ontology-validation.md#ontology_consolidation_max_terms)
    such terms sees each with its definition, its parents, the nearest catalog
    terms, the checks that flagged it and where the document uses it, and
    answers `keep`, `merge_into` another term, `generalise_to` a broader
    parent, `demote_to_property_value` (a class that is really a value becomes
-   a SKOS concept) or `drop`. OntoCast turns the answers into the change
+   a SKOS concept), `narrow` (a property gets a more specific domain or
+   range) or `drop`. OntoCast turns the answers into the change
    itself, without a model, and never edits a catalog term's own axioms. A
    planned term with no answer is kept; a candidate with no answer is dropped.
    With [`ONTOLOGY_CONSOLIDATION`](../reference/configuration/ontology-validation.md#ontology_consolidation)
@@ -202,7 +204,7 @@ Inside each block, every unit runs the same short loop:
   would see the same graph and findings.
 - **How many passes** is set per block:
   [`FACTS_CRITIC_PASSES`](../reference/configuration/facts-validation.md#facts_critic_passes)
-  (on by default) and
+  (off by default) and
   [`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes)
   (off by default; at one pass, spent only on a part with a mandatory finding).
 - **Gap passes** (facts only, one by default) run only on a part with a gap:

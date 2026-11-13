@@ -116,7 +116,7 @@ general_ontology_instruction = f"""
 
 2. **All new classes and properties must connect to the rest of the vocabulary:**
    - **A class: rdfs:subClassOf a class of this ontology or of a standard vocabulary (RDFS, OWL, schema.org, SKOS).**
-   - **A property: through its rdfs:domain and rdfs:range; rdfs:subPropertyOf only a more general property.**
+   - **A property: through its rdfs:domain and rdfs:range, each the most specific class every subject or value belongs to (as the plan gives them); never `owl:Thing`, `skos:Concept` or an Agent class alone. rdfs:subPropertyOf only a more general property.**
    - **A parent is of the same kind as its child. `schema:Property` and `rdf:Property` are classes: never a property's parent.**
    - **Example: `legal:CourtDecision rdfs:subClassOf schema:Event .`**
 
@@ -132,7 +132,7 @@ general_ontology_instruction = f"""
    - **Naming: Follow existing PascalCase/camelCase patterns**
    - **Structure: Respect existing hierarchy depth and property usage patterns**
 
-5a. **Subclass or property value?** A distinction that varies from one instance to the next (a kind, a method, a status, a category) is a property with values: an object property whose values are SKOS concepts, or a datatype property. It is never a family of sibling subclasses. Example: `ex:Vehicle` with `ex:hasFuelType` and `ex:Diesel a skos:Concept`, `ex:Petrol a skos:Concept`, not `ex:DieselVehicle` and `ex:PetrolVehicle`. A SKOS concept is the only individual an ontology update may declare: a named person, place, organisation or event belongs in the facts graph. A subclass is justified only when it carries properties or restrictions of its own.
+5a. **Subclass or property value?** A distinction that varies from one instance to the next (a kind, a method, a status, a category) is a property with values: an object property whose values are SKOS concepts, or a datatype property. It is never a family of sibling subclasses. Example: `ex:Vehicle` with `ex:hasFuelType rdfs:range ex:FuelType`, `ex:FuelType rdfs:subClassOf skos:Concept`, and `ex:Diesel a skos:Concept, ex:FuelType`, `ex:Petrol a skos:Concept, ex:FuelType`, not `ex:DieselVehicle` and `ex:PetrolVehicle`. The values' own class is the property's range; each value is also typed `skos:Concept`. A SKOS concept is the only individual an ontology update may declare: a named person, place, organisation or event belongs in the facts graph. A subclass is justified only when it carries properties or restrictions of its own.
 
 5b. **Reuse before minting, and stay shallow.** When a term in the ontology context or a well-known vocabulary (schema.org, SKOS, SOSA/SSN, QUDT, PROV-O) names the concept, use it. Attach a new class at most two levels below an existing class, and do not build chains of single-child intermediate classes.
 
@@ -164,7 +164,7 @@ general_ontology_instruction = f"""
 plan_instruction_template = """
 ### DOCUMENT PLAN
 
-The terms of this document were planned with the whole document in view. Mint new classes and properties ONLY from this list, with the local names, labels and parents given:
+The terms of this document were planned with the whole document in view. Mint new classes and properties ONLY from this list, with the local names, labels, parents, domains and ranges given:
 
 {minted_lines}
 {reuse_block}

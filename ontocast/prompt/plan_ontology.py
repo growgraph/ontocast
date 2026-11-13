@@ -31,8 +31,9 @@ You see the whole document below. Several renderers will then each read one part
 4. **One property per relation, not per quantity.** A measured quantity is the value of a general relation (a result, a value, a measured property) unless the catalog already models that quantity as its own property.
 5. **Shallow.** Give every class a parent from the catalog, a well-known vocabulary or another planned term, at most two levels below an existing class. No chains of single-child classes. A property's parent is a more general property, or none; a class such as `schema:Property` is never one.
 6. **Few and general.** A short plan of general terms beats a long plan of specific ones. Do not exceed {max_terms} terms.
+7. **Every property says what it relates.** Give each property a `domain` and a `range`: the most specific class that every subject, and every value, belongs to (a catalog term, a well-known term or a planned class). A datatype property's range is an XSD datatype. Never `owl:Thing`, `skos:Concept` or an Agent class alone: they say nothing about the property. When the values come from a fixed list (a kind, a format, a status), plan a class for those values with `skos:Concept` as its parent and use it as the range.
 
-For each term give: `kind` (class, object_property or datatype_property), `label`, `local_name` (PascalCase for a class, camelCase for a property), `parent`, a one-sentence domain-wide `definition`, `reuse` when an existing term already names it, and a `justification` that says why other documents of the domain need it.
+For each term give: `kind` (class, object_property or datatype_property), `label`, `local_name` (PascalCase for a class, camelCase for a property), `parent`, for a property its `domain` and `range`, a one-sentence domain-wide `definition`, `reuse` when an existing term already names it, and a `justification` that says why other documents of the domain need it.
 """
 
 catalog_intro = """

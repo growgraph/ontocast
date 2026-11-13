@@ -121,7 +121,7 @@ When SHACL runs and reports violations:
 - `metadata.facts_validation_findings` lists each one, and `metadata.facts_gate_repairs` what was repaired.
 - [`FACTS_SHACL_AUTOFIX`](../reference/configuration/facts-validation.md#facts_shacl_autofix) repairs what it can without an LLM call (`prune` by default). It never invents a value, so a node with real data but a missing required property stays a finding.
 - The model is shown the shapes by default, so it can extract conforming facts in the first place. Check that [`FACTS_SHAPES_PROMPT_CONTRACT`](../reference/configuration/facts-validation.md#facts_shapes_prompt_contract) is not `off`.
-- [`FACTS_CRITIC_PASSES`](../reference/configuration/facts-validation.md#facts_critic_passes) sets how many review calls each part gets; the critic runs once by default. [Validation layers](../internals/validation_layers.md) explains what it sees and when it stops.
+- [`FACTS_CRITIC_PASSES`](../reference/configuration/facts-validation.md#facts_critic_passes) sets how many review calls each part gets; the critic is off by default, so set it to 1 to have each part reviewed. [Validation layers](../internals/validation_layers.md) explains what it sees and when it stops.
 
 [Validation and SHACL](validation.md) covers shapes and the gate in full.
 

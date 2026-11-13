@@ -70,8 +70,9 @@ the unit leaves the loop marked failed at the critique stage.
 
 ### Budgets
 
-- **`FACTS_CRITIC_PASSES`** defaults to 1, so a facts unit costs two calls: one
-  render, one review. `0` leaves the findings to layers 1 and 3. In the default
+- **`FACTS_CRITIC_PASSES`** defaults to 0: a facts unit costs one render call,
+  and its findings go to the LLM-free repairs, the gap pass and layer 3. `1`
+  adds one review call per unit. In the default
   `selected_single_ontology` context mode each unit also makes one ontology
   selection call, counted as `llm/ontology_selection` in `budget.counters`.
 - **`FACTS_CRITIC_MIN_TRIPLES`** skips the critic for a render with fewer
@@ -492,11 +493,16 @@ whole catalog, without a model:
 - a parent must be a catalog term, a well-known term or another accepted
   proposal, of the term's own role; any other parent is dropped and the term
   kept;
+- a property's domain and range must be a catalog or well-known class or a
+  class the plan mints (an XSD datatype for a datatype property's range); an
+  unknown one, or a generic upper class (`owl:Thing`, `skos:Concept`, an
+  Agent class), is dropped and the term kept. The render sees the planned
+  domain and range beside the property;
 - a plan with no term counts as no plan, so units render without one.
 
 Counters: `plan_proposed`, `plan_minted`, `plan_reused`,
-`plan_resolved_to_catalog`, `plan_rejected`, and `plan_failed` / `plan_empty`
-when no plan reached the units.
+`plan_resolved_to_catalog`, `plan_rejected`, `plan_generic_sides_dropped`,
+and `plan_failed` / `plan_empty` when no plan reached the units.
 
 A reused term is never minted, so the facts lane would not see it. Before the
 facts units render, every reused term the facts ontology context does not
@@ -516,8 +522,12 @@ The model is asked only about terms that need a decision: candidates, and
 minted terms that carry a term-level finding (`specific_label_leaf`,
 `value_set_siblings`, `catalog_duplicate`, `label_collision`,
 `hierarchy_too_deep`), name an existing catalog term, sit in a value-set
-family, or vary another term's name by one modifier (`hasOpticalCavity` and
-`hasOpticalMicrocavity`). Each of those gets a full entry; the document's other
+family, vary another term's name by one modifier (`hasOpticalCavity` and
+`hasOpticalMicrocavity`), or are properties whose domain or range is missing
+(`no_domain`, `no_range`) or only a generic upper class (`generic_domain`,
+`generic_range`: `owl:Thing`, `schema:Thing`, `rdfs:Resource`, `skos:Concept`,
+`prov:Agent`, `foaf:Agent` or any class named `Agent`; a datatype property's
+range is never generic). Each of those gets a full entry; the document's other
 minted terms are listed one line each, as possible merge targets. When no term
 needs a decision, no call is made and the defaults apply. The actions are
 validated before they are compiled:
@@ -528,6 +538,7 @@ validated before they are compiled:
 | `merge_into T` | `T` is a minted, catalog or well-known term of the same role, and the merge chain ends at a term that survives | the term's own triples go; every other triple naming it names `T` |
 | `generalise_to T` | as for a merge | its named parents are replaced by `T` |
 | `demote_to_property_value` | the term is a class | its class typing and named superclasses go; it becomes an `owl:NamedIndividual` and `skos:Concept` with its former parents as `skos:broader`; subclasses and domain/range uses move to its former parent |
+| `narrow` with `domain` and/or `range` | the term is a property; each side named is a minted, catalog or well-known class (an XSD datatype for a datatype property's range); a side that is already specific stays; under a generic `skos:Concept` or Agent side the new class must lie under one of the same kind | the named side's `rdfs:domain` / `rdfs:range` triples are replaced |
 | `drop` | always; the default for a candidate | every triple naming it goes |
 
 An action on a term the document did not mint or the model was not asked
@@ -537,8 +548,12 @@ axioms are never edited. Counters: `minted_terms_before_decisions`,
 `plan_candidates` (and `plan_candidate_iris`), `plan_candidates_dropped`,
 `consolidation_flagged`, `consolidation_skipped`,
 `consolidation_keep` / `_merge_into` / `_generalise_to` /
-`_demote_to_property_value` / `_drop`, `consolidation_actions_ignored`,
+`_demote_to_property_value` / `_narrow` / `_drop`, `consolidation_actions_ignored`,
 `consolidation_changed_triples` and `consolidation_calls_failed`.
+`generic_property_sides` and `missing_property_sides` count the flagged
+sides over the minted properties before the decisions, and
+`generic_property_sides_after` / `missing_property_sides_after` over the
+properties that survive them.
 
 ## Applying the merged update
 

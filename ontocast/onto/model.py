@@ -771,6 +771,24 @@ class OntologyTermProposal(BaseModel):
             "local name. Empty for none."
         ),
     )
+    domain: str | None = Field(
+        default=None,
+        description=(
+            "Property only: the most specific class every subject of the "
+            "property belongs to (a catalog term, a well-known term or another "
+            "proposal's local name). Never Thing, Concept or an Agent class "
+            "alone. Empty for a class."
+        ),
+    )
+    range: str | None = Field(
+        default=None,
+        description=(
+            "Property only: the most specific class every value belongs to, "
+            "or an XSD datatype for a datatype property. For values from a "
+            "fixed list, a proposed class of those values under skos:Concept. "
+            "Never Thing, Concept or an Agent class alone. Empty for a class."
+        ),
+    )
     definition: str = Field(
         default="",
         max_length=600,
@@ -794,7 +812,9 @@ class OntologyTermProposal(BaseModel):
 
     _kind = field_validator("kind", mode="before")(_coerce_term_kind)
     _local = field_validator("local_name", mode="before")(_coerce_local_name)
-    _parent = field_validator("parent", "reuse", mode="before")(_blank_to_none)
+    _parent = field_validator("parent", "reuse", "domain", "range", mode="before")(
+        _blank_to_none
+    )
     _free = field_validator("definition", "justification", mode="before")(
         _coerce_free_text
     )
@@ -824,6 +844,10 @@ class OntologyPlanTerm(BaseModel):
     iri: str
     decision: Literal["mint", "reuse"]
     parent_iri: str | None = None
+    #: A minted property's planned ``rdfs:domain`` / ``rdfs:range``: a known
+    #: term or another plan entry, never a generic upper class.
+    domain_iri: str | None = None
+    range_iri: str | None = None
     definition: str = ""
     #: Catalog terms near this one by the vector index, ``(iri, label)``; shown
     #: to the renderer and to consolidation as reuse candidates.
@@ -838,6 +862,8 @@ class OntologyPlan(BaseModel):
     rejected: list[tuple[str, str]] = Field(default_factory=list)
     #: Proposals turned into a reuse because their name matched a catalog term.
     resolved_to_catalog: int = 0
+    #: Planned domains and ranges dropped for naming a generic upper class.
+    generic_sides_dropped: int = 0
     #: The CURIE prefixes the plan was made under, prefix to namespace; the
     #: prompts that show the plan use them.
     prefixes: dict[str, str] = Field(default_factory=dict)
@@ -852,7 +878,7 @@ class OntologyPlan(BaseModel):
 
 
 TermActionKind = Literal[
-    "keep", "merge_into", "generalise_to", "demote_to_property_value", "drop"
+    "keep", "merge_into", "generalise_to", "demote_to_property_value", "narrow", "drop"
 ]
 
 _TERM_ACTION_ALIASES: dict[str, str] = {
@@ -867,6 +893,9 @@ _TERM_ACTION_ALIASES: dict[str, str] = {
     "demote": "demote_to_property_value",
     "demote_to_value": "demote_to_property_value",
     "demote_to_property_value": "demote_to_property_value",
+    "narrow": "narrow",
+    "specialise": "narrow",
+    "specialize": "narrow",
     "drop": "drop",
     "remove": "drop",
     "delete": "drop",
@@ -885,15 +914,16 @@ class OntologyTermAction(BaseModel):
 
     ``keep`` leaves it; ``merge_into`` replaces it by ``target`` everywhere;
     ``generalise_to`` makes ``target`` its only parent; ``demote_to_property_value``
-    turns a class into a SKOS concept (a value of some property); ``drop``
-    removes it and every triple naming it.
+    turns a class into a SKOS concept (a value of some property); ``narrow``
+    gives a property the ``domain`` and/or ``range`` named; ``drop`` removes it
+    and every triple naming it.
     """
 
     term: str = Field(description="The term's IRI or CURIE, as listed.")
     action: TermActionKind = Field(
         description=(
             "'keep', 'merge_into', 'generalise_to', "
-            "'demote_to_property_value' or 'drop'."
+            "'demote_to_property_value', 'narrow' or 'drop'."
         )
     )
     target: str | None = Field(
@@ -903,10 +933,27 @@ class OntologyTermAction(BaseModel):
             "well-known term. Empty otherwise."
         ),
     )
+    domain: str | None = Field(
+        default=None,
+        description=(
+            "For narrow: the property's new domain, a listed class, catalog "
+            "class or well-known class. Empty to leave the domain."
+        ),
+    )
+    range: str | None = Field(
+        default=None,
+        description=(
+            "For narrow: the property's new range, a listed class, catalog "
+            "class or well-known class (an XSD datatype for a datatype "
+            "property). Empty to leave the range."
+        ),
+    )
     rationale: str = Field(default="", max_length=300)
 
     _action = field_validator("action", mode="before")(_coerce_term_action)
-    _target = field_validator("target", mode="before")(_blank_to_none)
+    _target = field_validator("target", "domain", "range", mode="before")(
+        _blank_to_none
+    )
     _rationale = field_validator("rationale", mode="before")(_coerce_free_text)
 
 

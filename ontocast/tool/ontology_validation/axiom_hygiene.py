@@ -15,6 +15,9 @@ many it removed, for ``ontology_reduce_metrics``:
 - :func:`drop_vacuous_upper_terms`: ``owl:Thing`` / ``schema:Thing`` as a
   range or domain, or as a parent beside another parent, says nothing and
   reads as a modelling decision.
+- :func:`property_side_reasons` (a check, not a rule): a minted property
+  whose domain or range is missing or a generic upper class
+  (:func:`is_generic_class`); consolidation reviews it.
 - :func:`drop_role_crossing_parents`: a property's parent must be a property
   and a class's parent a class. ``rdfs:subPropertyOf schema:Property`` names a
   class, and ``rdfs:subClassOf`` a property or a datatype is no hierarchy.
@@ -58,6 +61,95 @@ THING_IRIS: frozenset[URIRef] = frozenset(
         URIRef("https://schema.org/Thing"),
     }
 )
+
+#: Upper classes too general to be a minted property's domain or range: they
+#: tell a reader nothing about what the property relates.
+GENERIC_CLASS_IRIS: frozenset[URIRef] = THING_IRIS | frozenset(
+    {
+        RDFS.Resource,
+        SKOS.Concept,
+        URIRef("http://www.w3.org/ns/prov#Agent"),
+        URIRef("http://xmlns.com/foaf/0.1/Agent"),
+    }
+)
+
+
+def is_generic_class(iri: str | URIRef) -> bool:
+    """True for an upper class too general for a property's domain or range.
+
+    Members of :data:`GENERIC_CLASS_IRIS`, and any class whose local name is
+    exactly ``Agent``: a vocabulary's own upper agent class.
+    """
+    node = URIRef(str(iri))
+    if node in GENERIC_CLASS_IRIS:
+        return True
+    _, local = split_namespace_local(str(node))
+    return local == "Agent"
+
+
+def is_datatype_iri(iri: str | URIRef) -> bool:
+    """True for an XSD datatype, ``rdfs:Literal`` or ``rdf:langString``."""
+    text = str(iri)
+    return text.startswith(str(XSD)) or URIRef(text) in (
+        RDFS.Literal,
+        RDF.langString,
+        RDF.PlainLiteral,
+        RDFS.Datatype,
+    )
+
+
+def is_datatype_property(prop: URIRef, graphs: Iterable[Graph]) -> bool:
+    """A property declared ``owl:DatatypeProperty`` or ranging over a datatype."""
+    graph_list = list(graphs)
+    if any((prop, RDF.type, OWL.DatatypeProperty) in g for g in graph_list):
+        return True
+    return any(
+        is_datatype_iri(r)
+        for g in graph_list
+        for r in g.objects(prop, RDFS.range)
+        if isinstance(r, URIRef)
+    )
+
+
+def property_side_reasons(prop: URIRef, graphs: Iterable[Graph]) -> list[str]:
+    """Why a minted property's domain or range says too little.
+
+    ``generic_domain`` / ``generic_range`` for a side whose every value is a
+    generic class (:func:`is_generic_class`; a datatype property's range is a
+    datatype and is never generic), ``no_domain`` / ``no_range`` for a
+    missing side. Empty when both sides are specific.
+
+    Args:
+        prop: The property.
+        graphs: Where its ``rdfs:domain`` / ``rdfs:range`` are read: the
+            document's delta and the catalog axioms.
+    """
+    graph_list = list(graphs)
+    domains = {
+        d
+        for g in graph_list
+        for d in g.objects(prop, RDFS.domain)
+        if isinstance(d, URIRef)
+    }
+    ranges = {
+        r
+        for g in graph_list
+        for r in g.objects(prop, RDFS.range)
+        if isinstance(r, URIRef)
+    }
+    reasons: list[str] = []
+    if not domains:
+        reasons.append("no_domain")
+    elif all(is_generic_class(d) for d in domains):
+        reasons.append("generic_domain")
+    if not ranges:
+        reasons.append("no_range")
+    elif not is_datatype_property(prop, graph_list) and all(
+        is_generic_class(r) for r in ranges
+    ):
+        reasons.append("generic_range")
+    return reasons
+
 
 #: ``rdf:type`` objects that make a subject something an ontology may declare.
 TERM_TYPES: frozenset[URIRef] = frozenset(
@@ -337,9 +429,14 @@ def drop_terms_minted_outside_home(
 __all__ = [
     "DATATYPE_PRECEDENCE",
     "EXAMPLE_NAMESPACE_STEMS",
+    "GENERIC_CLASS_IRIS",
     "TERM_AXIOMS",
     "TERM_TYPES",
     "THING_IRIS",
+    "is_datatype_iri",
+    "is_datatype_property",
+    "is_generic_class",
+    "property_side_reasons",
     "drop_example_namespace_triples",
     "drop_external_subjects",
     "drop_non_term_subjects",

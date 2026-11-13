@@ -25,9 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `statement_without_subject` unit finding (mandatory): an observation that states a value with no subject property from or to it (`sosa:hasFeatureOfInterest`, `sosa:isFeatureOfInterestOf`, and the catalog's sub-properties and inverses of either), or a value linked to no other instance of its part. Statement classes are SOSA's `Observation`, `Actuation` and `Sampling` and every catalog class under one. Metrics `facts_statements_without_subject_rendered` and `facts_statements_without_subject`.
 - Rule 3c in the facts prompt: every observation names what it is about, in the direction its property runs, and the final checklist checks it. The term sheet lists `sosa:hasFeatureOfInterest`, `sosa:observedProperty` and `sosa:hasResult` beside a catalog's observation classes.
 - `facts_mandatory_residual_by_kind` in the run manifest: the mandatory findings left on the facts units, per finding kind.
+- A planned property names its domain and range; a generic upper class (`owl:Thing`, `skos:Concept`, an Agent class) or an unknown one is dropped (`plan_generic_sides_dropped`), and the render sees the rest.
+- Consolidation reviews a minted property whose domain or range is missing or generic (flags `no_domain`, `no_range`, `generic_domain`, `generic_range`) and can `narrow` it to a listed class; counts `generic_property_sides`, `missing_property_sides` and their `…_after`.
 
 ### Changed
 
+- `FACTS_CRITIC_PASSES` defaults to 0: a facts unit costs one render call, and the facts critic runs only when set to 1 or more.
+- A value set gets a class of its own under `skos:Concept`, used as the property's range; each value is typed both `skos:Concept` and that class.
 - The facts and ontology prompts give domain-neutral examples, and `specific_label_leaf` no longer reads a token as a chemical formula.
 - Rule 3a: an observation's result is the value node itself, not a separate result node holding the value, and its feature of interest is the instance the text says was measured.
 - `FACTS_COMPLETION_PASSES` defaults to 1 and the pass becomes the gap pass: it runs only on a unit with a `statement_without_subject` finding, and asks for the missing subject links. A unit with no gap makes no call. `FACTS_COMPLETION_MEASUREMENTS=true` (off by default) also lets it recover measurements the render missed.

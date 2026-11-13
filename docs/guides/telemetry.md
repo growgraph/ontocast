@@ -138,8 +138,8 @@ process`. [Validation](validation.md) explains the findings.
 
 The run manifest's `critic` block records what the facts critic did. Read
 `calls` before `accepted`: [`FACTS_CRITIC_PASSES`](../reference/configuration/facts-validation.md#facts_critic_passes)
-is `1` by default, so `calls` is normally above zero, and `calls: 0` means the
-critic was turned off or every unit skipped it. `accepted` counts the reviews
+is `0` by default, so `calls: 0` is normal; above zero, the critic was turned
+on, and `calls` counts its reviews. `accepted` counts the reviews
 whose verdict let the unit leave the loop. The `ontology_critic`
 block is the same for the ontology loop, whose critic is off by default.
 

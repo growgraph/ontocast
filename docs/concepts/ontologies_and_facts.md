@@ -85,7 +85,9 @@ critic prompts name it, and a term newly declared anywhere else is dropped
 (`minted_outside_home_dropped`). An ontology update declares classes,
 properties and SKOS concepts (value sets) only: a person, place, organisation
 or event named in the text is a fact, and is dropped from the update
-(`non_term_subjects_dropped`). Each statement is written to the ontology that
+(`non_term_subjects_dropped`). A value set has a class of its own under
+`skos:Concept`, which is the range of the property that takes those values,
+and each value is typed both `skos:Concept` and that class. Each statement is written to the ontology that
 owns its subject; a restriction or a list travels whole with the term that
 uses it, so a restriction on an external property is written beside the home
 class, never into the external ontology.

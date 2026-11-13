@@ -25,6 +25,7 @@ Return one action per term:
 - `merge_into` with `target`: the same concept as another listed term, a catalog term or a well-known term. Prefer the existing catalog term.
 - `generalise_to` with `target`: a reusable term with the wrong or too specific parent; `target` becomes its only parent.
 - `demote_to_property_value`: a class that is really a value of some property (a kind, a method, a category); it becomes a SKOS concept.
+- `narrow` with `domain` and/or `range`: a reusable property whose domain or range is missing or too general (`generic_domain`, `generic_range`, `no_domain`, `no_range`). Name the most specific listed, catalog or well-known class every subject (domain) or value (range) belongs to; under a generic `skos:Concept` or Agent range, the new class must be one of its subclasses. A datatype property's range is an XSD datatype.
 - `drop`: one document's case, a duplicate with nothing to merge into, or a term no fact needs.
 
 Keep a term only if a second document of the domain would use it. A `candidate` with no action is dropped; a `planned` term with no action is kept. Name terms and targets exactly as listed.

@@ -18,6 +18,8 @@ import logging
 from collections import Counter
 from collections.abc import Mapping, Sequence
 
+from rdflib import RDFS, URIRef
+
 from ontocast.agent.consolidate_ontology import (
     build_term_contexts,
     consolidate_terms,
@@ -27,6 +29,7 @@ from ontocast.onto.model import OntologyUnitFinding, OntologyUnitFindingKind
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
+from ontocast.tool.ontology_validation.axiom_hygiene import property_side_reasons
 from ontocast.tool.ontology_validation.catalog_terms import catalog_prefixes
 from ontocast.tool.ontology_validation.consolidate import (
     compile_actions,
@@ -52,6 +55,32 @@ REVIEW_FINDING_KINDS = frozenset(
         OntologyUnitFindingKind.HIERARCHY_TOO_DEEP,
     }
 )
+
+
+def _side_counts(
+    minted: Mapping[str, str], carriers: Sequence[RDFGraph]
+) -> tuple[int, int]:
+    """Generic and missing domains and ranges over the minted properties."""
+    generic = missing = 0
+    for iri, role in minted.items():
+        if role != "property":
+            continue
+        for reason in property_side_reasons(URIRef(iri), carriers):
+            if reason.startswith("generic_"):
+                generic += 1
+            else:
+                missing += 1
+    return generic, missing
+
+
+def _class_hierarchy(tools: ToolBox, carriers: Sequence[RDFGraph]) -> RDFGraph:
+    """The catalog's class hierarchy with the document's own subclass axioms."""
+    hierarchy = RDFGraph()
+    hierarchy += tools.ontology_manager.catalog_roles().hierarchy
+    for carrier in carriers:
+        for triple in carrier.triples((None, RDFS.subClassOf, None)):
+            hierarchy.add(triple)
+    return hierarchy
 
 
 async def decide_minted_terms(
@@ -96,6 +125,9 @@ async def decide_minted_terms(
         )
     )
     flagged = structural_flags(minted, carriers, catalog_index)
+    metrics["generic_property_sides"], metrics["missing_property_sides"] = _side_counts(
+        minted, carriers
+    )
     for iri in candidates:
         flagged.setdefault(iri, set()).add("candidate")
     for finding in findings:
@@ -140,6 +172,8 @@ async def decide_minted_terms(
         catalog_index=catalog_index,
         prefixes=prefixes,
         reviewed=flagged,
+        graphs=carriers,
+        hierarchy=_class_hierarchy(tools, carriers),
     )
     changed = sum(
         compile_actions(decided, carrier, minted=minted).apply_to(carrier)
@@ -153,9 +187,19 @@ async def decide_minted_terms(
         "merge_into",
         "generalise_to",
         "demote_to_property_value",
+        "narrow",
         "drop",
     ):
         metrics[f"consolidation_{action}"] = counts.get(action, 0)
+    surviving = {
+        iri: role
+        for iri, role in minted.items()
+        if decided[iri].action not in ("drop", "merge_into")
+    }
+    (
+        metrics["generic_property_sides_after"],
+        metrics["missing_property_sides_after"],
+    ) = _side_counts(surviving, carriers)
     metrics["consolidation_actions_ignored"] = len(ignored)
     metrics["consolidation_changed_triples"] = changed
     metrics["plan_candidates_dropped"] = sum(

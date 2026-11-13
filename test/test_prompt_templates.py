@@ -362,3 +362,61 @@ def test_ontology_prompts_ask_for_the_reuse_level() -> None:
         assert "second document" in text
         assert "property with values" in text
         assert "no instances" not in text
+
+
+def test_value_list_example_gives_the_property_a_class_of_its_own() -> None:
+    """Rule 5a's example: values are typed with their own class under
+    skos:Concept, and that class is the property's range."""
+    from rdflib import RDF, RDFS, SKOS, Graph, URIRef
+
+    from ontocast.prompt.render_ontology import general_ontology_instruction
+
+    statements = re.findall(r"`(ex:[^`]+)`", general_ontology_instruction)
+    body = "\n".join(
+        f"{s} ." for s in statements if " " in s and not s.startswith("ex:Vehicle")
+    )
+    graph = Graph().parse(
+        data="@prefix ex: <http://ex.org/> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+        "@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n" + body,
+        format="turtle",
+    )
+    ex = "http://ex.org/"
+    fuel_type = URIRef(f"{ex}FuelType")
+    assert (URIRef(f"{ex}hasFuelType"), RDFS.range, fuel_type) in graph
+    assert (fuel_type, RDFS.subClassOf, SKOS.Concept) in graph
+    for value in ("Diesel", "Petrol"):
+        assert (URIRef(f"{ex}{value}"), RDF.type, SKOS.Concept) in graph
+        assert (URIRef(f"{ex}{value}"), RDF.type, fuel_type) in graph
+
+
+def test_plan_and_render_prompts_ask_for_specific_domains_and_ranges() -> None:
+    from ontocast.prompt.plan_ontology import plan_instruction
+    from ontocast.prompt.render_ontology import general_ontology_instruction
+
+    for text in (plan_instruction, general_ontology_instruction):
+        assert "most specific class" in text
+        assert "`skos:Concept`" in text
+
+
+def test_the_plan_block_shows_a_property_domain_and_range() -> None:
+    from ontocast.agent.render_ontology import format_plan_instruction
+    from ontocast.onto.model import OntologyPlan, OntologyPlanTerm
+
+    home = "https://example.com/home#"
+    plan = OntologyPlan(
+        terms=[
+            OntologyPlanTerm(
+                kind="object_property",
+                label="has fuel type",
+                local_name="hasFuelType",
+                iri=f"{home}hasFuelType",
+                decision="mint",
+                domain_iri=f"{home}Vehicle",
+                range_iri=f"{home}FuelType",
+            )
+        ],
+        prefixes={"home": home},
+    )
+    block = format_plan_instruction(plan)
+    assert "domain `home:Vehicle` → range `home:FuelType`" in block

@@ -2722,15 +2722,15 @@ class FactsValidationConfig(BaseSettings):
         ),
     )
     critic_passes: int = Field(
-        default=1,
+        default=0,
         ge=0,
         description=(
             "Review-and-patch passes per facts unit, in **LLM calls**. Each "
             "pass re-runs the deterministic checks for free, sends the graph "
             "and its findings to the critic, and applies what comes back as a "
-            "compiled patch. At the default of 1 a unit costs two provider "
-            "calls: one extraction, one review. Set 0 for extraction only, "
-            "leaving findings to the LLM-free repairs and the gate."
+            "compiled patch. 0 (default) is extraction only: findings go to "
+            "the LLM-free repairs, the gap pass and the gate. 1 adds one "
+            "review call per unit."
         ),
     )
     critic_max_delete_share: float = Field(

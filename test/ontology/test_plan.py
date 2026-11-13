@@ -208,3 +208,84 @@ def test_a_well_known_term_of_the_other_kind_is_neither_a_reuse_nor_a_parent():
         "https://schema.org/subEvent",
     )
     assert person.decision == "mint"
+
+
+SIDE_PREFIXES = {
+    **PREFIXES,
+    "skos": "http://www.w3.org/2004/02/skos/core#",
+    "owl": "http://www.w3.org/2002/07/owl#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+}
+
+
+def test_a_planned_property_keeps_a_specific_domain_and_range():
+    report = OntologyPlanReport(
+        proposals=[
+            _proposal(label="Fuel type", local_name="FuelType", parent="skos:Concept"),
+            _proposal(
+                kind="object_property",
+                label="has fuel type",
+                local_name="hasFuelType",
+                domain="cat:Sample",
+                range="FuelType",
+            ),
+            _proposal(
+                kind="datatype_property",
+                label="trade name",
+                local_name="tradeName",
+                domain="cat:Sample",
+                range="string",
+            ),
+        ]
+    )
+    plan = check_plan(
+        report,
+        home=HOME,
+        catalog_index=_catalog(),
+        prefixes=SIDE_PREFIXES,
+        max_terms=10,
+    )
+    by_local = {t.local_name: t for t in plan.terms}
+    assert by_local["hasFuelType"].domain_iri == f"{CAT}Sample"
+    assert by_local["hasFuelType"].range_iri == f"{HOME.namespace}FuelType"
+    assert by_local["tradeName"].domain_iri == f"{CAT}Sample"
+    assert by_local["tradeName"].range_iri == "http://www.w3.org/2001/XMLSchema#string"
+    assert by_local["FuelType"].domain_iri is None
+    assert plan.generic_sides_dropped == 0
+
+
+def test_a_generic_or_unknown_planned_side_is_dropped_and_the_term_kept():
+    report = OntologyPlanReport(
+        proposals=[
+            _proposal(
+                kind="object_property",
+                label="has format",
+                local_name="hasFormat",
+                domain="owl:Thing",
+                range="skos:Concept",
+            ),
+            _proposal(
+                kind="object_property",
+                label="has origin",
+                local_name="hasOrigin",
+                domain="cat:Nope",
+                range="home:Agent",
+            ),
+            _proposal(
+                kind="datatype_property",
+                label="code",
+                local_name="code",
+                range="MadeUpType",
+            ),
+        ]
+    )
+    plan = check_plan(
+        report,
+        home=HOME,
+        catalog_index=_catalog(),
+        prefixes=SIDE_PREFIXES,
+        max_terms=10,
+    )
+    assert [t.local_name for t in plan.terms] == ["hasFormat", "hasOrigin", "code"]
+    assert all(t.domain_iri is None and t.range_iri is None for t in plan.terms)
+    assert plan.generic_sides_dropped == 2

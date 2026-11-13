@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from rdflib import URIRef
+from rdflib import XSD, URIRef
 
 from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.model import (
@@ -27,6 +27,11 @@ from ontocast.onto.model import (
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.well_known import well_known_vocabulary
 from ontocast.tool.facts_validation.terms import _local_name
+from ontocast.tool.ontology_validation.axiom_hygiene import (
+    DATATYPE_PRECEDENCE,
+    is_datatype_iri,
+    is_generic_class,
+)
 from ontocast.tool.ontology_validation.reconcile import minted_roles, surfaces_of
 from ontocast.tool.ontology_validation.shape import (
     CatalogSurfaceIndex,
@@ -122,6 +127,9 @@ def check_plan(
     - Anything else is minted under the home namespace.
     - A parent must be a known term or another accepted entry; an unknown
       parent is dropped and the term kept.
+    - A minted property's domain and range must be a known class or a class
+      the plan mints (a datatype for a datatype property's range); an unknown
+      one, or a generic upper class, is dropped and the term kept.
 
     Args:
         report: The model's proposals.
@@ -137,6 +145,7 @@ def check_plan(
     seen_local: set[str] = set()
     seen_label: set[str] = set()
     parents: list[str | None] = []
+    sides: list[tuple[str | None, str | None]] = []
     for proposal in report.proposals:
         role = term_role(proposal.kind)
         local_key = proposal.local_name.casefold()
@@ -188,6 +197,7 @@ def check_plan(
                 )
             )
         parents.append(proposal.parent)
+        sides.append((proposal.domain, proposal.range))
 
     by_local = {term.local_name.casefold(): term.iri for term in plan.terms}
     plan_iris = {term.iri for term in plan.terms}
@@ -206,7 +216,80 @@ def check_plan(
                 iri = by_local.get(parent.strip().casefold())
         if iri is not None and iri != term.iri:
             term.parent_iri = iri
+
+    plan_classes = {term.iri for term in plan.terms if term.kind == "class"}
+    for term, (domain, range_) in zip(plan.terms, sides, strict=True):
+        if term.decision != "mint" or term.kind == "class":
+            continue
+        term.domain_iri = _resolve_side(
+            domain,
+            plan,
+            prefixes=prefixes,
+            catalog_index=catalog_index,
+            plan_classes=plan_classes,
+            by_local=by_local,
+        )
+        if term.kind == "datatype_property":
+            term.range_iri = _resolve_datatype(range_, prefixes)
+        else:
+            term.range_iri = _resolve_side(
+                range_,
+                plan,
+                prefixes=prefixes,
+                catalog_index=catalog_index,
+                plan_classes=plan_classes,
+                by_local=by_local,
+            )
     return plan
+
+
+def _resolve_side(
+    reference: str | None,
+    plan: OntologyPlan,
+    *,
+    prefixes: Mapping[str, str],
+    catalog_index: CatalogSurfaceIndex,
+    plan_classes: set[str],
+    by_local: Mapping[str, str],
+) -> str | None:
+    """The class a planned domain or range names, or ``None``.
+
+    A known class or a class the plan mints. An unknown reference is dropped;
+    a generic upper class (:func:`is_generic_class`) is dropped and counted in
+    ``plan.generic_sides_dropped``, since it says nothing about the property.
+    """
+    if not reference:
+        return None
+    iri = _resolve_known(
+        reference, "class", prefixes=prefixes, catalog_index=catalog_index
+    )
+    if iri is None:
+        expanded = expand_reference(reference, prefixes)
+        candidate = (
+            expanded
+            if expanded in plan_classes
+            else by_local.get(reference.strip().casefold())
+        )
+        iri = candidate if candidate in plan_classes else None
+    if iri is not None and is_generic_class(iri):
+        plan.generic_sides_dropped += 1
+        return None
+    return iri
+
+
+def _resolve_datatype(reference: str | None, prefixes: Mapping[str, str]) -> str | None:
+    """The datatype a planned datatype-property range names, or ``None``.
+
+    A CURIE or IRI of an XSD datatype (or ``rdfs:Literal``), or a bare XSD
+    local name such as ``string``.
+    """
+    if not reference:
+        return None
+    iri = expand_reference(reference, prefixes)
+    if iri is None:
+        bare = URIRef(f"{XSD}{reference.strip()}")
+        return str(bare) if bare in DATATYPE_PRECEDENCE else None
+    return iri if is_datatype_iri(iri) else None
 
 
 class PlanIndex:

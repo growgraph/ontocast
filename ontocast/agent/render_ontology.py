@@ -125,6 +125,10 @@ def format_plan_instruction(plan: OntologyPlan | None) -> str:
         parts = [f"- `{curie(term.iri)}` | {term.kind} | {term.label}"]
         if term.parent_iri:
             parts.append(f"parent `{curie(term.parent_iri)}`")
+        if term.domain_iri or term.range_iri:
+            domain = f"`{curie(term.domain_iri)}`" if term.domain_iri else "?"
+            range_ = f"`{curie(term.range_iri)}`" if term.range_iri else "?"
+            parts.append(f"domain {domain} → range {range_}")
         if term.definition:
             parts.append(term.definition)
         if term.nearest:
