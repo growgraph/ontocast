@@ -254,13 +254,17 @@ namespace IRIs:
 | `foaf` | FOAF | yes |
 | `schema` | schema.org (`https://` and `http://`) | yes |
 | `qudt` | QUDT schema | yes |
-| `unit`, `quantitykind` | QUDT units and quantity kinds | no |
+| `unit` | QUDT units | yes |
+| `quantitykind` | QUDT quantity kinds | no |
 
 The model writes well-known terms from memory, so a term must exist in its
 vocabulary: one it does not have, such as `schema:vulnerableTo`, is an
 `unknown_term` finding with the vocabulary's near-misses as suggestions. A
 vocabulary marked "no" is admitted by namespace, as are your own namespaces.
-The QUDT schema list covers every term its 2.1 and 3.x releases publish.
+The QUDT schema list covers every term its 2.1 and 3.x releases publish; the
+QUDT unit list covers every unit of its 3.1.4 release. A unit comes from the
+ontology context first, then from QUDT; a unit neither has is kept as text on
+the value node.
 
 **`strict`** (the default) stops there. A thing that neither your catalog nor
 these vocabularies can type or relate is not extracted. A stated quantity always

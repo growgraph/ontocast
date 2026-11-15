@@ -23,7 +23,11 @@ from ontocast.onto.rdfgraph import (
     RejectedLiteralTriple,
 )
 from ontocast.onto.scaffolding import scaffolding_nodes
-from ontocast.onto.well_known import well_known_terms, well_known_vocabulary
+from ontocast.onto.well_known import (
+    is_listed_unit,
+    well_known_terms,
+    well_known_vocabulary,
+)
 from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
 from ontocast.tool.facts_validation.connectivity import (
     isolated_instances,
@@ -500,13 +504,12 @@ def _unit_outside_context_findings(
     context_terms: set[str],
     policy: ValidationPolicy,
 ) -> list[FactsUnitFinding]:
-    """Flag a unit IRI the ontology context does not hold.
+    """Flag a unit IRI that is neither in the ontology context nor a QUDT unit.
 
-    A unit namespace is open -- any local name reads as a term of it -- so a
-    unit written from memory passes every vocabulary check, often under a
-    name the vocabulary does not have. The context is the only list of real
-    units the model was shown; one it lacks is kept as text on the value
-    node instead. Mandatory, so a patch that adds one is rolled back.
+    A unit written from memory is often a name no vocabulary has. Real units
+    are the context's unit individuals and the shipped QUDT unit list; any
+    other is kept as text on the value node instead. Mandatory, so a patch
+    that adds one is rolled back.
     """
     if not context_terms:
         return []
@@ -520,17 +523,20 @@ def _unit_outside_context_findings(
             str(unit)
             for prop in unit_properties
             for unit in graph.objects(None, URIRef(prop))
-            if isinstance(unit, URIRef) and str(unit) not in context_terms
+            if isinstance(unit, URIRef)
+            and str(unit) not in context_terms
+            and not is_listed_unit(str(unit))
         }
     )
     return [
         FactsUnitFinding(
             kind=FactsUnitFindingKind.UNKNOWN_TERM,
             message=(
-                f"<{unit}> is not a unit of the ontology context; use a unit "
-                "individual the context lists, or, when none fits, keep the "
-                "unit's token as text on the value node (rdfs:comment) and "
-                "drop the unit link."
+                f"<{unit}> is neither a unit of the ontology context nor a "
+                "QUDT unit; use a unit individual the context lists, else a "
+                "QUDT unit (`unit:`) whose exact name exists, or, when neither "
+                "fits, keep the unit's token as text on the value node "
+                "(rdfs:comment) and drop the unit link."
             ),
             predicate=unit,
         )

@@ -449,7 +449,9 @@ def _fake_tools(
             shapes_catalog=SimpleNamespace(graph=lambda: shapes),
             shapes_prompt_contract=lambda: ("", (), False),
             shapes_chapter_terms=lambda context_terms: frozenset(),
-            ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            ontology_manager=SimpleNamespace(
+                catalog_terms=lambda: set(), get_head_by_iri=lambda iri: None
+            ),
             get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
@@ -695,6 +697,11 @@ def test_single_unit_multi_value_is_only_a_warning() -> None:
     assert len(suspects) == 1
     assert suspects[0].severity == "warning"
     assert not report.error_findings
+
+
+def test_only_cross_unit_multi_values_are_errors_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT", raising=False)
+    assert FactsValidationConfig().suspect_multi_value_require_cross_unit is True
 
 
 def test_cross_unit_multi_value_stays_an_error() -> None:

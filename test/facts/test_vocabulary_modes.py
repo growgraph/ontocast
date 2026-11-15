@@ -16,7 +16,11 @@ from ontocast.onto.model import (
     OntologyUnitFindingKind,
 )
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.well_known import WELL_KNOWN_VOCABULARIES, is_well_known_term
+from ontocast.onto.well_known import (
+    WELL_KNOWN_VOCABULARIES,
+    is_listed_unit,
+    is_well_known_term,
+)
 from ontocast.prompt.facts_guidelines import (
     format_facts_operational_guidelines,
     format_vocabulary_rules,
@@ -124,11 +128,19 @@ def test_the_well_known_set() -> None:
         ("http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies", True),
         ("http://www.w3.org/1999/02/22-rdf-syntax-ns#_7", True),
         ("http://qudt.org/vocab/unit/NanoM", True),
+        ("http://qudt.org/vocab/unit/DegreeCelsius", False),
+        ("http://qudt.org/vocab/quantitykind/AnyKind", True),
         (f"{DBO}Person", None),
     ],
 )
 def test_membership(iri: str, expected: bool | None) -> None:
     assert is_well_known_term(iri) is expected
+
+
+def test_a_listed_unit_is_a_unit_of_the_shipped_qudt_list() -> None:
+    assert is_listed_unit("http://qudt.org/vocab/unit/DEG_C")
+    assert not is_listed_unit("http://qudt.org/vocab/unit/DegreeCelsius")
+    assert not is_listed_unit("http://qudt.org/schema/qudt/Unit")
 
 
 def test_an_unknown_mode_is_refused() -> None:

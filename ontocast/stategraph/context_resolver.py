@@ -2,7 +2,7 @@ import asyncio
 import logging
 import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -17,6 +17,7 @@ from ontocast.onto.enum import (
 )
 from ontocast.onto.model import OntologyPlan
 from ontocast.onto.null import NULL_ONTOLOGY
+from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.prefixes import CURIE_IN_TEXT, NOTE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
@@ -286,40 +287,94 @@ def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
     )
 
 
+def _catalog_ontologies(
+    artifacts: Sequence[Ontology],
+    context: UnitLoopContext,
+    catalog_head: Callable[[str], Ontology | None],
+) -> list[Ontology]:
+    """The catalog ontologies the document's facts context must hold beside its homes.
+
+    Every ontology the ontology units were rendered against, and every one a
+    home imports or extends, followed through the catalog's own imports. An
+    IRI the catalog does not hold (a well-known vocabulary) is skipped.
+    """
+    held = {ontology.iri for ontology in artifacts}
+    pending = list(context.ontology_sources)
+    if context.home_ontology is not None and context.home_ontology.extends:
+        pending.append(context.home_ontology.extends)
+    for ontology in artifacts:
+        pending.extend(
+            str(target)
+            for target in ontology.graph.objects(URIRef(ontology.iri), OWL.imports)
+        )
+    found: dict[str, Ontology] = {}
+    while pending:
+        iri = pending.pop()
+        if iri in held or iri in found:
+            continue
+        head = catalog_head(iri)
+        if head is None or head.is_null() or not len(head.graph):
+            continue
+        found[iri] = head
+        pending.extend(
+            str(target) for target in head.graph.objects(URIRef(iri), OWL.imports)
+        )
+    return [found[iri] for iri in sorted(found)]
+
+
 def build_merged_document_ontology_context(
     context: UnitLoopContext,
+    catalog_head: Callable[[str], Ontology | None],
 ) -> UnitOntologyContext | None:
-    """Build merged ontology context from reduced document artifacts.
+    """The one ontology context every facts unit of a document is rendered against.
 
-    The result depends only on document-level state, so it should be computed
-    once per document. ``"ctx/merge_document_ontology.calls"`` on the budget
-    tracker exists to make a regression to per-unit calls visible.
+    The document's home ontologies as the ontology stage left them, merged
+    with the catalog ontologies they rest on (:func:`_catalog_ontologies`):
+    a home that extends an external catalog, or a fresh home, holds only the
+    terms documents added, so without the catalog the facts render would
+    fall back on generic vocabulary. Catalog ontologies are read, never
+    writable. The result depends only on document-level state, so it is
+    computed once per document; ``"ctx/merge_document_ontology.calls"`` makes
+    a regression to per-unit calls visible.
+
+    Args:
+        context: Document-level loop inputs.
+        catalog_head: The catalog's head of an ontology IRI, or ``None``.
+
+    Returns:
+        The merged context, or ``None`` when no ontology stage ran.
     """
     started = time.perf_counter()
     context.budget_tracker.incr("ctx/merge_document_ontology.calls")
-    artifacts = [
-        ontology
-        for ontology in context.reduced_artifacts()
-        if not ontology.is_null() and len(ontology.graph) > 0
-    ]
-    if not artifacts:
+    artifacts = sorted(
+        (
+            ontology
+            for ontology in context.reduced_artifacts()
+            if not ontology.is_null() and len(ontology.graph) > 0
+        ),
+        key=lambda ontology: ontology.iri or "",
+    )
+    catalog = _catalog_ontologies(artifacts, context, catalog_head)
+    if not artifacts and not catalog:
         context.budget_tracker.add_duration(
             "ctx/merge_document_ontology", time.perf_counter() - started
         )
         return None
+    context.budget_tracker.incr("ctx/facts_catalog_ontologies", len(catalog))
 
-    sorted_artifacts = sorted(artifacts, key=lambda ontology: ontology.iri or "")
     merged_graph = RDFGraph()
     patch_sources: list[str] = []
-    for ontology in sorted_artifacts:
+    for ontology in artifacts:
         merged_graph += ontology.graph
         if ontology.iri:
             patch_sources.append(ontology.iri)
+    for ontology in catalog:
+        merged_graph += ontology.graph
     merged_graph.sanitize_prefixes_namespaces()
 
     snapshot = OntologySnapshot.from_graph(
         merged_graph,
-        source_iris=patch_sources,
+        source_iris=[*patch_sources, *(ontology.iri for ontology in catalog)],
         assembly_mode=OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED,
         title="Merged document ontology context",
         description=(

@@ -506,6 +506,25 @@ class FactsCritiqueReport(BaseModel):
     )
 
 
+class FactsDomainRepairReport(BaseModel):
+    """Output of the facts domain-repair call.
+
+    Each fix replaces one listed statement by the same subject and object
+    linked through a property whose domain fits the subject; anything else is
+    dropped before it is applied.
+    """
+
+    proposed_fixes: list[TripleFix] = Field(
+        default_factory=list,
+        description=(
+            "One REPLACE per statement repaired, citing its id in `triple_ids`; "
+            "`correct_value` is that statement with the same subject and "
+            "object and the fitting property. A statement no property fits is "
+            "left out."
+        ),
+    )
+
+
 class FactsCompletionReport(BaseModel):
     """Output of the insert-only facts completion pass.
 
@@ -956,6 +975,10 @@ class FactsUnitFindingKind(StrEnum):
     #: rewritten to the one catalog class with exactly its local name.
     #: Repair-only: never raised as a finding.
     CLASS_ALIAS = "class_alias"
+    #: A node written on a well-known datatype property, moved to the object
+    #: property its vocabulary pairs with it (``sosa:hasSimpleResult`` ->
+    #: ``sosa:hasResult``). Repair-only: never raised as a finding.
+    PAIRED_OBJECT_PROPERTY = "paired_object_property"
     NUMERIC_COVERAGE = "numeric_coverage"
     LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"
@@ -1133,6 +1156,10 @@ class FactsGateRepairKind(StrEnum):
     #: A rendered triple naming an IRI no SPARQL ``IRIREF`` can hold (a
     #: space, a quote, a brace), dropped at parse time; one record per IRI.
     MALFORMED_IRI_DROPPED = "malformed_iri_dropped"
+    #: A statement whose subject's type contradicts its property's declared
+    #: domain after the unit's domain repair, removed when the unit left its
+    #: loop.
+    DOMAIN_VIOLATION_DROPPED = "domain_violation_dropped"
 
 
 class GraphRepairRecord(BaseModel):
@@ -1209,13 +1236,21 @@ class LoopAttempt(BaseModel):
         (``empty_render``, ``citation_metadata``). A ``critic`` record whose
         ``accept_reason`` is ``critic_unavailable`` is a call made that
         produced no critique; the unit leaves the loop unreviewed.
-        ``kind="completion"`` is the insert-only completion pass.
+        ``kind="completion"`` is the insert-only completion pass;
+        ``kind="domain_repair"`` the call that gives a statement violating a
+        declared domain a property that fits its subject.
     """
 
     render_attempt: int = 0
     critic_attempt: int = 0
     kind: Literal[
-        "render", "critic", "critic_patch", "critic_skipped", "completion", "llm_repair"
+        "render",
+        "critic",
+        "critic_patch",
+        "critic_skipped",
+        "completion",
+        "domain_repair",
+        "llm_repair",
     ] = "render"
     score: float | None = None
     success: bool | None = None
@@ -1291,6 +1326,13 @@ class LoopAttempt(BaseModel):
         description=(
             "Completion pass only: statement_without_subject findings that no "
             "longer hold after the inserts that stayed."
+        ),
+    )
+    n_detached_linked: int = Field(
+        default=0,
+        description=(
+            "Completion pass only: instances linked to nothing before the "
+            "pass that are linked after the inserts that stayed."
         ),
     )
     patch_delete_capped: bool = Field(

@@ -199,6 +199,57 @@ _SPARQL_DATA_BLOCK_RE = re.compile(
 _SPLIT_NAME_HEAD_RE = re.compile(rb"(?:^|[\s.;,(\[])[A-Za-z][\w-]*:[\w-]*$")
 _SPLIT_NAME_TAIL_RE = re.compile(rb"\w+(?=[\s,;.\]])")
 _MAX_SPLIT_NAME_JOINS = 8
+#: Statements one answer may have run together after a ``;``.
+_MAX_RESTATED_SUBJECTS = 32
+
+
+#: ``; S P `` right before the parser's stop: a subject and a predicate
+#: restated after a semicolon, the stop on the object.
+def _statement_subjects(data: bytes) -> set[bytes]:
+    """The first token of every Turtle statement in ``data``.
+
+    A statement starts at the beginning and after each ``.`` that is followed
+    by whitespace and lies outside a string and an IRI.
+    """
+    starts = [0]
+    position = 0
+    end = len(data)
+    quote: bytes | None = None
+    while position < end:
+        char = data[position : position + 1]
+        if quote is not None:
+            if char == b"\\":
+                position += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in (b'"', b"'"):
+            quote = char
+        elif char == b"<":
+            closing = data.find(b">", position, end)
+            position = end if closing < 0 else closing + 1
+            continue
+        elif char == b"." and data[position + 1 : position + 2] in (
+            b" ",
+            b"\t",
+            b"\r",
+            b"\n",
+            b"",
+        ):
+            starts.append(position + 1)
+        position += 1
+    subjects: set[bytes] = set()
+    for start in starts:
+        tokens = data[start : start + 512].split(maxsplit=1)
+        if tokens:
+            subjects.add(tokens[0])
+    return subjects
+
+
+_RESTATED_SUBJECT_RE = re.compile(
+    rb";[ \t\r\n]*((?:<[^>\s]*>|_:[\w-]+|[A-Za-z][\w-]*:[\w.-]*)"
+    rb"[ \t\r\n]+(?:<[^>\s]*>|[A-Za-z][\w-]*:[\w.-]*|a))[ \t\r\n]+$"
+)
 _SPARQL_PREFIX_RE = re.compile(
     r"^PREFIX\s+(\w*):\s*<([^>]+)>\s*\.?",
     re.IGNORECASE | re.MULTILINE,
@@ -952,6 +1003,10 @@ class RDFGraph(Graph):
                     patched_turtle, parse_error
                 )
             if repaired_turtle == patched_turtle:
+                repaired_turtle = cls._end_statement_before_restated_subject(
+                    patched_turtle, parse_error
+                )
+            if repaired_turtle == patched_turtle:
                 raise
             logger.warning(
                 "Recovering malformed Turtle after parse failure: %s",
@@ -1315,6 +1370,55 @@ class RDFGraph(Graph):
                 + rb")"
             )
             data = split.sub(lambda _: name, data)
+            text = data.decode("utf-8")
+            try:
+                Graph().parse(data=text, format="turtle")
+            except Exception as next_error:
+                error = next_error
+                continue
+            return text
+        return turtle_str
+
+    @staticmethod
+    def _end_statement_before_restated_subject(
+        turtle_str: str, parse_error: Exception
+    ) -> str:
+        """End a statement whose subject is restated after ``;``, where the parser stopped.
+
+        ``cd:x p o ; cd:y q r .`` on one line stops the parser at ``r``: after
+        ``;`` it read ``cd:y`` as a predicate and ``q`` as its object. When the
+        two tokens before the stop follow a ``;`` and the first opens a
+        statement somewhere in the text (a subject, not a predicate), that
+        ``;`` becomes ``.``; the next stop is examined the same way. The text is
+        returned only when it parses.
+        """
+        data = turtle_str.encode("utf-8")
+        subjects = _statement_subjects(data)
+        error: Exception = parse_error
+        for _ in range(_MAX_RESTATED_SUBJECTS):
+            if not isinstance(error, BadSyntax):
+                return turtle_str
+            source = error._str
+            if isinstance(source, str):
+                source = source.encode("utf-8")
+            if source != data:
+                return turtle_str
+            # The stop is a byte offset on some paths and a character offset
+            # on others; whichever lands right after ``; S P`` is the stop.
+            text = data.decode("utf-8")
+            stops = {error._i, len(text[: error._i].encode("utf-8"))}
+            restated = next(
+                (
+                    match
+                    for stop in sorted(stops)
+                    if (match := _RESTATED_SUBJECT_RE.search(data[:stop])) is not None
+                ),
+                None,
+            )
+            if restated is None or restated.group(1).split()[0] not in subjects:
+                return turtle_str
+            semicolon = restated.start()
+            data = data[:semicolon] + b"." + data[semicolon + 1 :]
             text = data.decode("utf-8")
             try:
                 Graph().parse(data=text, format="turtle")

@@ -48,8 +48,9 @@ template_prompt = """
 # TASK
 
 The facts graph already extracted from this unit has gaps: measurements the
-source text states that are missing, or statements that name nothing they are
-about. Propose insert-only fixes that close them.
+source text states that are missing, statements that name nothing they are
+about, or instances linked to nothing. Propose insert-only fixes that close
+them.
 
 {completion_instruction}
 
@@ -60,6 +61,8 @@ about. Propose insert-only fixes that close them.
 {missing_measurements_chapter}
 
 {subject_gaps_chapter}
+
+{detached_chapter}
 
 {output_instruction}
 
@@ -93,10 +96,11 @@ exactly as it is; propose nothing beyond what recovers a listed measurement.
 4. A property whose range is a class (a unit-valued property among them)
    takes an IRI, never a string: resolve the unit token against the TERM
    SHEET's unit individuals by label, notation, or symbol, matching
-   case-sensitively. When no listed unit matches, or the sheet lists none,
-   keep the unit token as text on the value node (`rdfs:comment`) and add
-   no unit link -- never a unit IRI the TERM SHEET does not list. Keep the
-   value and unit verbatim -- never convert, round, or re-derive.
+   case-sensitively. When no listed unit matches, use the QUDT unit
+   (`unit:`) for exactly that unit, only if you are certain of its QUDT name;
+   otherwise keep the unit token as text on the value node (`rdfs:comment`)
+   and add no unit link -- never an invented or approximate unit IRI. Keep
+   the value and unit verbatim -- never convert, round, or re-derive.
 
 5. Do NOT mint an entity for a bare number, a citation marker, or a
    typography artifact. If a listed measurement cannot be placed as a fact
@@ -113,6 +117,14 @@ exactly as it is; propose nothing beyond what recovers a listed measurement.
    surrounding text is about. Prefer a listed candidate; mint a new `cd:`
    subject only for a thing the text names. Leave a statement whose subject
    the text does not give.
+
+8. For each instance under DETACHED INSTANCES, add the one triple linking it
+   to another instance of this unit that the text relates it to, with one of
+   its candidate properties in the direction given (`from`: the detached
+   instance is the subject; `to`: it is the object), or another object
+   property whose domain and range fit both ends. Link to an existing
+   instance; never mint one for this. Leave an instance the text relates to
+   nothing.
 """
 
 _OUTPUT_INSTRUCTION_TURTLE = """\n\n
@@ -394,6 +406,55 @@ def build_subject_gaps_chapter(
     if candidates:
         lines.append("\nCandidate subjects in the graph:")
         lines.extend(describe(URIRef(c)) for c in candidates[:limit])
+    return "\n".join(lines) + "\n"
+
+
+def build_detached_chapter(
+    fact_graph: RDFGraph,
+    detached: Sequence[tuple[URIRef, Sequence[tuple[URIRef, str]]]],
+    *,
+    limit: int = 20,
+) -> str:
+    """The DETACHED INSTANCES chapter: instances linked to nothing, and how they may link.
+
+    Args:
+        fact_graph: The unit's current facts graph.
+        detached: Each instance with its candidate properties and their
+            direction (``from``: the instance is the subject).
+        limit: Cap on listed instances.
+
+    Returns:
+        The chapter text, or "" when there is none.
+    """
+    if not detached:
+        return ""
+    lines = [
+        "\n\n# DETACHED INSTANCES",
+        "Instances linked to no other instance:",
+    ]
+    for node, properties in list(detached)[:limit]:
+        types = ", ".join(
+            sorted(
+                _qname(fact_graph, t)
+                for t in fact_graph.objects(node, RDF.type)
+                if isinstance(t, URIRef)
+            )
+        )
+        row = f"  {_qname(fact_graph, node)}"
+        if types:
+            row += f"  a {types}"
+        label = _first_label(fact_graph, node)
+        if label:
+            row += f'  rdfs:label "{label}"'
+        lines.append(row)
+        if properties:
+            lines.append(
+                "    candidate properties: "
+                + ", ".join(
+                    f"{_qname(fact_graph, p)} ({direction})"
+                    for p, direction in properties
+                )
+            )
     return "\n".join(lines) + "\n"
 
 

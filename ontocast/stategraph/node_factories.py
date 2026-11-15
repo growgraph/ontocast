@@ -24,6 +24,7 @@ from ontocast.onto.enum import (
 from ontocast.onto.identity import is_owned_ontology
 from ontocast.onto.iri_policy import normalize_namespace_iri, split_namespace_local
 from ontocast.onto.model import (
+    FactsGateRepairKind,
     FactsUnitFindingKind,
     OntologyUnitFinding,
     UnitFailure,
@@ -782,7 +783,8 @@ def make_render_facts_node(tools: ToolBox):
         # other unit's in-flight provider call. None means no ontology stage ran
         # (facts-only mode); units then resolve their own context as before.
         merged_context = build_merged_document_ontology_context(
-            UnitLoopContext.from_agent_state(state)
+            UnitLoopContext.from_agent_state(state),
+            tools.ontology_manager.get_head_by_iri,
         )
         if (
             merged_context is None
@@ -1095,6 +1097,22 @@ def make_render_facts_node(tools: ToolBox):
         state.retrieval_metrics[
             RetrievalMetric.FACTS_COMPLETION_MEASUREMENTS_RECOVERED
         ] = sum(a.n_measurements_recovered for a in completion_attempts)
+        state.retrieval_metrics[RetrievalMetric.FACTS_COMPLETION_DETACHED_LINKED] = sum(
+            a.n_detached_linked for a in completion_attempts
+        )
+        domain_repairs = [a for a in all_attempts if a.kind == "domain_repair"]
+        state.retrieval_metrics[RetrievalMetric.FACTS_DOMAIN_REPAIR_CALLS] = len(
+            domain_repairs
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_DOMAIN_REPAIR_FIXED] = sum(
+            a.n_fixes_applied for a in domain_repairs
+        )
+        state.retrieval_metrics[RetrievalMetric.FACTS_DOMAIN_VIOLATIONS_DROPPED] = sum(
+            record.triple_count
+            for records in state.facts_repairs_applied.values()
+            for record in records
+            if record.kind == FactsGateRepairKind.DOMAIN_VIOLATION_DROPPED
+        )
         state.facts_units = facts_units
         state.status = _map_stage_status(
             failed_without_output_count, len(state.content_units)
@@ -1145,7 +1163,9 @@ def _union_unit_ontology_context(
     return union
 
 
-def _facts_aggregation_inputs(state: AgentState) -> tuple[RDFGraph, dict]:
+def _facts_aggregation_inputs(
+    state: AgentState, tools: ToolBox
+) -> tuple[RDFGraph, dict]:
     """Ontology context and document metadata shared by merge and validate.
 
     Reuses the graph the facts fan-out already merged. Only falls back to
@@ -1157,7 +1177,8 @@ def _facts_aggregation_inputs(state: AgentState) -> tuple[RDFGraph, dict]:
         ontology_graph = state.facts_ontology_context
     else:
         merged_context = build_merged_document_ontology_context(
-            UnitLoopContext.from_agent_state(state)
+            UnitLoopContext.from_agent_state(state),
+            tools.ontology_manager.get_head_by_iri,
         )
         if merged_context is not None and len(merged_context.snapshot.graph) > 0:
             ontology_graph = merged_context.snapshot.graph
@@ -1180,7 +1201,7 @@ def make_merge_facts_node(tools: ToolBox):
                 state.status = Status.SUCCESS
             return state
 
-        ontology_graph, document_metadata = _facts_aggregation_inputs(state)
+        ontology_graph, document_metadata = _facts_aggregation_inputs(state, tools)
         result = tools.aggregator.postprocess_facts_units(
             units=state.facts_units,
             ontology_graph=ontology_graph,
@@ -1252,7 +1273,7 @@ def make_resolve_coreference_node(tools: ToolBox):
             return state
         state.coreference_vetoes = stored_pairs(vetoes)
         state.coreference_confirmations = stored_pairs(confirmations)
-        ontology_graph, document_metadata = _facts_aggregation_inputs(state)
+        ontology_graph, document_metadata = _facts_aggregation_inputs(state, tools)
         result = tools.aggregator.postprocess_facts_units(
             units=state.facts_units,
             ontology_graph=ontology_graph,
@@ -1291,7 +1312,7 @@ def make_validate_facts_node(tools: ToolBox):
                 state.status = Status.SUCCESS
             return state
 
-        ontology_graph, document_metadata = _facts_aggregation_inputs(state)
+        ontology_graph, document_metadata = _facts_aggregation_inputs(state, tools)
         run_facts_gate(
             state,
             ontology_graph,

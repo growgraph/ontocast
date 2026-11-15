@@ -31,6 +31,7 @@ from ontocast.onto.rdfgraph import (
 from ontocast.onto.reification import Triple
 from ontocast.onto.well_known import (
     is_well_known_term,
+    well_known_object_pairs,
     well_known_role,
 )
 from ontocast.onto.xsd_lexical import TEMPORAL_DATATYPES, is_valid_temporal_lexical
@@ -756,6 +757,44 @@ def repair_reversed_triples(
         if graph.has_reifications:
             graph.reifications.retarget(reversed_)
         record_active_count("repair/triple_reversed", len(applied))
+    return len(applied), applied
+
+
+def repair_paired_object_properties(
+    graph: RDFGraph,
+) -> tuple[int, list[GraphRepairRecord]]:
+    """Move a node off a datatype property onto the object property paired with it.
+
+    A well-known vocabulary can state one relation twice, once for a literal
+    and once for a node (``sosa:hasSimpleResult`` / ``sosa:hasResult``,
+    :func:`~ontocast.onto.well_known.well_known_object_pairs`). A node written
+    on the datatype one is rewritten to the object one. A reifier follows its
+    statement.
+
+    Returns:
+        Tuple of (number of triples moved, applied-repair records).
+    """
+    pairs = well_known_object_pairs()
+    moved: dict[Triple, Triple] = {}
+    for subject, predicate, obj in graph:
+        paired = pairs.get(str(predicate))
+        if paired is not None and isinstance(obj, (URIRef, BNode)):
+            moved[(subject, predicate, obj)] = (subject, URIRef(paired), obj)
+    applied: list[GraphRepairRecord] = []
+    for written in sorted(moved, key=lambda t: tuple(str(term) for term in t)):
+        graph.remove(written)
+        graph.add(moved[written])
+        applied.append(
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.PAIRED_OBJECT_PROPERTY,
+                source=f"{written[0]} {written[1]}",
+                target=str(moved[written][1]),
+            )
+        )
+    if applied:
+        if graph.has_reifications:
+            graph.reifications.retarget(moved)
+        record_active_count("repair/paired_object_property", len(applied))
     return len(applied), applied
 
 

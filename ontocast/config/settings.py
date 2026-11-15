@@ -2829,7 +2829,7 @@ class FactsValidationConfig(BaseSettings):
         ),
     )
     suspect_multi_value_require_cross_unit: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Report a multi-valued IRI predicate as an error only when the "
             "values came from merging different units; otherwise report a "
@@ -3045,7 +3045,18 @@ class FactsValidationConfig(BaseSettings):
             "sees a term sheet, the unit's typed subjects, the text and the "
             "gaps, not the ontology chapter; each fix it adds is kept or "
             "rolled back by the same regression check as a critic fix. A "
-            "unit with no gap costs nothing. 0 disables it."
+            "unit with no gap costs nothing. The same budget enables one "
+            "domain-repair call on a unit holding a statement whose subject "
+            "contradicts its property's declared domain. 0 disables both."
+        ),
+    )
+    completion_detached: bool = Field(
+        default=True,
+        description=(
+            "Let the gap pass also ask for a link for each instance the render "
+            "linked to nothing, when the text relates it to another instance "
+            "of the unit. Such an instance is otherwise kept unlinked when it "
+            "holds a value, and dropped at the gate when it holds none."
         ),
     )
     completion_measurements: bool = Field(

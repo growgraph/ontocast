@@ -63,6 +63,10 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_COMPLETION_MEASUREMENTS_RECOVERED": (
         "facts_completion_measurements_recovered"
     ),
+    "FACTS_COMPLETION_DETACHED_LINKED": "facts_completion_detached_linked",
+    "FACTS_DOMAIN_REPAIR_CALLS": "facts_domain_repair_calls",
+    "FACTS_DOMAIN_REPAIR_FIXED": "facts_domain_repair_fixed",
+    "FACTS_DOMAIN_VIOLATIONS_DROPPED": "facts_domain_violations_dropped",
     "FACTS_FINDINGS_RESIDUAL": "facts_findings_residual",
     "FACTS_REJECTED_MERGES": "facts_rejected_merges",
     "FACTS_MERGE_REJECTIONS_BY_REASON": "facts_merge_rejections_by_reason",

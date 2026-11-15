@@ -44,6 +44,12 @@ facts_instruction_shared = """\n\n
       `rdfs:subPropertyOf` of `onto:hasPart` and its domain/range fit the subject and object.
     - CORRECT: `cd:assembly_1 onto:hasComponent cd:widget_1 .`
 
+1e. DOMAIN FIT: a property applies only to a subject of its declared domain. Never use a
+    provenance or observation property as a generic "relates to" link: `prov:used` takes an
+    activity as its subject, a thing made from another takes `prov:wasDerivedFrom`, and a
+    sensor's readings take `sosa:madeBySensor` on the observation. A statement whose subject
+    is not of the property's domain is removed.
+
 {vocabulary_precedence_rule}
 3. EXTRACT STATEMENTS: extract every statement the text makes in the terms of the provided ontology — the relations between things and the values it gives them. Mint a `cd:` instance only for a thing a statement is about: it is the subject or the object of a relation, or it holds a value. A mention the text says nothing about is not a fact; do not mint it.
 {quantitative_completeness_rule}
@@ -119,7 +125,7 @@ facts_instruction_shared = """\n\n
      unit — and never round or re-derive values —
      canonicalization happens downstream in code. If the exact source unit
      has no individual in the provided context, keep the value verbatim and
-     preserve the unit token per rule 8a's fallback.
+     resolve the unit per rule 8a.
 
 8a. OBJECT PROPERTIES TAKE IRIs, NOT STRINGS:
    - A property whose range is a class (declared `owl:ObjectProperty`, or with an
@@ -131,12 +137,15 @@ facts_instruction_shared = """\n\n
      DIFFERENT individuals — match character-for-character).
    - WRONG:   `[ … qudt:unit "nm" ]` — string on an object property
    - CORRECT: `[ … qudt:unit unit:NanoM ]` — when that individual's
-     label/notation matches the text token; use only unit IRIs that appear
-     verbatim in the provided context, never invent one
-   - Only if NO individual in the provided context matches the token: keep the raw
-     token in a literal-code annotation property (e.g. `qudt:ucumCode` or
-     `rdfs:comment`) on the value node instead of putting a string on the
-     object property, so the surface form is preserved without breaking typing.
+     label/notation matches the text token
+   - A unit IRI comes from the provided context first. When no individual there
+     matches the token, use the QUDT unit (`unit:`) for exactly that unit, only
+     if you are certain of its QUDT name (`unit:DEG_C`, `unit:KiloM-PER-HR`,
+     `unit:PERCENT`); never invent or approximate a unit name.
+   - Only if neither fits: keep the raw token in a literal-code annotation
+     property (e.g. `qudt:ucumCode` or `rdfs:comment`) on the value node instead
+     of putting a string on the object property, so the surface form is
+     preserved without breaking typing.
 
 9. To extract data from tables, use CSV on the Web (CSVW) to describe tables.
 

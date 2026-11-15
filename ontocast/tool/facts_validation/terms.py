@@ -765,6 +765,161 @@ def types_compatible(
     )
 
 
+def _listed_sides(ontology_graph: RDFGraph, link: str) -> dict[URIRef, set[URIRef]]:
+    """Predicate -> the named classes its ``schema:<link>`` lists."""
+    listed: dict[URIRef, set[URIRef]] = {}
+    for namespace in _SCHEMA_ORG:
+        for predicate, _, cls in ontology_graph.triples(
+            (None, URIRef(namespace + link), None)
+        ):
+            if isinstance(predicate, URIRef) and isinstance(cls, URIRef):
+                listed.setdefault(predicate, set()).add(cls)
+    return listed
+
+
+def domain_fitting_properties(
+    subject: URIRef,
+    obj: Node,
+    graph: RDFGraph,
+    ontology_graph: RDFGraph,
+    *,
+    replacing: URIRef,
+    limit: int = 8,
+) -> list[tuple[URIRef, set[URIRef]]]:
+    """Context properties that may link ``subject`` to ``obj`` in place of ``replacing``.
+
+    A candidate declares a domain (``rdfs:domain`` or ``schema:domainIncludes``)
+    that the subject's asserted types fit, and no range the object's types
+    contradict; a literal object takes only a property with no class range.
+    Ranked by the local-name tokens shared with ``replacing``, then by IRI.
+
+    Returns:
+        Up to ``limit`` (property, its domain classes) pairs.
+    """
+    asserted = {t for t in graph.objects(subject, RDF.type) if isinstance(t, URIRef)}
+    if not asserted:
+        return []
+    described = _described_classes(ontology_graph)
+    closures: dict[URIRef, set[URIRef]] = {}
+    domains = _declared_domains(ontology_graph)
+    for predicate, classes in _listed_sides(ontology_graph, "domainIncludes").items():
+        domains.setdefault(predicate, set()).update(classes)
+    ranges = declared_class_ranges(ontology_graph)
+    for predicate, classes in _listed_sides(ontology_graph, "rangeIncludes").items():
+        ranges.setdefault(predicate, set()).update(classes)
+    object_types = (
+        {t for t in graph.objects(obj, RDF.type) if isinstance(t, URIRef)}
+        if isinstance(obj, URIRef)
+        else set()
+    )
+    wanted = _name_tokens(_local_name(str(replacing)))
+    scored: list[tuple[int, str, URIRef, set[URIRef]]] = []
+    for predicate, declared in domains.items():
+        if predicate == replacing:
+            continue
+        fits = types_compatible(
+            asserted, declared, ontology_graph, described=described, closures=closures
+        )
+        if fits is not True:
+            continue
+        declared_range = ranges.get(predicate)
+        if isinstance(obj, Literal):
+            if declared_range:
+                continue
+        elif declared_range and object_types:
+            if (
+                types_compatible(
+                    object_types,
+                    declared_range,
+                    ontology_graph,
+                    described=described,
+                    closures=closures,
+                )
+                is False
+            ):
+                continue
+        shared = len(wanted & _name_tokens(_local_name(str(predicate))))
+        scored.append((-shared, str(predicate), predicate, declared))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [(predicate, declared) for _, _, predicate, declared in scored[:limit]]
+
+
+def link_properties(
+    node: URIRef,
+    graph: RDFGraph,
+    ontology_graph: RDFGraph,
+    *,
+    limit: int = 8,
+) -> list[tuple[URIRef, str]]:
+    """Context object properties that may link ``node`` to another instance.
+
+    A property qualifies with ``node`` as its subject when its declared domain
+    (``rdfs:domain`` or ``schema:domainIncludes``) fits ``node``'s asserted
+    types and it has a class range; as its object when its class range fits
+    them. Ordered by IRI, subject direction first.
+
+    Returns:
+        Up to ``limit`` (property, ``"from"`` or ``"to"``) pairs: ``from``
+        when ``node`` is the subject.
+    """
+    asserted = {t for t in graph.objects(node, RDF.type) if isinstance(t, URIRef)}
+    if not asserted:
+        return []
+    described = _described_classes(ontology_graph)
+    closures: dict[URIRef, set[URIRef]] = {}
+    domains = _declared_domains(ontology_graph)
+    for predicate, classes in _listed_sides(ontology_graph, "domainIncludes").items():
+        domains.setdefault(predicate, set()).update(classes)
+    ranges = declared_class_ranges(ontology_graph)
+    for predicate, classes in _listed_sides(ontology_graph, "rangeIncludes").items():
+        ranges.setdefault(predicate, set()).update(classes)
+
+    def fits(declared: set[URIRef] | None) -> bool:
+        return bool(declared) and (
+            types_compatible(
+                asserted,
+                declared or set(),
+                ontology_graph,
+                described=described,
+                closures=closures,
+            )
+            is True
+        )
+
+    found: list[tuple[URIRef, str]] = []
+    for predicate in sorted(ranges, key=str):
+        if fits(domains.get(predicate)):
+            found.append((predicate, "from"))
+    for predicate in sorted(ranges, key=str):
+        if fits(ranges.get(predicate)):
+            found.append((predicate, "to"))
+    return found[:limit]
+
+
+def domain_fits(
+    subject: URIRef, predicate: URIRef, graph: RDFGraph, ontology_graph: RDFGraph
+) -> bool:
+    """Whether ``subject``'s asserted types contradict no declared domain of ``predicate``.
+
+    The test :func:`domain_violation_findings` applies: only ``rdfs:domain``
+    entails, so only it can be contradicted.
+    """
+    declared = _declared_domains(ontology_graph).get(predicate)
+    if not declared:
+        return True
+    asserted = {t for t in graph.objects(subject, RDF.type) if isinstance(t, URIRef)}
+    return (
+        types_compatible(
+            asserted,
+            declared,
+            ontology_graph,
+            described=_described_classes(ontology_graph),
+            closures={},
+        )
+        is not False
+    )
+
+
 _COMPACT_IRI = re.compile(r"^([A-Za-z][\w.-]*):([^\s/][^\s]*)$")
 
 

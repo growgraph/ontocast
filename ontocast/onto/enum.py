@@ -158,6 +158,13 @@ class RetrievalMetric(StrEnum):
     FACTS_COMPLETION_CALLS = "facts_completion_calls"
     FACTS_COMPLETION_TRIPLES_INSERTED = "facts_completion_triples_inserted"
     FACTS_COMPLETION_MEASUREMENTS_RECOVERED = "facts_completion_measurements_recovered"
+    #: Instances linked to nothing that the gap pass linked.
+    FACTS_COMPLETION_DETACHED_LINKED = "facts_completion_detached_linked"
+    #: Domain-repair calls, statements they gave a fitting property, and
+    #: statements still violating a declared domain that were dropped.
+    FACTS_DOMAIN_REPAIR_CALLS = "facts_domain_repair_calls"
+    FACTS_DOMAIN_REPAIR_FIXED = "facts_domain_repair_fixed"
+    FACTS_DOMAIN_VIOLATIONS_DROPPED = "facts_domain_violations_dropped"
 
     # Aggregation and the un-merge repair.
     FACTS_REJECTED_MERGES = "facts_rejected_merges"

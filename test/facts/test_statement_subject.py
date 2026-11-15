@@ -174,6 +174,7 @@ def _atomic() -> AtomicToolBox:
             prefix_table=lambda: PrefixTable({}, {}),
             facts_completion_passes=1,
             facts_completion_measurements=False,
+            facts_completion_detached=False,
             facts_patch_policy=CriticPatchPolicy(),
             quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY),
             additional_standard_namespaces=(),
@@ -194,7 +195,7 @@ async def test_the_gap_pass_fires_on_a_subject_gap_alone_and_links_it(
 ) -> None:
     seen: dict[str, object] = {}
 
-    async def fake_complete(_state, _atomic, inventory, subject_gaps=()):
+    async def fake_complete(_state, _atomic, inventory, subject_gaps=(), _detached=()):
         seen["measurements"] = list(inventory.measurements)
         seen["gaps"] = [gap.subject for gap in subject_gaps]
         return [
@@ -250,7 +251,9 @@ async def test_a_fix_that_adds_a_mandatory_finding_is_rolled_back(
             ]
         return found
 
-    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         return [
             TripleFix(
                 text_fragment="x",
@@ -334,7 +337,7 @@ async def test_a_missed_measurement_alone_makes_no_call_unless_recovery_is_on(
     """Measurement recovery is opt-in; a subject gap still calls."""
     calls: list[int] = []
 
-    async def fake_complete(_state, _atomic, inventory, subject_gaps=()):
+    async def fake_complete(_state, _atomic, inventory, subject_gaps=(), _detached=()):
         calls.append(len(inventory.measurements))
         return []
 

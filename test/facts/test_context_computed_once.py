@@ -97,6 +97,7 @@ def _tools(*, context_from_units: bool = False) -> ToolBox:
             ),
             shapes_prompt_contract=lambda: ("", (), False),
             shapes_chapter_terms=lambda context_terms: frozenset(),
+            ontology_manager=SimpleNamespace(get_head_by_iri=lambda iri: None),
         ),
     )
 
@@ -185,7 +186,9 @@ async def test_merge_and_validate_reuse_the_fan_out_context(monkeypatch) -> None
     assert len(state.facts_ontology_context) > 0
 
     # Downstream aggregation reads the cached graph rather than merging again.
-    ontology_graph, _metadata = node_factories._facts_aggregation_inputs(state)
+    ontology_graph, _metadata = node_factories._facts_aggregation_inputs(
+        state, _tools()
+    )
     assert ontology_graph is state.facts_ontology_context
     assert state.budget_tracker.counters[MERGE_CALLS] == 1
 
@@ -250,7 +253,9 @@ async def test_facts_only_context_stays_empty_by_default(monkeypatch) -> None:
     await node_factories.make_render_facts_node(_tools())(state)
 
     assert len(state.facts_ontology_context) == 0
-    ontology_graph, _metadata = node_factories._facts_aggregation_inputs(state)
+    ontology_graph, _metadata = node_factories._facts_aggregation_inputs(
+        state, _tools()
+    )
     assert len(ontology_graph) == 0
 
 
@@ -274,7 +279,9 @@ async def test_facts_only_context_from_units_reaches_merge_and_validate(
     # Distinct snapshot objects per unit, one union downstream.
     assert len(set(snapshot_ids)) == 3
     assert len(state.facts_ontology_context) == 2
-    ontology_graph, _metadata = node_factories._facts_aggregation_inputs(state)
+    ontology_graph, _metadata = node_factories._facts_aggregation_inputs(
+        state, _tools()
+    )
     assert ontology_graph is state.facts_ontology_context
     assert state.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] == 2
 

@@ -105,6 +105,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `rdf/jsonld_rdflib_fallback` | `ontocast/onto/rdfgraph.py` | JSON-LD payloads that failed URDNA2015 normalization and were parsed by rdflib instead |
 | `repair/compact_iri_literal` | `ontocast/tool/facts_validation/literal_repair.py` | Compact IRIs written as plain strings on an IRI-valued position and coerced back to IRIs: in facts renders and their critic and completion patches, and on the schema predicates of ontology renders |
 | `repair/entailed_type` | `ontocast/tool/facts_validation/literal_repair.py` | `rdf:type` triples added from a predicate's `rdfs:domain` or `rdfs:range`, or on an untyped node from the one class its links list, in renders and in critic and completion patches |
+| `repair/paired_object_property` | `ontocast/tool/facts_validation/literal_repair.py` | Nodes moved off a well-known datatype property onto the object property its vocabulary pairs with it (`sosa:hasSimpleResult` to `sosa:hasResult`) |
 | `repair/triple_reversed` | `ontocast/tool/facts_validation/literal_repair.py` | Triples turned around in a facts render because both ends contradicted the predicate's domain and range as written and fit them swapped |
 | `llm/ontology_selection` | `ontocast/agent/select_ontology_catalog.py` | Ontology selection calls, one per unit in `selected_single_ontology` mode |
 | `chapter/text_chars_before` | `ontocast/agent/render_facts.py` | Summed length of capped text literals before the text caps |
@@ -113,6 +114,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `chapter/text_over_budget` | `ontocast/agent/render_facts.py` | Chapters still over `ONTOLOGY_TEXT_TOTAL_BUDGET` after every role was tightened |
 | `chapter/triples_over_budget` | `ontocast/agent/render_facts.py` | Facts chapters still over `ONTOLOGY_CONTEXT_MAX_TRIPLES` after condensing, passed through whole |
 | `ctx/merge_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Document ontology merges; `1` per document |
+| `ctx/facts_catalog_ontologies` | `ontocast/stategraph/context_resolver.py` | Catalog ontologies added, read-only, to the document's facts context beside its home ontologies: those the ontology units read, and those a home imports or extends |
 | `ctx/union_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Union chapters built; `1` per facts-only document with a document scope |
 | `ctx/admitted_planned_terms` | `ontocast/stategraph/context_resolver.py` | Terms the ontology plan reuses that were added to the facts ontology context |
 | `ctx/admitted_named_terms` | `ontocast/stategraph/context_resolver.py` | Catalog terms the facts prompt names (conformance rules, notes) whose definitions were added to the ontology context |
@@ -176,6 +178,8 @@ Facts fan-out, written in `ontocast/stategraph/node_factories.py`:
 | `facts_critic_fixes_unresolved_prefix` | Fixes naming a prefix nothing declares |
 | `facts_critic_units_unreviewed`, `facts_critic_units_skipped` | Units whose critic call failed, and units not sent to the critic |
 | `facts_completion_calls`, `facts_completion_triples_inserted`, `facts_completion_measurements_recovered` | The gap pass: calls, triples that stayed, and missed measurements found. Each pass's loop attempt also records `n_subjects_linked` |
+| `facts_completion_detached_linked` | Instances linked to nothing before a gap pass and linked after it (`n_detached_linked` on the pass's loop attempt) |
+| `facts_domain_repair_calls`, `facts_domain_repair_fixed`, `facts_domain_violations_dropped` | The domain repair: calls (loop attempts of kind `domain_repair`), statements given a property that fits their subject, and statements removed because they were still in domain violation when the unit left its loop (`domain_violation_dropped` repair records) |
 
 Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 `ontocast/stategraph/facts_gate.py` and `ontocast/tool/facts_validation/gate.py`:

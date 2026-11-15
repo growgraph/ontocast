@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `FACTS_VOCABULARY=strict|open`. Both modes use the catalog first, then the built-in well-known vocabularies (RDF, RDFS, OWL, XSD, SKOS, Dublin Core, PROV-O, SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF, schema.org and QUDT) and `FACTS_ADDITIONAL_STANDARD_NAMESPACES`, all named in the prompt. `strict` (the default) stops there: a thing these cannot type or relate is not minted, a term of any other vocabulary is `unknown_term`, and `non_catalog_vocabulary` is an error. `open` also admits any other established vocabulary, as warnings. `FACTS_QUANTITY_FALLBACK_VOCABULARY` takes an optional `carrier` role.
-- A term of a well-known vocabulary must exist in it: one it does not have is `unknown_term` with near-miss suggestions, an error at the gate under `strict`, and `foreign_namespace` when an ontology render mints it. The QUDT schema (every term of its 2.1 and 3.x releases) and vCard term lists ship with the package; QUDT units and quantity kinds are admitted by namespace.
+- A term of a well-known vocabulary must exist in it: one it does not have is `unknown_term` with near-miss suggestions, an error at the gate under `strict`, and `foreign_namespace` when an ontology render mints it. The QUDT schema (every term of its 2.1 and 3.x releases), QUDT unit (every unit of 3.1.4) and vCard term lists ship with the package; QUDT quantity kinds are admitted by namespace. A unit is taken from the ontology context first, then from the QUDT list, else kept as text on the value node.
 - Ontology findings `hierarchy_too_deep` (blocking; bound `ONTOLOGY_MAX_CLASS_DEPTH`, default 6), `value_set_siblings`, `catalog_duplicate` (against the whole catalog, with the catalog IRI as candidate) and the advisory `specific_label_leaf`.
 - A minted ontology term left unlabelled gets an `rdfs:label` derived from its local name, without a model call (`ontology/labels_derived`).
 - Ontology plan (`ONTOLOGY_PLAN_ENABLED`, on by default): one call per document, before units render, lists the terms the document adds to its domain; proposals are checked against the whole catalog, and every unit renders against the plan. New node `Plan Ontology` and LLM phase `ontology_plan`.
@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `statement_without_subject` unit finding (mandatory): an observation that states a value with no subject property from or to it (`sosa:hasFeatureOfInterest`, `sosa:isFeatureOfInterestOf`, and the catalog's sub-properties and inverses of either), or a value linked to no other instance of its part. Statement classes are SOSA's `Observation`, `Actuation` and `Sampling` and every catalog class under one. Metrics `facts_statements_without_subject_rendered` and `facts_statements_without_subject`.
 - Rule 3c in the facts prompt: every observation names what it is about, in the direction its property runs, and the final checklist checks it. The term sheet lists `sosa:hasFeatureOfInterest`, `sosa:observedProperty` and `sosa:hasResult` beside a catalog's observation classes.
 - `facts_mandatory_residual_by_kind` in the run manifest: the mandatory findings left on the facts units, per finding kind.
+- `FACTS_COMPLETION_DETACHED` (on by default): the gap pass also runs on a unit holding an instance linked to nothing, and asks for the one link the text states to an existing instance, with candidate properties whose domain or range fits it. Metric `facts_completion_detached_linked`.
+- After an ontology stage, the facts context holds, beside the document's home ontologies, the catalog ontologies they rest on (read-only): those the ontology units were rendered against and those a home imports or extends. A home that extends an external catalog, or a fresh home, no longer leaves the facts render without the catalog. Counter `ctx/facts_catalog_ontologies`.
+- Facts domain repair: a unit still holding a `domain_violation` after the critic loop gets one call that may only swap each such statement's property for one whose domain the subject fits (`FACTS_COMPLETION_PASSES` > 0). Statements still in violation are removed when the unit leaves its loop (`domain_violation_dropped` repair records). Metrics `facts_domain_repair_calls`, `facts_domain_repair_fixed`, `facts_domain_violations_dropped`; loop attempt kind `domain_repair`.
+- A node written on `sosa:hasSimpleResult` moves to `sosa:hasResult`, the object property SOSA pairs with it, without a model call (`paired_object_property` repair records, counter `repair/paired_object_property`).
+- Facts prompt rule 1e: a property applies only to a subject of its declared domain; provenance and observation properties are not generic links.
 - A planned property names its domain and range, shown to the render (`plan_generic_sides` counts generic ones, which are kept).
 - At reduce, a planned property's domain and range are the plan's, whatever a render wrote (`plan_sides_written`).
 - Ontology clean-up: a domain, range or parent naming an IRI under `CURRENT_DOMAIN` that nothing declares is rewritten to the one declared term with that local name, else removed (`undeclared_owned_references_rewritten`, `undeclared_owned_references_dropped`).
@@ -33,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `CHUNK_MAX_SIZE` defaults to 6000 (was 12000): shorter units extract more facts from long documents, at a proportional token cost. Set 12000 to keep the old behaviour.
+- `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` defaults to true: two IRI objects one unit gave a property are a warning, not an error that triggers the un-merge repair; numeric and string values are unchanged.
 - `FACTS_CRITIC_PASSES` defaults to 0: a facts unit costs one render call, and the facts critic runs only when set to 1 or more.
 - A value set gets a class of its own under `skos:Concept`, used as the property's range; each value is typed both `skos:Concept` and that class.
 - The facts and ontology prompts give domain-neutral examples, and `specific_label_leaf` no longer reads a token as a chemical formula.
@@ -59,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A prefixed name a model splits with a stray space (`cd:lytt on`, `cd: june_2021`) is closed at every occurrence where the Turtle parser stops, kept only when the whole graph then parses, so the answer no longer costs a retry.
+- Statements a model runs together on one line after a `;` (`… ; cd:x p o .`, the node restating a subject) are split where the Turtle parser stops, kept only when the whole graph then parses.
 - A measurement counts as present in the graph when any node, blank or named, states its number (value or bound) with its unit, as an IRI or kept as text on that node; the gap pass no longer re-adds values a render already wrote.
 - A unit IRI the ontology context does not hold is `unknown_term`, so a patch that links one is rolled back.
 - The gap-pass prompt lists every catalog type of a subject, sorted, and picks labels deterministically, so the same graph gives the same prompt and a replay hits the cache.

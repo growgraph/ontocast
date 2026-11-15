@@ -26,7 +26,8 @@ class UnitLoopContext(BasePydanticModel):
     """Document-level inputs for one unit's ontology/facts loop.
 
     ``reduced_ontology_artifacts`` is shared by reference with the document
-    state — the loops only read it. ``ontology_plan`` is the document's plan,
+    state — the loops only read it. ``ontology_sources`` are the catalog
+    ontologies the document's ontology units were rendered against. ``ontology_plan`` is the document's plan,
     whose reused terms every facts context admits. ``retrieval_metrics`` is per-unit and is
     folded back into the document state after the fan-out gathers.
     """
@@ -38,6 +39,7 @@ class UnitLoopContext(BasePydanticModel):
     ontology_context_fixed_ontology_id: str = ""
     home_ontology: OntologyIdentity | None = None
     reduced_ontology_artifacts: list[Ontology] = Field(default_factory=list)
+    ontology_sources: list[str] = Field(default_factory=list)
     ontology_plan: OntologyPlan | None = None
     budget_tracker: BudgetTracker = Field(default_factory=BudgetTracker)
     retrieval_metrics: dict[str, int | float | str | dict[str, Any]] = Field(
@@ -69,6 +71,13 @@ class UnitLoopContext(BasePydanticModel):
             reduced_ontology_artifacts=document_ontology_access(
                 state
             ).reduced_artifacts(),
+            ontology_sources=sorted(
+                {
+                    iri
+                    for iris in state.unit_context_sources.get("ontology", {}).values()
+                    for iri in iris
+                }
+            ),
             ontology_plan=state.ontology_plan,
             budget_tracker=budget_tracker
             if budget_tracker is not None

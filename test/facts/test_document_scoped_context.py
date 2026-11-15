@@ -96,6 +96,7 @@ def _tools(*, scope: OntologyContextScope, warmup: int = 0) -> ToolBox:
             ),
             shapes_prompt_contract=lambda: ("", (), False),
             shapes_chapter_terms=lambda context_terms: frozenset(),
+            ontology_manager=SimpleNamespace(get_head_by_iri=lambda iri: None),
         ),
     )
 

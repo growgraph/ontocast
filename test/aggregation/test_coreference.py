@@ -196,7 +196,13 @@ def _judge(verdicts: dict[int, str]):
 @pytest.mark.anyio
 async def test_a_different_verdict_splits_an_unconfirmed_merge(monkeypatch) -> None:
     aggregator = _one_cluster_aggregator(monkeypatch)
-    tools = cast(ToolBox, SimpleNamespace(aggregator=aggregator))
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            aggregator=aggregator,
+            ontology_manager=SimpleNamespace(get_head_by_iri=lambda iri: None),
+        ),
+    )
     state = _state(
         [
             _unit(0, 'cd:max_temp a q:Property ; rdfs:label "maximum temperature" .'),
@@ -223,7 +229,13 @@ async def test_a_different_verdict_splits_an_unconfirmed_merge(monkeypatch) -> N
 @pytest.mark.anyio
 async def test_a_same_verdict_merges_what_wording_kept_apart(monkeypatch) -> None:
     aggregator = _one_cluster_aggregator(monkeypatch)
-    tools = cast(ToolBox, SimpleNamespace(aggregator=aggregator))
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            aggregator=aggregator,
+            ontology_manager=SimpleNamespace(get_head_by_iri=lambda iri: None),
+        ),
+    )
     state = _state(
         [
             _unit(0, 'cd:applicant a q:Person ; rdfs:label "the first applicant" .'),
@@ -245,7 +257,13 @@ async def test_a_same_verdict_merges_what_wording_kept_apart(monkeypatch) -> Non
 async def test_a_same_verdict_never_overrides_a_guard(monkeypatch) -> None:
     """Two entities one unit minted stay apart whatever the model says."""
     aggregator = _one_cluster_aggregator(monkeypatch)
-    tools = cast(ToolBox, SimpleNamespace(aggregator=aggregator))
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            aggregator=aggregator,
+            ontology_manager=SimpleNamespace(get_head_by_iri=lambda iri: None),
+        ),
+    )
     state = _state(
         [
             _unit(
@@ -277,7 +295,13 @@ async def test_a_same_verdict_never_overrides_a_guard(monkeypatch) -> None:
 
 def test_one_unit_has_no_coreference_to_resolve(monkeypatch) -> None:
     aggregator = _one_cluster_aggregator(monkeypatch)
-    tools = cast(ToolBox, SimpleNamespace(aggregator=aggregator))
+    tools = cast(
+        ToolBox,
+        SimpleNamespace(
+            aggregator=aggregator,
+            ontology_manager=SimpleNamespace(get_head_by_iri=lambda iri: None),
+        ),
+    )
     state = _state([_unit(0, 'cd:a a q:Person ; rdfs:label "A" .')])
     make_merge_facts_node(tools)(state)
     assert state.coreference_candidates == []

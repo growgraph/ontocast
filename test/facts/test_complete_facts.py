@@ -97,6 +97,7 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
             prefix_table=lambda: PrefixTable({}, {}),
             facts_completion_passes=completion_passes,
             facts_completion_measurements=True,
+            facts_completion_detached=False,
             facts_patch_policy=CriticPatchPolicy(),
             quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY),
             additional_standard_namespaces=(),
@@ -158,7 +159,9 @@ def _poison_sensitive_findings(state, _atomic) -> list[FactsUnitFinding]:
 async def test_a_pass_produces_only_additions(monkeypatch) -> None:
     state = _unit_state()
 
-    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -187,7 +190,9 @@ async def test_a_regressing_insert_is_rolled_back(monkeypatch) -> None:
     state = _unit_state()
     poison = f'<{_SUBJECT}> <{_POISON}> "bad" .'
 
-    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         return [_fix(poison)]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -214,7 +219,9 @@ async def test_only_add_fixes_are_kept(monkeypatch) -> None:
     """
     state = _unit_state()
 
-    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         return [
             _fix(_mev_insert()),
             TripleFix(
@@ -242,7 +249,9 @@ async def test_n_measurements_recovered_counts_precisely(monkeypatch) -> None:
     """One of two missing measurements is addressed; the count reflects that."""
     state = _unit_state(text="a shift of 96 meV and a gap of 12 nm")
 
-    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -261,7 +270,9 @@ async def test_it_stops_early_once_measurements_are_covered(monkeypatch) -> None
     state = _unit_state()
     calls = {"n": 0}
 
-    async def fake_complete(_state, _atomic, _inventory, _subject_gaps=()):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         calls["n"] += 1
         return [_fix(_mev_insert())]
 
@@ -295,6 +306,7 @@ def _facts_tools(*, completion_passes: int) -> object:
             facts_critic_min_triples=0,
             facts_completion_passes=completion_passes,
             facts_completion_measurements=True,
+            facts_completion_detached=False,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
             subject_contract=lambda: None,
@@ -425,12 +437,15 @@ def _gap_term_sheet(*, vocabulary: dict[str, str], contract) -> str:
     )
 
 
-def test_the_guidelines_keep_an_unlisted_unit_as_text_and_ask_for_a_subject() -> None:
+def test_the_guidelines_take_a_qudt_unit_else_keep_it_as_text_and_ask_for_a_subject() -> (
+    None
+):
     from ontocast.prompt.complete_facts import completion_instruction
 
     text = " ".join(completion_instruction.split())
+    assert "use the QUDT unit (`unit:`) for exactly that unit" in text
     assert "keep the unit token as text on the value node" in text
-    assert "never a unit IRI the TERM SHEET does not list" in text
+    assert "never an invented or approximate unit IRI" in text
     assert "A value node nothing points to is not a fact" in text
 
 

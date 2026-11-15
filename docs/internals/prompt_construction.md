@@ -192,9 +192,17 @@ on the render mode and
 [`ONTOLOGY_CONTEXT_SCOPE`](../reference/configuration/pipeline.md#ontology_context_scope)
 (`ontocast/stategraph/node_factories.py`, `ontocast/stategraph/context_resolver.py`):
 
-- **After an ontology stage** (`ontology_and_facts`), the reduced ontology
-  artifacts are merged once per document and every unit reads that merge. The
-  counter `ctx/merge_document_ontology.calls` is `1` per document.
+- **After an ontology stage** (`ontology_and_facts`), one context is built per
+  document and every unit reads it. It holds the document's home ontologies as
+  the ontology stage left them, plus, read-only, the catalog ontologies they
+  rest on: every ontology the document's ontology units were rendered against,
+  and every one a home imports or extends, followed through the catalog's own
+  imports. A home that extends an external catalog, or a home minted for the
+  document, holds only the terms documents added; the catalog beside it is
+  what keeps the facts render on the catalog's vocabulary. The same context is
+  built when the ontology stage wrote nothing. The counter
+  `ctx/merge_document_ontology.calls` is `1` per document, and
+  `ctx/facts_catalog_ontologies` counts the catalog ontologies added.
 - **Facts only, `unit` scope** (default): each unit resolves its own context,
   so chapters match only where two units resolve the same context.
 - **Facts only, `document` scope**: every unit's context is resolved first

@@ -145,6 +145,7 @@ class AtomicToolBox:
         # only when their recovery is on.
         self.facts_completion_passes = facts_validation.completion_passes
         self.facts_completion_measurements = facts_validation.completion_measurements
+        self.facts_completion_detached = facts_validation.completion_detached
         self.facts_patch_policy = CriticPatchPolicy(
             max_delete_share=facts_validation.critic_max_delete_share,
             min_deletes=facts_validation.critic_min_deletes,

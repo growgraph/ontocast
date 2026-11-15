@@ -21,6 +21,7 @@ from collections.abc import Sequence
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
+from rdflib import URIRef
 
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import LLMPhase
@@ -29,6 +30,7 @@ from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import text_template, user_template
 from ontocast.prompt.complete_facts import (
     build_catalog_subjects_chapter,
+    build_detached_chapter,
     build_missing_measurements_chapter,
     build_subject_gaps_chapter,
     build_term_sheet,
@@ -43,6 +45,7 @@ from ontocast.tool.facts_validation import (
     collect_catalog_terms,
     expand_vocabulary_terms,
 )
+from ontocast.tool.facts_validation.terms import link_properties
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.util.numeric_inventory import NumericInventory
 
@@ -77,6 +80,7 @@ def _build_prompt() -> PromptTemplate:
             "text_chapter",
             "missing_measurements_chapter",
             "subject_gaps_chapter",
+            "detached_chapter",
             "output_instruction",
             "format_instructions",
         ],
@@ -88,6 +92,7 @@ async def complete_facts(
     atomic: AtomicToolBox,
     inventory: NumericInventory,
     subject_gaps: Sequence[FactsUnitFinding] = (),
+    detached: Sequence[URIRef] = (),
 ) -> list[TripleFix]:
     """Propose insert-only fixes closing the unit's gaps.
 
@@ -99,14 +104,15 @@ async def complete_facts(
             by the caller so the completion pass and the NUMERIC_COVERAGE
             finding agree on what is missing.
         subject_gaps: The unit's ``statement_without_subject`` findings.
-            With no gap of either kind there is no call.
+        detached: The unit's instances linked to nothing that no subject gap
+            names. With no gap of any kind there is no call.
 
     Returns:
         Proposed fixes, action ``ADD`` only. Anything else the model returns
         is dropped defensively rather than trusted -- this pass is
         insert-only by contract, not by the model's cooperation.
     """
-    if not inventory.measurements and not subject_gaps:
+    if not inventory.measurements and not subject_gaps and not detached:
         return []
 
     llm_tool = await atomic.get_llm_tool(state.budget_tracker)
@@ -132,6 +138,13 @@ async def complete_facts(
     )
     missing_measurements_chapter = build_missing_measurements_chapter(inventory)
     subject_gaps_chapter = build_subject_gaps_chapter(fact_graph, subject_gaps)
+    detached_chapter = build_detached_chapter(
+        fact_graph,
+        [
+            (node, link_properties(node, fact_graph, ontology_graph))
+            for node in detached
+        ],
+    )
 
     user_instruction = (
         user_template.format(user_instruction=state.facts_user_instruction)
@@ -150,6 +163,7 @@ async def complete_facts(
         "text_chapter": text_chapter,
         "missing_measurements_chapter": missing_measurements_chapter,
         "subject_gaps_chapter": subject_gaps_chapter,
+        "detached_chapter": detached_chapter,
         "output_instruction": output_instruction_for(profile.format),
         "format_instructions": profile.format_instructions(
             FactsCompletionReport, web_search_enabled=False

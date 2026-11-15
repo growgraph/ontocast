@@ -135,6 +135,7 @@ machine can decide without the model:
 | Compact-IRI literal coercion | A plain string such as `"unit:NanoM"` on another predicate becomes the IRI, when its prefix is bound and either the schema says the predicate takes an IRI or the IRI is a catalog or fallback-vocabulary term. Critic and completion patches get the same repair before they are judged |
 | Near-miss predicate rewrite | A class written as a type that exists nowhere is rewritten to the catalog class with exactly its local name in another namespace: the only one, or among several the one that is a subclass of every other (`class_alias`). A predicate that exists nowhere (not a catalog term, not a real term of a well-known vocabulary) is rewritten to the one catalog property, across the whole catalog, in another namespace with exactly its local name (a slipped prefix, also into a well-known namespace); otherwise, in a namespace the catalog declares terms in, to the one catalog term of its own namespace whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
 | Code resolution | A node carrying a code from `FACTS_CODE_PREDICATES` (such as `qudt:ucumCode "d"`) but no link to the coded individual gains that link, when exactly one catalog individual declares the code. The linking property comes from the schema's domain and range, or else from how the graph already links such nodes |
+| Paired object properties | A node (IRI or blank) written on a well-known datatype property that its vocabulary pairs with an object property for the same relation moves to that property: `sosa:hasSimpleResult` becomes `sosa:hasResult`. Records are kind `paired_object_property`. Critic and completion patches get the same repair |
 | Reversed triples | `x p y` becomes `y p x` when `p` declares an `rdfs:domain` and an `rdfs:range`, both ends are typed IRIs, `x` contradicts the domain and `y` the range as written, and swapped both fit. One end fitting, an untyped end, a type the context does not place, or a symmetric property leaves the triple as written. Records are kind `triple_reversed`. Critic and completion patches get the same repair |
 | Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. An IRI still untyped takes the class a link lists through `schema:domainIncludes` or `schema:rangeIncludes`, when the property lists exactly one class, declares no `rdfs` counterpart, and all of the node's links agree. Critic and completion patches get the same repair |
 | Degenerate bounds | Equal lower and upper bounds become one value, when the quantity fallback vocabulary names `numeric_value`, `lower_bound` and `upper_bound` |
@@ -216,10 +217,10 @@ candidates are offered only by token containment and filtered by role, so a
 property is never offered as a class or the reverse.
 
 A well-known term must exist in its vocabulary, checked against rdflib's
-bundled term lists, and the QUDT schema and vCard lists that ship with OntoCast
-(QUDT units and quantity kinds are admitted by namespace). A unit namespace
-is open, so a unit linked through the unit property must also appear in the
-ontology context; otherwise the render keeps the unit's token as text.
+bundled term lists, and the QUDT schema, QUDT unit and vCard lists that ship
+with OntoCast (QUDT quantity kinds are admitted by namespace). A unit linked
+through the unit property must be a unit individual of the ontology context or
+a unit of the QUDT list; otherwise the render keeps the unit's token as text.
 One it does not have is `unknown_term` in both modes, with the vocabulary's
 near-misses as suggestions; an ontology render that mints one gets
 `foreign_namespace`.
@@ -326,9 +327,11 @@ a score rule (`success`, or a score above 90) would have decided.
 The critic judges whether what was rendered is right, not whether something is
 missing. `FACTS_COMPLETION_PASSES` (default 1) adds insert-only passes after the
 critic loop, run only while the unit has a gap: a `statement_without_subject`
-finding holds, or, with `FACTS_COMPLETION_MEASUREMENTS=true` (off by default),
-the numeric inventory still lists a measurement (a number with its unit)
-absent from the graph. A unit with no gap makes no call.
+finding holds; with `FACTS_COMPLETION_DETACHED=true` (the default), an
+instance is linked to no other instance; or, with
+`FACTS_COMPLETION_MEASUREMENTS=true` (off by default), the numeric inventory
+still lists a measurement (a number with its unit) absent from the graph. A
+unit with no gap makes no call.
 Each pass:
 
 - shows the model a term sheet instead of the full ontology chapter: the
@@ -341,15 +344,40 @@ Each pass:
   attaches to a node that is already there;
 - lists the missing measurements, and the statements that name nothing with
   the unit's candidate subjects;
+- lists the instances linked to nothing, each with the context's object
+  properties whose domain or class range fits it and the direction it would
+  take, and asks for the one link the text states to an existing instance;
 - asks for each recovered measurement as a statement about a subject, never a
-  value on its own, with a unit the term sheet does not list kept as text on
-  the value node;
+  value on its own, with a unit the term sheet does not list taken from QUDT
+  when the model is certain of its name, else kept as text on the value node;
 - keeps only `ADD` fixes, whatever else the model returns;
 - applies them through the same one-at-a-time regression check as critic
   fixes.
 
 The passes stop as soon as no gap is left. Each records the measurements it
-recovered and the statements it gave a subject on its loop attempt.
+recovered, the statements it gave a subject and the detached instances it
+linked on its loop attempt.
+
+### Domain repair
+
+A `domain_violation` is a statement whose property declares an `rdfs:domain`
+that the subject's asserted types contradict; served, it would entail a type
+the subject does not have. With `FACTS_COMPLETION_PASSES` above 0, a unit that
+still holds one after the critic loop gets one call before the gap passes:
+
+- each such statement is listed under a citable id, with its subject's and
+  object's types and labels, the classes its property applies to, and the
+  context properties whose domain fits the subject and whose range does not
+  contradict the object;
+- the model may answer only with `REPLACE` fixes citing those ids;
+- a fix is applied only if it swaps the property and nothing else (same
+  subject, same object, no other statement) for one whose declared domain the
+  subject fits, then goes through the same regression check as critic fixes.
+
+Whatever is still in violation when the unit leaves its loop is removed, with
+the blank nodes only it reached, as a `domain_violation_dropped` repair record
+(subject as source, property as target). This drop runs whatever the pass
+budget.
 
 ## Layer 3: the post-merge gate
 
@@ -373,9 +401,9 @@ recovered and the statements it gave a subject on its loop attempt.
     | `mixed_object_kinds`: a property used with both IRI and literal objects | warning | reported |
 
     String values on a cluster confirmed by a natural key are reported as
-    warnings. With `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT`, two IRI
-    objects asserted by a single unit are a warning: only objects from
-    different units can come from a bad merge.
+    warnings. With `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` (on by
+    default), two IRI objects asserted by a single unit are a warning: only
+    objects from different units can come from a bad merge.
 3. **Un-merge repair** (document path only). The first three kinds are merge
    signatures: two things that are not the same got one IRI. A finding
    implicates a cluster: the subject's for `functional_violation` and

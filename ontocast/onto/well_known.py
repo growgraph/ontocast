@@ -3,9 +3,9 @@
 Every facts vocabulary mode admits them: the W3C and DCMI core, FOAF,
 schema.org and QUDT. A term of one of them must exist in it. Term lists come
 from rdflib's bundled namespace definitions; RDF 1.2 terms rdflib does not
-list yet are added here. The QUDT schema and vCard lists ship as data in
-``vocabularies/``. QUDT units and quantity kinds are individuals in their
-thousands, so those two namespaces are admitted without a list.
+list yet are added here. The QUDT schema, QUDT unit and vCard lists ship as
+data in ``vocabularies/``. QUDT quantity kinds are admitted by namespace,
+without a list.
 
 Some vocabularies also name the classes of structured values (a quantity, an
 amount): a node of such a class belongs to the statement that carries it.
@@ -39,6 +39,8 @@ from rdflib.namespace import (
     DefinedNamespace,
 )
 
+QUDT_UNIT_NAMESPACE = "http://qudt.org/vocab/unit/"
+
 _RDF_12_TERMS = ("reifies", "dirLangString", "CompoundLiteral", "language", "direction")
 _CONTAINER_MEMBER = re.compile(r"_[1-9][0-9]*")
 
@@ -68,6 +70,9 @@ class WellKnownVocabulary(BaseModel):
         subject_links: Local name -> direction of the properties that link a
             statement and what it is about: ``forward`` runs from the
             statement to its subject, ``inverse`` from the subject.
+        object_pairs: Local name of a datatype property -> local name of the
+            object property the vocabulary gives for the same relation when
+            the object is a node.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -84,6 +89,7 @@ class WellKnownVocabulary(BaseModel):
     subject_links: dict[str, Literal["forward", "inverse"]] = Field(
         default_factory=dict
     )
+    object_pairs: dict[str, str] = Field(default_factory=dict)
 
     def has_term(self, local_name: str) -> bool:
         """Whether ``local_name`` is a term of this vocabulary."""
@@ -112,6 +118,7 @@ def _vocabulary(
     statement_classes: tuple[str, ...] = (),
     statement_properties: dict[str, str] | None = None,
     subject_links: dict[str, Literal["forward", "inverse"]] | None = None,
+    object_pairs: dict[str, str] | None = None,
 ) -> WellKnownVocabulary:
     return WellKnownVocabulary(
         prefix=prefix,
@@ -124,6 +131,7 @@ def _vocabulary(
         statement_classes=frozenset(statement_classes),
         statement_properties=statement_properties or {},
         subject_links=subject_links or {},
+        object_pairs=object_pairs or {},
     )
 
 
@@ -204,6 +212,7 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
             "hasFeatureOfInterest": "forward",
             "isFeatureOfInterestOf": "inverse",
         },
+        object_pairs={"hasSimpleResult": "hasResult"},
     ),
     _vocabulary("ssn", "SSN", SSN),
     _vocabulary(
@@ -250,7 +259,7 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
         "qudt_schema.txt",
         value_classes=("QuantityValue",),
     ),
-    _by_namespace("unit", "QUDT units", "http://qudt.org/vocab/unit/"),
+    _listed("unit", "QUDT units", QUDT_UNIT_NAMESPACE, "qudt_units.txt"),
     _by_namespace(
         "quantitykind", "QUDT quantity kinds", "http://qudt.org/vocab/quantitykind/"
     ),
@@ -282,6 +291,11 @@ def well_known_namespaces() -> tuple[str, ...]:
 def well_known_vocabulary(iri: str) -> WellKnownVocabulary | None:
     """The well-known vocabulary ``iri`` belongs to, if any."""
     return _index().get(_split(iri)[0])
+
+
+def is_listed_unit(iri: str) -> bool:
+    """Whether ``iri`` is a unit of the shipped QUDT unit list."""
+    return iri.startswith(QUDT_UNIT_NAMESPACE) and is_well_known_term(iri) is True
 
 
 def is_well_known_term(iri: str) -> bool | None:
@@ -434,6 +448,21 @@ def well_known_subject_links() -> tuple[frozenset[str], frozenset[str]]:
 
 
 @cache
+@cache
+def well_known_object_pairs() -> dict[str, str]:
+    """Datatype property IRI -> the object property IRI paired with it.
+
+    The pair states the same relation with a node as its object, so a node
+    written on the datatype property belongs on the object property.
+    """
+    return {
+        namespace + datatype_property: namespace + object_property
+        for vocabulary in WELL_KNOWN_VOCABULARIES
+        for namespace in vocabulary.namespaces
+        for datatype_property, object_property in vocabulary.object_pairs.items()
+    }
+
+
 def well_known_temporal_properties() -> frozenset[str]:
     """Property IRIs of the well-known vocabularies whose object is a time."""
     return frozenset(
@@ -453,12 +482,15 @@ def well_known_prompt_list() -> str:
 
 
 __all__ = [
+    "QUDT_UNIT_NAMESPACE",
     "WELL_KNOWN_VOCABULARIES",
     "WellKnownRole",
     "WellKnownVocabulary",
+    "is_listed_unit",
     "is_well_known_term",
     "well_known_role",
     "well_known_namespaces",
+    "well_known_object_pairs",
     "well_known_prompt_list",
     "well_known_terms",
     "well_known_datatype_ranges",

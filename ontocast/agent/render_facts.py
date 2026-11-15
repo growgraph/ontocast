@@ -54,6 +54,7 @@ from ontocast.tool.facts_validation import (
     promote_degenerate_bounds_from_vocabulary,
     repair_compact_iri_literals,
     repair_literal_type_objects,
+    repair_paired_object_properties,
     repair_property_aliases,
     repair_reversed_triples,
     resolve_code_literals,
@@ -120,6 +121,7 @@ def _normalize_and_repair_graph(
     resolved, code_records = resolve_code_literals(
         graph, ontology_context_graph, tools.code_predicates
     )
+    paired, paired_records = repair_paired_object_properties(graph)
     axioms = tools.catalog_roles().with_axioms(ontology_context_graph)
     reversed_count, reversed_records = repair_reversed_triples(graph, axioms)
     entailed, entailed_records = materialize_entailed_types(graph, axioms)
@@ -136,19 +138,22 @@ def _normalize_and_repair_graph(
         or type_repaired
         or iri_repaired
         or resolved
+        or paired
         or reversed_count
         or entailed
     ):
         logger.info(
             "Deterministic graph repair: retyped %d literal(s), coerced %d "
             "rdf:type literal(s), coerced %d compact-IRI literal(s), rewrote %d "
-            "alias triple(s), resolved %d code(s), turned %d triple(s), "
-            "materialised %d entailed type(s)",
+            "alias triple(s), resolved %d code(s), moved %d node(s) to a paired "
+            "object property, turned %d triple(s), materialised %d entailed "
+            "type(s)",
             retyped,
             type_repaired,
             iri_repaired,
             rewritten,
             resolved,
+            paired,
             reversed_count,
             entailed,
         )
@@ -157,6 +162,7 @@ def _normalize_and_repair_graph(
         *iri_records,
         *alias_records,
         *code_records,
+        *paired_records,
         *reversed_records,
         *entailed_records,
     ]

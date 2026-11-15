@@ -1,7 +1,7 @@
 from copy import deepcopy
 
 import pytest
-from rdflib import Graph, Literal, URIRef
+from rdflib import RDF, Graph, Literal, URIRef
 
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.rdfgraph import (
@@ -540,3 +540,69 @@ def test_a_split_name_before_a_comma_is_closed() -> None:
         URIRef("http://www.w3.org/ns/prov#wasAttributedTo"),
         URIRef("https://example.com/facts/adolf_kraus"),
     ) in graph
+
+
+_RESTATED_PREFIXES = (
+    "@prefix cd: <https://example.com/facts/> . "
+    "@prefix prov: <http://www.w3.org/ns/prov#> . "
+    "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> . "
+)
+_FACT = "https://example.com/facts/"
+_PROV = "http://www.w3.org/ns/prov#"
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        'cd:iww a prov:Agent ; rdfs:label "IWW. A union; founded" ; '
+        "cd:iww prov:wasDerivedFrom cd:hagerty .",
+        "<https://example.com/facts/iww> a prov:Agent ; "
+        "<https://example.com/facts/iww> prov:wasDerivedFrom cd:hagerty .",
+        "cd:iww a prov:Agent ; cd:iww prov:wasDerivedFrom cd:hagerty ; "
+        "prov:atLocation cd:chicago . cd:x a prov:Entity ; cd:x prov:value 'q' .",
+    ],
+)
+def test_a_subject_restated_after_a_semicolon_on_one_line_ends_the_statement(
+    written: str,
+) -> None:
+    graph = RDFGraph._from_turtle_str(_RESTATED_PREFIXES + written)
+
+    assert (
+        URIRef(f"{_FACT}iww"),
+        URIRef(f"{_PROV}wasDerivedFrom"),
+        URIRef(f"{_FACT}hagerty"),
+    ) in graph
+    assert (URIRef(f"{_FACT}iww"), RDF.type, URIRef(f"{_PROV}Agent")) in graph
+
+
+def test_another_subject_after_a_semicolon_is_not_taken_for_a_restated_one() -> None:
+    # Two objects without a comma: ending the statement would make the
+    # predicate a subject.
+    ttl = _RESTATED_PREFIXES + "cd:a a prov:Agent ; prov:wasDerivedFrom cd:t cd:u ."
+
+    with pytest.raises(Exception):
+        RDFGraph._from_turtle_str(ttl)
+
+
+def test_statements_run_together_after_text_with_non_ascii_characters_are_split() -> (
+    None
+):
+    # Each restated node opens a statement of its own elsewhere; the stops sit
+    # after text whose characters take several bytes.
+    ttl = _RESTATED_PREFIXES + (
+        'cd:lucy a prov:Agent ; rdfs:label "Lucy Béhag — 35 °C" . '
+        'cd:sue a prov:Agent ; rdfs:label "Süe" . '
+        "cd:julie prov:wasDerivedFrom cd:julie_awards ; "
+        "cd:lucy prov:wasDerivedFrom cd:lucy_awards ; "
+        "cd:sue prov:wasDerivedFrom cd:sue_awards ."
+    )
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    derived = URIRef(f"{_PROV}wasDerivedFrom")
+    for name in ("julie", "lucy", "sue"):
+        assert (
+            URIRef(f"{_FACT}{name}"),
+            derived,
+            URIRef(f"{_FACT}{name}_awards"),
+        ) in graph

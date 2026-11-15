@@ -1,7 +1,7 @@
 """Tests for deterministic literal-object checks on rendered facts graphs."""
 
 import pytest
-from rdflib import Literal, Namespace
+from rdflib import Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
 from ontocast.onto.enum import LLMGraphFormat
@@ -355,6 +355,7 @@ def _units_flagged(
     *,
     with_units: bool = True,
     quantity_vocabulary: bool = True,
+    second_unit: URIRef = UNIT.Kilometer,
 ) -> list[str]:
     from ontocast.onto.model import FactsUnitFindingKind
     from ontocast.prompt.facts_guidelines import DEFAULT_QUANTITY_FALLBACK_VOCABULARY
@@ -364,7 +365,7 @@ def _units_flagged(
     onto = _unit_ontology()
     onto.add((UNIT.DEG_C, RDF.type, QUDT.Unit))
     facts = RDFGraph()
-    for value, unit in (("v1", UNIT.DEG_C), ("v2", UNIT.Kilometer)):
+    for value, unit in (("v1", UNIT.DEG_C), ("v2", second_unit)):
         facts.add((CD[value], QUDT.numericValue, Literal("2", datatype=XSD.decimal)))
         if with_units:
             facts.add((CD[value], QUDT.unit, unit))
@@ -391,9 +392,13 @@ def _units_flagged(
     ]
 
 
-def test_a_unit_the_context_lacks_is_an_unknown_term() -> None:
-    """Unit namespaces are open, so only the context says a unit is real."""
+def test_a_unit_neither_the_context_nor_qudt_has_is_an_unknown_term() -> None:
+    """``unit:Kilometer`` is a plausible name QUDT does not have."""
     assert _units_flagged() == [str(UNIT.Kilometer)]
+
+
+def test_a_qudt_unit_the_context_lacks_is_known() -> None:
+    assert _units_flagged(second_unit=UNIT.KiloM) == []
 
 
 def test_a_unit_of_the_full_catalog_is_known() -> None:

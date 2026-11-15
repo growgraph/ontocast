@@ -29,6 +29,8 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import (
     FactsGateRepairKind,
+    FactsUnitFinding,
+    FactsUnitFindingKind,
     FactsValidationFinding,
     FactsValidationFindingKind,
     GraphRepairRecord,
@@ -474,6 +476,64 @@ def _remove_instances(graph: RDFGraph, instances: Sequence[URIRef]) -> int:
     removed_nodes |= orphaned
     drop_reifiers_mentioning(graph, removed_nodes)
     return removed + orphan_triples
+
+
+def drop_domain_violations(
+    graph: RDFGraph, findings: Sequence[FactsUnitFinding]
+) -> list[GraphRepairRecord]:
+    """Remove every statement a mandatory ``domain_violation`` finding names.
+
+    The finding names a subject and a property whose declared domain the
+    subject's types contradict; every statement of that pair goes, with the
+    blank nodes only it reached and the reifiers quoting it.
+
+    Args:
+        graph: A unit's facts graph, mutated in place.
+        findings: The unit's findings; other kinds are ignored.
+
+    Returns:
+        One ``domain_violation_dropped`` record per (subject, property) pair:
+        the subject as source, the property as target.
+    """
+    records: list[GraphRepairRecord] = []
+    pairs = sorted(
+        {
+            (finding.subject, finding.predicate)
+            for finding in findings
+            if finding.kind == FactsUnitFindingKind.DOMAIN_VIOLATION
+            and finding.mandatory
+            and finding.subject
+            and finding.predicate
+        }
+    )
+    for subject, predicate in pairs:
+        triples = list(graph.triples((URIRef(subject), URIRef(predicate), None)))
+        if not triples:
+            continue
+        orphan_candidates: set[BNode] = set()
+        for triple in triples:
+            graph.remove(triple)
+            if isinstance(triple[2], BNode):
+                orphan_candidates.add(triple[2])
+            if graph.has_reifications:
+                reifiers = graph.reifications.reifiers_of(triple)
+                graph.reifications.remove_reifiers(reifiers)
+                for reifier in reifiers:
+                    for arc in list(graph.triples((reifier, None, None))):
+                        graph.remove(arc)
+        orphaned, orphan_triples = _remove_orphaned_blank_nodes(
+            graph, orphan_candidates
+        )
+        drop_reifiers_mentioning(graph, orphaned)
+        records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.DOMAIN_VIOLATION_DROPPED,
+                source=subject,
+                target=predicate,
+                triple_count=len(triples) + orphan_triples,
+            )
+        )
+    return records
 
 
 def run_facts_gate(
