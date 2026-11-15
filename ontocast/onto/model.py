@@ -154,24 +154,6 @@ class FactsRenderReport(BaseModel):
             "Encoding is defined by deployment llm_graph_format and OUTPUT INSTRUCTION."
         ),
     )
-    ontology_relevance_score: float | None = Field(
-        default=None,
-        ge=0,
-        le=100,
-        description=(
-            "Score between 0 and 100 of how well "
-            "the ontology represents the domain of the document."
-        ),
-    )
-    triples_generation_score: float | None = Field(
-        default=None,
-        ge=0,
-        le=100,
-        description=(
-            "Score 0-100 for how well the semantic triples "
-            "represent the document. 0 is the worst, 100 is the best."
-        ),
-    )
     external_evidence_request: ExternalEvidenceRequest = Field(
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",
@@ -192,21 +174,13 @@ class FactsRenderReport(BaseModel):
 
 
 class GraphUpdateRenderReport(BaseModel):
-    """Graph update rendering output with optional search decision.
+    """Ontology render output: the triples to insert and the triples to delete."""
 
-    The wire shape is deliberately flat, and deliberately the same shape as
-    :class:`FactsRenderReport`: two sibling graph fields, no wrapper object and
-    no list. The previous shape nested the graph inside
-    ``graph_update.triple_operations[]``, and a *singleton* list holding one
-    long JSON-LD document is a shape models close wrongly -- measured at 20/24
-    malformed above ~4k characters on gpt-5-mini, versus 0/22 whenever the list
-    happened to hold two or more operations and the ``},{`` boundary reinforced
-    the array frame. Nothing here may reintroduce a list-of-one around a large
-    payload.
-
-    The internal :class:`GraphUpdate` keeps its ordered ``TripleOp`` list; this
-    is a wire encoding, not the patch model. See :meth:`to_graph_update`.
-    """
+    # The docstring above is sent to the model as the schema description, so
+    # the contract lives in this comment. The wire is flat, two sibling graph
+    # fields like FactsRenderReport, with no wrapper and no list: models close a
+    # single-element list around one long graph with mismatched brackets. The
+    # ordered TripleOp patch is internal (see to_graph_update).
 
     insert_graph: LLMGraphWire = Field(
         default_factory=RDFGraph,
@@ -776,8 +750,8 @@ class OntologyTermProposal(BaseModel):
         description=(
             "Property only: the most specific class every subject of the "
             "property belongs to (a catalog term, a well-known term or another "
-            "proposal's local name). Never Thing, Concept or an Agent class "
-            "alone. Empty for a class."
+            "proposal's local name). Thing, Concept or an Agent class only "
+            "when nothing more specific fits. Empty for a class."
         ),
     )
     range: str | None = Field(
@@ -786,7 +760,8 @@ class OntologyTermProposal(BaseModel):
             "Property only: the most specific class every value belongs to, "
             "or an XSD datatype for a datatype property. For values from a "
             "fixed list, a proposed class of those values under skos:Concept. "
-            "Never Thing, Concept or an Agent class alone. Empty for a class."
+            "Thing, Concept or an Agent class only when nothing more specific "
+            "fits. Empty for a class."
         ),
     )
     definition: str = Field(
@@ -845,7 +820,7 @@ class OntologyPlanTerm(BaseModel):
     decision: Literal["mint", "reuse"]
     parent_iri: str | None = None
     #: A minted property's planned ``rdfs:domain`` / ``rdfs:range``: a known
-    #: term or another plan entry, never a generic upper class.
+    #: class or another plan entry.
     domain_iri: str | None = None
     range_iri: str | None = None
     definition: str = ""
@@ -862,8 +837,8 @@ class OntologyPlan(BaseModel):
     rejected: list[tuple[str, str]] = Field(default_factory=list)
     #: Proposals turned into a reuse because their name matched a catalog term.
     resolved_to_catalog: int = 0
-    #: Planned domains and ranges dropped for naming a generic upper class.
-    generic_sides_dropped: int = 0
+    #: Planned domains and ranges that name only a generic upper class; kept.
+    generic_sides: int = 0
     #: The CURIE prefixes the plan was made under, prefix to namespace; the
     #: prompts that show the plan use them.
     prefixes: dict[str, str] = Field(default_factory=dict)
@@ -878,7 +853,7 @@ class OntologyPlan(BaseModel):
 
 
 TermActionKind = Literal[
-    "keep", "merge_into", "generalise_to", "demote_to_property_value", "narrow", "drop"
+    "keep", "merge_into", "generalise_to", "demote_to_property_value", "drop"
 ]
 
 _TERM_ACTION_ALIASES: dict[str, str] = {
@@ -893,9 +868,6 @@ _TERM_ACTION_ALIASES: dict[str, str] = {
     "demote": "demote_to_property_value",
     "demote_to_value": "demote_to_property_value",
     "demote_to_property_value": "demote_to_property_value",
-    "narrow": "narrow",
-    "specialise": "narrow",
-    "specialize": "narrow",
     "drop": "drop",
     "remove": "drop",
     "delete": "drop",
@@ -914,16 +886,15 @@ class OntologyTermAction(BaseModel):
 
     ``keep`` leaves it; ``merge_into`` replaces it by ``target`` everywhere;
     ``generalise_to`` makes ``target`` its only parent; ``demote_to_property_value``
-    turns a class into a SKOS concept (a value of some property); ``narrow``
-    gives a property the ``domain`` and/or ``range`` named; ``drop`` removes it
-    and every triple naming it.
+    turns a class into a SKOS concept (a value of some property); ``drop``
+    removes it and every triple naming it.
     """
 
     term: str = Field(description="The term's IRI or CURIE, as listed.")
     action: TermActionKind = Field(
         description=(
             "'keep', 'merge_into', 'generalise_to', "
-            "'demote_to_property_value', 'narrow' or 'drop'."
+            "'demote_to_property_value' or 'drop'."
         )
     )
     target: str | None = Field(
@@ -933,27 +904,10 @@ class OntologyTermAction(BaseModel):
             "well-known term. Empty otherwise."
         ),
     )
-    domain: str | None = Field(
-        default=None,
-        description=(
-            "For narrow: the property's new domain, a listed class, catalog "
-            "class or well-known class. Empty to leave the domain."
-        ),
-    )
-    range: str | None = Field(
-        default=None,
-        description=(
-            "For narrow: the property's new range, a listed class, catalog "
-            "class or well-known class (an XSD datatype for a datatype "
-            "property). Empty to leave the range."
-        ),
-    )
     rationale: str = Field(default="", max_length=300)
 
     _action = field_validator("action", mode="before")(_coerce_term_action)
-    _target = field_validator("target", "domain", "range", mode="before")(
-        _blank_to_none
-    )
+    _target = field_validator("target", mode="before")(_blank_to_none)
     _rationale = field_validator("rationale", mode="before")(_coerce_free_text)
 
 

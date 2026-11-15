@@ -6,7 +6,8 @@ insert delta (units that extended a catalog ontology) and the fresh ontology
 graphs (units that started the document's new home ontology). Both are decided
 together and patched in place.
 
-Order: list the minted terms; split off the candidates the plan did not name;
+Order: list the minted terms; write the plan's domains and ranges over the
+render's; split off the candidates the plan did not name;
 flag the terms that need a decision; ask consolidation about the flagged terms
 only (when on, and only when any is flagged); compile the actions, defaults
 included, onto each carrier.
@@ -18,7 +19,7 @@ import logging
 from collections import Counter
 from collections.abc import Mapping, Sequence
 
-from rdflib import RDFS, URIRef
+from rdflib import URIRef
 
 from ontocast.agent.consolidate_ontology import (
     build_term_contexts,
@@ -36,7 +37,11 @@ from ontocast.tool.ontology_validation.consolidate import (
     resolve_actions,
     structural_flags,
 )
-from ontocast.tool.ontology_validation.plan import minted_terms, plan_candidates
+from ontocast.tool.ontology_validation.plan import (
+    apply_plan_sides,
+    minted_terms,
+    plan_candidates,
+)
 from ontocast.tool.ontology_validation.reconcile import MintedDuplicate
 from ontocast.toolbox import ToolBox
 
@@ -73,16 +78,6 @@ def _side_counts(
     return generic, missing
 
 
-def _class_hierarchy(tools: ToolBox, carriers: Sequence[RDFGraph]) -> RDFGraph:
-    """The catalog's class hierarchy with the document's own subclass axioms."""
-    hierarchy = RDFGraph()
-    hierarchy += tools.ontology_manager.catalog_roles().hierarchy
-    for carrier in carriers:
-        for triple in carrier.triples((None, RDFS.subClassOf, None)):
-            hierarchy.add(triple)
-    return hierarchy
-
-
 async def decide_minted_terms(
     state: AgentState,
     tools: ToolBox,
@@ -108,8 +103,12 @@ async def decide_minted_terms(
     minted = minted_terms(carriers, catalog_index)
     if not minted:
         return
-    candidates = plan_candidates(carriers, plan, catalog_index)
     metrics = state.ontology_reduce_metrics
+    if plan is not None:
+        # The plan resolved each property's sides against the whole catalog;
+        # a render saw one unit, so its sides give way.
+        metrics["plan_sides_written"] = apply_plan_sides(carriers, plan, minted)
+    candidates = plan_candidates(carriers, plan, catalog_index)
     metrics["minted_terms_before_decisions"] = len(minted)
     metrics["plan_candidates"] = len(candidates)
     if candidates:
@@ -125,9 +124,6 @@ async def decide_minted_terms(
         )
     )
     flagged = structural_flags(minted, carriers, catalog_index)
-    metrics["generic_property_sides"], metrics["missing_property_sides"] = _side_counts(
-        minted, carriers
-    )
     for iri in candidates:
         flagged.setdefault(iri, set()).add("candidate")
     for finding in findings:
@@ -172,8 +168,6 @@ async def decide_minted_terms(
         catalog_index=catalog_index,
         prefixes=prefixes,
         reviewed=flagged,
-        graphs=carriers,
-        hierarchy=_class_hierarchy(tools, carriers),
     )
     changed = sum(
         compile_actions(decided, carrier, minted=minted).apply_to(carrier)
@@ -187,7 +181,6 @@ async def decide_minted_terms(
         "merge_into",
         "generalise_to",
         "demote_to_property_value",
-        "narrow",
         "drop",
     ):
         metrics[f"consolidation_{action}"] = counts.get(action, 0)
@@ -196,10 +189,9 @@ async def decide_minted_terms(
         for iri, role in minted.items()
         if decided[iri].action not in ("drop", "merge_into")
     }
-    (
-        metrics["generic_property_sides_after"],
-        metrics["missing_property_sides_after"],
-    ) = _side_counts(surviving, carriers)
+    metrics["generic_property_sides"], metrics["missing_property_sides"] = _side_counts(
+        surviving, carriers
+    )
     metrics["consolidation_actions_ignored"] = len(ignored)
     metrics["consolidation_changed_triples"] = changed
     metrics["plan_candidates_dropped"] = sum(

@@ -25,11 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `statement_without_subject` unit finding (mandatory): an observation that states a value with no subject property from or to it (`sosa:hasFeatureOfInterest`, `sosa:isFeatureOfInterestOf`, and the catalog's sub-properties and inverses of either), or a value linked to no other instance of its part. Statement classes are SOSA's `Observation`, `Actuation` and `Sampling` and every catalog class under one. Metrics `facts_statements_without_subject_rendered` and `facts_statements_without_subject`.
 - Rule 3c in the facts prompt: every observation names what it is about, in the direction its property runs, and the final checklist checks it. The term sheet lists `sosa:hasFeatureOfInterest`, `sosa:observedProperty` and `sosa:hasResult` beside a catalog's observation classes.
 - `facts_mandatory_residual_by_kind` in the run manifest: the mandatory findings left on the facts units, per finding kind.
-- A planned property names its domain and range; a generic upper class (`owl:Thing`, `skos:Concept`, an Agent class) or an unknown one is dropped (`plan_generic_sides_dropped`), and the render sees the rest.
-- Consolidation reviews a minted property whose domain or range is missing or generic (flags `no_domain`, `no_range`, `generic_domain`, `generic_range`) and can `narrow` it to a listed class; counts `generic_property_sides`, `missing_property_sides` and their `…_after`.
+- A planned property names its domain and range, shown to the render (`plan_generic_sides` counts generic ones, which are kept).
+- At reduce, a planned property's domain and range are the plan's, whatever a render wrote (`plan_sides_written`).
+- Ontology clean-up: a domain, range or parent naming an IRI under `CURRENT_DOMAIN` that nothing declares is rewritten to the one declared term with that local name, else removed (`undeclared_owned_references_rewritten`, `undeclared_owned_references_dropped`).
+- `generic_property_sides` and `missing_property_sides` in `ontology_reduce_metrics`: minted properties' domains and ranges that are only an upper class (`owl:Thing`, `skos:Concept`, an Agent class) or absent.
 
 ### Changed
 
+- `CHUNK_MAX_SIZE` defaults to 6000 (was 12000): shorter units extract more facts from long documents, at a proportional token cost. Set 12000 to keep the old behaviour.
 - `FACTS_CRITIC_PASSES` defaults to 0: a facts unit costs one render call, and the facts critic runs only when set to 1 or more.
 - A value set gets a class of its own under `skos:Concept`, used as the property's range; each value is typed both `skos:Concept` and that class.
 - The facts and ontology prompts give domain-neutral examples, and `specific_label_leaf` no longer reads a token as a chemical formula.
@@ -40,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A proposed new home ontology is overridden by the catalog ontology whose terms the text names at least five times (`home_new_overridden`).
 - At `ONTOLOGY_CRITIC_PASSES=1` the ontology critic is called only for a unit with a mandatory deterministic finding; 2 or more review every unit. The default stays 0 (no ontology critic).
 - The ontology render and critic prompts ask for classes at the level another document in the domain would reuse: a distinction that varies per instance is a property with values, not sibling subclasses, and existing terms are reused before minting.
+- The plan, render, consolidation and ontology critic prompts share one criterion for a new term: a class is a kind with instances in the domain, and a property's domain and range cover everything the property can apply to in the domain, not one document's subject; the plan reuses a general property rather than minting a narrower copy.
 - The render prompt's value-set example uses SKOS concepts: a SKOS concept is the only individual an ontology update may declare.
 - A critic fix's `explanation` is optional: a report with a fix that omits it is kept instead of re-requested.
 - Minted-term reconciliation (`ONTOLOGY_RECONCILE_MINTED_TERMS`) checks every catalog ontology, not only the retrieved ones, and matches labels case-insensitively and local names as a second key.
@@ -54,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A prefixed name a model splits with a stray space (`cd:lytt on`, `cd: june_2021`) is closed at every occurrence where the Turtle parser stops, kept only when the whole graph then parses, so the answer no longer costs a retry.
 - A measurement counts as present in the graph when any node, blank or named, states its number (value or bound) with its unit, as an IRI or kept as text on that node; the gap pass no longer re-adds values a render already wrote.
 - A unit IRI the ontology context does not hold is `unknown_term`, so a patch that links one is rolled back.
 - The gap-pass prompt lists every catalog type of a subject, sorted, and picks labels deterministically, so the same graph gives the same prompt and a replay hits the cache.
@@ -121,6 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The `oxrdflib` dependency.
+- `FactsRenderReport.ontology_relevance_score` and `triples_generation_score`: the facts render no longer asks the model to score itself. The ontology render's output schema now has a one-line description.
 - `ENABLE_ONTOLOGY_CONSOLIDATION` and the `Consolidate Ontology` node; consolidation now runs at reduce, on by default (`ONTOLOGY_CONSOLIDATION`).
 
 ## [0.9.0]

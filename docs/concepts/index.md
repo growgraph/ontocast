@@ -111,8 +111,7 @@ when [`RENDER_MODE`](../reference/configuration/pipeline.md#render_mode) is
    terms, the checks that flagged it and where the document uses it, and
    answers `keep`, `merge_into` another term, `generalise_to` a broader
    parent, `demote_to_property_value` (a class that is really a value becomes
-   a SKOS concept), `narrow` (a property gets a more specific domain or
-   range) or `drop`. OntoCast turns the answers into the change
+   a SKOS concept) or `drop`. OntoCast turns the answers into the change
    itself, without a model, and never edits a catalog term's own axioms. A
    planned term with no answer is kept; a candidate with no answer is dropped.
    With [`ONTOLOGY_CONSOLIDATION`](../reference/configuration/ontology-validation.md#ontology_consolidation)

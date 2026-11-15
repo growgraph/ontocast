@@ -17,7 +17,10 @@ many it removed, for ``ontology_reduce_metrics``:
   reads as a modelling decision.
 - :func:`property_side_reasons` (a check, not a rule): a minted property
   whose domain or range is missing or a generic upper class
-  (:func:`is_generic_class`); consolidation reviews it.
+  (:func:`is_generic_class`); counted for telemetry, nothing removed.
+- :func:`repair_undeclared_owned_references`: a side or parent naming an IRI
+  under the deployment's own domain that nothing declares was made up; it is
+  rewritten to the one declared term with that local name, else removed.
 - :func:`drop_role_crossing_parents`: a property's parent must be a property
   and a class's parent a class. ``rdfs:subPropertyOf schema:Property`` names a
   class, and ``rdfs:subClassOf`` a property or a datatype is no hierarchy.
@@ -37,7 +40,7 @@ with the statements pointing at it (:func:`ontocast.onto.blank_structures.remove
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
 
 from rdflib import OWL, RDF, RDFS, SKOS, XSD, Graph, URIRef
 
@@ -293,6 +296,56 @@ def drop_vacuous_upper_terms(graph: Graph) -> int:
     return len(doomed)
 
 
+#: Axioms whose object names another term: a side or a parent.
+REFERENCE_AXIOMS: frozenset[URIRef] = frozenset(
+    {RDFS.domain, RDFS.range, RDFS.subClassOf, RDFS.subPropertyOf}
+)
+
+
+def repair_undeclared_owned_references(
+    graphs: Sequence[Graph], *, known: Collection[str], current_domain: str
+) -> tuple[int, int]:
+    """Repair a side or parent naming an IRI of the deployment that nothing declares.
+
+    The deployment knows every term of its own namespaces: those in ``known``
+    (the catalog, the ontology IRIs) and those ``graphs`` declare. Any other
+    IRI under ``current_domain`` in a side or a parent was made up by a
+    render. It is rewritten to the one known or declared term with the same
+    local name, else removed, which leaves the side or parent missing.
+    IRIs outside ``current_domain`` are never touched: an external
+    vocabulary may hold terms the catalog does not list.
+
+    Returns:
+        ``(rewritten, removed)``.
+    """
+    own = f"{current_domain.rstrip('/')}/"
+    names = {*known}
+    for graph in graphs:
+        names.update(str(s) for s in graph.subjects(RDF.type, None))
+    by_local: dict[str, set[str]] = {}
+    for name in names:
+        by_local.setdefault(split_namespace_local(name)[1], set()).add(name)
+    rewritten = removed = 0
+    for graph in graphs:
+        for triple in list(graph):
+            subject, predicate, obj = triple
+            if (
+                predicate not in REFERENCE_AXIOMS
+                or not isinstance(obj, URIRef)
+                or not str(obj).startswith(own)
+                or str(obj) in names
+            ):
+                continue
+            graph.remove(triple)
+            matches = by_local.get(split_namespace_local(str(obj))[1], set())
+            if len(matches) == 1:
+                graph.add((subject, predicate, URIRef(next(iter(matches)))))
+                rewritten += 1
+            else:
+                removed += 1
+    return rewritten, removed
+
+
 _CLASS_TYPES: frozenset[URIRef] = frozenset({OWL.Class, RDFS.Class})
 _PROPERTY_TYPES: frozenset[URIRef] = frozenset(
     {OWL.ObjectProperty, OWL.DatatypeProperty, OWL.AnnotationProperty, RDF.Property}
@@ -430,6 +483,7 @@ __all__ = [
     "DATATYPE_PRECEDENCE",
     "EXAMPLE_NAMESPACE_STEMS",
     "GENERIC_CLASS_IRIS",
+    "REFERENCE_AXIOMS",
     "TERM_AXIOMS",
     "TERM_TYPES",
     "THING_IRIS",
@@ -443,4 +497,5 @@ __all__ = [
     "drop_terms_minted_outside_home",
     "drop_vacuous_upper_terms",
     "normalize_datatype_ranges",
+    "repair_undeclared_owned_references",
 ]

@@ -70,25 +70,9 @@ class TermContext:
         self.label = ""
         self.definition = ""
         self.parents: list[str] = []
-        #: A property's ``rdfs:domain`` / ``rdfs:range``; empty for a class.
-        self.domains: list[str] = []
-        self.ranges: list[str] = []
         self.nearest: list[tuple[str, str]] = []
         self.findings: list[str] = []
         self.excerpts: list[str] = []
-
-
-def _objects(
-    subject: URIRef, predicate: URIRef, graphs: Sequence[RDFGraph]
-) -> list[str]:
-    return sorted(
-        {
-            str(node)
-            for graph in graphs
-            for node in graph.objects(subject, predicate)
-            if isinstance(node, URIRef)
-        }
-    )
 
 
 def _local_key(iri: str) -> str:
@@ -167,9 +151,6 @@ def build_term_contexts(
                 if isinstance(parent, URIRef)
             }
         )
-        if context.role == "property":
-            context.domains = _objects(subject, RDFS.domain, carriers)
-            context.ranges = _objects(subject, RDFS.range, carriers)
         context.nearest = list(
             plan_nearest.get(iri) or plan_nearest.get(_local_key(iri)) or []
         )
@@ -205,13 +186,6 @@ def format_term_block(context: TermContext, prefixes: Mapping[str, str]) -> str:
         lines.append(f"definition: {context.definition}")
     if context.parents:
         lines.append("parents: " + ", ".join(f"`{curie(p)}`" for p in context.parents))
-    if context.role == "property":
-        lines.append(
-            "domain: " + (", ".join(f"`{curie(d)}`" for d in context.domains) or "none")
-        )
-        lines.append(
-            "range: " + (", ".join(f"`{curie(r)}`" for r in context.ranges) or "none")
-        )
     if context.nearest:
         lines.append(
             "near: "

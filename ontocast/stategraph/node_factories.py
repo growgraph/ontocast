@@ -76,6 +76,7 @@ from ontocast.tool.ontology_validation.axiom_hygiene import (
     drop_terms_minted_outside_home,
     drop_vacuous_upper_terms,
     normalize_datatype_ranges,
+    repair_undeclared_owned_references,
 )
 from ontocast.tool.ontology_validation.reconcile import MintedDuplicate
 from ontocast.tool.ontology_validation.shape import (
@@ -152,6 +153,8 @@ def clean_ontology_delta(
         "datatype_ranges_normalized": 0,
         "vacuous_upper_terms_dropped": 0,
         "role_crossing_parents_dropped": 0,
+        "undeclared_owned_references_rewritten": 0,
+        "undeclared_owned_references_dropped": 0,
     }
     catalog_terms = catalog_index.terms
     declared = {*catalog_terms, *ontology_iris}
@@ -177,6 +180,12 @@ def clean_ontology_delta(
             catalog_classes=catalog_index.classes,
             catalog_properties=catalog_index.properties,
         )
+    (
+        counts["undeclared_owned_references_rewritten"],
+        counts["undeclared_owned_references_dropped"],
+    ) = repair_undeclared_owned_references(
+        graphs, known=declared, current_domain=current_domain
+    )
     return counts
 
 

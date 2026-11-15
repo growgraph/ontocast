@@ -189,7 +189,7 @@ async def plan_ontology(state: AgentState, tools: ToolBox) -> AgentState:
             "plan_reused": len(plan.reused()),
             "plan_resolved_to_catalog": plan.resolved_to_catalog,
             "plan_rejected": len(plan.rejected),
-            "plan_generic_sides_dropped": plan.generic_sides_dropped,
+            "plan_generic_sides": plan.generic_sides,
         }
     )
     logger.info(

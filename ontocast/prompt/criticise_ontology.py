@@ -1,4 +1,5 @@
 from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.prompt.ontology_terms import INSTANCE_CRITERION
 
 template_prompt = """
 {preamble}
@@ -35,7 +36,7 @@ Provide a constructive, actionable critique following these priorities:
 2. **Completeness**: The domain concepts the text needs are represented (not every phrase of it)
 3. **Correctness**: Accurate relationships, proper datatypes, valid syntax
 4. **Structure**: Appropriate class hierarchies and property definitions
-5. **Reuse level**: Classes are minted at the level a second document in the domain would reuse. A distinction that varies per instance is a property with values, not a family of sibling subclasses. Existing and well-known terms are reused rather than re-minted. Hierarchies stay shallow, without chains of single-child classes.
+5. **Reuse level**: {INSTANCE_CRITERION} Classes are minted at the level a second document in the domain would reuse, not as a family of sibling subclasses. Existing and well-known terms are reused rather than re-minted. Hierarchies stay shallow, without chains of single-child classes.
 6. **Domain Coverage**: Includes implicit domain knowledge beyond literal text
 
 ## SCORING:

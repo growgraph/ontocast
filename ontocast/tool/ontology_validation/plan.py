@@ -13,9 +13,9 @@ which catalog ontology a unit writes into is the context resolver's choice.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 
-from rdflib import XSD, URIRef
+from rdflib import RDFS, XSD, URIRef
 
 from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.model import (
@@ -129,7 +129,8 @@ def check_plan(
       parent is dropped and the term kept.
     - A minted property's domain and range must be a known class or a class
       the plan mints (a datatype for a datatype property's range); an unknown
-      one, or a generic upper class, is dropped and the term kept.
+      one is dropped and the term kept. A generic upper class is kept and
+      counted.
 
     Args:
         report: The model's proposals.
@@ -254,9 +255,9 @@ def _resolve_side(
 ) -> str | None:
     """The class a planned domain or range names, or ``None``.
 
-    A known class or a class the plan mints. An unknown reference is dropped;
-    a generic upper class (:func:`is_generic_class`) is dropped and counted in
-    ``plan.generic_sides_dropped``, since it says nothing about the property.
+    A known class or a class the plan mints; an unknown reference is dropped.
+    A generic upper class (:func:`is_generic_class`) is kept, since it may be
+    the right level, and counted in ``plan.generic_sides``.
     """
     if not reference:
         return None
@@ -272,8 +273,7 @@ def _resolve_side(
         )
         iri = candidate if candidate in plan_classes else None
     if iri is not None and is_generic_class(iri):
-        plan.generic_sides_dropped += 1
-        return None
+        plan.generic_sides += 1
     return iri
 
 
@@ -327,6 +327,52 @@ def minted_terms(
     return roles
 
 
+def apply_plan_sides(
+    graphs: Sequence[RDFGraph], plan: OntologyPlan, minted: Mapping[str, str]
+) -> int:
+    """Write each planned property's resolved domain and range over the render's.
+
+    The plan resolved the sides against the whole catalog; a render sees one
+    unit and may re-type them. A minted property matches its plan entry as in
+    :class:`PlanIndex` (IRI, else local name). A planned side is written when
+    it is known or declared in ``graphs``: a class the plan mints but the
+    document never declared would dangle, so the render's side stays. A side
+    the plan does not give is left as the render wrote it.
+
+    Returns:
+        The number of sides changed.
+    """
+    entries = [term for term in plan.minted() if term.kind != "class"]
+    by_iri = {term.iri: term for term in entries}
+    by_local = {term.local_name.casefold(): term for term in entries}
+    planned_classes = {term.iri for term in plan.minted() if term.kind == "class"}
+    changed = 0
+    for iri, role in minted.items():
+        if role != "property":
+            continue
+        term = by_iri.get(iri) or by_local.get(_local_name(iri).casefold())
+        if term is None:
+            continue
+        subject = URIRef(iri)
+        for predicate, side in (
+            (RDFS.domain, term.domain_iri),
+            (RDFS.range, term.range_iri),
+        ):
+            if side is None or (side in planned_classes and side not in minted):
+                continue
+            holders = [graph for graph in graphs if (subject, None, None) in graph]
+            if all(
+                set(graph.objects(subject, predicate)) == {URIRef(side)}
+                for graph in holders
+            ):
+                continue
+            for graph in holders:
+                graph.remove((subject, predicate, None))
+                graph.add((subject, predicate, URIRef(side)))
+            changed += 1
+    return changed
+
+
 def plan_candidates(
     graphs: Iterable[RDFGraph],
     plan: OntologyPlan | None,
@@ -346,6 +392,7 @@ def plan_candidates(
 
 __all__ = [
     "PlanIndex",
+    "apply_plan_sides",
     "check_plan",
     "compact_iri",
     "expand_reference",

@@ -125,8 +125,6 @@ async def test_render_facts_fresh_sets_success_and_budget(monkeypatch) -> None:
         )
         return FactsRenderReport(
             semantic_graph=rendered_graph,
-            ontology_relevance_score=95,
-            triples_generation_score=94,
         )
 
     monkeypatch.setattr(
@@ -202,8 +200,6 @@ async def test_render_facts_fresh_coerces_invalid_typed_literal_at_ingest(
         )
         return FactsRenderReport(
             semantic_graph=rendered_graph,
-            ontology_relevance_score=95,
-            triples_generation_score=94,
         )
 
     monkeypatch.setattr(
@@ -239,8 +235,6 @@ async def test_render_facts_fresh_drops_a_triple_naming_a_malformed_iri(
         )
         return FactsRenderReport(
             semantic_graph=rendered_graph,
-            ontology_relevance_score=95,
-            triples_generation_score=94,
         )
 
     monkeypatch.setattr(

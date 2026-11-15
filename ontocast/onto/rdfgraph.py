@@ -16,6 +16,7 @@ from pydantic_core import core_schema
 from pyld import jsonld
 from rdflib import BNode, Graph, Literal, Namespace, Node, URIRef, plugin
 from rdflib.namespace import RDF, SH, XSD, NamespaceManager
+from rdflib.plugins.parsers.notation3 import BadSyntax
 from rdflib.plugins.serializers.turtle import _GEN_QNAME_FOR_DT, TurtleSerializer
 from rdflib.serializer import Serializer
 
@@ -192,6 +193,12 @@ _SPARQL_DATA_BLOCK_RE = re.compile(
     r"(?:INSERT|DELETE)\s+DATA\s*\{([^}]*)\}",
     re.IGNORECASE | re.DOTALL,
 )
+# A prefixed name (its local part possibly empty) before a space where the parser
+# stopped, and the bare word after it. Together: one name split by a stray space
+# ("cd:lytt on", "cd: june_2021").
+_SPLIT_NAME_HEAD_RE = re.compile(rb"(?:^|[\s.;,(\[])[A-Za-z][\w-]*:[\w-]*$")
+_SPLIT_NAME_TAIL_RE = re.compile(rb"\w+(?=[\s,;.\]])")
+_MAX_SPLIT_NAME_JOINS = 8
 _SPARQL_PREFIX_RE = re.compile(
     r"^PREFIX\s+(\w*):\s*<([^>]+)>\s*\.?",
     re.IGNORECASE | re.MULTILINE,
@@ -941,6 +948,10 @@ class RDFGraph(Graph):
             ):
                 repaired_turtle = strip_sparql_update_wrapper(patched_turtle)
             if repaired_turtle == patched_turtle:
+                repaired_turtle = cls._join_split_prefixed_names(
+                    patched_turtle, parse_error
+                )
+            if repaired_turtle == patched_turtle:
                 raise
             logger.warning(
                 "Recovering malformed Turtle after parse failure: %s",
@@ -1260,6 +1271,58 @@ class RDFGraph(Graph):
 
         repaired = cls._repair_missing_object_before_dot(repaired)
         return repaired
+
+    @staticmethod
+    def _join_split_prefixed_names(turtle_str: str, parse_error: Exception) -> str:
+        """Close a prefixed name a stray space split in two, where the parser stopped.
+
+        A model can emit ``cd:lytt on`` or ``cd: june_2021`` for one name. The
+        parser stops at the second piece; that split is closed wherever it
+        occurs, and the next stop is examined the same way. The joined text is
+        returned only when it parses, so a bare word that is not the rest of a
+        name (a predicate without its prefix) leaves the text, and the error,
+        as they were.
+        """
+        # The parser reports its position in the UTF-8 bytes it read.
+        data = turtle_str.encode("utf-8")
+        error: Exception = parse_error
+        for _ in range(_MAX_SPLIT_NAME_JOINS):
+            if not isinstance(error, BadSyntax):
+                return turtle_str
+            source = error._str
+            if isinstance(source, str):
+                source = source.encode("utf-8")
+            # The parser stops just before or just after the space.
+            position = error._i
+            space = position if data[position : position + 1] == b" " else position - 1
+            head = _SPLIT_NAME_HEAD_RE.search(data[:space])
+            tail = _SPLIT_NAME_TAIL_RE.match(data, space + 1)
+            if (
+                source != data
+                or data[space : space + 1] != b" "
+                or head is None
+                or tail is None
+            ):
+                return turtle_str
+            # A model splits a name the same way each time it writes it, and the
+            # parser's position is not exact at every later site: close them all.
+            name = head.group(0).lstrip(b" \t\r\n.;,([")
+            split = re.compile(
+                rb"(?<![\w:-])"
+                + re.escape(name)
+                + rb" (?="
+                + re.escape(tail.group(0))
+                + rb")"
+            )
+            data = split.sub(lambda _: name, data)
+            text = data.decode("utf-8")
+            try:
+                Graph().parse(data=text, format="turtle")
+            except Exception as next_error:
+                error = next_error
+                continue
+            return text
+        return turtle_str
 
     @staticmethod
     def _repair_truncated_turtle(turtle_str: str) -> str:

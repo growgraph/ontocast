@@ -10,10 +10,7 @@ ignored, and every action is checked before it is applied:
 - a ``merge_into`` / ``generalise_to`` target must be a listed minted term, a
   catalog term or a well-known term of compatible role, and a merge chain must
   end at a term that survives;
-- ``demote_to_property_value`` applies to classes only;
-- ``narrow`` applies to properties only: each side it names must be a class
-  (a datatype for a datatype property's range), and when the property's
-  current side is a generic upper class the new one must lie under it.
+- ``demote_to_property_value`` applies to classes only.
 
 An invalid action falls back to the term's default: ``keep``, or ``drop`` for a
 candidate (a term the document plan did not name).
@@ -22,25 +19,18 @@ candidate (a term the document plan did not name).
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
-from rdflib import OWL, RDF, RDFS, SKOS, XSD, URIRef
+from rdflib import OWL, RDF, RDFS, SKOS, URIRef
 from rdflib.graph import Graph
 from rdflib.term import Node
 
 from ontocast.onto.model import OntologyTermAction, TermActionKind
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
-from ontocast.onto.well_known import well_known_role, well_known_vocabulary
-from ontocast.tool.facts_validation.terms import _local_name, superclass_closure
-from ontocast.tool.ontology_validation.axiom_hygiene import (
-    THING_IRIS,
-    is_datatype_iri,
-    is_datatype_property,
-    is_generic_class,
-    property_side_reasons,
-)
+from ontocast.onto.well_known import well_known_vocabulary
+from ontocast.tool.facts_validation.terms import _local_name
 from ontocast.tool.ontology_validation.plan import expand_reference
 from ontocast.tool.ontology_validation.reconcile import match_catalog_term
 from ontocast.tool.ontology_validation.shape import (
@@ -60,9 +50,6 @@ class ResolvedAction(BaseModel):
     term: str
     action: TermActionKind
     target: str | None = None
-    #: For ``narrow``: the property's new domain and range, as IRIs.
-    domain: str | None = None
-    range: str | None = None
 
 
 class CompiledActions(BaseModel):
@@ -128,8 +115,6 @@ def resolve_actions(
     catalog_index: CatalogSurfaceIndex,
     prefixes: Mapping[str, str],
     reviewed: Iterable[str] | None = None,
-    graphs: Sequence[Graph] = (),
-    hierarchy: RDFGraph | None = None,
 ) -> tuple[dict[str, ResolvedAction], list[tuple[str, str]]]:
     """Validate model actions and fill in defaults for every minted term.
 
@@ -141,11 +126,6 @@ def resolve_actions(
         prefixes: CURIE prefixes the prompt used.
         reviewed: The terms the model was asked about; an action on any other
             minted term is ignored. ``None`` accepts every minted term.
-        graphs: The graphs that declare the minted terms; ``narrow`` reads a
-            property's current domain and range there.
-        hierarchy: Class hierarchy (catalog and minted) a narrowed side must
-            fall under when the current one is generic; without it only a
-            missing or ``Thing`` side can be narrowed.
 
     Returns:
         The decided action per minted term, and the refused actions with a
@@ -195,22 +175,6 @@ def resolve_actions(
         if action.action == "demote_to_property_value" and role != "class":
             ignored.append((action.term, "only a class can be demoted"))
             continue
-        if action.action == "narrow":
-            narrowed = _resolve_narrow(
-                action,
-                term,
-                role=role,
-                lookup=lookup,
-                minted=minted,
-                catalog_index=catalog_index,
-                graphs=graphs,
-                hierarchy=hierarchy,
-            )
-            if isinstance(narrowed, str):
-                ignored.append((action.term, narrowed))
-                continue
-            chosen[term] = narrowed
-            continue
         chosen[term] = ResolvedAction(term=term, action=action.action, target=target)
 
     decided: dict[str, ResolvedAction] = {}
@@ -247,89 +211,6 @@ def resolve_actions(
     return decided, ignored
 
 
-def _is_class_target(
-    iri: str, *, minted: Mapping[str, str], catalog_index: CatalogSurfaceIndex
-) -> bool:
-    if iri in minted:
-        return minted[iri] == "class"
-    if iri in catalog_index.terms:
-        return iri in catalog_index.classes or iri not in catalog_index.properties
-    return well_known_role(iri) == "class"
-
-
-def _generic_family(node: URIRef) -> str:
-    """A generic class's family, so one vocabulary's Agent bounds another's."""
-    if node == SKOS.Concept:
-        return "concept"
-    if is_generic_class(node) and node not in THING_IRIS and node != RDFS.Resource:
-        return "agent"
-    return str(node)
-
-
-def _resolve_narrow(
-    action: OntologyTermAction,
-    term: str,
-    *,
-    role: str,
-    lookup: Callable[[str], str | None],
-    minted: Mapping[str, str],
-    catalog_index: CatalogSurfaceIndex,
-    graphs: Sequence[Graph],
-    hierarchy: RDFGraph | None,
-) -> ResolvedAction | str:
-    """A validated ``narrow``, or why it is refused."""
-    if role != "property":
-        return "only a property can be narrowed"
-    prop = URIRef(term)
-    datatype = is_datatype_property(prop, graphs)
-    sides: dict[str, str] = {}
-    for side, predicate, reference in (
-        ("domain", RDFS.domain, action.domain),
-        ("range", RDFS.range, action.range),
-    ):
-        if not reference:
-            continue
-        if side == "range" and datatype:
-            iri = expand_reference(reference, {"xsd": str(XSD)}) or lookup(reference)
-            if iri is None or not is_datatype_iri(iri):
-                return "a datatype property's range must be a datatype"
-            sides[side] = iri
-            continue
-        iri = lookup(reference) or _catalog_by_name(reference, catalog_index)
-        if (
-            iri is None
-            or iri == term
-            or not _is_class_target(iri, minted=minted, catalog_index=catalog_index)
-        ):
-            return f"{side} is not a known class"
-        current = {
-            node
-            for graph in graphs
-            for node in graph.objects(prop, predicate)
-            if isinstance(node, URIRef)
-        }
-        bounds = {node for node in current if node not in THING_IRIS}
-        if bounds and not all(is_generic_class(node) for node in bounds):
-            return f"{side} is already specific"
-        if bounds:
-            if hierarchy is None:
-                return f"{side} cannot be checked against its current class"
-            above = {
-                _generic_family(n) for n in superclass_closure(URIRef(iri), hierarchy)
-            }
-            if not above & {_generic_family(n) for n in bounds}:
-                return f"{side} is not narrower"
-        sides[side] = iri
-    if not sides:
-        return "narrow names no domain or range"
-    return ResolvedAction(
-        term=term,
-        action="narrow",
-        domain=sides.get("domain"),
-        range=sides.get("range"),
-    )
-
-
 def _catalog_by_name(name: str, catalog_index: CatalogSurfaceIndex) -> str | None:
     key = name.strip().casefold()
     for table in (catalog_index.by_label, catalog_index.by_local):
@@ -354,8 +235,6 @@ def compile_actions(
       go; it becomes a ``skos:Concept`` individual whose former parents are
       ``skos:broader``. Subclasses and domain/range uses move to its former
       parent, or go when it had none.
-    - ``narrow``: the property's ``rdfs:domain`` (or ``rdfs:range``) is
-      replaced by the one named, in a graph that declares the property.
     - ``drop``: every triple naming it goes.
     """
     result = CompiledActions(decided=dict(decided))
@@ -375,17 +254,6 @@ def compile_actions(
         for term, a in decided.items()
         if a.action == "generalise_to" and a.target
     }
-    narrow: dict[URIRef, dict[URIRef, URIRef]] = {}
-    for term, a in decided.items():
-        if a.action != "narrow":
-            continue
-        sides: dict[URIRef, URIRef] = {}
-        if a.domain:
-            sides[RDFS.domain] = URIRef(a.domain)
-        if a.range:
-            sides[RDFS.range] = URIRef(a.range)
-        if sides:
-            narrow[URIRef(term)] = sides
     demoted_parents: dict[URIRef, list[URIRef]] = {
         term: sorted(
             (p for p in graph.objects(term, RDFS.subClassOf) if isinstance(p, URIRef)),
@@ -403,13 +271,6 @@ def compile_actions(
             result.deletes.add(triple)
             continue
         if subject in merge:
-            result.deletes.add(triple)
-            continue
-        if (
-            isinstance(subject, URIRef)
-            and subject in narrow
-            and predicate in narrow[subject]
-        ):
             result.deletes.add(triple)
             continue
         if subject in generalise and predicate in (RDFS.subClassOf, RDFS.subPropertyOf):
@@ -440,10 +301,6 @@ def compile_actions(
         if (term, None, None) in graph:
             role = minted.get(str(term), "class")
             result.inserts.add((term, _PARENT_PREDICATE[role], rewrite(target)))
-    for term, sides in narrow.items():
-        if (term, None, None) in graph:
-            for predicate, value in sides.items():
-                result.inserts.add((term, predicate, rewrite(value)))
     for term in demote:
         if (term, None, None) not in graph:
             continue
@@ -471,10 +328,7 @@ def structural_flags(
     - ``value_set``: one of three or more minted sibling classes whose labels
       differ in one word;
     - ``catalog_duplicate``: its label or local name names exactly one catalog
-      term of compatible role;
-    - ``generic_domain`` / ``generic_range`` / ``no_domain`` / ``no_range``: a
-      property whose domain or range is a generic upper class, or missing
-      (:func:`~ontocast.tool.ontology_validation.axiom_hygiene.property_side_reasons`).
+      term of compatible role.
 
     Model-free; a term with no flag needs no model call.
     """
@@ -514,11 +368,6 @@ def structural_flags(
             if match_catalog_term(URIRef(iri), graph, catalog_index, role) is not None:
                 flag(iri, "catalog_duplicate")
             break
-
-    for iri, role in minted.items():
-        if role == "property":
-            for reason in property_side_reasons(URIRef(iri), graphs):
-                flag(iri, reason)
     return flags
 
 

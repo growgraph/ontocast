@@ -153,8 +153,6 @@ async def test_facts_render_and_critic_prompts_show_one_prefix_per_namespace(
             "render",
             FactsRenderReport(
                 semantic_graph=rendered,
-                ontology_relevance_score=90,
-                triples_generation_score=90,
             ),
         ),
     )

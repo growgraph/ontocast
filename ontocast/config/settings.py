@@ -561,11 +561,11 @@ class ChunkConfig(BaseSettings):
         ),
     )
     max_size: int = Field(
-        default=12000,
+        default=6000,
         description=(
-            "Largest chunk in characters. Raising it gives each LLM call more "
-            "context and makes fewer calls; lower it if the model loses track "
-            "of long chunks."
+            "Largest chunk in characters. Raising it makes fewer, longer LLM "
+            "calls, and the facts render then extracts fewer facts per "
+            "character; lowering it extracts more at a proportional token cost."
         ),
     )
     embedding_model: str = Field(

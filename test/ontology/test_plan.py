@@ -1,7 +1,7 @@
 """The document ontology plan: the model-free check and the candidate split."""
 
 import pytest
-from rdflib import OWL, RDF, RDFS, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, XSD, Literal, URIRef
 
 from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.model import OntologyPlanReport, OntologyTermProposal
@@ -251,10 +251,10 @@ def test_a_planned_property_keeps_a_specific_domain_and_range():
     assert by_local["tradeName"].domain_iri == f"{CAT}Sample"
     assert by_local["tradeName"].range_iri == "http://www.w3.org/2001/XMLSchema#string"
     assert by_local["FuelType"].domain_iri is None
-    assert plan.generic_sides_dropped == 0
+    assert plan.generic_sides == 0
 
 
-def test_a_generic_or_unknown_planned_side_is_dropped_and_the_term_kept():
+def test_a_generic_planned_side_is_kept_and_counted_an_unknown_one_dropped():
     report = OntologyPlanReport(
         proposals=[
             _proposal(
@@ -286,6 +286,75 @@ def test_a_generic_or_unknown_planned_side_is_dropped_and_the_term_kept():
         prefixes=SIDE_PREFIXES,
         max_terms=10,
     )
-    assert [t.local_name for t in plan.terms] == ["hasFormat", "hasOrigin", "code"]
-    assert all(t.domain_iri is None and t.range_iri is None for t in plan.terms)
-    assert plan.generic_sides_dropped == 2
+    by_local = {t.local_name: t for t in plan.terms}
+    assert list(by_local) == ["hasFormat", "hasOrigin", "code"]
+    assert by_local["hasFormat"].domain_iri == "http://www.w3.org/2002/07/owl#Thing"
+    assert (
+        by_local["hasFormat"].range_iri == "http://www.w3.org/2004/02/skos/core#Concept"
+    )
+    assert plan.generic_sides == 2
+    assert by_local["hasOrigin"].domain_iri is None
+    assert by_local["hasOrigin"].range_iri is None
+    assert by_local["code"].range_iri is None
+
+
+def test_the_plan_sides_replace_the_render_sides_of_a_planned_property():
+    """A render saw one unit; the plan's sides were resolved against the catalog."""
+    from ontocast.onto.model import OntologyPlan, OntologyPlanTerm
+    from ontocast.tool.ontology_validation.plan import apply_plan_sides
+
+    home = HOME.namespace
+    plan = OntologyPlan(
+        terms=[
+            OntologyPlanTerm(
+                kind="object_property",
+                label="has part",
+                local_name="hasComponent",
+                iri=f"{home}hasComponent",
+                decision="mint",
+                domain_iri=f"{CAT}Sample",
+                range_iri=f"{home}Component",
+            ),
+            OntologyPlanTerm(
+                kind="class",
+                label="component",
+                local_name="Component",
+                iri=f"{home}Component",
+                decision="mint",
+            ),
+            OntologyPlanTerm(
+                kind="datatype_property",
+                label="code",
+                local_name="code",
+                iri=f"{home}code",
+                decision="mint",
+                range_iri=str(XSD.string),
+            ),
+        ]
+    )
+    graph = RDFGraph()
+    prop = URIRef(f"{home}hasComponent")
+    graph.add((prop, RDF.type, OWL.ObjectProperty))
+    graph.add((prop, RDFS.domain, URIRef(f"{CAT}ThinSample")))
+    graph.add((prop, RDFS.range, URIRef("https://example.com/made-up#Component")))
+    # Declared under another namespace of the deployment: matched by local name.
+    code = URIRef("https://example.com/other#code")
+    graph.add((code, RDF.type, OWL.DatatypeProperty))
+    graph.add((code, RDFS.domain, URIRef(f"{CAT}Sample")))
+    minted = {str(prop): "property", str(code): "property"}
+
+    # The planned class is not declared: its side would dangle, so it waits.
+    assert apply_plan_sides([graph], plan, minted) == 2
+    assert set(graph.objects(prop, RDFS.domain)) == {URIRef(f"{CAT}Sample")}
+    assert set(graph.objects(prop, RDFS.range)) == {
+        URIRef("https://example.com/made-up#Component")
+    }
+    assert set(graph.objects(code, RDFS.range)) == {XSD.string}
+    assert set(graph.objects(code, RDFS.domain)) == {URIRef(f"{CAT}Sample")}
+
+    component = URIRef(f"{home}Component")
+    graph.add((component, RDF.type, OWL.Class))
+    minted[str(component)] = "class"
+    assert apply_plan_sides([graph], plan, minted) == 1
+    assert set(graph.objects(prop, RDFS.range)) == {component}
+    assert apply_plan_sides([graph], plan, minted) == 0

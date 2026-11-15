@@ -472,6 +472,7 @@ decisions see the delta:
 | Datatype ranges | A property with several datatype ranges keeps one: `rdfs:Literal` goes beside a concrete datatype, and of several concrete ones the first of `rdf:langString`, `xsd:string`, then numbers from wide to narrow, then time, stays. Several ranges mean their intersection, empty for two datatypes | `datatype_ranges_normalized` |
 | `Thing` | `owl:Thing` or `schema:Thing` as a range or domain, or as a parent beside another parent, is removed: it constrains nothing | `vacuous_upper_terms_dropped` |
 | Parent kind | A property's `rdfs:subPropertyOf` naming a class or a datatype (`schema:Property` and `rdf:Property` are classes), and a class's `rdfs:subClassOf` naming a property or a datatype, are removed. A parent's kind comes from the delta's own declarations, then the catalog, then the well-known vocabulary's naming: classes capitalised, properties not, XSD terms datatypes. A parent of unknown kind stays | `role_crossing_parents_dropped` |
+| Undeclared own terms | A domain, range or parent naming an IRI under `CURRENT_DOMAIN` that neither the catalog nor the delta declares was made up: it is rewritten to the one declared term with the same local name, else removed. The deployment knows every term of its own namespaces; an IRI of another vocabulary is left alone | `undeclared_owned_references_rewritten`, `undeclared_owned_references_dropped` |
 | Home target | The home ontology is always a write target. When it is not stored yet and no unit rendered it fresh, an empty root under its identity receives its terms; under vector retrieval units render updates against catalog patches even for a new home | — |
 | Blank nodes | A blank node and every blank node connected to it are one blank-node structure (a restriction, a list, an anonymous axiom), with the named subjects that point at it as its anchors. Every rule above removes a structure whole: when one of its statements goes, or when every statement pointing at it goes, the structure goes with those statements. No restriction is left half-written or orphaned | — |
 | Fresh renders | A fresh ontology is filed like an update: its header and the statements its home owns stay, a statement whose subject another writable ontology owns joins the delta for that ontology, and one no writable ontology owns is removed | `fresh_triples_refiled`, `fresh_triples_unattributed` |
@@ -495,13 +496,16 @@ whole catalog, without a model:
   kept;
 - a property's domain and range must be a catalog or well-known class or a
   class the plan mints (an XSD datatype for a datatype property's range); an
-  unknown one, or a generic upper class (`owl:Thing`, `skos:Concept`, an
-  Agent class), is dropped and the term kept. The render sees the planned
-  domain and range beside the property;
+  unknown one is dropped and the term kept. A generic upper class
+  (`owl:Thing`, `skos:Concept`, an Agent class) is kept and counted, since it
+  is sometimes the right level. The render sees the sides beside the
+  property, and at reduce the plan's sides replace the ones a render wrote
+  for that property (`plan_sides_written`); a side naming a planned class
+  the document never declared is not written;
 - a plan with no term counts as no plan, so units render without one.
 
 Counters: `plan_proposed`, `plan_minted`, `plan_reused`,
-`plan_resolved_to_catalog`, `plan_rejected`, `plan_generic_sides_dropped`,
+`plan_resolved_to_catalog`, `plan_rejected`, `plan_generic_sides`, `plan_sides_written`,
 and `plan_failed` / `plan_empty` when no plan reached the units.
 
 A reused term is never minted, so the facts lane would not see it. Before the
@@ -522,12 +526,8 @@ The model is asked only about terms that need a decision: candidates, and
 minted terms that carry a term-level finding (`specific_label_leaf`,
 `value_set_siblings`, `catalog_duplicate`, `label_collision`,
 `hierarchy_too_deep`), name an existing catalog term, sit in a value-set
-family, vary another term's name by one modifier (`hasOpticalCavity` and
-`hasOpticalMicrocavity`), or are properties whose domain or range is missing
-(`no_domain`, `no_range`) or only a generic upper class (`generic_domain`,
-`generic_range`: `owl:Thing`, `schema:Thing`, `rdfs:Resource`, `skos:Concept`,
-`prov:Agent`, `foaf:Agent` or any class named `Agent`; a datatype property's
-range is never generic). Each of those gets a full entry; the document's other
+family, or vary another term's name by one modifier (`hasOpticalCavity` and
+`hasOpticalMicrocavity`). Each of those gets a full entry; the document's other
 minted terms are listed one line each, as possible merge targets. When no term
 needs a decision, no call is made and the defaults apply. The actions are
 validated before they are compiled:
@@ -538,7 +538,6 @@ validated before they are compiled:
 | `merge_into T` | `T` is a minted, catalog or well-known term of the same role, and the merge chain ends at a term that survives | the term's own triples go; every other triple naming it names `T` |
 | `generalise_to T` | as for a merge | its named parents are replaced by `T` |
 | `demote_to_property_value` | the term is a class | its class typing and named superclasses go; it becomes an `owl:NamedIndividual` and `skos:Concept` with its former parents as `skos:broader`; subclasses and domain/range uses move to its former parent |
-| `narrow` with `domain` and/or `range` | the term is a property; each side named is a minted, catalog or well-known class (an XSD datatype for a datatype property's range); a side that is already specific stays; under a generic `skos:Concept` or Agent side the new class must lie under one of the same kind | the named side's `rdfs:domain` / `rdfs:range` triples are replaced |
 | `drop` | always; the default for a candidate | every triple naming it goes |
 
 An action on a term the document did not mint or the model was not asked
@@ -548,12 +547,22 @@ axioms are never edited. Counters: `minted_terms_before_decisions`,
 `plan_candidates` (and `plan_candidate_iris`), `plan_candidates_dropped`,
 `consolidation_flagged`, `consolidation_skipped`,
 `consolidation_keep` / `_merge_into` / `_generalise_to` /
-`_demote_to_property_value` / `_narrow` / `_drop`, `consolidation_actions_ignored`,
+`_demote_to_property_value` / `_drop`, `consolidation_actions_ignored`,
 `consolidation_changed_triples` and `consolidation_calls_failed`.
-`generic_property_sides` and `missing_property_sides` count the flagged
-sides over the minted properties before the decisions, and
-`generic_property_sides_after` / `missing_property_sides_after` over the
-properties that survive them.
+`generic_property_sides` and `missing_property_sides` count, over the minted
+properties that survive the decisions, the sides that are only a generic
+upper class (`owl:Thing`, `schema:Thing`, `rdfs:Resource`, `skos:Concept`,
+`prov:Agent`, `foaf:Agent` or any class named `Agent`; a datatype property's
+range is never generic) and the sides that are missing.
+
+The plan, the render, consolidation and the ontology critic judge a new term
+by one criterion, stated once in `ontocast/prompt/ontology_terms.py`: a class
+is a kind whose instances are things of the domain, named in the text or
+not; one particular thing is an individual, a distinction between members is
+a property value, and a property's domain and range are the classes of
+everything the property can apply to in the domain, usually broader than one
+document's subject. The plan reuses a general property rather than minting a
+narrower copy of it for one kind of subject.
 
 ## Applying the merged update
 

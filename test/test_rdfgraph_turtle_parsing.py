@@ -475,3 +475,68 @@ def test_serialize_canonical_turtle_keeps_double_precision() -> None:
 
     assert "1.602177e-22" not in turtle
     assert "1.602176634e-22" in turtle
+
+
+@pytest.mark.parametrize(
+    ("written", "subject"),
+    [
+        ("cd: june_2021_heat_wave a prov:Entity ;", "june_2021_heat_wave"),
+        ('cd:a prov:value "x" . cd:lytt on a prov:Entity ;', "lytton"),
+        ('cd:t prov:value "35 °C" . cd: june a prov:Entity ;', "june"),
+    ],
+)
+def test_a_space_inside_a_prefixed_name_is_closed(written: str, subject: str) -> None:
+    ttl = (
+        "@prefix cd: <https://example.com/facts/> . "
+        "@prefix prov: <http://www.w3.org/ns/prov#> . "
+        f'{written} prov:value "y" .'
+    )
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert (
+        URIRef(f"https://example.com/facts/{subject}"),
+        URIRef("http://www.w3.org/ns/prov#value"),
+        Literal("y"),
+    ) in graph
+
+
+def test_a_bare_word_that_does_not_close_into_a_name_still_fails() -> None:
+    # Joining the predicate onto the subject parses nothing, so the error stands.
+    ttl = '@prefix cd: <https://example.com/facts/> . cd:obs hasValue cd:v ; cd:p "x" .'
+
+    with pytest.raises(Exception):
+        RDFGraph._from_turtle_str(ttl)
+
+
+def test_every_occurrence_of_one_split_name_is_closed() -> None:
+    ttl = (
+        "@prefix cd: <https://example.com/facts/> . "
+        "@prefix prov: <http://www.w3.org/ns/prov#> . "
+        'cd:lytt on a prov:Entity ; prov:value "y" . '
+        "cd:lytt on_record prov:wasDerivedFrom cd:lytt on . "
+        "cd:x prov:wasDerivedFrom cd:lytt on ; prov:atLocation cd:lytt on ."
+    )
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    lytton = URIRef("https://example.com/facts/lytton")
+    derived = URIRef("http://www.w3.org/ns/prov#wasDerivedFrom")
+    assert (URIRef("https://example.com/facts/lytton_record"), derived, lytton) in graph
+    assert (URIRef("https://example.com/facts/x"), derived, lytton) in graph
+
+
+def test_a_split_name_before_a_comma_is_closed() -> None:
+    ttl = (
+        "@prefix cd: <https://example.com/facts/> . "
+        "@prefix prov: <http://www.w3.org/ns/prov#> . "
+        "cd:firm prov:wasAttributedTo cd:adol f_kraus, cd:levy_mayer ."
+    )
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert (
+        URIRef("https://example.com/facts/firm"),
+        URIRef("http://www.w3.org/ns/prov#wasAttributedTo"),
+        URIRef("https://example.com/facts/adolf_kraus"),
+    ) in graph

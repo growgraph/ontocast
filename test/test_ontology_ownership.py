@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from rdflib import OWL, PROV, RDF, RDFS, XSD, BNode, Literal, URIRef
+from rdflib import OWL, PROV, RDF, RDFS, XSD, BNode, Graph, Literal, URIRef
 from rdflib.collection import Collection
 from rdflib.term import Node
 
@@ -1051,3 +1051,33 @@ def test_a_structure_whose_anchors_disagree_goes_with_its_edges() -> None:
 
     assert buckets == {}
     assert unattributed == len(inserts)
+
+
+def test_an_undeclared_owned_side_or_parent_is_repaired_or_removed() -> None:
+    """The deployment knows every term of its own namespaces; others are made up."""
+    from ontocast.tool.ontology_validation.axiom_hygiene import (
+        repair_undeclared_owned_references,
+    )
+
+    own = "https://deploy.test"
+    ext = URIRef(f"{own}/ontology-ext#Championship")
+    other = Graph()
+    other.add((ext, RDF.type, OWL.Class))
+    graph = Graph()
+    winner = URIRef(f"{own}/sports#championshipWinner")
+    graph.add((winner, RDF.type, OWL.ObjectProperty))
+    graph.add((winner, RDFS.domain, URIRef(f"{own}/ontology#Championship")))
+    graph.add((winner, RDFS.range, URIRef(f"{own}/ontology#Nobody")))
+    graph.add(
+        (winner, RDFS.subPropertyOf, URIRef("http://dbpedia.org/ontology/winner"))
+    )
+    rewritten, removed = repair_undeclared_owned_references(
+        [graph, other], known=set(), current_domain=own
+    )
+    assert (rewritten, removed) == (1, 1)
+    assert set(graph.objects(winner, RDFS.domain)) == {ext}
+    assert set(graph.objects(winner, RDFS.range)) == set()
+    # Outside the deployment's domain: an external vocabulary, left alone.
+    assert set(graph.objects(winner, RDFS.subPropertyOf)) == {
+        URIRef("http://dbpedia.org/ontology/winner")
+    }

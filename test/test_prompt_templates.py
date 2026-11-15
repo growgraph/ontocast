@@ -255,8 +255,6 @@ async def test_render_and_critic_prompts_share_the_prefix_through_the_ontology(
             "render",
             FactsRenderReport(
                 semantic_graph=rendered,
-                ontology_relevance_score=90,
-                triples_generation_score=90,
             ),
         ),
     )
@@ -360,7 +358,7 @@ def test_ontology_prompts_ask_for_the_reuse_level() -> None:
 
     for text in (general_ontology_instruction, ontology_criteria):
         assert "second document" in text
-        assert "property with values" in text
+        assert "property value" in text
         assert "no instances" not in text
 
 
@@ -390,13 +388,33 @@ def test_value_list_example_gives_the_property_a_class_of_its_own() -> None:
         assert (URIRef(f"{ex}{value}"), RDF.type, fuel_type) in graph
 
 
-def test_plan_and_render_prompts_ask_for_specific_domains_and_ranges() -> None:
+def test_every_ontology_prompt_states_the_instance_criterion_once() -> None:
+    """Plan, render, consolidation and critic judge terms by one test."""
+    from ontocast.prompt.consolidate_ontology import consolidation_instruction
+    from ontocast.prompt.criticise_ontology import ontology_criteria
+    from ontocast.prompt.ontology_terms import INSTANCE_CRITERION
     from ontocast.prompt.plan_ontology import plan_instruction
     from ontocast.prompt.render_ontology import general_ontology_instruction
 
-    for text in (plan_instruction, general_ontology_instruction):
-        assert "most specific class" in text
-        assert "`skos:Concept`" in text
+    for text in (
+        plan_instruction,
+        general_ontology_instruction,
+        consolidation_instruction,
+        ontology_criteria,
+    ):
+        assert text.count(INSTANCE_CRITERION) == 1
+    assert "no fact needs" not in consolidation_instruction
+
+
+def test_a_side_covers_every_use_and_a_general_property_is_reused() -> None:
+    """A side fitted to one document's subject makes a narrower copy of a general property."""
+    from ontocast.prompt.ontology_terms import INSTANCE_CRITERION
+    from ontocast.prompt.plan_ontology import plan_instruction
+
+    assert "most specific class" not in INSTANCE_CRITERION
+    assert "every use of the property" in INSTANCE_CRITERION
+    assert "broader than this document's subject" in INSTANCE_CRITERION
+    assert "never plan a narrower copy" in plan_instruction
 
 
 def test_the_plan_block_shows_a_property_domain_and_range() -> None:
@@ -420,3 +438,26 @@ def test_the_plan_block_shows_a_property_domain_and_range() -> None:
     )
     block = format_plan_instruction(plan)
     assert "domain `home:Vehicle` → range `home:FuelType`" in block
+
+
+@pytest.mark.parametrize(
+    "report",
+    ["FactsRenderReport", "GraphUpdateRenderReport", "FreshOntologyRenderReport"],
+)
+def test_render_output_schema_asks_only_for_what_code_reads(report: str) -> None:
+    """The schema sent with every render is short: the graph fields, one line."""
+    import json
+
+    from langchain_core.output_parsers import PydanticOutputParser
+
+    from ontocast.onto import model
+
+    instructions = PydanticOutputParser(
+        pydantic_object=getattr(model, report)
+    ).get_format_instructions()
+    schema = json.loads(
+        instructions[instructions.index("```") + 3 : instructions.rindex("```")]
+    )
+    assert not [name for name in schema["properties"] if name.endswith("_score")]
+    assert "\n" not in schema["description"]
+    assert len(schema["description"]) <= 100
