@@ -126,17 +126,15 @@ def domain_violation_findings(
     graph: RDFGraph,
     ontology_graph: RDFGraph | None,
 ) -> list[FactsUnitFinding]:
-    """Report subjects whose asserted type fits no class of a predicate's domain.
+    """Report subjects whose asserted type contradicts a predicate's ``rdfs:domain``.
 
-    A predicate's domain is the classes its ``rdfs:domain`` names (they
-    entail) and those its ``schema:domainIncludes`` lists (expected
-    classes). An untyped subject is never a violation -- the parse-time
-    repair types it from an entailing domain, and a subject still untyped is
+    Only ``rdfs:domain`` entails, so only it can be contradicted: classes a
+    ``schema:domainIncludes`` lists are expected ones, which later uses may
+    widen. An untyped subject is never a violation -- the parse-time repair
+    types it from the domain, and a subject still untyped is
     ``UNTYPED_INSTANCE``'s to report. It becomes one when the subject carries
-    an asserted type unrelated to every class of the domain: the statement
-    then says something about a kind of thing the property is not for, and
-    under an ``rdfs:domain`` inference adds the domain class on top of an
-    incompatible one.
+    an asserted type unrelated to every domain class: inference would add the
+    domain class on top of an incompatible one.
 
     Conservative by construction, since a false accusation costs a repair.
     A subject is reported only when it has at least one asserted type and every
@@ -156,7 +154,7 @@ def domain_violation_findings(
     """
     if ontology_graph is None or not len(ontology_graph):
         return []
-    domains = _declared_domains(ontology_graph)
+    domains = _declared_domains(ontology_graph, source="rdfs")
     if not domains:
         return []
     described = _described_classes(ontology_graph)
@@ -193,9 +191,9 @@ def domain_violation_findings(
                 kind=FactsUnitFindingKind.DOMAIN_VIOLATION,
                 message=(
                     f"<{subject}> is typed {actual} but carries <{predicate}>, "
-                    f"whose domain is {expected}. Either type the subject as "
-                    "a class of the domain, or use the property that fits the "
-                    "type it has."
+                    f"whose rdfs:domain is {expected}. Either type the subject "
+                    "as a class of the domain, or use the property that fits "
+                    "the type it has."
                 ),
                 subject=str(subject),
                 predicate=str(predicate),
@@ -870,7 +868,7 @@ def collect_unit_findings(
     Mandatory: quarantined literals (with closed-range individual
     suggestions), forbidden-namespace terms (``example.org``), doc-namespace
     predicates, unresolved catalog near-misses, predicates asserted on a
-    subject whose type fits no class of their domain, statements and
+    subject whose type contradicts their ``rdfs:domain``, statements and
     values that name no subject (``subject_contract``), instances with no
     concrete type, and value nodes whose only numeric content sits in a
     label. Advisory by default: numeric

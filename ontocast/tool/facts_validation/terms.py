@@ -859,13 +859,13 @@ def link_properties(
 def domain_fits(
     subject: URIRef, predicate: URIRef, graph: RDFGraph, ontology_graph: RDFGraph
 ) -> bool:
-    """Whether ``subject``'s asserted types fit a declared domain of ``predicate``.
+    """Whether ``subject``'s asserted types contradict no ``rdfs:domain`` of ``predicate``.
 
-    The test :func:`domain_violation_findings` applies: the subject fits when
-    it is compatible with one class of the domain (``rdfs:domain`` or
-    ``schema:domainIncludes``), or when the context cannot decide.
+    The test :func:`domain_violation_findings` applies: only ``rdfs:domain``
+    entails, so only it can be contradicted; a listed class is an expected
+    one.
     """
-    declared = _declared_domains(ontology_graph).get(predicate)
+    declared = _declared_domains(ontology_graph, source="rdfs").get(predicate)
     if not declared:
         return True
     asserted = {t for t in graph.objects(subject, RDF.type) if isinstance(t, URIRef)}

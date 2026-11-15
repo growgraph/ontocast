@@ -1,8 +1,8 @@
 """Facts domain-repair agent.
 
 Runs after the facts render/critic loop, only on a unit with a mandatory
-``domain_violation`` finding: a statement whose subject's asserted types fit
-no class of its property's domain. One LLM call per unit
+``domain_violation`` finding: a statement whose property declares an
+``rdfs:domain`` its subject's asserted types contradict. One LLM call per unit
 is shown those statements under citable ids and may replace each one's
 property; :func:`property_swaps` keeps only patches that do exactly that and
 leave the subject fitting the new property's domain. The unit loop
@@ -165,7 +165,7 @@ async def repair_domain_violations(
     if not statements:
         return [], index
 
-    domains = _declared_domains(ontology_graph)
+    domains = _declared_domains(ontology_graph, source="rdfs")
     chapter = build_violations_chapter(
         graph,
         index,

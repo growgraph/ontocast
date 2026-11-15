@@ -75,19 +75,21 @@ def test_the_accessor_reads_both_kinds_and_says_which() -> None:
     }
 
 
-def test_a_subject_fitting_no_listed_class_is_a_violation() -> None:
+def test_only_an_rdfs_domain_is_contradicted() -> None:
+    """A listed class is an expected one: a later use may widen the property."""
     facts = RDFGraph()
-    facts.add((URIRef(F + "etna"), RDF.type, u("Volcano")))
-    facts.add((URIRef(F + "etna"), u("elevation"), Literal("3357")))
-    facts.add((URIRef(F + "ada"), RDF.type, u("Person")))
-    facts.add((URIRef(F + "ada"), u("elevation"), Literal("1")))
+    ada = URIRef(F + "ada")
+    facts.add((ada, RDF.type, u("Person")))
+    # elevation lists Volcano and Mountain: a person is unexpected, not wrong.
+    facts.add((ada, u("elevation"), Literal("1")))
+    # eruptedIn declares rdfs:domain Volcano: a person contradicts it.
+    facts.add((ada, u("eruptedIn"), URIRef(F + "lava_1991")))
 
     findings = domain_violation_findings(facts, _ontology())
 
     assert [(f.subject, f.predicate) for f in findings] == [
-        (F + "ada", str(u("elevation")))
+        (F + "ada", str(u("eruptedIn")))
     ]
-    assert "whose domain is" in findings[0].message
 
 
 def test_listed_classes_type_nothing_when_there_are_several() -> None:
