@@ -363,6 +363,31 @@ def well_known_role(iri: str) -> WellKnownRole | None:
     return "class" if local_name[0].isupper() else "property"
 
 
+@cache
+def _by_local_name() -> dict[str, tuple[str, ...]]:
+    found: dict[str, list[str]] = {}
+    for vocabulary in WELL_KNOWN_VOCABULARIES:
+        if vocabulary.terms is None:
+            continue
+        namespace = vocabulary.namespaces[0]
+        for name in sorted(vocabulary.terms):
+            found.setdefault(name.casefold(), []).append(namespace + name)
+    return {name: tuple(iris) for name, iris in found.items()}
+
+
+def well_known_by_local_name(local_name: str, role: WellKnownRole) -> tuple[str, ...]:
+    """Well-known terms of ``role`` named ``local_name``, ignoring case.
+
+    In the order of :data:`WELL_KNOWN_VOCABULARIES`; vocabularies admitted by
+    namespace have no term list and never match.
+    """
+    return tuple(
+        iri
+        for iri in _by_local_name().get(local_name.casefold(), ())
+        if well_known_role(iri) == role
+    )
+
+
 def well_known_terms(namespace: str) -> set[str]:
     """The term IRIs of the vocabulary at ``namespace``, spelled in it.
 
@@ -488,6 +513,7 @@ __all__ = [
     "WellKnownVocabulary",
     "is_listed_unit",
     "is_well_known_term",
+    "well_known_by_local_name",
     "well_known_role",
     "well_known_namespaces",
     "well_known_object_pairs",

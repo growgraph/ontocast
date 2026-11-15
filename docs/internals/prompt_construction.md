@@ -131,7 +131,8 @@ in three passes, stopping as soon as it fits:
    `skos:altLabel`.
 
 `rdfs:label`, `skos:prefLabel`, `rdf:type`, `rdfs:subClassOf`,
-`owl:equivalentClass`, `rdfs:domain`, `rdfs:range` and `rdfs:subPropertyOf`
+`owl:equivalentClass`, a domain or range (`rdfs:domain`, `rdfs:range`,
+`schema:domainIncludes`, `schema:rangeIncludes`) and `rdfs:subPropertyOf`
 are never dropped, and neither is any predicate the passes do not name. The
 budget is therefore best-effort: a graph still over it after the third pass is
 used as is, with a warning that names the remedy (a smaller catalog, or

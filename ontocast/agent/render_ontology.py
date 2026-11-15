@@ -32,6 +32,7 @@ from ontocast.onto.ontology_access import (
     ontology_access_for_unit_ontology,
 )
 from ontocast.onto.ontology_header import mint_ontology
+from ontocast.onto.property_sides import SIDE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
@@ -62,8 +63,7 @@ logger = logging.getLogger(__name__)
 _SCHEMA_IRI_PREDICATES = (
     RDFS.subClassOf,
     RDFS.subPropertyOf,
-    RDFS.domain,
-    RDFS.range,
+    *sorted(SIDE_PREDICATES, key=str),
     OWL.equivalentClass,
     OWL.equivalentProperty,
     OWL.inverseOf,

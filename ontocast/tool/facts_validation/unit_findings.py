@@ -18,6 +18,7 @@ from ontocast.onto.model import (
     FactsUnitFinding,
     FactsUnitFindingKind,
 )
+from ontocast.onto.property_sides import sides_by_property
 from ontocast.onto.rdfgraph import (
     RDFGraph,
     RejectedLiteralTriple,
@@ -125,26 +126,25 @@ def domain_violation_findings(
     graph: RDFGraph,
     ontology_graph: RDFGraph | None,
 ) -> list[FactsUnitFinding]:
-    """Report subjects whose asserted type contradicts a predicate's domain.
+    """Report subjects whose asserted type fits no class of a predicate's domain.
 
-    Asserting a triple whose predicate declares an ``rdfs:domain`` *entails*
-    that the subject belongs to that domain, so an untyped subject is never a
-    violation -- the parse-time repair materialises the domain, and a subject
-    still untyped is ``UNTYPED_INSTANCE``'s to report. It becomes one when the
-    subject carries an asserted type that is unrelated to the declared domain:
-    inference then adds the domain class on top of an incompatible one, and
-    the contradiction surfaces later as a confusing failure somewhere else
-    (SHACL reporting a missing property on a class the graph never meant to
-    assert) rather than at the triple that caused it.
+    A predicate's domain is the classes its ``rdfs:domain`` names (they
+    entail) and those its ``schema:domainIncludes`` lists (expected
+    classes). An untyped subject is never a violation -- the parse-time
+    repair types it from an entailing domain, and a subject still untyped is
+    ``UNTYPED_INSTANCE``'s to report. It becomes one when the subject carries
+    an asserted type unrelated to every class of the domain: the statement
+    then says something about a kind of thing the property is not for, and
+    under an ``rdfs:domain`` inference adds the domain class on top of an
+    incompatible one.
 
-    Conservative by construction, since a false accusation costs a render pass.
+    Conservative by construction, since a false accusation costs a repair.
     A subject is reported only when it has at least one asserted type and every
-    asserted type is *unrelated* to every declared domain -- neither a subtype
-    nor a supertype of it, following ``rdfs:subClassOf`` and
+    asserted type is *unrelated* to every declared domain class -- neither a
+    subtype nor a supertype of it, following ``rdfs:subClassOf`` and
     ``owl:equivalentClass`` intersections in both directions. Typing a subject
     with a supertype of the domain (``sosa:Observation`` where the domain is
-    ``ex:Measurement``) is consistent: inference specializes it,
-    it contradicts nothing, and flagging it would bury the real violations.
+    ``ex:Measurement``) is consistent and not reported.
 
     Args:
         graph: Rendered facts graph for one unit.
@@ -193,8 +193,8 @@ def domain_violation_findings(
                 kind=FactsUnitFindingKind.DOMAIN_VIOLATION,
                 message=(
                     f"<{subject}> is typed {actual} but carries <{predicate}>, "
-                    f"whose rdfs:domain is {expected}. Either type the subject "
-                    "as the declared domain, or use the property that fits the "
+                    f"whose domain is {expected}. Either type the subject as "
+                    "a class of the domain, or use the property that fits the "
                     "type it has."
                 ),
                 subject=str(subject),
@@ -243,8 +243,8 @@ def untyped_instance_findings(
     (:func:`fact_instances`); it is typed when one of its ``rdf:type`` objects
     is a class outside the fact namespaces that is neither a schema metaclass
     nor vacuous (:func:`concrete_types`). Suggested classes are the declared
-    ``rdfs:domain`` of every predicate the instance carries and the declared
-    ``rdfs:range`` of every predicate it is the object of, then catalog
+    domain of every predicate the instance carries and the declared range of
+    every predicate it is the object of (``rdfs`` or ``schema:*Includes``), then catalog
     classes whose name shares a token with the instance's label or local
     name.
 
@@ -264,9 +264,7 @@ def untyped_instance_findings(
     known_classes: set[str] = set()
     if ontology_graph is not None and len(ontology_graph):
         domains = _declared_domains(ontology_graph)
-        for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
-            if isinstance(predicate, URIRef) and isinstance(range_iri, URIRef):
-                ranges.setdefault(predicate, set()).add(range_iri)
+        ranges = sides_by_property(ontology_graph, "range")
         _, known_classes = _catalog_term_roles(ontology_graph)
     findings: list[FactsUnitFinding] = []
     for instance in untyped:
@@ -872,7 +870,7 @@ def collect_unit_findings(
     Mandatory: quarantined literals (with closed-range individual
     suggestions), forbidden-namespace terms (``example.org``), doc-namespace
     predicates, unresolved catalog near-misses, predicates asserted on a
-    subject whose type contradicts their ``rdfs:domain``, statements and
+    subject whose type fits no class of their domain, statements and
     values that name no subject (``subject_contract``), instances with no
     concrete type, and value nodes whose only numeric content sits in a
     label. Advisory by default: numeric

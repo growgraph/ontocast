@@ -31,12 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A node written on `sosa:hasSimpleResult` moves to `sosa:hasResult`, the object property SOSA pairs with it, without a model call (`paired_object_property` repair records, counter `repair/paired_object_property`).
 - Facts prompt rule 1e: a property applies only to a subject of its declared domain; provenance and observation properties are not generic links.
 - A planned property names its domain and range, shown to the render (`plan_generic_sides` counts generic ones, which are kept).
-- At reduce, a planned property's domain and range are the plan's, whatever a render wrote (`plan_sides_written`).
+- At reduce, a planned term's parent, and a planned property's domain and range, are the plan's, whatever a render wrote (`plan_parents_written`, `plan_sides_written`).
+- Consolidation flag `well_known_duplicate`: a minted term whose local name (case-insensitive, same role) a well-known vocabulary has. Each flag shows the term it points at (the name variant's partner, the catalog or well-known term of the same name). A `merge_into` / `generalise_to` target in a well-known vocabulary must be one of its terms, of the same role.
+- `generic_parents` in `ontology_reduce_metrics`: minted terms whose every parent is the top of a hierarchy or a catch-all relation. The term criterion in every ontology prompt adds that a parent is the nearest kind the term's instances belong to.
 - Ontology clean-up: a domain, range or parent naming an IRI under `CURRENT_DOMAIN` that nothing declares is rewritten to the one declared term with that local name, else removed (`undeclared_owned_references_rewritten`, `undeclared_owned_references_dropped`).
 - `generic_property_sides` and `missing_property_sides` in `ontology_reduce_metrics`: minted properties' domains and ranges that are only an upper class (`owl:Thing`, `skos:Concept`, an Agent class) or absent.
 
 ### Changed
 
+- A property of the home ontology, or one a document mints, gets its class domain and range as `schema:domainIncludes` / `schema:rangeIncludes`: a render's or the plan's `rdfs:domain` / `rdfs:range` is restated at clean-up (`owned_sides_listed`), and each later document may add its own classes. A datatype range stays `rdfs:range`. Every reader of a property's sides (facts repairs and findings, retrieval, the vector index, the term sheet, side counts) reads both forms; a type is inferred only from an `rdfs` side or a listed side naming one class. `domain_violation` now means the subject fits no class of the domain, stated or listed.
 - `CHUNK_MAX_SIZE` defaults to 6000 (was 12000): shorter units extract more facts from long documents, at a proportional token cost. Set 12000 to keep the old behaviour.
 - `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` defaults to true: two IRI objects one unit gave a property are a warning, not an error that triggers the un-merge repair; numeric and string values are unchanged.
 - `FACTS_CRITIC_PASSES` defaults to 0: a facts unit costs one render call, and the facts critic runs only when set to 1 or more.

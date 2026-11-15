@@ -27,9 +27,14 @@ from rdflib.graph import Graph
 from rdflib.term import Node
 
 from ontocast.onto.model import OntologyTermAction, TermActionKind
+from ontocast.onto.property_sides import SIDE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
-from ontocast.onto.well_known import well_known_vocabulary
+from ontocast.onto.well_known import (
+    well_known_by_local_name,
+    well_known_role,
+    well_known_vocabulary,
+)
 from ontocast.tool.facts_validation.terms import _local_name
 from ontocast.tool.ontology_validation.plan import expand_reference
 from ontocast.tool.ontology_validation.reconcile import match_catalog_term
@@ -104,7 +109,7 @@ def _target_role_ok(
         if role == "class":
             return target not in catalog_index.properties
         return target not in catalog_index.classes
-    return well_known_vocabulary(target) is not None
+    return well_known_role(target) == role
 
 
 def resolve_actions(
@@ -286,7 +291,7 @@ def compile_actions(
         if (
             isinstance(obj, URIRef)
             and obj in demote
-            and predicate in (RDFS.subClassOf, RDFS.domain, RDFS.range)
+            and (predicate == RDFS.subClassOf or predicate in SIDE_PREDICATES)
         ):
             result.deletes.add(triple)
             for parent in demoted_parents[obj]:
@@ -316,27 +321,46 @@ def compile_actions(
     return result
 
 
+#: Minted term -> the reasons it needs a decision -> the terms each reason
+#: points at (a name variant's partner, the catalog or well-known term of the
+#: same name); empty when a reason names no other term.
+TermFlags = dict[str, dict[str, tuple[str, ...]]]
+
+
+def add_flag(
+    flags: TermFlags, iri: str, reason: str, targets: Iterable[str] = ()
+) -> None:
+    """Add ``reason`` to ``iri``'s flags, with the terms it points at."""
+    reasons = flags.setdefault(iri, {})
+    known = reasons.get(reason, ())
+    reasons[reason] = known + tuple(t for t in targets if t not in known)
+
+
 def structural_flags(
     minted: Mapping[str, str],
     graphs: Sequence[RDFGraph],
     catalog_index: CatalogSurfaceIndex,
-) -> dict[str, set[str]]:
+) -> TermFlags:
     """Minted terms whose shape says a decision is needed, with the reasons.
 
     - ``variant``: its name is another term's with one modifier added, or the
-      same words, among minted and catalog terms of the same role;
+      same words, among minted and catalog terms of the same role; the target
+      is the other term;
     - ``value_set``: one of three or more minted sibling classes whose labels
       differ in one word;
     - ``catalog_duplicate``: its label or local name names exactly one catalog
-      term of compatible role.
+      term of compatible role, the target;
+    - ``well_known_duplicate``: a term of the same role in a well-known
+      vocabulary has its local name, ignoring case; those terms are the
+      targets.
 
     Model-free; a term with no flag needs no model call.
     """
-    flags: dict[str, set[str]] = {}
+    flags: TermFlags = {}
 
-    def flag(iri: str, reason: str) -> None:
+    def flag(iri: str, reason: str, targets: Iterable[str] = ()) -> None:
         if iri in minted:
-            flags.setdefault(iri, set()).add(reason)
+            add_flag(flags, iri, reason, targets)
 
     pool: dict[str, str] = dict(minted)
     for iri in catalog_index.classes:
@@ -344,8 +368,8 @@ def structural_flags(
     for iri in catalog_index.properties:
         pool.setdefault(iri, "property")
     for broad, narrow in variant_term_pairs(minted, pool):
-        flag(broad, "variant")
-        flag(narrow, "variant")
+        flag(broad, "variant", (narrow,))
+        flag(narrow, "variant", (broad,))
 
     children: dict[str, list[tuple[str, str]]] = {}
     for iri, role in minted.items():
@@ -365,9 +389,14 @@ def structural_flags(
         for graph in graphs:
             if (URIRef(iri), None, None) not in graph:
                 continue
-            if match_catalog_term(URIRef(iri), graph, catalog_index, role) is not None:
-                flag(iri, "catalog_duplicate")
+            match = match_catalog_term(URIRef(iri), graph, catalog_index, role)
+            if match is not None:
+                flag(iri, "catalog_duplicate", (match.catalog_iri,))
             break
+        if role in ("class", "property") and well_known_vocabulary(iri) is None:
+            same = well_known_by_local_name(_local_name(iri), role)
+            if same:
+                flag(iri, "well_known_duplicate", same)
     return flags
 
 
@@ -376,5 +405,7 @@ __all__ = [
     "ResolvedAction",
     "compile_actions",
     "resolve_actions",
+    "TermFlags",
+    "add_flag",
     "structural_flags",
 ]

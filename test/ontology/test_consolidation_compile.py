@@ -197,7 +197,75 @@ def test_structural_flags_name_variants_value_sets_and_catalog_duplicates():
 
     flags = structural_flags(minted, [graph], catalog)
 
-    assert flags[str(u("CesiumFilm"))] == {"value_set"}
-    assert "catalog_duplicate" in flags[str(u("SampleCopy"))]
-    assert "variant" in flags[str(u("hasInnerPart"))]
+    assert flags[str(u("CesiumFilm"))] == {"value_set": ()}
+    assert flags[str(u("SampleCopy"))]["catalog_duplicate"] == (str(u("Sample", CAT)),)
+    assert set(flags[str(u("hasInnerPart"))]["variant"]) == {
+        str(u("hasPart")),
+        str(u("hasPart", CAT)),
+    }
     assert str(u("Widget")) not in flags
+
+
+def test_a_minted_copy_of_a_well_known_term_is_flagged_with_it():
+    from ontocast.tool.ontology_validation.consolidate import structural_flags
+
+    graph = RDFGraph()
+    graph.add((u("observation"), RDF.type, OWL.Class))
+    graph.add((u("Volcano"), RDF.type, OWL.Class))
+    graph.add((u("hasResult"), RDF.type, OWL.ObjectProperty))
+    # Same name, other role: a class named like a well-known property.
+    graph.add((u("HasResultSet"), RDF.type, OWL.Class))
+    graph.add((u("Result"), RDF.type, OWL.Class))
+    catalog = _catalog()
+
+    flags = structural_flags(minted_terms([graph], catalog), [graph], catalog)
+
+    assert flags[str(u("observation"))]["well_known_duplicate"] == (
+        "http://www.w3.org/ns/sosa/Observation",
+        "https://schema.org/Observation",
+    )
+    assert flags[str(u("Volcano"))]["well_known_duplicate"] == (
+        "https://schema.org/Volcano",
+    )
+    assert flags[str(u("hasResult"))]["well_known_duplicate"] == (
+        "http://www.w3.org/ns/sosa/hasResult",
+    )
+    assert str(u("HasResultSet")) not in flags
+
+
+def test_a_well_known_target_must_exist_and_share_the_role():
+    graph = _document()
+    actions = [
+        act("home:Film", "merge_into", "https://schema.org/NoSuchClass"),
+        act("home:Device", "merge_into", "https://schema.org/name"),
+        act("home:Superradiance", "merge_into", "https://schema.org/Event"),
+    ]
+
+    compiled, ignored = _decide(actions, graph)
+
+    assert sorted(term for term, _ in ignored) == ["home:Device", "home:Film"]
+    assert compiled.decided[str(u("Superradiance"))].target == (
+        "https://schema.org/Event"
+    )
+
+
+def test_the_consolidation_prompt_shows_what_each_flag_points_at():
+    from ontocast.agent.consolidate_ontology import flag_targets
+
+    assert flag_targets(
+        {
+            "variant": ("https://example.com/home#hasPart",),
+            "well_known_duplicate": (
+                "http://www.w3.org/ns/sosa/Observation",
+                "https://schema.org/Observation",
+            ),
+            "candidate": (),
+        }
+    ) == [
+        ("https://example.com/home#hasPart", "name variant"),
+        (
+            "http://www.w3.org/ns/sosa/Observation",
+            "same name in a well-known vocabulary",
+        ),
+        ("https://schema.org/Observation", "same name in a well-known vocabulary"),
+    ]

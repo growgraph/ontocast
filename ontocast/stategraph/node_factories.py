@@ -43,6 +43,7 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
 from ontocast.onto.state import UNIT_SUM_SUFFIX, AgentState, BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
+from ontocast.onto.well_known import well_known_vocabulary
 from ontocast.stategraph.atomic import facts_loop, ontology_loop
 from ontocast.stategraph.context_resolver import (
     admit_facts_context_terms,
@@ -76,6 +77,7 @@ from ontocast.tool.ontology_validation.axiom_hygiene import (
     drop_role_crossing_parents,
     drop_terms_minted_outside_home,
     drop_vacuous_upper_terms,
+    list_owned_sides,
     normalize_datatype_ranges,
     repair_undeclared_owned_references,
 )
@@ -152,6 +154,7 @@ def clean_ontology_delta(
         "minted_outside_home_dropped": 0,
         "non_term_subjects_dropped": 0,
         "datatype_ranges_normalized": 0,
+        "owned_sides_listed": 0,
         "vacuous_upper_terms_dropped": 0,
         "role_crossing_parents_dropped": 0,
         "undeclared_owned_references_rewritten": 0,
@@ -159,6 +162,13 @@ def clean_ontology_delta(
     }
     catalog_terms = catalog_index.terms
     declared = {*catalog_terms, *ontology_iris}
+
+    def owned(iri: str) -> bool:
+        # The home's terms, and terms this delta mints: never a catalog's.
+        if home_namespace and iri.startswith(home_namespace):
+            return True
+        return iri not in catalog_terms and well_known_vocabulary(iri) is None
+
     for graph in graphs:
         counts["external_subject_refused"] += drop_external_subjects(graph, external)
         counts["example_namespace_dropped"] += drop_example_namespace_triples(
@@ -175,6 +185,7 @@ def clean_ontology_delta(
             graph, declared=declared, facts_namespace=DEFAULT_IRI
         )
         counts["datatype_ranges_normalized"] += normalize_datatype_ranges(graph)
+        counts["owned_sides_listed"] += list_owned_sides(graph, owned)
         counts["vacuous_upper_terms_dropped"] += drop_vacuous_upper_terms(graph)
         counts["role_crossing_parents_dropped"] += drop_role_crossing_parents(
             graph,

@@ -14,6 +14,7 @@ which catalog ontology a unit writes into is the context resolver's choice.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from typing import NamedTuple
 
 from rdflib import RDFS, XSD, URIRef
 
@@ -23,6 +24,11 @@ from ontocast.onto.model import (
     OntologyPlanReport,
     OntologyPlanTerm,
     TermKind,
+)
+from ontocast.onto.property_sides import (
+    includes_predicates,
+    is_datatype_value,
+    side_predicates,
 )
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.well_known import well_known_vocabulary
@@ -327,50 +333,91 @@ def minted_terms(
     return roles
 
 
-def apply_plan_sides(
-    graphs: Sequence[RDFGraph], plan: OntologyPlan, minted: Mapping[str, str]
-) -> int:
-    """Write each planned property's resolved domain and range over the render's.
+class PlanAxiomsWritten(NamedTuple):
+    """What :func:`apply_plan_axioms` changed."""
 
-    The plan resolved the sides against the whole catalog; a render sees one
-    unit and may re-type them. A minted property matches its plan entry as in
-    :class:`PlanIndex` (IRI, else local name). A planned side is written when
-    it is known or declared in ``graphs``: a class the plan mints but the
-    document never declared would dangle, so the render's side stays. A side
+    sides: int
+    parents: int
+
+
+def _replace_objects(
+    graphs: Sequence[RDFGraph],
+    subject: URIRef,
+    predicates: Sequence[URIRef],
+    value: str,
+) -> bool:
+    """Make ``value`` the only object of ``predicates`` wherever ``subject`` is held.
+
+    It is written with ``predicates[0]``; the others are cleared.
+    """
+    target = (predicates[0], URIRef(value))
+    holders = [graph for graph in graphs if (subject, None, None) in graph]
+    if all(
+        {(p, o) for p in predicates for o in graph.objects(subject, p)} == {target}
+        for graph in holders
+    ):
+        return False
+    for graph in holders:
+        for predicate in predicates:
+            graph.remove((subject, predicate, None))
+        graph.add((subject, *target))
+    return True
+
+
+def apply_plan_axioms(
+    graphs: Sequence[RDFGraph], plan: OntologyPlan, minted: Mapping[str, str]
+) -> PlanAxiomsWritten:
+    """Write each planned term's parent, domain and range over the render's.
+
+    The plan resolved them against the whole catalog; a render sees one unit
+    and may re-type them. A side is written as the expected class it is
+    (``schema:domainIncludes`` / ``schema:rangeIncludes``); a datatype range
+    stays ``rdfs:range``. A minted term matches its plan entry as in
+    :class:`PlanIndex` (IRI, else local name). A planned value is written when
+    it is known or declared in ``graphs``: a term the plan mints but the
+    document never declared would dangle, so the render's value stays. A value
     the plan does not give is left as the render wrote it.
 
     Returns:
-        The number of sides changed.
+        The number of sides and of parents changed.
     """
-    entries = [term for term in plan.minted() if term.kind != "class"]
+    entries = plan.minted()
     by_iri = {term.iri: term for term in entries}
-    by_local = {term.local_name.casefold(): term for term in entries}
-    planned_classes = {term.iri for term in plan.minted() if term.kind == "class"}
-    changed = 0
+    by_local = {
+        (term_role(term.kind), term.local_name.casefold()): term for term in entries
+    }
+    planned = {term.iri for term in entries}
+    sides = parents = 0
     for iri, role in minted.items():
-        if role != "property":
-            continue
-        term = by_iri.get(iri) or by_local.get(_local_name(iri).casefold())
-        if term is None:
+        term = by_iri.get(iri) or by_local.get((role, _local_name(iri).casefold()))
+        if term is None or term_role(term.kind) != role:
             continue
         subject = URIRef(iri)
-        for predicate, side in (
-            (RDFS.domain, term.domain_iri),
-            (RDFS.range, term.range_iri),
+
+        def writable(value: str | None) -> bool:
+            return (
+                value is not None
+                and value != iri
+                and (value not in planned or value in minted)
+            )
+
+        parent_predicate = RDFS.subClassOf if role == "class" else RDFS.subPropertyOf
+        if writable(term.parent_iri) and _replace_objects(
+            graphs, subject, (parent_predicate,), str(term.parent_iri)
         ):
-            if side is None or (side in planned_classes and side not in minted):
+            parents += 1
+        if role != "property":
+            continue
+        for name, value in (("domain", term.domain_iri), ("range", term.range_iri)):
+            if not writable(value):
                 continue
-            holders = [graph for graph in graphs if (subject, None, None) in graph]
-            if all(
-                set(graph.objects(subject, predicate)) == {URIRef(side)}
-                for graph in holders
-            ):
-                continue
-            for graph in holders:
-                graph.remove((subject, predicate, None))
-                graph.add((subject, predicate, URIRef(side)))
-            changed += 1
-    return changed
+            predicates = side_predicates(name)
+            if name == "domain" or not is_datatype_value(URIRef(str(value))):
+                # The listed predicate first: it is the one written.
+                predicates = (*includes_predicates(name), predicates[0])
+            if _replace_objects(graphs, subject, predicates, str(value)):
+                sides += 1
+    return PlanAxiomsWritten(sides=sides, parents=parents)
 
 
 def plan_candidates(
@@ -392,7 +439,8 @@ def plan_candidates(
 
 __all__ = [
     "PlanIndex",
-    "apply_plan_sides",
+    "PlanAxiomsWritten",
+    "apply_plan_axioms",
     "check_plan",
     "compact_iri",
     "expand_reference",

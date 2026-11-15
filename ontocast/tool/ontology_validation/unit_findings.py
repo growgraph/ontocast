@@ -31,6 +31,7 @@ from ontocast.onto.model import (
     OntologyUnitFindingKind,
     TripleFix,
 )
+from ontocast.onto.property_sides import SIDE_PREDICATES, properties_with_side
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.well_known import well_known_vocabulary
 from ontocast.tool.agg.signatures import harvest_max_one_predicates
@@ -87,7 +88,7 @@ def _declared_class_or_property_subjects(inserts: RDFGraph) -> set[URIRef]:
         for subject in inserts.subjects(RDF.type, type_iri):
             if isinstance(subject, URIRef):
                 declared.add(subject)
-    for predicate in (RDFS.subClassOf, RDFS.domain, RDFS.range, RDFS.subPropertyOf):
+    for predicate in (RDFS.subClassOf, RDFS.subPropertyOf, *SIDE_PREDICATES):
         for subject in inserts.subjects(predicate, None):
             if isinstance(subject, URIRef):
                 declared.add(subject)
@@ -586,11 +587,7 @@ def _specific_label_leaf_findings(
     for subject in _minted_classes(inserts, snapshot_graph):
         if any(True for _ in merged_graph.subjects(RDFS.subClassOf, subject)):
             continue
-        if any(
-            True
-            for predicate in (RDFS.domain, RDFS.range)
-            for _ in merged_graph.subjects(predicate, subject)
-        ):
+        if properties_with_side(merged_graph, subject):
             continue
         label = first_label(subject, inserts, merged_graph)
         if label is None:

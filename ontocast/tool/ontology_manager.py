@@ -15,6 +15,7 @@ from pydantic import Field
 from rdflib import RDF, RDFS, SKOS, BNode, URIRef
 
 from ontocast.onto.ontology_header import DivergedOntologyError, heads_by_iri
+from ontocast.onto.property_sides import SIDE_PREDICATES
 
 from ..onto.null import NULL_ONTOLOGY
 from ..onto.ontology import Ontology
@@ -41,8 +42,7 @@ _DEFINITION_PREDICATES = (
     SKOS.definition,
     SKOS.scopeNote,
     RDFS.comment,
-    RDFS.domain,
-    RDFS.range,
+    *sorted(SIDE_PREDICATES, key=str),
     RDFS.subClassOf,
     RDFS.subPropertyOf,
 )

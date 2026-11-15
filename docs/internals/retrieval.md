@@ -301,7 +301,8 @@ Consequences at the default weights and constant:
 ## From seeds to subgraph
 
 1. **Reference expansion.** Ontologies declaring classes that the seeds point
-   to through `rdfs:subClassOf`, `rdfs:domain` or `rdfs:range` join the set
+   to through `rdfs:subClassOf` or a domain or range (`rdfs:domain`,
+   `rdfs:range`, `schema:domainIncludes`, `schema:rangeIncludes`) join the set
    (`expanded_ontology_iris` in the metrics).
 2. **Version filter.** Each hit names the ontology version and content hash
    it was indexed from, and the catalog is narrowed to those. When no catalog

@@ -47,6 +47,7 @@ from ontocast.onto.graph_prune import (
     strip_redundant_generic_types as _strip_redundant_generic_types,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.property_sides import SIDE_PREDICATES, properties_with_side
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.representation_text import ROLE_PREDICATE
 from ontocast.tool.triple_manager.core import TripleStoreManager
@@ -103,17 +104,17 @@ _PROPERTY_DEFINITION_PREDICATES: frozenset[URIRef] = frozenset(
         RDFS.label,
         RDFS.comment,
         SKOS.definition,
-        RDFS.domain,
-        RDFS.range,
+        *SIDE_PREDICATES,
         RDFS.subPropertyOf,
         OWL.inverseOf,
         OWL.equivalentProperty,
     }
 )
 
-_CONNECTIVITY_PREDICATES: frozenset[URIRef] = frozenset(
-    {RDFS.subClassOf, RDFS.domain, RDFS.range}
-)
+_CONNECTIVITY_PREDICATES: frozenset[URIRef] = SIDE_PREDICATES | {RDFS.subClassOf}
+
+#: A SPARQL path matching any side predicate.
+_SIDE_PATH = "|".join(f"<{p}>" for p in sorted(SIDE_PREDICATES, key=str))
 
 _CLASS_SCHEMA_PREDICATES: frozenset[URIRef] = frozenset(
     {RDFS.subClassOf, OWL.equivalentClass}
@@ -122,8 +123,7 @@ _CLASS_SCHEMA_PREDICATES: frozenset[URIRef] = frozenset(
 _SCHEMA_URI_CONNECTIVITY_PREDICATES: frozenset[URIRef] = frozenset(
     {
         RDFS.subClassOf,
-        RDFS.domain,
-        RDFS.range,
+        *SIDE_PREDICATES,
         OWL.equivalentClass,
         OWL.equivalentProperty,
         RDFS.subPropertyOf,
@@ -183,8 +183,8 @@ def build_candidate_subgraph_query(
        their types -- :func:`_add_subclass_ancestor_closure` after seed promotion.
        Unbounded ``*`` rather than the configured hop limit, deliberately: a
        superset is safe, a subset is not.
-    4. Definition triples of properties whose ``rdfs:domain``/``rdfs:range`` is a
-       seed or a seed's type -- :func:`_crosslink_property_seeds`.
+    4. Definition triples of properties whose domain or range (``rdfs`` or
+       ``schema:*Includes``) is a seed or a seed's type -- :func:`_crosslink_property_seeds`.
 
     Not covered: the cross-component schema-path repair
     (:func:`_find_schema_path_in_merged_graph`) can search up to
@@ -240,7 +240,7 @@ WHERE {{
        {{ ?s ?p ?anc . BIND(?anc AS ?o) }} }} }}
   UNION
   {{ ?seed rdf:type? ?cls .
-     ?prop rdfs:domain|rdfs:range ?cls .
+     ?prop {_SIDE_PATH} ?cls .
      ?prop ?p ?o . BIND(?prop AS ?s) }}
 }}
 """
@@ -477,12 +477,10 @@ def _crosslink_property_seeds(
     linked = list(property_seeds)
     for class_uri in concept_seeds:
         ref = URIRef(class_uri)
-        for prop, _, _ in merged_graph.triples((None, RDFS.domain, ref)):
-            if isinstance(prop, URIRef) and str(prop) not in ontology_subjects:
-                linked.append(str(prop))
-        for prop, _, _ in merged_graph.triples((None, RDFS.range, ref)):
-            if isinstance(prop, URIRef) and str(prop) not in ontology_subjects:
-                linked.append(str(prop))
+        for side in ("domain", "range"):
+            for prop in sorted(properties_with_side(merged_graph, ref, side), key=str):
+                if str(prop) not in ontology_subjects:
+                    linked.append(str(prop))
     return list(dict.fromkeys(linked))
 
 
@@ -1072,7 +1070,7 @@ def _bfs_expand_from_seed(
 
 def _class_has_property_incidence(graph: RDFGraph, class_ref: URIRef) -> bool:
     for subj, pred, obj in graph:
-        if pred not in (RDFS.domain, RDFS.range) or obj != class_ref:
+        if pred not in SIDE_PREDICATES or obj != class_ref:
             continue
         if isinstance(subj, URIRef):
             return True
@@ -1084,13 +1082,7 @@ def _find_property_for_class(
     class_ref: URIRef,
     preferred_properties: set[str],
 ) -> URIRef | None:
-    candidates: list[URIRef] = []
-    for prop, _, _ in merged_graph.triples((None, RDFS.domain, class_ref)):
-        if isinstance(prop, URIRef):
-            candidates.append(prop)
-    for prop, _, _ in merged_graph.triples((None, RDFS.range, class_ref)):
-        if isinstance(prop, URIRef) and prop not in candidates:
-            candidates.append(prop)
+    candidates = sorted(properties_with_side(merged_graph, class_ref), key=str)
     if not candidates:
         return None
     preferred = [p for p in candidates if str(p) in preferred_properties]
@@ -1112,7 +1104,7 @@ def _ensure_property_schema_links(
     preferred = set(property_seeds)
     targets = list(dict.fromkeys(concept_seeds))
     for subj, pred, obj in result:
-        if pred in (RDFS.domain, RDFS.range) and isinstance(obj, URIRef):
+        if pred in SIDE_PREDICATES and isinstance(obj, URIRef):
             uri = str(obj)
             if uri not in targets:
                 targets.append(uri)
@@ -1408,7 +1400,7 @@ def _connectivity_repair_cross_component_pass(
         domain_range_first = sorted(
             path,
             key=lambda triple: (
-                0 if triple[1] in (RDFS.domain, RDFS.range) else 1,
+                0 if triple[1] in SIDE_PREDICATES else 1,
                 str(triple),
             ),
         )
@@ -1460,7 +1452,7 @@ def _protected_uris_for_snapshot(
     for prop_uri in property_seeds:
         prop_ref = URIRef(prop_uri)
         for _, pred, obj in merged_graph.triples((prop_ref, None, None)):
-            if pred in (RDFS.domain, RDFS.range) and isinstance(obj, URIRef):
+            if pred in SIDE_PREDICATES and isinstance(obj, URIRef):
                 protected.add(str(obj))
     return protected
 
@@ -1604,7 +1596,7 @@ class SPARQLTool:
                     for _, pred, obj in merged_graph.triples(
                         (URIRef(prop_uri), None, None)
                     )
-                    if pred in (RDFS.domain, RDFS.range) and isinstance(obj, URIRef)
+                    if pred in SIDE_PREDICATES and isinstance(obj, URIRef)
                 )
             )
             metrics = _finalize_induced_subgraph_snapshot(

@@ -22,6 +22,7 @@ from typing import Literal as TypingLiteral
 from pydantic import BaseModel
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
+from ontocast.onto.property_sides import SIDE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.facts_validation.terms import _PROPERTY_TYPES, _local_name
 from ontocast.tool.ontology_validation.shape import (
@@ -34,7 +35,7 @@ from ontocast.tool.ontology_validation.shape import (
 logger = logging.getLogger(__name__)
 
 #: Delta evidence that a minted term acts as a property / as a class.
-_PROPERTY_EVIDENCE_PREDICATES = (RDFS.domain, RDFS.range, RDFS.subPropertyOf)
+_PROPERTY_EVIDENCE_PREDICATES = (*sorted(SIDE_PREDICATES, key=str), RDFS.subPropertyOf)
 _CLASS_EVIDENCE_PREDICATES = (RDFS.subClassOf,)
 
 

@@ -5,6 +5,7 @@ from rdflib import OWL, RDF, RDFS, XSD, Graph, URIRef
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.iri_policy import is_opaque_local_name
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.property_sides import side_classes
 
 #: The RDF languages and the facts namespace: never a domain vocabulary, even
 #: where a graph declares terms in them (``owl:Thing``).
@@ -157,13 +158,13 @@ def build_property_summary(graph: Graph) -> str:
         prop_label = label_map.get(str(prop), "?")
         qn = _qname(graph, prop)
         domain_parts: list[str] = []
-        for _, _, d in graph.triples((prop, RDFS.domain, None)):
+        for d in sorted(side_classes(prop, [graph], "domain"), key=str):
             if isinstance(d, URIRef):
                 dl = label_map.get(str(d), "")
                 dqn = _qname(graph, d)
                 domain_parts.append(f"{dl} ({dqn})" if dl else dqn)
         range_parts: list[str] = []
-        for _, _, r in graph.triples((prop, RDFS.range, None)):
+        for r in sorted(side_classes(prop, [graph], "range"), key=str):
             if isinstance(r, URIRef):
                 rl = label_map.get(str(r), "")
                 rqn = _qname(graph, r)

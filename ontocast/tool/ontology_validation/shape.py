@@ -23,6 +23,7 @@ from rdflib import OWL, RDF, RDFS, SKOS, BNode, URIRef
 from rdflib import Literal as RDFLiteral
 from rdflib.graph import Graph
 
+from ontocast.onto.property_sides import properties_with_side
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.well_known import well_known_role, well_known_vocabulary
 from ontocast.tool.facts_validation.terms import _catalog_term_roles, _local_name
@@ -181,7 +182,7 @@ def has_own_structure(class_iri: URIRef, graph: Graph) -> bool:
     """
     if any(True for _ in graph.subjects(RDFS.subClassOf, class_iri)):
         return True
-    if any(True for _ in graph.subjects(RDFS.domain, class_iri)):
+    if properties_with_side(graph, class_iri, "domain"):
         return True
     if any(isinstance(o, BNode) for o in graph.objects(class_iri, RDFS.subClassOf)):
         return True

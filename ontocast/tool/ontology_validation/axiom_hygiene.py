@@ -40,13 +40,20 @@ with the statements pointing at it (:func:`ontocast.onto.blank_structures.remove
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 
-from rdflib import OWL, RDF, RDFS, SKOS, XSD, Graph, URIRef
+from rdflib import DC, DCTERMS, OWL, RDF, RDFS, SKOS, XSD, Graph, URIRef
 
 from ontocast.onto.blank_structures import remove_with_structures
 from ontocast.onto.identity import is_owned_ontology
 from ontocast.onto.iri_policy import split_namespace_local
+from ontocast.onto.property_sides import (
+    DOMAIN_INCLUDES,
+    RANGE_INCLUDES,
+    SIDE_PREDICATES,
+    is_datatype_value,
+    side_classes,
+)
 from ontocast.onto.well_known import well_known_role, well_known_vocabulary
 
 #: Reserved by RFC 2606 for documentation; never a real vocabulary.
@@ -90,6 +97,37 @@ def is_generic_class(iri: str | URIRef) -> bool:
     return local == "Agent"
 
 
+#: Parents too broad to place a minted term: the top of a class or property
+#: hierarchy, or a catch-all relation. ``skos:Concept`` is not one: it is the
+#: parent the prompts ask for of a class of values from a fixed list.
+GENERIC_PARENT_IRIS: frozenset[URIRef] = THING_IRIS | frozenset(
+    {
+        RDFS.Resource,
+        OWL.topObjectProperty,
+        OWL.topDataProperty,
+        SKOS.related,
+        SKOS.semanticRelation,
+        DCTERMS.relation,
+        DC.relation,
+    }
+)
+
+
+def has_generic_parent(term: URIRef, graphs: Iterable[Graph]) -> bool:
+    """True when every parent of ``term`` is in :data:`GENERIC_PARENT_IRIS`.
+
+    A term with no parent is not counted: a missing parent is not a broad one.
+    """
+    parents = {
+        parent
+        for graph in graphs
+        for predicate in (RDFS.subClassOf, RDFS.subPropertyOf)
+        for parent in graph.objects(term, predicate)
+        if isinstance(parent, URIRef)
+    }
+    return bool(parents) and parents <= GENERIC_PARENT_IRIS
+
+
 def is_datatype_iri(iri: str | URIRef) -> bool:
     """True for an XSD datatype, ``rdfs:Literal`` or ``rdf:langString``."""
     text = str(iri)
@@ -106,12 +144,7 @@ def is_datatype_property(prop: URIRef, graphs: Iterable[Graph]) -> bool:
     graph_list = list(graphs)
     if any((prop, RDF.type, OWL.DatatypeProperty) in g for g in graph_list):
         return True
-    return any(
-        is_datatype_iri(r)
-        for g in graph_list
-        for r in g.objects(prop, RDFS.range)
-        if isinstance(r, URIRef)
-    )
+    return any(is_datatype_iri(r) for r in side_classes(prop, graph_list, "range"))
 
 
 def property_side_reasons(prop: URIRef, graphs: Iterable[Graph]) -> list[str]:
@@ -124,22 +157,12 @@ def property_side_reasons(prop: URIRef, graphs: Iterable[Graph]) -> list[str]:
 
     Args:
         prop: The property.
-        graphs: Where its ``rdfs:domain`` / ``rdfs:range`` are read: the
-            document's delta and the catalog axioms.
+        graphs: Where its sides (``rdfs`` or ``schema:*Includes``) are read:
+            the document's delta and the catalog axioms.
     """
     graph_list = list(graphs)
-    domains = {
-        d
-        for g in graph_list
-        for d in g.objects(prop, RDFS.domain)
-        if isinstance(d, URIRef)
-    }
-    ranges = {
-        r
-        for g in graph_list
-        for r in g.objects(prop, RDFS.range)
-        if isinstance(r, URIRef)
-    }
+    domains = side_classes(prop, graph_list, "domain")
+    ranges = side_classes(prop, graph_list, "range")
     reasons: list[str] = []
     if not domains:
         reasons.append("no_domain")
@@ -176,8 +199,7 @@ TERM_AXIOMS: frozenset[URIRef] = frozenset(
     {
         RDFS.subClassOf,
         RDFS.subPropertyOf,
-        RDFS.domain,
-        RDFS.range,
+        *SIDE_PREDICATES,
         OWL.equivalentClass,
         OWL.equivalentProperty,
         OWL.inverseOf,
@@ -283,8 +305,8 @@ def drop_vacuous_upper_terms(graph: Graph) -> int:
     """Remove Thing as a range or domain, and as a parent beside another parent."""
     doomed: list[tuple] = []
     for thing in THING_IRIS:
-        doomed.extend(graph.triples((None, RDFS.range, thing)))
-        doomed.extend(graph.triples((None, RDFS.domain, thing)))
+        for predicate in SIDE_PREDICATES:
+            doomed.extend(graph.triples((None, predicate, thing)))
         for cls in graph.subjects(RDFS.subClassOf, thing):
             if any(
                 parent not in THING_IRIS
@@ -297,9 +319,40 @@ def drop_vacuous_upper_terms(graph: Graph) -> int:
 
 
 #: Axioms whose object names another term: a side or a parent.
-REFERENCE_AXIOMS: frozenset[URIRef] = frozenset(
-    {RDFS.domain, RDFS.range, RDFS.subClassOf, RDFS.subPropertyOf}
+REFERENCE_AXIOMS: frozenset[URIRef] = SIDE_PREDICATES | frozenset(
+    {RDFS.subClassOf, RDFS.subPropertyOf}
 )
+
+
+def list_owned_sides(graph: Graph, owned: Callable[[str], bool]) -> int:
+    """Restate an owned property's class domain and range as expected classes.
+
+    ``p rdfs:domain C`` becomes ``p schema:domainIncludes C`` and
+    ``p rdfs:range C`` becomes ``p schema:rangeIncludes C`` when ``owned(p)``.
+    A side written for one document is a claim about every later use of the
+    property; a listed class claims only that it is one of the expected
+    kinds, and later documents add theirs. A datatype range stays
+    ``rdfs:range``: it decides what a literal is. Properties not owned (the
+    catalog's, the well-known vocabularies') keep their authors' axioms.
+
+    Returns:
+        The number of sides restated.
+    """
+    changed = 0
+    for predicate, listed in (
+        (RDFS.domain, DOMAIN_INCLUDES),
+        (RDFS.range, RANGE_INCLUDES),
+    ):
+        for prop, value in list(graph.subject_objects(predicate)):
+            if not isinstance(prop, URIRef) or not owned(str(prop)):
+                continue
+            if isinstance(value, URIRef) and (
+                predicate == RDFS.domain or not is_datatype_value(value, graph)
+            ):
+                graph.remove((prop, predicate, value))
+                graph.add((prop, listed, value))
+                changed += 1
+    return changed
 
 
 def repair_undeclared_owned_references(
@@ -483,12 +536,15 @@ __all__ = [
     "DATATYPE_PRECEDENCE",
     "EXAMPLE_NAMESPACE_STEMS",
     "GENERIC_CLASS_IRIS",
+    "GENERIC_PARENT_IRIS",
     "REFERENCE_AXIOMS",
     "TERM_AXIOMS",
     "TERM_TYPES",
     "THING_IRIS",
     "is_datatype_iri",
     "is_datatype_property",
+    "has_generic_parent",
+    "list_owned_sides",
     "is_generic_class",
     "property_side_reasons",
     "drop_example_namespace_triples",

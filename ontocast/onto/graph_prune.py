@@ -15,6 +15,8 @@ scores and no triple store, which is what makes it reusable outside retrieval.
 from rdflib import BNode, Graph, URIRef
 from rdflib.namespace import DCTERMS, OWL, RDF, RDFS, SKOS
 
+from ontocast.onto.property_sides import SIDE_PREDICATES
+
 #: RDF list plumbing and ontology-header bookkeeping. Disconnected from any
 #: business entity, so dropping these is as close to lossless as pruning gets.
 NOISY_EXPANSION_PREDICATES: frozenset[URIRef] = frozenset(
@@ -70,7 +72,7 @@ BFS_PREDICATE_PRIORITY: tuple[frozenset[URIRef], ...] = (
     frozenset({RDFS.label, SKOS.prefLabel}),  # name it
     frozenset({RDF.type}),  # say what it is
     frozenset({RDFS.subClassOf, OWL.equivalentClass}),  # place it in the hierarchy
-    frozenset({RDFS.domain, RDFS.range, RDFS.subPropertyOf}),  # connect properties
+    SIDE_PREDICATES | {RDFS.subPropertyOf},  # connect properties
     frozenset(
         {RDFS.comment, SKOS.definition, SKOS.scopeNote, SKOS.altLabel}
     ),  # describe it (scope notes carry usage contracts)

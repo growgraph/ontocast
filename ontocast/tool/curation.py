@@ -31,6 +31,7 @@ from rdflib.namespace import DCTERMS, PROV
 from ontocast.agent.common import call_llm_with_retry
 from ontocast.agent.consolidate_ontology import (
     TermContext,
+    flag_targets,
     format_other_terms,
     format_term_block,
 )
@@ -46,6 +47,8 @@ from ontocast.prompt.curate_catalog import curation_instruction, template_prompt
 from ontocast.tool.llm import RUN_STOPPING_ERRORS, use_budget_tracker
 from ontocast.tool.ontology_validation.catalog_terms import catalog_prefixes
 from ontocast.tool.ontology_validation.consolidate import (
+    TermFlags,
+    add_flag,
     compile_actions,
     resolve_actions,
     structural_flags,
@@ -223,7 +226,7 @@ async def facts_usage(tools: ToolBox) -> dict[str, set[str]] | None:
 def _contexts(
     head: Ontology,
     terms: Sequence[CuratedTerm],
-    flagged: Mapping[str, set[str]],
+    flagged: TermFlags,
 ) -> list[TermContext]:
     by_iri = {term.iri: term for term in terms}
     contexts = []
@@ -237,6 +240,7 @@ def _contexts(
         )
         context.status = f"added by {term.minted_by}{uses}"
         context.reasons = sorted(flagged[iri])
+        context.nearest = flag_targets(flagged[iri])
         subject = URIRef(iri)
         context.label = first_label(subject, head.graph) or ""
         comments = sorted(str(v) for v in head.graph.objects(subject, RDFS.comment))
@@ -340,16 +344,16 @@ async def curate_ontology(
     for iri in sorted(curated):
         used = sorted(usage.get(iri, set())) if usage is not None else None
         if used is not None and len(used) == 0:
-            flagged.setdefault(iri, set()).add("unused")
+            add_flag(flagged, iri, "unused")
         elif used is not None and len(used) == 1:
-            flagged.setdefault(iri, set()).add("single_document_use")
+            add_flag(flagged, iri, "single_document_use")
         terms.append(
             CuratedTerm(
                 iri=iri,
                 role=curated[iri],
                 minted_by=minted_by[iri],
                 used_by=used,
-                flags=sorted(flagged.get(iri, set())),
+                flags=sorted(flagged.get(iri, {})),
             )
         )
     report.terms = terms

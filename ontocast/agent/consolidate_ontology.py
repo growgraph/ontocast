@@ -46,7 +46,6 @@ from ontocast.tool.llm import (
     use_budget_tracker,
 )
 from ontocast.tool.ontology_validation.plan import compact_iri
-from ontocast.tool.ontology_validation.reconcile import MintedDuplicate
 from ontocast.tool.ontology_validation.shape import first_label
 from ontocast.toolbox import ToolBox
 
@@ -56,6 +55,15 @@ logger = logging.getLogger(__name__)
 EVIDENCE_WINDOW = 200
 #: Excerpts shown per term, one per unit that minted it.
 EVIDENCE_PER_TERM = 2
+#: Terms a flag points at, shown per reason.
+TARGETS_PER_REASON = 3
+
+#: How the prompt names the relation of a flag's target to the term.
+_TARGET_NOTES = {
+    "variant": "name variant",
+    "catalog_duplicate": "same name in the catalog",
+    "well_known_duplicate": "same name in a well-known vocabulary",
+}
 
 
 class TermContext:
@@ -73,6 +81,19 @@ class TermContext:
         self.nearest: list[tuple[str, str]] = []
         self.findings: list[str] = []
         self.excerpts: list[str] = []
+
+
+def flag_targets(
+    reasons: Mapping[str, Sequence[str]],
+) -> list[tuple[str, str]]:
+    """The terms a term's flags point at, each with what relates them."""
+    found: list[tuple[str, str]] = []
+    for reason in sorted(reasons):
+        note = _TARGET_NOTES.get(reason, reason)
+        for target in list(reasons[reason])[:TARGETS_PER_REASON]:
+            if all(target != iri for iri, _ in found):
+                found.append((target, note))
+    return found
 
 
 def _local_key(iri: str) -> str:
@@ -114,11 +135,10 @@ def build_term_contexts(
     *,
     carriers: Sequence[RDFGraph],
     minted: Mapping[str, str],
-    flagged: Mapping[str, set[str]],
+    flagged: Mapping[str, Mapping[str, Sequence[str]]],
     candidates: set[str],
     findings: Sequence[OntologyUnitFinding],
     term_units: Mapping[str, set[int]],
-    duplicates: Sequence[MintedDuplicate],
     plan: OntologyPlan | None,
 ) -> list[TermContext]:
     """One context per flagged term, ordered by IRI."""
@@ -132,8 +152,6 @@ def build_term_contexts(
             by_subject.setdefault(finding.subject, []).append(
                 f"{finding.kind}: {finding.message}"
             )
-    duplicate_of = {d.minted_iri: d.catalog_iri for d in duplicates}
-
     contexts: list[TermContext] = []
     for iri in sorted(flagged):
         subject = URIRef(iri)
@@ -151,11 +169,10 @@ def build_term_contexts(
                 if isinstance(parent, URIRef)
             }
         )
-        context.nearest = list(
-            plan_nearest.get(iri) or plan_nearest.get(_local_key(iri)) or []
-        )
-        if iri in duplicate_of:
-            context.nearest.insert(0, (duplicate_of[iri], "same name in the catalog"))
+        context.nearest = flag_targets(flagged[iri])
+        for near in plan_nearest.get(iri) or plan_nearest.get(_local_key(iri)) or []:
+            if all(near[0] != known for known, _ in context.nearest):
+                context.nearest.append(near)
         context.findings = by_subject.get(iri, [])[:3]
         for unit_index in sorted(term_units.get(iri, set())):
             if len(context.excerpts) >= EVIDENCE_PER_TERM:
@@ -203,7 +220,7 @@ def format_term_block(context: TermContext, prefixes: Mapping[str, str]) -> str:
 
 def format_other_terms(
     minted: Mapping[str, str],
-    flagged: Mapping[str, set[str]],
+    flagged: Mapping[str, object],
     carriers: Sequence[RDFGraph],
     prefixes: Mapping[str, str],
 ) -> str:

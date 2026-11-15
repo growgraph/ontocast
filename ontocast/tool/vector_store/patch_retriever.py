@@ -25,6 +25,7 @@ from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.iri_policy import as_sparql_iriref
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
+from ontocast.onto.property_sides import SIDE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.util import RDFLIB_DEFAULT_NAMESPACE_URIS
 from ontocast.tool.onto import Tool
@@ -58,7 +59,7 @@ from ontocast.tool.vector_store.util import (
 
 logger = logging.getLogger(__name__)
 
-_STRUCTURAL_REFERENCE_PREDICATES = frozenset({RDFS.subClassOf, RDFS.domain, RDFS.range})
+_STRUCTURAL_REFERENCE_PREDICATES = SIDE_PREDICATES | {RDFS.subClassOf}
 
 # Cap on terms per SPARQL ``VALUES`` clause. Seed counts are already bounded by
 # the retrieval config; this keeps a runaway list from becoming one huge query.
@@ -146,7 +147,7 @@ def _schema_closure_entities(
     ancestor_depth: int,
     seed_relevance: dict[str, float] | None = None,
 ) -> dict[str, str]:
-    """Terms reachable from the seeds by ``rdfs:domain`` / ``rdfs:range``.
+    """Terms reachable from the seeds by a domain or range (``rdfs`` or listed).
 
     Vector retrieval ranks terms by how a text chunk reads, which favours noun
     phrases: a class scores against prose far more readily than the property
@@ -183,7 +184,7 @@ def _schema_closure_entities(
     # One pass over the schema axioms; ontologies are small enough that
     # indexing them beats re-scanning per seed.
     domain_range: dict[URIRef, set[URIRef]] = defaultdict(set)
-    for predicate in (RDFS.domain, RDFS.range):
+    for predicate in SIDE_PREDICATES:
         for prop, target in graph.subject_objects(predicate):
             if isinstance(prop, URIRef) and isinstance(target, URIRef):
                 domain_range[prop].add(target)
@@ -1146,7 +1147,7 @@ class OntologyPatchRetriever(Tool):
         merged_context: tuple[RDFGraph, dict[str, str]] | None,
         catalog: list[Ontology] | None,
     ) -> RDFGraph | None:
-        """Pick the graph to read ``rdfs:domain``/``rdfs:range`` axioms from.
+        """Pick the graph to read domain and range axioms from.
 
         Whichever of the two expansion paths materialized the ontologies wins;
         neither being available means the induced-subgraph call is fetching on

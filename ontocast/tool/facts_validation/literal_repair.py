@@ -24,6 +24,7 @@ from ontocast.onto.model import (
     FactsUnitFindingKind,
     GraphRepairRecord,
 )
+from ontocast.onto.property_sides import sides_by_property
 from ontocast.onto.rdfgraph import (
     RDFGraph,
     RejectedLiteralTriple,
@@ -594,10 +595,12 @@ def materialize_entailed_types(
     """
     if ontology_graph is None or not len(ontology_graph):
         return 0, []
-    domains = _declared_domains(ontology_graph)
-    ranges = declared_class_ranges(ontology_graph)
-    listed_domains = sole_listed_classes(ontology_graph, "domainIncludes", domains)
-    listed_ranges = sole_listed_classes(ontology_graph, "rangeIncludes", ranges)
+    # Only an rdfs side entails; a listed side types a node only when it
+    # names one class (below).
+    domains = _declared_domains(ontology_graph, source="rdfs")
+    ranges = declared_class_ranges(ontology_graph, source="rdfs")
+    listed_domains = sole_listed_classes(ontology_graph, "domain", domains)
+    listed_ranges = sole_listed_classes(ontology_graph, "range", ranges)
     if not (domains or ranges or listed_domains or listed_ranges):
         return 0, []
 
@@ -687,8 +690,8 @@ def repair_reversed_triples(
 ) -> tuple[int, list[GraphRepairRecord]]:
     """Turn around a triple the context shows was written backwards.
 
-    ``x p y`` becomes ``y p x`` when ``p`` declares an ``rdfs:domain`` and an
-    ``rdfs:range``, both ends are typed IRIs, ``x`` contradicts the domain and
+    ``x p y`` becomes ``y p x`` when ``p`` declares a domain and a class range
+    (``rdfs`` or ``schema:*Includes``), both ends are typed IRIs, ``x`` contradicts the domain and
     ``y`` the range as written, and swapped both fit. One end fitting, or a
     type the context cannot place, leaves the triple as it is: the subject
     may be mistyped, or the property wrong, and neither is a direction. A
@@ -1167,10 +1170,7 @@ def resolve_code_literals(
         return 0, []
 
     domains = _declared_domains(ontology_graph)
-    ranges: dict[URIRef, set[URIRef]] = {}
-    for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
-        if isinstance(predicate, URIRef) and isinstance(range_iri, URIRef):
-            ranges.setdefault(predicate, set()).add(range_iri)
+    ranges = sides_by_property(ontology_graph, "range")
 
     # Superclass closures repeat heavily across literals; memoise per call.
     closures: dict[URIRef, set[URIRef]] = {}

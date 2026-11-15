@@ -136,7 +136,7 @@ machine can decide without the model:
 | Near-miss predicate rewrite | A class written as a type that exists nowhere is rewritten to the catalog class with exactly its local name in another namespace: the only one, or among several the one that is a subclass of every other (`class_alias`). A predicate that exists nowhere (not a catalog term, not a real term of a well-known vocabulary) is rewritten to the one catalog property, across the whole catalog, in another namespace with exactly its local name (a slipped prefix, also into a well-known namespace); otherwise, in a namespace the catalog declares terms in, to the one catalog term of its own namespace whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
 | Code resolution | A node carrying a code from `FACTS_CODE_PREDICATES` (such as `qudt:ucumCode "d"`) but no link to the coded individual gains that link, when exactly one catalog individual declares the code. The linking property comes from the schema's domain and range, or else from how the graph already links such nodes |
 | Paired object properties | A node (IRI or blank) written on a well-known datatype property that its vocabulary pairs with an object property for the same relation moves to that property: `sosa:hasSimpleResult` becomes `sosa:hasResult`. Records are kind `paired_object_property`. Critic and completion patches get the same repair |
-| Reversed triples | `x p y` becomes `y p x` when `p` declares an `rdfs:domain` and an `rdfs:range`, both ends are typed IRIs, `x` contradicts the domain and `y` the range as written, and swapped both fit. One end fitting, an untyped end, a type the context does not place, or a symmetric property leaves the triple as written. Records are kind `triple_reversed`. Critic and completion patches get the same repair |
+| Reversed triples | `x p y` becomes `y p x` when `p` declares a domain and a class range (`rdfs` or `schema:*Includes`), both ends are typed IRIs, `x` contradicts the domain and `y` the range as written, and swapped both fit. One end fitting, an untyped end, a type the context does not place, or a symmetric property leaves the triple as written. Records are kind `triple_reversed`. Critic and completion patches get the same repair |
 | Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. An IRI still untyped takes the class a link lists through `schema:domainIncludes` or `schema:rangeIncludes`, when the property lists exactly one class, declares no `rdfs` counterpart, and all of the node's links agree. Critic and completion patches get the same repair |
 | Degenerate bounds | Equal lower and upper bounds become one value, when the quantity fallback vocabulary names `numeric_value`, `lower_bound` and `upper_bound` |
 
@@ -185,7 +185,7 @@ fix. Every kind is mandatory except numeric coverage:
 | `quarantined_literal` | A quarantined triple, with the catalog individuals of the property's range as suggestions |
 | `unknown_term` | A term under `example.org`, a predicate or class minted in the facts namespace, a term missing from a closed catalog namespace, or a unit (the object of the unit property of `FACTS_QUANTITY_FALLBACK_VOCABULARY`) that the ontology context does not hold |
 | `literal_type_object` | An `rdf:type` written as a string that layer 1 could not resolve |
-| `domain_violation` | A predicate asserted on a subject whose stated type contradicts the predicate's `rdfs:domain` |
+| `domain_violation` | A predicate asserted on a subject whose stated types fit no class of the predicate's domain (`rdfs:domain` or `schema:domainIncludes`) |
 | `statement_without_subject` | An instance that states a value but names nothing it is about. For a statement class (`sosa:Observation`, `sosa:Actuation`, `sosa:Sampling`, or a catalog class under one): no subject property from it (`sosa:hasFeatureOfInterest`) nor to it (`sosa:isFeatureOfInterestOf`), counting the catalog's sub-properties and inverses of either; a link to its observed property is not a subject. For a value class: linked to no other instance of the unit. An instance of another class stating its own values is a fact about itself and is not reported. Suggestions are the unit's other instances. Not raised on citation or non-content units; counted per document as `facts_statements_without_subject_rendered` (on the renders) and `facts_statements_without_subject` (after the passes) |
 | `untyped_instance` | A facts-namespace IRI in subject or IRI-object position with no `rdf:type` naming a concrete class: one outside the facts namespaces that is neither a metaclass (`owl:Class`, `rdf:Property`, `owl:NamedIndividual`, …) nor vacuous (`owl:Thing`, `rdfs:Resource`, `schema:Thing`). Blank nodes and the chunk and document nodes are not instances. Suggestions are the domain and range classes of the predicates the instance carries, then catalog classes sharing a name token with its label |
 | `domain_adherence` | Too few of the render's schema terms come from the ontology context (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, judged from `FACTS_DOMAIN_ADHERENCE_MIN_TERMS` terms up); not judged on citation or non-content units |
@@ -360,9 +360,10 @@ linked on its loop attempt.
 
 ### Domain repair
 
-A `domain_violation` is a statement whose property declares an `rdfs:domain`
-that the subject's asserted types contradict; served, it would entail a type
-the subject does not have. With `FACTS_COMPLETION_PASSES` above 0, a unit that
+A `domain_violation` is a statement whose subject's asserted types fit no
+class of its property's domain; served, it says something about a kind of
+thing the property is not for (under an `rdfs:domain`, it would also entail a
+type the subject does not have). With `FACTS_COMPLETION_PASSES` above 0, a unit that
 still holds one after the critic loop gets one call before the gap passes:
 
 - each such statement is listed under a citable id, with its subject's and
@@ -498,7 +499,8 @@ decisions see the delta:
 | Minted outside home | A term the delta newly declares (not in the catalog) under any namespace other than the home ontology's is removed: every new term of a document lives under its home namespace. Under the deployment's own domain every triple naming the term goes; in another vocabulary only the statements about it go, and a home axiom pointing at it stays as a reuse. A term counts as declared when it is typed as a class, a property or a SKOS concept, or carries a subclass, subproperty, domain, range, equivalence, inverse or disjointness axiom; a term of a well-known vocabulary is never newly declared | `minted_outside_home_dropped` |
 | Non-term subjects | A subject in the facts namespace, an individual (typed, but neither as a class, a property nor a SKOS concept), or an untyped subject that neither the catalog nor a subclass, domain or range axiom declares is removed: an ontology update declares terms and value sets, and the rest belongs in the facts graph | `non_term_subjects_dropped` |
 | Datatype ranges | A property with several datatype ranges keeps one: `rdfs:Literal` goes beside a concrete datatype, and of several concrete ones the first of `rdf:langString`, `xsd:string`, then numbers from wide to narrow, then time, stays. Several ranges mean their intersection, empty for two datatypes | `datatype_ranges_normalized` |
-| `Thing` | `owl:Thing` or `schema:Thing` as a range or domain, or as a parent beside another parent, is removed: it constrains nothing | `vacuous_upper_terms_dropped` |
+| Owned sides | A class domain or range of a property of the home namespace, or one the delta mints, is written as an expected class: `rdfs:domain C` becomes `schema:domainIncludes C`, `rdfs:range C` becomes `schema:rangeIncludes C`. A side written from one document would be a claim about every later use; a listed class adds to the others. A datatype range stays `rdfs:range`; a catalog's or well-known vocabulary's property is never rewritten | `owned_sides_listed` |
+| `Thing` | `owl:Thing` or `schema:Thing` as a range or domain (stated or listed), or as a parent beside another parent, is removed: it constrains nothing | `vacuous_upper_terms_dropped` |
 | Parent kind | A property's `rdfs:subPropertyOf` naming a class or a datatype (`schema:Property` and `rdf:Property` are classes), and a class's `rdfs:subClassOf` naming a property or a datatype, are removed. A parent's kind comes from the delta's own declarations, then the catalog, then the well-known vocabulary's naming: classes capitalised, properties not, XSD terms datatypes. A parent of unknown kind stays | `role_crossing_parents_dropped` |
 | Undeclared own terms | A domain, range or parent naming an IRI under `CURRENT_DOMAIN` that neither the catalog nor the delta declares was made up: it is rewritten to the one declared term with the same local name, else removed. The deployment knows every term of its own namespaces; an IRI of another vocabulary is left alone | `undeclared_owned_references_rewritten`, `undeclared_owned_references_dropped` |
 | Home target | The home ontology is always a write target. When it is not stored yet and no unit rendered it fresh, an empty root under its identity receives its terms; under vector retrieval units render updates against catalog patches even for a new home | — |
@@ -527,13 +529,16 @@ whole catalog, without a model:
   unknown one is dropped and the term kept. A generic upper class
   (`owl:Thing`, `skos:Concept`, an Agent class) is kept and counted, since it
   is sometimes the right level. The render sees the sides beside the
-  property, and at reduce the plan's sides replace the ones a render wrote
-  for that property (`plan_sides_written`); a side naming a planned class
-  the document never declared is not written;
+  property, and at reduce the plan's parent and sides replace the ones a
+  render wrote for that term (`plan_parents_written`, `plan_sides_written`);
+  a parent or side naming a planned term the document never declared is not
+  written. Sides are written as `schema:domainIncludes` /
+  `schema:rangeIncludes`, a datatype range as `rdfs:range`;
 - a plan with no term counts as no plan, so units render without one.
 
 Counters: `plan_proposed`, `plan_minted`, `plan_reused`,
 `plan_resolved_to_catalog`, `plan_rejected`, `plan_generic_sides`, `plan_sides_written`,
+`plan_parents_written`,
 and `plan_failed` / `plan_empty` when no plan reached the units.
 
 A reused term is never minted, so the facts lane would not see it. Before the
@@ -553,9 +558,14 @@ candidate.
 The model is asked only about terms that need a decision: candidates, and
 minted terms that carry a term-level finding (`specific_label_leaf`,
 `value_set_siblings`, `catalog_duplicate`, `label_collision`,
-`hierarchy_too_deep`), name an existing catalog term, sit in a value-set
-family, or vary another term's name by one modifier (`hasOpticalCavity` and
-`hasOpticalMicrocavity`). Each of those gets a full entry; the document's other
+`hierarchy_too_deep`), name an existing catalog term, share their local name
+(case-insensitive, same role) with a term of a well-known vocabulary
+(`well_known_duplicate`: a minted `Observation` beside `sosa:Observation`), sit
+in a value-set family, or vary another term's name by one modifier
+(`hasOpticalCavity` and `hasOpticalMicrocavity`). Each of those gets a full
+entry, whose `near:` line names the terms its flags point at (the variant's
+partner, the catalog or well-known term of the same name) before the plan's
+nearest catalog terms; the document's other
 minted terms are listed one line each, as possible merge targets. When no term
 needs a decision, no call is made and the defaults apply. The actions are
 validated before they are compiled:
@@ -563,7 +573,7 @@ validated before they are compiled:
 | Action | Valid when | Effect on the document's update |
 |---|---|---|
 | `keep` | always; the default for a planned term | none |
-| `merge_into T` | `T` is a minted, catalog or well-known term of the same role, and the merge chain ends at a term that survives | the term's own triples go; every other triple naming it names `T` |
+| `merge_into T` | `T` is a minted or catalog term of the same role, or a term a well-known vocabulary has under that role, and the merge chain ends at a term that survives | the term's own triples go; every other triple naming it names `T` |
 | `generalise_to T` | as for a merge | its named parents are replaced by `T` |
 | `demote_to_property_value` | the term is a class | its class typing and named superclasses go; it becomes an `owl:NamedIndividual` and `skos:Concept` with its former parents as `skos:broader`; subclasses and domain/range uses move to its former parent |
 | `drop` | always; the default for a candidate | every triple naming it goes |
@@ -581,15 +591,22 @@ axioms are never edited. Counters: `minted_terms_before_decisions`,
 properties that survive the decisions, the sides that are only a generic
 upper class (`owl:Thing`, `schema:Thing`, `rdfs:Resource`, `skos:Concept`,
 `prov:Agent`, `foaf:Agent` or any class named `Agent`; a datatype property's
-range is never generic) and the sides that are missing.
+range is never generic) and the sides that are missing. `generic_parents`
+counts the surviving minted terms whose every parent is the top of a
+hierarchy (`owl:Thing`, `schema:Thing`, `rdfs:Resource`,
+`owl:topObjectProperty`, `owl:topDataProperty`) or a catch-all relation
+(`skos:related`, `skos:semanticRelation`, `dcterms:relation`, `dc:relation`);
+`skos:Concept` is not one, since a class of fixed-list values belongs under
+it.
 
 The plan, the render, consolidation and the ontology critic judge a new term
 by one criterion, stated once in `ontocast/prompt/ontology_terms.py`: a class
 is a kind whose instances are things of the domain, named in the text or
 not; one particular thing is an individual, a distinction between members is
-a property value, and a property's domain and range are the classes of
+a property value, a property's domain and range list the classes of
 everything the property can apply to in the domain, usually broader than one
-document's subject. The plan reuses a general property rather than minting a
+document's subject, and a parent is the nearest kind the term's instances
+belong to. The plan reuses a general property rather than minting a
 narrower copy of it for one kind of subject.
 
 ## Applying the merged update

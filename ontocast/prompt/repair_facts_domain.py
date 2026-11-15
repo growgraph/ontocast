@@ -1,8 +1,8 @@
 """Prompt for the facts domain-repair call.
 
 Runs after the facts render/critic loop, only on a unit holding a statement
-whose property declares an ``rdfs:domain`` the subject's asserted types
-contradict (``domain_violation`` findings). The call sees each such statement
+whose subject's asserted types fit no class of its property's domain
+ (``domain_violation`` findings). The call sees each such statement
 under a citable id, what its subject and object are, the classes its property
 applies to, and the context properties whose domain fits the subject; it may
 only replace the property. Chapter order follows the gap pass: preamble ->

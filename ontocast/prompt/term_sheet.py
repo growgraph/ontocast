@@ -29,6 +29,7 @@ from __future__ import annotations
 from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 
 from ontocast.onto.prefixes import NOTE_PREDICATES
+from ontocast.onto.property_sides import SIDE_PREDICATES, side_predicates
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.well_known import (
     well_known_statement_classes,
@@ -126,17 +127,20 @@ def _first_text(graph: RDFGraph, subject: URIRef, *predicates: URIRef) -> str:
     return ""
 
 
-def _iris(graph: RDFGraph, subject: URIRef, predicate: URIRef) -> list[str]:
-    """Sorted qnames of the IRI objects of ``predicate`` on ``subject``.
+def _iris(graph: RDFGraph, subject: URIRef, *predicates: URIRef) -> list[str]:
+    """Sorted, distinct qnames of the IRI objects of ``predicates`` on ``subject``.
 
     Blank-node objects are skipped: an ``owl:Restriction`` has no name to print,
     and the term sheet has no syntax for an anonymous class expression. The
     class it restricts is already named by the term's own line.
     """
     return sorted(
-        qname_for(graph, obj)
-        for obj in graph.objects(subject, predicate)
-        if isinstance(obj, URIRef)
+        {
+            qname_for(graph, obj)
+            for predicate in predicates
+            for obj in graph.objects(subject, predicate)
+            if isinstance(obj, URIRef)
+        }
     )
 
 
@@ -145,7 +149,7 @@ def partition_terms(graph: RDFGraph) -> tuple[list[URIRef], list[URIRef], list[U
 
     Classification is by declared ``rdf:type``, with two structural fallbacks so
     a catalog that under-declares still lands its terms in the right section: a
-    subject carrying ``rdfs:domain``/``rdfs:range``/``rdfs:subPropertyOf`` is a
+    subject carrying a domain, a range or ``rdfs:subPropertyOf`` is a
     property, and one carrying ``rdfs:subClassOf`` is a class.
     """
     classes: list[URIRef] = []
@@ -156,8 +160,7 @@ def partition_terms(graph: RDFGraph) -> tuple[list[URIRef], list[URIRef], list[U
     ):
         types = {t for t in graph.objects(subject, RDF.type) if isinstance(t, URIRef)}
         if types & _PROPERTY_TYPES or any(
-            (subject, p, None) in graph
-            for p in (RDFS.domain, RDFS.range, RDFS.subPropertyOf)
+            (subject, p, None) in graph for p in (*SIDE_PREDICATES, RDFS.subPropertyOf)
         ):
             properties.append(subject)
         elif types & _CLASS_TYPES or (subject, RDFS.subClassOf, None) in graph:
@@ -192,8 +195,8 @@ def term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
         if parents:
             parts.append(f"< {', '.join(sorted(set(parents)))}")
     elif kind == "property":
-        domain = _iris(graph, subject, RDFS.domain)
-        codomain = _iris(graph, subject, RDFS.range)
+        domain = _iris(graph, subject, *side_predicates("domain"))
+        codomain = _iris(graph, subject, *side_predicates("range"))
         parts.append(f"{'/'.join(domain) or '?'} -> {'/'.join(codomain) or '?'}")
         super_properties = _iris(graph, subject, RDFS.subPropertyOf)
         if super_properties:

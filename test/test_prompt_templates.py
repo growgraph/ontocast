@@ -367,6 +367,7 @@ def test_value_list_example_gives_the_property_a_class_of_its_own() -> None:
     skos:Concept, and that class is the property's range."""
     from rdflib import RDF, RDFS, SKOS, Graph, URIRef
 
+    from ontocast.onto.property_sides import RANGE_INCLUDES
     from ontocast.prompt.render_ontology import general_ontology_instruction
 
     statements = re.findall(r"`(ex:[^`]+)`", general_ontology_instruction)
@@ -376,12 +377,13 @@ def test_value_list_example_gives_the_property_a_class_of_its_own() -> None:
     graph = Graph().parse(
         data="@prefix ex: <http://ex.org/> .\n"
         "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
-        "@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n" + body,
+        "@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n"
+        "@prefix schema: <https://schema.org/> .\n" + body,
         format="turtle",
     )
     ex = "http://ex.org/"
     fuel_type = URIRef(f"{ex}FuelType")
-    assert (URIRef(f"{ex}hasFuelType"), RDFS.range, fuel_type) in graph
+    assert (URIRef(f"{ex}hasFuelType"), RANGE_INCLUDES, fuel_type) in graph
     assert (fuel_type, RDFS.subClassOf, SKOS.Concept) in graph
     for value in ("Diesel", "Petrol"):
         assert (URIRef(f"{ex}{value}"), RDF.type, SKOS.Concept) in graph
@@ -406,13 +408,15 @@ def test_every_ontology_prompt_states_the_instance_criterion_once() -> None:
     assert "no fact needs" not in consolidation_instruction
 
 
-def test_a_side_covers_every_use_and_a_general_property_is_reused() -> None:
+def test_a_side_lists_expected_classes_and_a_general_property_is_reused() -> None:
     """A side fitted to one document's subject makes a narrower copy of a general property."""
     from ontocast.prompt.ontology_terms import INSTANCE_CRITERION
     from ontocast.prompt.plan_ontology import plan_instruction
 
     assert "most specific class" not in INSTANCE_CRITERION
-    assert "every use of the property" in INSTANCE_CRITERION
+    assert "expected on" in INSTANCE_CRITERION
+    assert "claim about every use" not in INSTANCE_CRITERION
+    assert "nearest kind the term's instances belong to" in INSTANCE_CRITERION
     assert "broader than this document's subject" in INSTANCE_CRITERION
     assert "never plan a narrower copy" in plan_instruction
 

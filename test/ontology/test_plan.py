@@ -301,7 +301,8 @@ def test_a_generic_planned_side_is_kept_and_counted_an_unknown_one_dropped():
 def test_the_plan_sides_replace_the_render_sides_of_a_planned_property():
     """A render saw one unit; the plan's sides were resolved against the catalog."""
     from ontocast.onto.model import OntologyPlan, OntologyPlanTerm
-    from ontocast.tool.ontology_validation.plan import apply_plan_sides
+    from ontocast.onto.property_sides import DOMAIN_INCLUDES, RANGE_INCLUDES
+    from ontocast.tool.ontology_validation.plan import apply_plan_axioms
 
     home = HOME.namespace
     plan = OntologyPlan(
@@ -344,17 +345,89 @@ def test_the_plan_sides_replace_the_render_sides_of_a_planned_property():
     minted = {str(prop): "property", str(code): "property"}
 
     # The planned class is not declared: its side would dangle, so it waits.
-    assert apply_plan_sides([graph], plan, minted) == 2
-    assert set(graph.objects(prop, RDFS.domain)) == {URIRef(f"{CAT}Sample")}
+    # Class sides are written as expected classes; a datatype range stays rdfs.
+    assert apply_plan_axioms([graph], plan, minted).sides == 2
+    assert set(graph.objects(prop, RDFS.domain)) == set()
+    assert set(graph.objects(prop, DOMAIN_INCLUDES)) == {URIRef(f"{CAT}Sample")}
     assert set(graph.objects(prop, RDFS.range)) == {
         URIRef("https://example.com/made-up#Component")
     }
     assert set(graph.objects(code, RDFS.range)) == {XSD.string}
+    # The plan gives no domain for it: the render's stays as written.
     assert set(graph.objects(code, RDFS.domain)) == {URIRef(f"{CAT}Sample")}
 
     component = URIRef(f"{home}Component")
     graph.add((component, RDF.type, OWL.Class))
     minted[str(component)] = "class"
-    assert apply_plan_sides([graph], plan, minted) == 1
-    assert set(graph.objects(prop, RDFS.range)) == {component}
-    assert apply_plan_sides([graph], plan, minted) == 0
+    assert apply_plan_axioms([graph], plan, minted).sides == 1
+    assert set(graph.objects(prop, RDFS.range)) == set()
+    assert set(graph.objects(prop, RANGE_INCLUDES)) == {component}
+    assert apply_plan_axioms([graph], plan, minted).sides == 0
+
+
+def test_the_plan_parent_replaces_the_render_parent_once_it_is_declared():
+    from ontocast.onto.model import OntologyPlan, OntologyPlanTerm
+    from ontocast.tool.ontology_validation.plan import apply_plan_axioms
+
+    home = HOME.namespace
+    plan = OntologyPlan(
+        terms=[
+            OntologyPlanTerm(
+                kind="class",
+                label="stratovolcano",
+                local_name="Stratovolcano",
+                iri=f"{home}Stratovolcano",
+                decision="mint",
+                parent_iri=f"{home}Volcano",
+            ),
+            OntologyPlanTerm(
+                kind="class",
+                label="volcano",
+                local_name="Volcano",
+                iri=f"{home}Volcano",
+                decision="mint",
+                parent_iri=f"{CAT}Sample",
+            ),
+        ]
+    )
+    graph = RDFGraph()
+    strato = URIRef(f"{home}Stratovolcano")
+    volcano = URIRef(f"{home}Volcano")
+    graph.add((strato, RDF.type, OWL.Class))
+    graph.add((strato, RDFS.subClassOf, OWL.Thing))
+    graph.add((volcano, RDF.type, OWL.Class))
+    graph.add((volcano, RDFS.subClassOf, URIRef(f"{CAT}Thing")))
+    minted = {str(strato): "class"}
+
+    # The planned parent is minted by the plan but not declared: it waits.
+    written = apply_plan_axioms([graph], plan, minted)
+    assert written.parents == 0
+    assert set(graph.objects(strato, RDFS.subClassOf)) == {OWL.Thing}
+
+    minted[str(volcano)] = "class"
+    written = apply_plan_axioms([graph], plan, minted)
+    assert written.parents == 2
+    assert set(graph.objects(strato, RDFS.subClassOf)) == {volcano}
+    assert set(graph.objects(volcano, RDFS.subClassOf)) == {URIRef(f"{CAT}Sample")}
+    assert apply_plan_axioms([graph], plan, minted).parents == 0
+
+
+def test_a_parent_at_the_top_of_a_hierarchy_counts_as_generic():
+    from rdflib import SKOS
+
+    from ontocast.tool.ontology_validation.axiom_hygiene import has_generic_parent
+
+    home = HOME.namespace
+    graph = RDFGraph()
+    graph.add((URIRef(f"{home}Event"), RDFS.subClassOf, OWL.Thing))
+    graph.add((URIRef(f"{home}Award"), RDFS.subClassOf, OWL.Thing))
+    graph.add((URIRef(f"{home}Award"), RDFS.subClassOf, URIRef(f"{CAT}Sample")))
+    graph.add((URIRef(f"{home}relatedVenue"), RDFS.subPropertyOf, SKOS.related))
+    graph.add((URIRef(f"{home}Status"), RDFS.subClassOf, SKOS.Concept))
+
+    assert has_generic_parent(URIRef(f"{home}Event"), [graph])
+    assert has_generic_parent(URIRef(f"{home}relatedVenue"), [graph])
+    assert not has_generic_parent(URIRef(f"{home}Award"), [graph])
+    # A class of values from a fixed list belongs under skos:Concept.
+    assert not has_generic_parent(URIRef(f"{home}Status"), [graph])
+    assert not has_generic_parent(URIRef(f"{home}Orphan"), [graph])

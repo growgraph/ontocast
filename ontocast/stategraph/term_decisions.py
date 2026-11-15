@@ -6,8 +6,8 @@ insert delta (units that extended a catalog ontology) and the fresh ontology
 graphs (units that started the document's new home ontology). Both are decided
 together and patched in place.
 
-Order: list the minted terms; write the plan's domains and ranges over the
-render's; split off the candidates the plan did not name;
+Order: list the minted terms; write the plan's parents, domains and ranges
+over the render's; split off the candidates the plan did not name;
 flag the terms that need a decision; ask consolidation about the flagged terms
 only (when on, and only when any is flagged); compile the actions, defaults
 included, onto each carrier.
@@ -30,15 +30,19 @@ from ontocast.onto.model import OntologyUnitFinding, OntologyUnitFindingKind
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
-from ontocast.tool.ontology_validation.axiom_hygiene import property_side_reasons
+from ontocast.tool.ontology_validation.axiom_hygiene import (
+    has_generic_parent,
+    property_side_reasons,
+)
 from ontocast.tool.ontology_validation.catalog_terms import catalog_prefixes
 from ontocast.tool.ontology_validation.consolidate import (
+    add_flag,
     compile_actions,
     resolve_actions,
     structural_flags,
 )
 from ontocast.tool.ontology_validation.plan import (
-    apply_plan_sides,
+    apply_plan_axioms,
     minted_terms,
     plan_candidates,
 )
@@ -105,9 +109,11 @@ async def decide_minted_terms(
         return
     metrics = state.ontology_reduce_metrics
     if plan is not None:
-        # The plan resolved each property's sides against the whole catalog;
-        # a render saw one unit, so its sides give way.
-        metrics["plan_sides_written"] = apply_plan_sides(carriers, plan, minted)
+        # The plan resolved each term's parent and sides against the whole
+        # catalog; a render saw one unit, so its values give way.
+        written = apply_plan_axioms(carriers, plan, minted)
+        metrics["plan_sides_written"] = written.sides
+        metrics["plan_parents_written"] = written.parents
     candidates = plan_candidates(carriers, plan, catalog_index)
     metrics["minted_terms_before_decisions"] = len(minted)
     metrics["plan_candidates"] = len(candidates)
@@ -125,13 +131,18 @@ async def decide_minted_terms(
     )
     flagged = structural_flags(minted, carriers, catalog_index)
     for iri in candidates:
-        flagged.setdefault(iri, set()).add("candidate")
+        add_flag(flagged, iri, "candidate")
     for finding in findings:
         if finding.kind in REVIEW_FINDING_KINDS and finding.subject in minted:
-            flagged.setdefault(finding.subject, set()).add(str(finding.kind))
+            add_flag(flagged, finding.subject, str(finding.kind))
     for duplicate in duplicates:
         if duplicate.minted_iri in minted:
-            flagged.setdefault(duplicate.minted_iri, set()).add("catalog_duplicate")
+            add_flag(
+                flagged,
+                duplicate.minted_iri,
+                "catalog_duplicate",
+                (duplicate.catalog_iri,),
+            )
     metrics["consolidation_flagged"] = len(flagged)
 
     actions = []
@@ -148,7 +159,6 @@ async def decide_minted_terms(
             candidates=candidates,
             findings=findings,
             term_units=term_units,
-            duplicates=duplicates,
             plan=plan,
         )
         actions, failed = await consolidate_terms(
@@ -191,6 +201,9 @@ async def decide_minted_terms(
     }
     metrics["generic_property_sides"], metrics["missing_property_sides"] = _side_counts(
         surviving, carriers
+    )
+    metrics["generic_parents"] = sum(
+        has_generic_parent(URIRef(iri), carriers) for iri in surviving
     )
     metrics["consolidation_actions_ignored"] = len(ignored)
     metrics["consolidation_changed_triples"] = changed

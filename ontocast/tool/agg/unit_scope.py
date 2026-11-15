@@ -36,6 +36,7 @@ from collections.abc import Sequence
 from rdflib import OWL, RDF, RDFS, Node, URIRef
 
 from ontocast.onto.iri_policy import normalize_namespace_iri, split_namespace_local
+from ontocast.onto.property_sides import SIDE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
 
 #: Separator between a minted local name and the index of the unit that minted it.
@@ -61,8 +62,7 @@ _SCHEMA_TARGET_PREDICATES: frozenset[URIRef] = frozenset(
         RDF.type,
         RDFS.subClassOf,
         RDFS.subPropertyOf,
-        RDFS.domain,
-        RDFS.range,
+        *SIDE_PREDICATES,
         OWL.equivalentClass,
         OWL.equivalentProperty,
         OWL.inverseOf,

@@ -18,6 +18,13 @@ from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 from rdflib.namespace import DCTERMS, XSD
 from rdflib.term import Node
 
+from ontocast.onto.property_sides import (
+    SIDE_PREDICATES,
+    Side,
+    SideSource,
+    is_datatype_value,
+    sides_by_property,
+)
 from ontocast.onto.rdfgraph import (
     RDFGraph,
 )
@@ -211,7 +218,7 @@ def _catalog_term_roles(
     """Split catalog terms into (known properties, known classes).
 
     Only what the catalog states is used: explicit property/class typing,
-    ``rdfs:domain``/``rdfs:range`` (property evidence), and
+    a domain or a range (``rdfs`` or ``schema:*Includes``, property evidence), and
     ``rdfs:subClassOf`` / ``rdf:type``-object position (class evidence). Terms
     with no evidence land in neither set and pass every role filter.
     """
@@ -226,7 +233,7 @@ def _catalog_term_roles(
     for subject in ontology_graph.subjects(RDF.type, RDF.Property):
         if isinstance(subject, URIRef):
             properties.add(str(subject))
-    for predicate in (RDFS.domain, RDFS.range):
+    for predicate in SIDE_PREDICATES:
         for subject in ontology_graph.subjects(predicate, None):
             if isinstance(subject, URIRef):
                 properties.add(str(subject))
@@ -390,18 +397,7 @@ def superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIRe
 
 #: What a term's domain, range and listed classes say, kept catalog-wide so a
 #: repair does not depend on which axioms retrieval kept for a unit.
-_AXIOM_PREDICATES = (
-    RDFS.domain,
-    RDFS.range,
-    *(
-        URIRef(ns + "domainIncludes")
-        for ns in ("http://schema.org/", "https://schema.org/")
-    ),
-    *(
-        URIRef(ns + "rangeIncludes")
-        for ns in ("http://schema.org/", "https://schema.org/")
-    ),
-)
+_AXIOM_PREDICATES = tuple(sorted(SIDE_PREDICATES, key=str))
 #: Statements that place a class in the hierarchy; the catalog-wide hierarchy
 #: graph keeps only these, so a closure over it equals one over the catalog.
 _HIERARCHY_PREDICATES = (
@@ -634,7 +630,7 @@ def is_value_node(graph: RDFGraph, node: Node, value_classes: frozenset[str]) ->
 def _described_classes(ontology_graph: RDFGraph) -> set[URIRef]:
     """Classes whose position in the hierarchy the context actually states.
 
-    A class named only as the object of an ``rdfs:domain`` or an ``rdf:type``
+    A class named only as the object of a domain or an ``rdf:type``
     carries no subclass edges here -- typically because it belongs to an
     imported vocabulary (SOSA, QUDT) that the context does not vendor, since
     ``owl:imports`` is not dereferenced. Its ancestors are unknown, so nothing
@@ -650,80 +646,64 @@ def _described_classes(ontology_graph: RDFGraph) -> set[URIRef]:
     return described
 
 
-def _declared_domains(ontology_graph: RDFGraph) -> dict[URIRef, set[URIRef]]:
-    """Predicate -> its declared ``rdfs:domain`` classes, named classes only."""
-    domains: dict[URIRef, set[URIRef]] = {}
-    for predicate, _, domain in ontology_graph.triples((None, RDFS.domain, None)):
-        # Anonymous domains are class expressions (unions, restrictions); they
-        # need a reasoner to decide membership, so they are out of scope here.
-        if isinstance(predicate, URIRef) and isinstance(domain, URIRef):
-            domains.setdefault(predicate, set()).add(domain)
-    return domains
+def _declared_domains(
+    ontology_graph: RDFGraph, *, source: SideSource | None = None
+) -> dict[URIRef, set[URIRef]]:
+    """Predicate -> the named classes its domain names.
 
-
-def declared_class_ranges(ontology_graph: RDFGraph) -> dict[URIRef, set[URIRef]]:
-    """Predicate -> its declared ``rdfs:range`` classes, named classes only.
-
-    A datatype range (XSD, ``rdfs:Literal``, a declared ``rdfs:Datatype``)
-    types a literal, not a node, and is left out.
+    Both ``rdfs:domain`` and ``schema:domainIncludes`` by default: the classes
+    a subject is expected to fit. ``source="rdfs"`` keeps the entailing ones.
+    Anonymous domains are class expressions (unions, restrictions); they need
+    a reasoner to decide membership, so they are out of scope here.
     """
-    datatypes = {
-        subject
-        for subject in ontology_graph.subjects(RDF.type, RDFS.Datatype)
-        if isinstance(subject, URIRef)
-    }
+    return sides_by_property(ontology_graph, "domain", source=source)
+
+
+def declared_class_ranges(
+    ontology_graph: RDFGraph, *, source: SideSource | None = None
+) -> dict[URIRef, set[URIRef]]:
+    """Predicate -> the named classes its range names, datatypes left out.
+
+    Both ``rdfs:range`` and ``schema:rangeIncludes`` by default;
+    ``source="rdfs"`` keeps the entailing ones. A datatype range (XSD,
+    ``rdfs:Literal``, a declared ``rdfs:Datatype``) types a literal, not a
+    node, and is left out.
+    """
     ranges: dict[URIRef, set[URIRef]] = {}
-    for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
-        if not isinstance(predicate, URIRef) or not isinstance(range_iri, URIRef):
-            continue
-        if range_iri in datatypes or range_iri in (RDFS.Literal, RDF.langString):
-            continue
-        if str(range_iri).startswith(str(XSD)):
-            continue
-        ranges.setdefault(predicate, set()).add(range_iri)
+    for predicate, values in sides_by_property(
+        ontology_graph, "range", source=source
+    ).items():
+        classes = {v for v in values if not is_datatype_value(v, ontology_graph)}
+        if classes:
+            ranges[predicate] = classes
     return ranges
 
 
-_SCHEMA_ORG = ("http://schema.org/", "https://schema.org/")
-
-
 def sole_listed_classes(
-    ontology_graph: RDFGraph, link: str, declared: Mapping[URIRef, set[URIRef]]
+    ontology_graph: RDFGraph, side: Side, declared: Mapping[URIRef, set[URIRef]]
 ) -> dict[URIRef, URIRef]:
-    """Predicate -> the one class its ``schema:<link>`` lists.
+    """Predicate -> the one class its ``schema:<side>Includes`` lists.
 
-    ``schema:rangeIncludes`` and ``schema:domainIncludes`` list alternatives,
-    so they entail nothing in general; a predicate listing exactly one named
-    class, and declaring no ``rdfs`` counterpart, leaves one reading.
+    Listed classes are alternatives, so they entail nothing in general; a
+    predicate listing exactly one named class, and declaring no ``rdfs``
+    counterpart, leaves one reading.
 
     Args:
         ontology_graph: Ontology context.
-        link: ``"rangeIncludes"`` or ``"domainIncludes"``.
-        declared: The predicate's ``rdfs:range`` (resp. ``rdfs:domain``)
-            classes; a predicate present here is left out.
+        side: ``domain`` or ``range``.
+        declared: The predicate's ``rdfs`` classes of that side; a predicate
+            present here is left out.
 
     Returns:
         The sole listed class per predicate; datatypes are never a class.
     """
-    datatypes = {
-        subject
-        for subject in ontology_graph.subjects(RDF.type, RDFS.Datatype)
-        if isinstance(subject, URIRef)
-    }
-    listed: dict[URIRef, set[URIRef]] = {}
-    for namespace in _SCHEMA_ORG:
-        for predicate, _, cls in ontology_graph.triples(
-            (None, URIRef(namespace + link), None)
-        ):
-            if isinstance(predicate, URIRef) and isinstance(cls, URIRef):
-                listed.setdefault(predicate, set()).add(cls)
+    listed = sides_by_property(ontology_graph, side, source="includes")
     return {
         predicate: next(iter(classes))
         for predicate, classes in listed.items()
         if len(classes) == 1
         and predicate not in declared
-        and not (classes & datatypes)
-        and not str(next(iter(classes))).startswith(str(XSD))
+        and not is_datatype_value(next(iter(classes)), ontology_graph)
     }
 
 
@@ -765,18 +745,6 @@ def types_compatible(
     )
 
 
-def _listed_sides(ontology_graph: RDFGraph, link: str) -> dict[URIRef, set[URIRef]]:
-    """Predicate -> the named classes its ``schema:<link>`` lists."""
-    listed: dict[URIRef, set[URIRef]] = {}
-    for namespace in _SCHEMA_ORG:
-        for predicate, _, cls in ontology_graph.triples(
-            (None, URIRef(namespace + link), None)
-        ):
-            if isinstance(predicate, URIRef) and isinstance(cls, URIRef):
-                listed.setdefault(predicate, set()).add(cls)
-    return listed
-
-
 def domain_fitting_properties(
     subject: URIRef,
     obj: Node,
@@ -802,11 +770,7 @@ def domain_fitting_properties(
     described = _described_classes(ontology_graph)
     closures: dict[URIRef, set[URIRef]] = {}
     domains = _declared_domains(ontology_graph)
-    for predicate, classes in _listed_sides(ontology_graph, "domainIncludes").items():
-        domains.setdefault(predicate, set()).update(classes)
     ranges = declared_class_ranges(ontology_graph)
-    for predicate, classes in _listed_sides(ontology_graph, "rangeIncludes").items():
-        ranges.setdefault(predicate, set()).update(classes)
     object_types = (
         {t for t in graph.objects(obj, RDF.type) if isinstance(t, URIRef)}
         if isinstance(obj, URIRef)
@@ -868,11 +832,7 @@ def link_properties(
     described = _described_classes(ontology_graph)
     closures: dict[URIRef, set[URIRef]] = {}
     domains = _declared_domains(ontology_graph)
-    for predicate, classes in _listed_sides(ontology_graph, "domainIncludes").items():
-        domains.setdefault(predicate, set()).update(classes)
     ranges = declared_class_ranges(ontology_graph)
-    for predicate, classes in _listed_sides(ontology_graph, "rangeIncludes").items():
-        ranges.setdefault(predicate, set()).update(classes)
 
     def fits(declared: set[URIRef] | None) -> bool:
         return bool(declared) and (
@@ -899,10 +859,11 @@ def link_properties(
 def domain_fits(
     subject: URIRef, predicate: URIRef, graph: RDFGraph, ontology_graph: RDFGraph
 ) -> bool:
-    """Whether ``subject``'s asserted types contradict no declared domain of ``predicate``.
+    """Whether ``subject``'s asserted types fit a declared domain of ``predicate``.
 
-    The test :func:`domain_violation_findings` applies: only ``rdfs:domain``
-    entails, so only it can be contradicted.
+    The test :func:`domain_violation_findings` applies: the subject fits when
+    it is compatible with one class of the domain (``rdfs:domain`` or
+    ``schema:domainIncludes``), or when the context cannot decide.
     """
     declared = _declared_domains(ontology_graph).get(predicate)
     if not declared:

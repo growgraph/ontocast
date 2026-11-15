@@ -19,6 +19,7 @@ from weakref import WeakKeyDictionary
 from rdflib import RDF, RDFS, SKOS, Graph, Literal, URIRef
 
 from ontocast.onto.annotation import is_annotation
+from ontocast.onto.property_sides import side_classes
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.util.measurement_lexicon import (
     Mention,
@@ -465,9 +466,7 @@ def _unit_classes(graph: Graph, unit_properties: Collection[str]) -> set[URIRef]
     classes, and everything below them."""
     seeds: set[URIRef] = set()
     for prop in unit_properties:
-        for rng in graph.objects(URIRef(prop), RDFS.range):
-            if isinstance(rng, URIRef):
-                seeds.add(rng)
+        seeds |= side_classes(URIRef(prop), [graph], "range")
     for cls in set(graph.objects(None, RDF.type)) | set(
         graph.subjects(RDFS.subClassOf)
     ):

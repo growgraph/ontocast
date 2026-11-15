@@ -24,6 +24,7 @@ from rdflib.namespace import TIME, XSD
 from rdflib.term import Node
 
 from ontocast.onto.model import FactsGateRepairKind, GraphRepairRecord
+from ontocast.onto.property_sides import side_classes, sides_by_property
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.well_known import (
     well_known_datatype_ranges,
@@ -145,9 +146,11 @@ def _temporal_properties(ontology_graph: RDFGraph) -> set[URIRef]:
     class or a date datatype.
     """
     found = set(_TEMPORAL_PROPERTIES)
-    for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
-        if not isinstance(predicate, URIRef) or not isinstance(range_iri, URIRef):
-            continue
+    for predicate, range_iri in (
+        (predicate, range_iri)
+        for predicate, values in sides_by_property(ontology_graph, "range").items()
+        for range_iri in values
+    ):
         if range_iri in DATE_DATATYPES or str(range_iri).startswith(str(TIME)):
             found.add(predicate)
             continue
@@ -194,9 +197,7 @@ def _date_property(
         predicate
         for predicate in ontology_graph.subjects(RDFS.range, datatype)
         if isinstance(predicate, URIRef)
-        and any(
-            domain in kinds for domain in ontology_graph.objects(predicate, RDFS.domain)
-        )
+        and side_classes(predicate, [ontology_graph], "domain") & kinds
     }
     return next(iter(fitting)) if len(fitting) == 1 else None
 
