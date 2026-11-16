@@ -910,3 +910,55 @@ def test_the_home_is_bound_to_the_prefix_the_table_gives_it() -> None:
         UnitOntologyState(content_unit=unit, home_ontology=home), table
     )
     assert catalog_prefixes([held], home, table)["ontology2"] == home.namespace
+
+
+# --- the catalog list tells the model what each ontology covers ----------------
+
+
+@pytest.mark.anyio
+async def test_the_catalog_list_shows_each_ontology_s_scope(monkeypatch) -> None:
+    """A title alone does not say whether an ontology covers a document."""
+    long_description = "Covers a wide field. " * 60
+    described, long, bare = (
+        stamped_ontology(
+            _terms(f"{DOMAIN}/{ontology_id}#", "Thing"),
+            ontology_id=ontology_id,
+            iri=f"{DOMAIN}/{ontology_id}",
+            description=description,
+        )
+        for ontology_id, description in (
+            ("alpha", "Agents, their roles\nand the events they take part in."),
+            ("beta", long_description),
+            ("gamma", ""),
+        )
+    )
+    manager = OntologyManager()
+    for head in (described, long, bare):
+        manager.add_ontology(head, skip_vector_index=True)
+    seen = _answer_through_validation(monkeypatch, "alpha")
+
+    await resolve_home_ontology_module.resolve_home_ontology(
+        _document_state(), _tools_with_catalog(manager)
+    )
+
+    lines = seen["prompt_kwargs"]["instruction"].splitlines()
+    alpha = next(line for line in lines if line.startswith("- alpha:"))
+    beta = next(line for line in lines if line.startswith("- beta:"))
+    gamma = next(line for line in lines if line.startswith("- gamma:"))
+    # One line per ontology, whatever the author's line breaks.
+    assert alpha.endswith(
+        f"<{described.iri}>: Agents, their roles and the events they take part in."
+    )
+    assert beta.endswith("…")
+    assert len(beta) < len(long_description)
+    assert gamma.endswith(f"<{bare.iri}>")
+
+
+def test_the_home_instruction_asks_for_a_field_not_the_document_s_subject() -> None:
+    from ontocast.prompt.render_ontology import home_ontology_instruction
+
+    instruction = " ".join(home_ontology_instruction.split())
+    assert "one level of abstraction" not in instruction
+    assert "field" in instruction
+    assert "never after the document's own subject" in instruction
+    assert "within the scope" in instruction

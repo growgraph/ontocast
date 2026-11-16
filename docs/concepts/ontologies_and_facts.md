@@ -62,8 +62,12 @@ Identity is minted by code, never written by the model. A run that can create
 vocabulary (`RENDER_MODE` `ontology` or `ontology_and_facts`) resolves one
 **home ontology** per document before its units are extracted, in one LLM
 call. The catalog is listed under each ontology's shown prefix (below), which
-unlike an id is unique; the model proposes an `ontology_id`, a title and a
-description. A shown prefix means the document extends that ontology; any
+unlike an id is unique, with its title and the start of its description: the
+description is how the model tells that an ontology covers a document, so
+give a seed ontology one. The model proposes an `ontology_id`, a title and a
+description, scoped to the document's field rather than its subject, and is
+asked to prefer a catalog ontology whose described scope the document falls
+within. A shown prefix means the document extends that ontology; any
 other id names a new one, whose IRI is
 [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain)`/<ontology_id>`.
 A new id is overridden when the document's text names at least five terms of

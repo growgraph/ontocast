@@ -382,11 +382,16 @@ class Ontology(OntologyPropertiesWithLineage):
         remove_with_structures(graph, header_triples)
         return graph
 
-    def describe(self) -> str:
-        """A short human-readable description; a long description is cut."""
-        description = self.description or ""
+    def description_preview(self) -> str:
+        """The description on one line; a long one is cut."""
+        description = " ".join((self.description or "").split())
         if len(description) > _DESCRIBE_MAX_CHARS:
             description = description[: _DESCRIBE_MAX_CHARS - 1].rstrip() + "…"
+        return description
+
+    def describe(self) -> str:
+        """A short human-readable description; a long description is cut."""
+        description = self.description_preview()
         return (
             f"Ontology id: {self.ontology_id}\n"
             f"Prefix: {self.prefix}\n"

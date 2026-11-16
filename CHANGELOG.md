@@ -81,6 +81,7 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 - The facts prompt asks for statements: an entity is minted only when a statement is about it, a structured value is a blank node under the property that carries it, and every stated quantity is extracted, as an observation where no property carries it. An observation names what it is about and holds its value node as its result; a property applies only to subjects of its domain; a date or time node carries its ISO 8601 value.
 - The ontology prompts share one criterion for a new term: a class is a kind with instances in the domain, a property's sides cover every subject it applies to, a distinction that varies per instance is a property value, existing terms are reused first, and a parent is the nearest kind.
 - A SKOS concept is the only individual an ontology update may declare; the render's value-set example uses SKOS concepts.
+- The home-ontology prompt asks for an ontology scoped to the document's field, not its subject, and lists each catalog ontology with the start of its description; a catalog ontology whose scope covers the document is preferred to a new one.
 - The facts term sheet lists `sosa:hasFeatureOfInterest`, `sosa:observedProperty` and `sosa:hasResult` beside a catalog's observation classes.
 - Every prompt uses domain-neutral examples.
 - A critic fix's `explanation` is optional.

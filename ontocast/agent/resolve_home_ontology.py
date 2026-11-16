@@ -1,7 +1,8 @@
 """Resolve a document's home ontology: where its new vocabulary is minted.
 
 One LLM call per document, before the ontology fan-out. The catalog is listed
-under each ontology's shown prefix (unique, unlike ids, which may repeat). The
+under each ontology's shown prefix (unique, unlike ids, which may repeat), with
+its title and the start of its description. The
 model proposes an ``ontology_id`` (plus title and description); code decides
 what that means:
 
@@ -32,6 +33,7 @@ from ontocast.onto.identity import (
     mint_ontology_iri,
 )
 from ontocast.onto.model import OntologyIdentityProposal
+from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import AmbiguousOntologyRefError
 from ontocast.onto.state import AgentState
 from ontocast.prompt.common import system_preamble_ontology, text_template
@@ -174,16 +176,23 @@ def covering_ontology(tools: ToolBox, text: str) -> OntologyIdentity | None:
     return identity_for_existing(tools, head.iri)
 
 
+def _catalog_entry(handle: str, head: Ontology) -> str:
+    """One list line: the handle, the title and IRI, then what the ontology covers."""
+    name = " ".join(filter(None, (head.title or "", f"<{head.iri}>")))
+    scope = head.description_preview()
+    return f"- {handle}: {name}: {scope}" if scope else f"- {handle}: {name}"
+
+
 async def propose_home_ontology(
     state: AgentState, tools: ToolBox
 ) -> OntologyIdentityProposal:
     """Ask the model for the document's home ontology id, title and description."""
     handles = catalog_handles(tools)
     if handles:
-        titles = {o.iri: o.title or "" for o in tools.ontology_manager.ontologies}
+        heads = {o.iri: o for o in tools.ontology_manager.ontologies}
         catalog_clause = home_ontology_catalog_clause.format(
             catalog_list="\n".join(
-                f"- {handle}: {' '.join(filter(None, (titles[iri], f'<{iri}>')))}"
+                _catalog_entry(handle, heads[iri])
                 for handle, iri in sorted(handles.items())
             )
         )
