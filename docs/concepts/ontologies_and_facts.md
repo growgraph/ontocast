@@ -391,8 +391,9 @@ becomes
 Keys match regardless of case and of `snake_case`, `camelCase` or `kebab-case`,
 so `DOI`, `doiId` and `doi_id` all mean `doi`. To give an entity another class,
 pass a dict with a `type`, such as `{"name": "...", "type": "schema:Project"}`.
-Entities are minted per document; OntoCast does not claim that the same author
-in two documents is one person.
+Entities are minted per document; OntoCast does not merge the same author in
+two documents into one. [Cross-document identity](cross_document_identity.md)
+links entities that carry the same `identifier` without changing either.
 
 Document metadata is always in the facts graph, even when the text never
 mentions it, and it stays there when provenance is stripped. Without
@@ -408,4 +409,5 @@ IRIs stay in the document namespace either way, so the runs can be compared.
 
 - [How OntoCast works](index.md): where each of these steps happens.
 - [Entity disambiguation](entity_disambiguation.md): how `cd:` entities from different units become one.
+- [Cross-document identity](cross_document_identity.md): how one entity in several documents is linked.
 - [Triple stores](../guides/triple_stores.md): where ontologies and facts are stored.

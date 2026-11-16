@@ -6,6 +6,7 @@ This module provides functionality for serializing the knowledge graph
 
 import logging
 
+from ontocast.onto.constants import ONTOLOGY_PROVENANCE_SUFFIX, auxiliary_graph_uri
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.toolbox import ToolBox
@@ -43,7 +44,9 @@ def serialize(state: AgentState, tools: ToolBox) -> AgentState:
         if parallelism_summary:
             logger.info(parallelism_summary)
 
-    provenance_graph_uri = f"{str(state.graph_uri).rstrip('/')}/ontology-provenance"
+    provenance_graph_uri = auxiliary_graph_uri(
+        str(state.graph_uri), ONTOLOGY_PROVENANCE_SUFFIX
+    )
     if len(state.ontology_provenance_artifact) > 0:
         logger.info(
             "Persisting ontology provenance artifact (%d triples) to graph %s",

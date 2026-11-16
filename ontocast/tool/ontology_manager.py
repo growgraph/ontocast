@@ -21,6 +21,7 @@ from ontocast.onto.ontology_header import (
 )
 from ontocast.onto.property_sides import SIDE_PREDICATES
 
+from ..link.declarations import IdentityDeclarations
 from ..onto.null import NULL_ONTOLOGY
 from ..onto.ontology import Ontology
 from ..onto.ontology_header import OntologyHeader
@@ -125,6 +126,7 @@ class OntologyManager(Tool):
             None
         )
         self._roles_memo: tuple[frozenset[str], CatalogRoles] | None = None
+        self._identity_memo: tuple[frozenset[str], IdentityDeclarations] | None = None
 
     @staticmethod
     def _primary_ontology_id(ontology: Ontology) -> str:
@@ -603,6 +605,25 @@ class OntologyManager(Tool):
         roles = CatalogRoles.of(o.graph for o in held.values())
         self._roles_memo = (key, roles)
         return roles
+
+    def identity_declarations(self) -> IdentityDeclarations:
+        """What the catalog heads declare about identity across documents.
+
+        Read from the heads only, not the graph cache, so the result depends on
+        the catalog state alone and not on which graphs this process happened
+        to read. Memoised on the heads' version IRIs.
+
+        Returns:
+            IdentityDeclarations: Shared -- treat as read-only.
+        """
+        heads = self.get_heads_by_iri(None)
+        key = frozenset(o.version_iri or o.iri for o in heads)
+        memo = self._identity_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
+        declarations = IdentityDeclarations.of(o.graph for o in heads)
+        self._identity_memo = (key, declarations)
+        return declarations
 
     def catalog_surface_index(self) -> CatalogSurfaceIndex:
         """Labels, notations and local names of every held term, case-insensitive.

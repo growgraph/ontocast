@@ -8,8 +8,9 @@ predict when two of them will be merged and find out why two were not.
 ## When two entities merge
 
 Merging happens once per document, after every unit's facts are extracted
-(see [How OntoCast works](index.md#the-facts-block)). For each pair of
-entities:
+(see [How OntoCast works](index.md#the-facts-block)). Entities of different
+documents are never merged; [Cross-document identity](cross_document_identity.md)
+links them instead. For each pair of entities:
 
 1. **Names alone prove nothing.** Two units that both write
    `cd:temperature_value` may mean two different measurements, so OntoCast

@@ -153,9 +153,11 @@ def _export_named_graph(store: ox.Store, graph_uri: str) -> RDFGraph:
     return RDFGraph.from_ox_quads(store.quads_for_pattern(None, None, None, graph_ctx))
 
 
-def _run_select(store: ox.Store, query: str) -> list[dict[str, str]]:
+def _run_select(
+    store: ox.Store, query: str, union: bool = False
+) -> list[dict[str, str]]:
     """Evaluate a SPARQL SELECT against ``store``, returning lexical values."""
-    solutions = store.query(query)
+    solutions = store.query(query, use_default_graph_as_union=union)
     if not isinstance(solutions, ox.QuerySolutions):
         # Drop the result *here*: pyoxigraph result handles are unsendable, and
         # letting one escape on a traceback frame gets it freed on the calling
@@ -174,9 +176,9 @@ def _run_select(store: ox.Store, query: str) -> list[dict[str, str]]:
     return rows
 
 
-def _run_construct(store: ox.Store, query: str) -> RDFGraph:
+def _run_construct(store: ox.Store, query: str, union: bool = False) -> RDFGraph:
     """Evaluate a SPARQL CONSTRUCT against ``store``, returning real RDF terms."""
-    triples = store.query(query)
+    triples = store.query(query, use_default_graph_as_union=union)
     if not isinstance(triples, ox.QueryTriples):
         del triples  # see the note in _run_select
         raise TypeError("aconstruct() requires a SPARQL CONSTRUCT or DESCRIBE query")
@@ -304,27 +306,27 @@ class InMemoryTripleStoreManager(TripleStoreManager):
         return True
 
     async def aselect(
-        self, query: str, *, store: StoreKind = "ontologies"
+        self, query: str, *, store: StoreKind = "ontologies", union: bool = False
     ) -> list[dict[str, str]]:
         """Evaluate a SPARQL SELECT against the active partition."""
         async with self._lock:
             partition = self._active_partition()
             ox_store = _partition_store(partition, store)
         self._select_queries += 1
-        return await asyncio.to_thread(_run_select, ox_store, query)
+        return await asyncio.to_thread(_run_select, ox_store, query, union)
 
     def supports_sparql_construct(self) -> bool:
         return True
 
     async def aconstruct(
-        self, query: str, *, store: StoreKind = "ontologies"
+        self, query: str, *, store: StoreKind = "ontologies", union: bool = False
     ) -> RDFGraph:
         """Evaluate a SPARQL CONSTRUCT against the active partition."""
         async with self._lock:
             partition = self._active_partition()
             ox_store = _partition_store(partition, store)
         self._construct_queries += 1
-        return await asyncio.to_thread(_run_construct, ox_store, query)
+        return await asyncio.to_thread(_run_construct, ox_store, query, union)
 
     async def afetch_ontology_catalog(self) -> list[OntologyHeader]:
         """Read one header per stored ontology version via a single SELECT."""

@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "OntologyValidationConfig",
     "AggregationConfig",
+    "LinkConfig",
     "ChunkConfig",
     "ClaudeModel",
     "Config",
@@ -1807,6 +1808,27 @@ class AggregationConfig(BaseSettings):
     )
 
 
+class LinkConfig(BaseSettings):
+    """Cross-document identity: the links graph written beside each document."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Write each document's identity links graph (<graph>/identity-links) "
+            "when its facts are stored: skos:closeMatch links from its entities "
+            "to match nodes, for the keys, inverse-functional properties and "
+            "globally named classes the catalog declares, and for caller "
+            "identifiers on metadata entities. Off writes nothing; "
+            "`ontocast link build` derives the same graphs later."
+        ),
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="LINK_",
+        case_sensitive=False,
+    )
+
+
 class EmbeddingConfig(BaseSettings):
     """Embedding provider settings used by vector stores."""
 
@@ -3283,6 +3305,7 @@ class ToolConfig(BaseSettings):
     domain: DomainConfig = Field(default_factory=DomainConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
     aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
+    link: LinkConfig = Field(default_factory=LinkConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     patch_retrieval: PatchRetrievalConfig = Field(
         default_factory=PatchRetrievalConfig,

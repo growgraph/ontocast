@@ -14,6 +14,7 @@ from typing import cast
 import pytest
 from rdflib import RDFS, Literal, URIRef
 
+from ontocast.config import LinkConfig
 from ontocast.onto.identity import OntologyIdentity
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import mint_ontology, stamp_version
@@ -125,6 +126,7 @@ async def test_an_identity_conflict_skips_the_version_and_still_writes_the_facts
     stub = SimpleNamespace(
         ontology_manager=manager,
         triple_store_manager=SimpleNamespace(aserialize=record),
+        config=SimpleNamespace(tool_config=SimpleNamespace(link=LinkConfig())),
     )
     await ToolBox.aserialize(cast(ToolBox, stub), state)
 

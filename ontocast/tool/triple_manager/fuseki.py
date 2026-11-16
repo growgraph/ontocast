@@ -45,6 +45,9 @@ from ontocast.util.loop import require_no_running_loop
 
 logger = logging.getLogger(__name__)
 
+#: TDB2's name for the union of a dataset's named graphs.
+_UNION_GRAPH = "urn:x-arq:UnionGraph"
+
 
 def normalize_fuseki_server_uri(raw: str | None) -> str | None:
     """Normalize ``FUSEKI_URI`` to the Fuseki HTTP service root.
@@ -621,7 +624,12 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
                 self._client = original_client
 
     async def _sparql_select_rows(
-        self, client: httpx.AsyncClient, sparql_url: str, query: str
+        self,
+        client: httpx.AsyncClient,
+        sparql_url: str,
+        query: str,
+        *,
+        union: bool = False,
     ) -> list[dict[str, str]]:
         """POST a SPARQL SELECT and flatten its JSON bindings to lexical values.
 
@@ -633,10 +641,10 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """
         self._select_queries += 1
         try:
-            response = await client.post(
-                sparql_url,
-                data={"query": query, "format": "application/sparql-results+json"},
-            )
+            data = {"query": query, "format": "application/sparql-results+json"}
+            if union:
+                data["default-graph-uri"] = _UNION_GRAPH
+            response = await client.post(sparql_url, data=data)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise TripleStoreUnavailableError(
@@ -658,7 +666,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         return True
 
     async def aconstruct(
-        self, query: str, *, store: StoreKind = "ontologies"
+        self, query: str, *, store: StoreKind = "ontologies", union: bool = False
     ) -> RDFGraph:
         """Run a SPARQL CONSTRUCT against the active dataset, parsing Turtle back.
 
@@ -666,9 +674,12 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         """
         client = await self._get_client()
         self._construct_queries += 1
+        data = {"query": query}
+        if union:
+            data["default-graph-uri"] = _UNION_GRAPH
         response = await client.post(
             self._sparql_endpoint(store=store),
-            data={"query": query},
+            data=data,
             headers={"Accept": "text/turtle"},
         )
         response.raise_for_status()
@@ -679,7 +690,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
         return result
 
     async def aselect(
-        self, query: str, *, store: StoreKind = "ontologies"
+        self, query: str, *, store: StoreKind = "ontologies", union: bool = False
     ) -> list[dict[str, str]]:
         """Run a SPARQL SELECT against the active dataset.
 
@@ -691,6 +702,7 @@ class FusekiTripleStoreManager(TripleStoreManagerWithAuth):
             client,
             self._sparql_endpoint(store=store),
             query,
+            union=union,
         )
 
     async def afetch_ontology_catalog(self) -> list[OntologyHeader]:

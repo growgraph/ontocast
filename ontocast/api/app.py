@@ -12,6 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ontocast._version import __version__
 from ontocast.api.batch import run_documents
+from ontocast.api.entities import build_entities_router
 from ontocast.api.match_models import (
     AlignEntitiesRequest,
     AlignEntitiesResponse,
@@ -133,6 +134,15 @@ def create_app(
 
     app.include_router(
         build_shapes_router(
+            tools,
+            active_tenant=active_tenant,
+            active_project=active_project,
+            server_config=server_config,
+        )
+    )
+
+    app.include_router(
+        build_entities_router(
             tools,
             active_tenant=active_tenant,
             active_project=active_project,

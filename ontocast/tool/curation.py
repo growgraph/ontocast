@@ -35,6 +35,7 @@ from ontocast.agent.consolidate_ontology import (
     format_other_terms,
     format_term_block,
 )
+from ontocast.onto.constants import is_auxiliary_graph
 from ontocast.onto.enum import LLMPhase
 from ontocast.onto.model import OntologyConsolidationReport, OntologyTermAction
 from ontocast.onto.ontology import Ontology, bump_version, increment_type_for
@@ -218,7 +219,7 @@ async def facts_usage(tools: ToolBox) -> dict[str, set[str]] | None:
     for query in queries:
         for row in await store.aselect(query, store="facts"):
             graph, term = row.get("g"), row.get("term")
-            if graph and term and not graph.endswith("/ontology-provenance"):
+            if graph and term and not is_auxiliary_graph(graph):
                 usage.setdefault(term, set()).add(graph)
     return usage
 

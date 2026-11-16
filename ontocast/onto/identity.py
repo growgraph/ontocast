@@ -30,10 +30,10 @@ from ontocast.onto.util import CONVENTIONAL_MAPPINGS, normalize_ontology_iri
 #: A valid Turtle prefix name that is also a safe path segment.
 ONTOLOGY_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 
-#: Ids of the library's own namespaces (facts, documents, its vocabulary):
-#: never an ontology's.
+#: Ids of the library's own namespaces (facts, documents, identity match nodes,
+#: its vocabulary): never an ontology's.
 LIBRARY_ONTOLOGY_IDS: frozenset[str] = frozenset(
-    {"cd", "doc", "facts", "oc", "ontocast"}
+    {"cd", "doc", "facts", "match", "oc", "ontocast"}
 )
 
 

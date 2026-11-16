@@ -83,6 +83,7 @@ nav:
     -   Ontologies and facts: concepts/ontologies_and_facts.md
     -   Structured documents: concepts/structured_documents.md
     -   Entity disambiguation: concepts/entity_disambiguation.md
+    -   Cross-document identity: concepts/cross_document_identity.md
 -   Guides:
     -   Overview: guides/index.md
     -   Configuring OntoCast: guides/configuration.md

@@ -10,6 +10,7 @@ from rdflib import OWL, RDF, BNode, Literal, URIRef
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.config import (
     Config,
+    LinkConfig,
     LLMConfig,
     LLMProvider,
     OllamaModel,
@@ -1026,6 +1027,7 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
         prefix_table=lambda: PrefixTable({}, {}),
         ontology_manager=RecordingOntologyManager(),
         triple_store_manager=store,
+        config=SimpleNamespace(tool_config=SimpleNamespace(link=LinkConfig())),
     )
 
     asyncio.run(ToolBox.aserialize(cast(ToolBox, toolbox), state))
@@ -1060,6 +1062,7 @@ def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
         prefix_table=lambda: PrefixTable({}, {}),
         ontology_manager=RecordingOntologyManager(),
         triple_store_manager=store,
+        config=SimpleNamespace(tool_config=SimpleNamespace(link=LinkConfig())),
     )
 
     asyncio.run(ToolBox.aserialize(cast(ToolBox, toolbox), state))

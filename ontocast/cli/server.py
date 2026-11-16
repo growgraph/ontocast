@@ -43,6 +43,7 @@ from ontocast.cli.cache import cache as cache_cli
 from ontocast.cli.config import config as config_cli
 from ontocast.cli.env_files import apply_env_files
 from ontocast.cli.inspect_sections import main as inspect_sections_cli
+from ontocast.cli.link import link as link_cli
 from ontocast.config import Config
 from ontocast.config.env_names import env_names
 from ontocast.onto.enum import OntologyContextMode, RenderMode
@@ -460,6 +461,7 @@ def cli(env_files: tuple[pathlib.Path, ...]) -> None:
 cli.add_command(cache_cli)
 cli.add_command(config_cli)
 cli.add_command(inspect_sections_cli)
+cli.add_command(link_cli)
 
 
 @cli.command("serve")

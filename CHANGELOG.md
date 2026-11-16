@@ -43,6 +43,11 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 - A minted term without a label gets one derived from its local name (`ontology/labels_derived`).
 - In `ontology_reduce_metrics`: `minted_classes`, `unused_minted_classes`, `generic_parents`, `generic_property_sides`, `missing_property_sides` and `owned_sides_listed`; `ontology_critic_units_skipped` in `retrieval_metrics`.
 
+#### Cross-document identity
+
+- Classes declared `ontocast:globallyNamed`, `owl:hasKey`, `owl:InverseFunctionalProperty` and caller `identifier`s on metadata entities link one entity across documents: each document gets an `<graph>/identity-links` graph of `skos:closeMatch` links to match nodes; no document IRI changes. `LINK_ENABLED` writes it on store; `ontocast link build | add | remove` maintain it.
+- `GET /entities/cluster` and `ontocast.link.cluster_of` return the stored entities that are one with an entity, and the candidates kept apart by a declared conflict. `aselect` / `aconstruct` take `union=True` to query across a partition's named graphs.
+
 #### Models
 
 - `LLM_MODEL_BY_PHASE`: a model per LLM phase, recorded in the run manifest.

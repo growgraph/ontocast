@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal, overload
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
-from rdflib.namespace import DCTERMS, OWL, RDF
+from rdflib.namespace import DCTERMS, OWL, RDF, SKOS
 
 from ontocast.config import Config
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
@@ -942,6 +942,31 @@ class ToolBox:
                 state.aggregated_facts,
                 graph_uri=state.graph_uri,
             )
+            if self.config.tool_config.link.enabled:
+                await self._awrite_identity_links(state)
+
+    async def _awrite_identity_links(self, state: AgentState) -> None:
+        """Write the document's identity links graph beside its facts.
+
+        The same pure function :func:`ontocast.link.build` applies to stored
+        documents, so writing here is an update of the resolution graph.
+        """
+        from ontocast.link import links_for, write_document_links
+
+        assert self.triple_store_manager is not None
+        links = links_for(
+            state.aggregated_facts,
+            self.ontology_manager.identity_declarations(),
+            domain=state.current_domain,
+            value_classes=self.get_atomic_tools().value_classes(),
+        )
+        await write_document_links(
+            self.triple_store_manager, str(state.graph_uri), links
+        )
+        state.budget_tracker.incr(
+            "serialize/identity_links",
+            sum(1 for _ in links.triples((None, SKOS.closeMatch, None))),
+        )
 
     def should_initialize_vector_store(
         self, ontology_context_mode: OntologyContextMode | None
