@@ -177,3 +177,30 @@ def test_retrieval_links_a_class_to_the_properties_listing_it() -> None:
     )
 
     assert linked == [str(u("elevation"))]
+
+
+def test_a_triple_is_turned_on_listed_sides_only_with_evidence_at_both_ends() -> None:
+    """A listed class contradicts nothing, but when the subject is of the
+    listed range kind and the object of the listed domain kind, the triple
+    was written backwards."""
+    from ontocast.tool.facts_validation.literal_repair import repair_reversed_triples
+
+    onto = _ontology()
+    onto.add((u("Period"), RDF.type, OWL.Class))
+    onto.add((u("happenedIn"), RDF.type, OWL.ObjectProperty))
+    onto.add((u("happenedIn"), DOMAIN_INCLUDES, u("Eruption")))
+    onto.add((u("happenedIn"), RANGE_INCLUDES, u("Period")))
+    facts = RDFGraph()
+    period, lava, ada = (URIRef(F + n) for n in ("the_1990s", "lava_1991", "ada"))
+    facts.add((period, RDF.type, u("Period")))
+    facts.add((lava, RDF.type, u("Eruption")))
+    facts.add((ada, RDF.type, u("Person")))
+    facts.add((period, u("happenedIn"), lava))
+    # A person is neither listed kind: no direction can be read.
+    facts.add((period, u("happenedIn"), ada))
+
+    turned, _ = repair_reversed_triples(facts, onto)
+
+    assert turned == 1
+    assert (lava, u("happenedIn"), period) in facts
+    assert (period, u("happenedIn"), ada) in facts

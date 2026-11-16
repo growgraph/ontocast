@@ -690,12 +690,15 @@ def repair_reversed_triples(
 ) -> tuple[int, list[GraphRepairRecord]]:
     """Turn around a triple the context shows was written backwards.
 
-    ``x p y`` becomes ``y p x`` when ``p`` declares an ``rdfs:domain`` and a
-    class ``rdfs:range``, both ends are typed IRIs, ``x`` contradicts the domain and
-    ``y`` the range as written, and swapped both fit. One end fitting, or a
-    type the context cannot place, leaves the triple as it is: the subject
-    may be mistyped, or the property wrong, and neither is a direction. A
-    symmetric property is never turned. A reifier follows its statement.
+    ``x p y`` becomes ``y p x`` when ``p`` has a domain and a class range,
+    both ends are typed IRIs, ``x`` is outside the domain and ``y`` outside the
+    range as written, and swapped both fit. One end fitting, or a type the
+    context cannot place, leaves the triple as it is: the subject may be
+    mistyped, or the property wrong, and neither is a direction. The sides are
+    read from ``rdfs`` and from listed (``schema:*Includes``) classes alike:
+    a listed class contradicts nothing on its own, but evidence at all four
+    positions is a direction. A symmetric property is never turned. A reifier
+    follows its statement.
 
     Args:
         graph: Facts graph, repaired in place.
@@ -706,9 +709,8 @@ def repair_reversed_triples(
     """
     if ontology_graph is None or not len(ontology_graph):
         return 0, []
-    # Only an rdfs side can be contradicted; a listed class is an expected one.
-    domains = _declared_domains(ontology_graph, source="rdfs")
-    ranges = declared_class_ranges(ontology_graph, source="rdfs")
+    domains = _declared_domains(ontology_graph)
+    ranges = declared_class_ranges(ontology_graph)
     directed = {
         predicate
         for predicate in domains.keys() & ranges.keys()

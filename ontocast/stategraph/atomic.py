@@ -895,7 +895,11 @@ async def _run_completion_passes(
         unit_state.deterministic_findings = findings
         subject_gaps = _subject_gaps(findings)
         detached = detached_instances(subject_gaps)
-        if not inventory.measurements and not subject_gaps and not detached:
+        if (
+            not inventory.measurements
+            and not subject_gaps
+            and len(detached) < DETACHED_TRIGGER_MIN
+        ):
             break
         mandatory_before = sum(1 for finding in findings if finding.mandatory)
 
@@ -964,9 +968,16 @@ async def _run_completion_passes(
         if (
             not post_inventory.measurements
             and not _subject_gaps(run.findings)
-            and not detached_instances(_subject_gaps(run.findings))
+            and len(detached_instances(_subject_gaps(run.findings)))
+            < DETACHED_TRIGGER_MIN
         ):
             break
+
+
+#: Detached instances that call the gap pass on their own. A lone unlinked
+#: instance is often an aside the text relates to nothing, so it does not pay
+#: for a call; a pass called for another gap still lists it.
+DETACHED_TRIGGER_MIN = 2
 
 
 def _subject_gaps(findings: Sequence) -> list[FactsUnitFinding]:

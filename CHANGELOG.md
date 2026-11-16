@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Instances linked to nothing start a gap pass only when there are at least two; a pass started for another gap still lists a lone one.
 - An ontology is identified by its IRI alone: catalog ontologies may share an `ontology_id` or prefix. A short name several ontologies hold no longer resolves (`AmbiguousOntologyRefError`, HTTP 400 on `/ontologies/{id}/…`, with their IRIs); loading, uploading or writing one is no longer refused.
 - An extension ontology's IRI is `CURRENT_DOMAIN/<id>-ext-<hash>`, keyed by the external IRI, so two externals with one id get two extensions. A deployment's stored `<id>-ext` ontologies are not migrated; new documents write to the new IRI.
 - A loaded file without `vann:preferredNamespacePrefix` takes the prefix it binds to its own namespace as its id (a DBpedia file binding `dbo:` loads as `dbo`).
@@ -71,6 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A statement joining a node to itself (`x p x`) is dropped from the served facts unless `p` is `owl:sameAs` or declared `owl:ReflexiveProperty` (`facts_self_loops_dropped`).
+- A triple written backwards is turned around also when the property's classes are only listed (`schema:domainIncludes` / `rangeIncludes`, as in SOSA's `phenomenonTime`), still only on evidence at both ends.
 - A prefix with `-` or `.` in its name (`ontology-ext:`) is recognised when declared and is declared when an answer uses it undeclared, so such an answer no longer fails to parse.
 - A prefixed name a model splits with a stray space (`cd:lytt on`, `cd: june_2021`) is closed at every occurrence where the Turtle parser stops, kept only when the whole graph then parses, so the answer no longer costs a retry.
 - Statements a model runs together on one line after a `;` (`… ; cd:x p o .`, the node restating a subject) are split where the Turtle parser stops, kept only when the whole graph then parses.

@@ -21,7 +21,7 @@ import logging
 from collections.abc import Iterable, Sequence
 from itertools import combinations
 
-from rdflib import RDF, RDFS, BNode, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, BNode, Literal, URIRef
 from rdflib.term import Node
 
 from ontocast.onto.constants import DEFAULT_IRI
@@ -283,6 +283,57 @@ def drop_untyped_instances(
         logger.info(
             "Dropped %d untyped instance(s) from the aggregated facts", len(records)
         )
+    return records
+
+
+#: Predicates whose statement may join a node to itself by definition.
+_REFLEXIVE_BY_DEFINITION = frozenset({OWL.sameAs, RDF.type})
+
+
+def drop_self_loops(
+    graph: RDFGraph, ontology_graph: RDFGraph | None
+) -> list[GraphRepairRecord]:
+    """Remove every statement ``x p x`` whose ``p`` is not declared reflexive.
+
+    A text never relates a thing to itself through an ordinary property: such
+    a statement is a slip (the subject written twice) or two nodes a merge
+    joined. It states nothing, so it goes; ``owl:sameAs``, ``rdf:type`` and an
+    ``owl:ReflexiveProperty`` the context declares are kept. A reifier goes
+    with its statement.
+
+    Returns:
+        One ``self_loop_dropped`` record per statement.
+    """
+    context = ontology_graph if ontology_graph is not None else RDFGraph()
+    loops = sorted(
+        (
+            (subject, predicate, obj)
+            for subject, predicate, obj in graph
+            if subject == obj
+            and isinstance(predicate, URIRef)
+            and predicate not in _REFLEXIVE_BY_DEFINITION
+            and (predicate, RDF.type, OWL.ReflexiveProperty) not in context
+        ),
+        key=lambda triple: tuple(str(term) for term in triple),
+    )
+    records: list[GraphRepairRecord] = []
+    for triple in loops:
+        graph.remove(triple)
+        records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.SELF_LOOP_DROPPED,
+                source=f"{triple[0]} {triple[1]}",
+                target=str(triple[2]),
+            )
+        )
+    if records:
+        if graph.has_reifications:
+            reifiers = {r for t in loops for r in graph.reifications.reifiers_of(t)}
+            graph.reifications.remove_reifiers(reifiers)
+            for reifier in reifiers:
+                for arc in list(graph.triples((reifier, None, None))):
+                    graph.remove(arc)
+        logger.info("Dropped %d self-loop statement(s)", len(records))
     return records
 
 
@@ -771,6 +822,13 @@ def run_facts_gate(
     )
     state.retrieval_metrics[RetrievalMetric.FACTS_DATE_VALUES_ADDED] = len(date_records)
 
+    # A statement joining a node to itself states nothing; dropped before the
+    # instances that then state nothing are.
+    loop_records = drop_self_loops(state.aggregated_facts, ontology_graph)
+    state.retrieval_metrics[RetrievalMetric.FACTS_SELF_LOOPS_DROPPED] = len(
+        loop_records
+    )
+
     # Every instance the served graph holds is typed. An instance still
     # untyped once all units have contributed their types takes the class its
     # links entail; whatever stays untyped is removed, with its links.
@@ -838,13 +896,20 @@ def run_facts_gate(
     # The served graph shows each namespace under the prefix the prompts did.
     tools.prefix_table().bind(state.aggregated_facts)
 
-    if repair_result.records or untyped_records or inferred_records or date_records:
+    if (
+        repair_result.records
+        or untyped_records
+        or inferred_records
+        or date_records
+        or loop_records
+    ):
         report = run_validation()
 
     gate_repairs = (
         dedupe_records
         + repair_result.records
         + date_records
+        + loop_records
         + inferred_records
         + untyped_records
     )

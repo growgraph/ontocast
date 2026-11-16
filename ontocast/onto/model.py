@@ -1177,6 +1177,9 @@ class FactsGateRepairKind(StrEnum):
     #: domain after the unit's domain repair, removed when the unit left its
     #: loop.
     DOMAIN_VIOLATION_DROPPED = "domain_violation_dropped"
+    #: A statement linking a node to itself through a property not declared
+    #: reflexive, removed after aggregation.
+    SELF_LOOP_DROPPED = "self_loop_dropped"
 
 
 class GraphRepairRecord(BaseModel):

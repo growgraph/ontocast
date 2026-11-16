@@ -289,3 +289,33 @@ def test_gate_counts_twin_labels() -> None:
     run_facts_gate(state, RDFGraph(), _fake_tools(), merge_repair=False)
 
     assert state.retrieval_metrics[RetrievalMetric.FACTS_TWIN_LABELS] == 1
+
+
+def test_a_statement_joining_a_node_to_itself_is_dropped_with_its_reifier() -> None:
+    from rdflib import OWL, RDF
+
+    from ontocast.stategraph.facts_gate import drop_self_loops
+
+    impurity = URIRef(f"{CD}impurity")
+    part_of = URIRef(f"{EX}isImpurityOf")
+    same = URIRef(f"{EX}sameAsItself")
+    graph = RDFGraph()
+    loop = (impurity, part_of, impurity)
+    graph.add(loop)
+    graph.add((impurity, OWL.sameAs, impurity))
+    graph.add((impurity, same, impurity))
+    graph.add((impurity, RDFS.label, Literal("impurity")))
+    reifier = BNode()
+    graph.reifications.add(reifier, loop)
+    graph.add((reifier, URIRef("http://www.w3.org/ns/prov#wasDerivedFrom"), DOC))
+    context = RDFGraph()
+    context.add((same, RDF.type, OWL.ReflexiveProperty))
+
+    records = drop_self_loops(graph, context)
+
+    assert [r.kind for r in records] == [FactsGateRepairKind.SELF_LOOP_DROPPED]
+    assert loop not in graph
+    assert (impurity, OWL.sameAs, impurity) in graph
+    assert (impurity, same, impurity) in graph
+    assert not graph.reifications.reifiers_of(loop)
+    assert (reifier, None, None) not in graph

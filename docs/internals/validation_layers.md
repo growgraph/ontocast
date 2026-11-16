@@ -136,7 +136,7 @@ machine can decide without the model:
 | Near-miss predicate rewrite | A class written as a type that exists nowhere is rewritten to the catalog class with exactly its local name in another namespace: the only one, or among several the one that is a subclass of every other (`class_alias`). A predicate that exists nowhere (not a catalog term, not a real term of a well-known vocabulary) is rewritten to the one catalog property, across the whole catalog, in another namespace with exactly its local name (a slipped prefix, also into a well-known namespace); otherwise, in a namespace the catalog declares terms in, to the one catalog term of its own namespace whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
 | Code resolution | A node carrying a code from `FACTS_CODE_PREDICATES` (such as `qudt:ucumCode "d"`) but no link to the coded individual gains that link, when exactly one catalog individual declares the code. The linking property comes from the schema's domain and range, or else from how the graph already links such nodes |
 | Paired object properties | A node (IRI or blank) written on a well-known datatype property that its vocabulary pairs with an object property for the same relation moves to that property: `sosa:hasSimpleResult` becomes `sosa:hasResult`. Records are kind `paired_object_property`. Critic and completion patches get the same repair |
-| Reversed triples | `x p y` becomes `y p x` when `p` declares an `rdfs:domain` and a class `rdfs:range`, both ends are typed IRIs, `x` contradicts the domain and `y` the range as written, and swapped both fit. One end fitting, an untyped end, a type the context does not place, or a symmetric property leaves the triple as written. Records are kind `triple_reversed`. Critic and completion patches get the same repair |
+| Reversed triples | `x p y` becomes `y p x` when `p` has a domain and a class range (`rdfs` or listed with `schema:domainIncludes` / `rangeIncludes`), both ends are typed IRIs, `x` is outside the domain and `y` outside the range as written, and swapped both fit. A listed class contradicts nothing alone; evidence at all four positions is a direction. One end fitting, an untyped end, a type the context does not place, or a symmetric property leaves the triple as written. Records are kind `triple_reversed`. Critic and completion patches get the same repair |
 | Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. An IRI still untyped takes the class a link lists through `schema:domainIncludes` or `schema:rangeIncludes`, when the property lists exactly one class, declares no `rdfs` counterpart, and all of the node's links agree. Critic and completion patches get the same repair |
 | Degenerate bounds | Equal lower and upper bounds become one value, when the quantity fallback vocabulary names `numeric_value`, `lower_bound` and `upper_bound` |
 
@@ -327,8 +327,9 @@ a score rule (`success`, or a score above 90) would have decided.
 The critic judges whether what was rendered is right, not whether something is
 missing. `FACTS_COMPLETION_PASSES` (default 1) adds insert-only passes after the
 critic loop, run only while the unit has a gap: a `statement_without_subject`
-finding holds; with `FACTS_COMPLETION_DETACHED=true` (the default), an
-instance is linked to no other instance; or, with
+finding holds; with `FACTS_COMPLETION_DETACHED=true` (the default), at
+least two instances are linked to no other instance (a pass called for
+another gap lists a lone one too); or, with
 `FACTS_COMPLETION_MEASUREMENTS=true` (off by default), the numeric inventory
 still lists a measurement (a number with its unit) absent from the graph. A
 unit with no gap makes no call.
@@ -451,7 +452,11 @@ budget.
    whole catalog places under one of them. Records are kind
    `unlinked_dropped`, each with the dropped node's label and the triples
    removed, as are the `untyped_dropped` ones; the `facts_unlinked_dropped`
-   metric counts all three. Before these drops, a node
+   metric counts all three. Before them, every statement joining a node to
+   itself (`x p x`) is removed, with its reifier, unless `p` is `owl:sameAs`,
+   `rdf:type` or a property the context declares `owl:ReflexiveProperty`:
+   records are kind `self_loop_dropped`, counted by
+   `facts_self_loops_dropped`. Before these drops, a node
    standing for a date that holds only a label (the object of a temporal
    property, a node typed with an OWL-Time class, or one labelled with a whole
    date or month) gets the typed ISO 8601 value its label names: through the

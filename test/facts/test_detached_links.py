@@ -7,7 +7,7 @@ from rdflib import Literal, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, SDO
 
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.model import FactsUnitFinding, TripleFix
+from ontocast.onto.model import FactsUnitFinding, FactsUnitFindingKind, TripleFix
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.prompt.complete_facts import build_detached_chapter
 from ontocast.stategraph import atomic as atomic_module
@@ -19,6 +19,7 @@ pytestmark = pytest.mark.unit
 
 _EVENT = URIRef(f"{DEFAULT_IRI}championships_2020")
 _SERIES = URIRef(f"{DEFAULT_IRI}series")
+_COACH = URIRef(f"{DEFAULT_IRI}coach")
 
 
 def _facts() -> RDFGraph:
@@ -49,12 +50,19 @@ def _link(subject: URIRef, obj: URIRef) -> TripleFix:
     )
 
 
+def _with_coach(graph: RDFGraph) -> RDFGraph:
+    graph.add((_COACH, RDF.type, SDO.Person))
+    graph.add((_COACH, RDFS.label, Literal("the coach")))
+    return graph
+
+
 @pytest.mark.anyio
-async def test_an_instance_linked_to_nothing_is_offered_and_its_link_counted(
+async def test_instances_linked_to_nothing_are_offered_and_their_links_counted(
     monkeypatch,
 ) -> None:
     state = _unit_state(
-        text="The 2020 championships, part of the series.", graph=_facts()
+        text="The 2020 championships, part of the series, and their coach.",
+        graph=_with_coach(_facts()),
     )
     seen: list[list[URIRef]] = []
 
@@ -74,9 +82,64 @@ async def test_an_instance_linked_to_nothing_is_offered_and_its_link_counted(
         render_attempt=1,
     )
 
-    assert seen == [[_EVENT]]
+    assert seen == [[_EVENT, _COACH]]
     assert (_EVENT, SDO.superEvent, _SERIES) in state.content_unit.graph
     assert state.attempt_log[-1].n_detached_linked == 1
+
+
+@pytest.mark.anyio
+async def test_a_lone_detached_instance_calls_no_pass(monkeypatch) -> None:
+    state = _unit_state(text="The 2020 championships.", graph=_facts())
+    calls: list[int] = []
+
+    async def fake_complete(*_args, **_kwargs):
+        calls.append(1)
+        return []
+
+    monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
+    atomic = _atomic()
+    atomic.facts_completion_detached = True  # type: ignore[attr-defined]
+    atomic.facts_completion_measurements = False  # type: ignore[attr-defined]
+
+    await _run_completion_passes(
+        state,
+        atomic,
+        replace(FACTS_PHASE, collect_findings=_no_findings),
+        render_attempt=1,
+    )
+
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_a_pass_called_for_another_gap_lists_a_lone_detached_instance(
+    monkeypatch,
+) -> None:
+    state = _unit_state(text="The 2020 championships.", graph=_facts())
+    seen: list[list[URIRef]] = []
+    gap = FactsUnitFinding(
+        kind=FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT,
+        message="a statement names no subject",
+        subject=f"{DEFAULT_IRI}reading_1",
+    )
+
+    async def fake_complete(_state, _atomic, _inventory, _gaps=(), detached=()):
+        seen.append(list(detached))
+        return []
+
+    monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
+    atomic = _atomic()
+    atomic.facts_completion_detached = True  # type: ignore[attr-defined]
+    atomic.facts_completion_measurements = False  # type: ignore[attr-defined]
+
+    await _run_completion_passes(
+        state,
+        atomic,
+        replace(FACTS_PHASE, collect_findings=lambda _s, _a: [gap]),
+        render_attempt=1,
+    )
+
+    assert seen and seen[0] == [_EVENT]
 
 
 @pytest.mark.anyio

@@ -3055,8 +3055,10 @@ class FactsValidationConfig(BaseSettings):
         description=(
             "Let the gap pass also ask for a link for each instance the render "
             "linked to nothing, when the text relates it to another instance "
-            "of the unit. Such an instance is otherwise kept unlinked when it "
-            "holds a value, and dropped at the gate when it holds none."
+            "of the unit. Unlinked instances call the pass on their own only "
+            "when there are at least two; a pass called for another gap lists "
+            "a lone one too. Such an instance is otherwise kept unlinked when "
+            "it holds a value, and dropped at the gate when it holds none."
         ),
     )
     completion_measurements: bool = Field(

@@ -221,8 +221,10 @@ finding in its part; the gap pass asks the model for the link
 (`FACTS_COMPLETION_PASSES`), and `facts_statements_without_subject` counts what
 is left.
 
-The served graph holds statements only. After merging, an entity linked to
-nothing and holding no value is dropped, and so is a value no statement
+The served graph holds statements only. After merging, a statement joining a
+node to itself through a property not declared reflexive is dropped
+(`facts_self_loops_dropped`), an entity linked to nothing and holding no value
+is dropped, and so is a value no statement
 carries (`facts_unlinked_dropped`). A value written as an entity of its own,
 typed with a value class, and linked to nothing is dropped too. Any other
 instance still linked to nothing is kept and listed in the run manifest
