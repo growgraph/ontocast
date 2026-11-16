@@ -3,6 +3,7 @@ import json
 import logging
 import random
 import re
+from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 
 from langchain_core.output_parsers import BaseOutputParser, PydanticOutputParser
@@ -482,6 +483,7 @@ async def call_llm_with_retry(
     retry_error_feedback: bool = True,
     llm_graph_format: LLMGraphFormat | None = None,
     phase: LLMPhase | None = None,
+    validation_context: Mapping[str, Any] | None = None,
 ) -> T:
     """Call LLM and parse response with automatic retry on parsing failures.
 
@@ -605,14 +607,12 @@ async def call_llm_with_retry(
             if isinstance(parser, PydanticOutputParser):
                 json_object = parse_json_object(content_to_parse)
                 model_cls = cast(type[BaseModel], parser.pydantic_object)
-                context = (
-                    {"llm_graph_format": llm_graph_format}
-                    if llm_graph_format is not None
-                    else None
-                )
+                context: dict[str, Any] = dict(validation_context or {})
+                if llm_graph_format is not None:
+                    context["llm_graph_format"] = llm_graph_format
                 parsed = cast(
                     T,
-                    model_cls.model_validate(json_object, context=context),
+                    model_cls.model_validate(json_object, context=context or None),
                 )
             else:
                 parsed = parser.parse(content_to_parse)

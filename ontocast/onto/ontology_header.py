@@ -49,7 +49,7 @@ from ontocast.onto.ontology import (
     normalize_semantic_version,
 )
 from ontocast.onto.ontology_namespace import ontology_namespace
-from ontocast.onto.prefixes import bind_own_namespace
+from ontocast.onto.prefixes import author_prefix_id, bind_own_namespace
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.util import derive_ontology_id
@@ -120,6 +120,21 @@ class DivergedOntologyError(RuntimeError):
         super().__init__(
             f"ontology {iri} has {len(self.heads)} heads ({', '.join(self.heads)}); "
             "merge them before extending it"
+        )
+
+
+class AmbiguousOntologyRefError(ValueError):
+    """A short reference (an id or a prefix) names several catalog ontologies.
+
+    Ids and prefixes may repeat across IRIs; only an IRI is unique.
+    """
+
+    def __init__(self, ref: str, iris: Sequence[str]) -> None:
+        self.ref = ref
+        self.iris = sorted(iris)
+        super().__init__(
+            f"{ref!r} names {len(self.iris)} ontologies ({', '.join(self.iris)}); "
+            "refer to one by its IRI"
         )
 
 
@@ -412,8 +427,9 @@ def adopt_ontology(
     anything about itself; a header that is only typed ``owl:Ontology`` is
     dropped. Its IRI must have no fragment; an empty one (``…/prov#``) is
     dropped, and the header is rewritten to that IRI. The id comes from
-    ``ontology_id``, else the file's ``vann:preferredNamespacePrefix``, else is
-    derived from the IRI; the title from ``dcterms:title``, else
+    ``ontology_id``, else the file's ``vann:preferredNamespacePrefix``, else the
+    prefix the file binds to the ontology's namespace, else is derived from the
+    IRI. The id is a label: several ontologies may share one; the title from ``dcterms:title``, else
     ``rdfs:label``, else the id; the version label from ``owl:versionInfo``
     when it parses, else ``1.0.0``; the namespace from
     :func:`~ontocast.onto.ontology_namespace.ontology_namespace`.
@@ -458,15 +474,16 @@ def adopt_ontology(
         values = sorted(str(o) for o in graph.objects(subject, predicate))
         return values[0] if values else None
 
-    candidate_id = (
-        ontology_id
-        or first(VANN.preferredNamespacePrefix)
-        or derive_ontology_id(iri)
-        or ""
-    )
     # The namespace is decided before the identity: a standard prefix is a
     # valid id only for the ontology that lives in its standard namespace.
     namespace = ontology_namespace(graph, iri)
+    candidate_id = (
+        ontology_id
+        or first(VANN.preferredNamespacePrefix)
+        or author_prefix_id(graph, namespace)
+        or derive_ontology_id(iri)
+        or ""
+    )
     identity = OntologyIdentity(
         ontology_id=candidate_id,
         iri=iri,

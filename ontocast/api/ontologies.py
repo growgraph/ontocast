@@ -20,7 +20,7 @@ from ontocast.api.schemas import (
 from ontocast.api.tenancy_resolution import make_scoped_toolbox_resolver
 from ontocast.config import ServerConfig
 from ontocast.onto.ontology import Ontology, OntologyHeader
-from ontocast.onto.ontology_header import heads_by_iri
+from ontocast.onto.ontology_header import AmbiguousOntologyRefError, heads_by_iri
 from ontocast.toolbox import ToolBox
 
 
@@ -52,7 +52,13 @@ def _mutation_response(o: Ontology) -> OntologyMutationResponse:
 
 
 def _resolve_iri(scoped: ToolBox, ontology_id: str) -> str:
-    iri = scoped.ontology_manager.resolve_ontology_ref(unquote(ontology_id))
+    try:
+        iri = scoped.ontology_manager.resolve_ontology_ref(unquote(ontology_id))
+    except AmbiguousOntologyRefError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(exc), "candidates": exc.iris},
+        ) from exc
     if iri is None:
         raise HTTPException(status_code=404, detail="Unknown ontology")
     return iri

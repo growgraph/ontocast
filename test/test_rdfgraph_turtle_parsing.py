@@ -606,3 +606,51 @@ def test_statements_run_together_after_text_with_non_ascii_characters_are_split(
             derived,
             URIRef(f"{_FACT}{name}_awards"),
         ) in graph
+
+
+_EXT = "https://example.com/ontology-ext/"
+_DOTTED = "https://example.com/a.b#"
+
+
+def test_an_undeclared_hyphenated_prefix_is_declared() -> None:
+    ttl = "@prefix ex: <https://example.com/ns#> . ex:firm ontology-ext:splitFrom ex:parent ."
+    previous = RDFGraph.get_known_prefixes()
+    RDFGraph.set_known_prefixes({"ontology-ext": _EXT})
+    try:
+        graph = RDFGraph._from_turtle_str(ttl)
+    finally:
+        RDFGraph.set_known_prefixes(previous)
+
+    assert list(graph.predicates()) == [URIRef(f"{_EXT}splitFrom")]
+
+
+def test_a_dotted_prefix_name_is_one_name() -> None:
+    from ontocast.onto.rdfgraph import PREFIX_DECLARATION_PATTERN, PREFIX_USAGE_PATTERN
+
+    ttl = f"@prefix a.b: <{_DOTTED}> . ex:s a.b:partOf ex:o ."
+
+    assert [m.group(1) for m in PREFIX_DECLARATION_PATTERN.finditer(ttl)] == ["a.b"]
+    assert "a.b" in {m.group(1) for m in PREFIX_USAGE_PATTERN.finditer(ttl)}
+
+
+def test_a_declared_hyphenated_prefix_is_not_declared_twice() -> None:
+    ttl = (
+        f"@prefix ontology-ext: <{_EXT}> . "
+        "@prefix ex: <https://example.com/ns#> . "
+        "ex:firm ontology-ext:splitFrom ex:parent ."
+    )
+
+    assert RDFGraph._ensure_prefixes(ttl) == ttl
+
+
+def test_a_name_inside_an_iri_or_a_local_part_is_not_read_as_a_prefix() -> None:
+    previous = RDFGraph.get_known_prefixes()
+    RDFGraph.set_known_prefixes({"ext": _EXT, "a": _DOTTED})
+    try:
+        ttl = (
+            "@prefix ex: <https://example.com/ns#> . "
+            "ex:firm ex:a:b <https://example.com/foo-ext:bar> ."
+        )
+        assert RDFGraph._ensure_prefixes(ttl) == ttl
+    finally:
+        RDFGraph.set_known_prefixes(previous)

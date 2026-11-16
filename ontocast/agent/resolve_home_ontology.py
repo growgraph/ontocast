@@ -1,16 +1,19 @@
 """Resolve a document's home ontology: where its new vocabulary is minted.
 
-One LLM call per document, before the ontology fan-out. The model proposes an
-``ontology_id`` (plus title and description); code decides what that means:
+One LLM call per document, before the ontology fan-out. The catalog is listed
+under each ontology's shown prefix (unique, unlike ids, which may repeat). The
+model proposes an ``ontology_id`` (plus title and description); code decides
+what that means:
 
-- an id already in the catalog makes the document extend that ontology;
+- a shown prefix (or an id one ontology alone holds) makes the document extend
+  that ontology;
 - any other id mints a new one under ``CURRENT_DOMAIN``, unless the text names
   at least :data:`HOME_COVERAGE_MIN_TERMS` terms of an existing ontology: the
   proposal is then overridden to the best-covered one, so documents of one
   domain share a home instead of each opening its own;
 - a home outside ``CURRENT_DOMAIN`` is external and is never written to: the
-  document's terms go to its extension ontology, ``<id>-ext`` under
-  ``CURRENT_DOMAIN``, which imports it.
+  document's terms go to its extension ontology, ``<id>-ext-<hash>`` under
+  ``CURRENT_DOMAIN`` (the hash is the external IRI's), which imports it.
 
 The model never writes an IRI.
 """
@@ -24,11 +27,12 @@ from ontocast.agent.common import call_llm_with_retry
 from ontocast.onto.enum import LLMPhase, Status
 from ontocast.onto.identity import (
     OntologyIdentity,
-    extension_ontology_id,
+    extension_ontology_iri,
     is_owned_ontology,
     mint_ontology_iri,
 )
 from ontocast.onto.model import OntologyIdentityProposal
+from ontocast.onto.ontology_header import AmbiguousOntologyRefError
 from ontocast.onto.state import AgentState
 from ontocast.prompt.common import system_preamble_ontology, text_template
 from ontocast.prompt.render_ontology import (
@@ -61,22 +65,54 @@ _TEMPLATE = """
 """
 
 
-def identity_for_existing(tools: ToolBox, ontology_id: str) -> OntologyIdentity | None:
-    """The identity of the catalog ontology ``ontology_id`` names, if any.
+def catalog_handles(tools: ToolBox) -> dict[str, str]:
+    """Shown prefix -> IRI of each catalog ontology: the handles the model sees."""
+    table = tools.prefix_table()
+    handles: dict[str, str] = {}
+    for head in tools.ontology_manager.ontologies:
+        handle = table.prefix_for(head.namespace) if head.namespace else None
+        handles[handle or head.iri] = head.iri
+    return handles
+
+
+def identity_for_handle(tools: ToolBox, handle: str) -> OntologyIdentity | None:
+    """The identity of the catalog ontology ``handle`` names, if any.
+
+    ``handle`` is a prefix the catalog's prefix table maps to an ontology's
+    namespace (a shown prefix, or an alias only one namespace has), else an
+    id or prefix one held ontology alone has (a diverged one, which the table
+    leaves out, included). A name several ontologies share names none.
 
     Raises:
         DivergedOntologyError: that ontology has several heads.
     """
-    iri = tools.ontology_manager.resolve_ontology_ref(ontology_id)
-    if iri is None:
+    handle = handle.strip()
+    namespace = tools.prefix_table().namespace_for(handle)
+    for head in tools.ontology_manager.ontologies:
+        if namespace is not None and head.namespace == namespace:
+            return identity_for_existing(tools, head.iri)
+    try:
+        iri = tools.ontology_manager.resolve_ontology_ref(handle)
+    except AmbiguousOntologyRefError:
         return None
-    head = tools.ontology_manager.get_head_by_iri(iri)
+    return identity_for_existing(tools, iri) if iri is not None else None
+
+
+def identity_for_existing(tools: ToolBox, iri: str) -> OntologyIdentity | None:
+    """The identity of the catalog ontology ``iri``, if the catalog holds it.
+
+    Raises:
+        DivergedOntologyError: that ontology has several heads.
+    """
+    manager = tools.ontology_manager
+    resolved = manager.resolve_ontology_ref(iri)
+    head = manager.get_head_by_iri(resolved) if resolved is not None else None
     if head is None:
         return None
     return OntologyIdentity(
-        ontology_id=head.ontology_id or ontology_id,
+        ontology_id=head.ontology_id or iri.rsplit("/", 1)[-1],
         iri=head.iri,
-        title=head.title or head.ontology_id or ontology_id,
+        title=head.title or head.ontology_id or head.iri,
         description=head.description or "",
         namespace=head.namespace,
     )
@@ -103,13 +139,12 @@ def identity_for_extension(
     tools: ToolBox, external: OntologyIdentity, current_domain: str
 ) -> OntologyIdentity:
     """The extension ontology of ``external``: the catalog's, else a new one."""
-    ontology_id = extension_ontology_id(external.ontology_id)
-    iri = mint_ontology_iri(current_domain, ontology_id)
+    iri = extension_ontology_iri(current_domain, external.iri, external.ontology_id)
     stored = identity_for_existing(tools, iri)
     if stored is not None:
         return stored.model_copy(update={"extends": external.iri})
     return OntologyIdentity(
-        ontology_id=ontology_id,
+        ontology_id=iri.rsplit("/", 1)[-1],
         iri=iri,
         title=f"{external.title} (extension)"[:200],
         description=(
@@ -118,6 +153,16 @@ def identity_for_extension(
         ),
         extends=external.iri,
     )
+
+
+def extended_ontology(tools: ToolBox, iri: str, current_domain: str) -> str | None:
+    """The external catalog ontology whose extension ontology is ``iri``, if any."""
+    for head in tools.ontology_manager.ontologies:
+        if head.iri and not is_owned_ontology(head.iri, current_domain):
+            stem = head.ontology_id or ""
+            if extension_ontology_iri(current_domain, head.iri, stem) == iri:
+                return head.iri
+    return None
 
 
 def covering_ontology(tools: ToolBox, text: str) -> OntologyIdentity | None:
@@ -133,11 +178,13 @@ async def propose_home_ontology(
     state: AgentState, tools: ToolBox
 ) -> OntologyIdentityProposal:
     """Ask the model for the document's home ontology id, title and description."""
-    heads = tools.ontology_manager.ontologies
-    if heads:
+    handles = catalog_handles(tools)
+    if handles:
+        titles = {o.iri: o.title or "" for o in tools.ontology_manager.ontologies}
         catalog_clause = home_ontology_catalog_clause.format(
             catalog_list="\n".join(
-                f"- {o.ontology_id}: {o.title or ''}".rstrip(": ") for o in heads
+                f"- {handle}: {' '.join(filter(None, (titles[iri], f'<{iri}>')))}"
+                for handle, iri in sorted(handles.items())
             )
         )
     else:
@@ -170,6 +217,7 @@ async def propose_home_ontology(
                 "text": text_template.format(text=build_document_excerpt(state)),
                 "format_instructions": parser.get_format_instructions(),
             },
+            validation_context={"catalog_handles": frozenset(handles)},
         )
 
 
@@ -189,7 +237,7 @@ async def resolve_home_ontology(state: AgentState, tools: ToolBox) -> AgentState
     if not state.render_ontology or not build_document_excerpt(state).strip():
         return state
     proposal = await propose_home_ontology(state, tools)
-    identity = identity_for_existing(tools, proposal.ontology_id)
+    identity = identity_for_handle(tools, proposal.ontology_id)
     if identity is None:
         identity = covering_ontology(tools, build_document_excerpt(state))
         if identity is not None:
@@ -208,6 +256,11 @@ async def resolve_home_ontology(state: AgentState, tools: ToolBox) -> AgentState
         identity = identity_for_extension(tools, identity, state.current_domain)
         state.ontology_reduce_metrics["home_extension"] = 1
         logger.info("External home: new terms go to its extension %s", identity.iri)
+    elif identity.extends is None:
+        # An extension picked by its own handle still imports its external.
+        extends = extended_ontology(tools, identity.iri, state.current_domain)
+        if extends is not None:
+            identity = identity.model_copy(update={"extends": extends})
     state.home_ontology = identity
     if state.status != Status.FAILED:
         state.status = Status.SUCCESS

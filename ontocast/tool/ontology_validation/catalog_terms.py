@@ -44,14 +44,17 @@ def catalog_prefixes(
 
     Each namespace gets the prefix ``table`` shows for it (the catalog's own
     table when none is given), so this lane names terms as the facts lane
-    does. A home ontology not in the catalog yet is named by its id.
+    does. A home ontology not in the catalog yet takes the prefix the table
+    would claim for it.
     """
     table = table if table is not None else build_prefix_table(heads)
     prefixes = dict(prefix_lookup_for_ingest())
     for namespace, prefix in sorted(table.shown.items()):
         prefixes.setdefault(prefix, namespace)
     if home is not None and home.namespace not in prefixes.values():
-        prefixes[home.ontology_id] = home.namespace
+        prefixes[table.prefix_or_claim(home.namespace, home.ontology_id)] = (
+            home.namespace
+        )
     return prefixes
 
 

@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING, Any
 from pydantic import Field
 from rdflib import RDF, RDFS, SKOS, BNode, URIRef
 
-from ontocast.onto.ontology_header import DivergedOntologyError, heads_by_iri
+from ontocast.onto.ontology_header import (
+    AmbiguousOntologyRefError,
+    DivergedOntologyError,
+    heads_by_iri,
+)
 from ontocast.onto.property_sides import SIDE_PREDICATES
 
 from ..onto.null import NULL_ONTOLOGY
@@ -88,10 +92,11 @@ class OntologyManager(Tool):
         self._cached_ontologies: dict[str, str] = {}
         self._patch_retriever: OntologyPatchRetriever | None = None
         self._triple_store_manager: TripleStoreManager | None = None
-        # Canonical short handle per IRI (ontology_id); prefix may differ.
+        # The id each IRI was registered with; ids may repeat across IRIs.
         self._iri_to_ontology_id: dict[str, str] = {}
-        # Lowercased alias (ontology_id, author prefix, …) → IRI.
-        self._alias_to_iri: dict[str, str] = {}
+        # Lowercased alias (ontology_id, author prefix, the IRI) → the IRIs
+        # holding it. Only an IRI is unique; a short alias may name several.
+        self._alias_to_iri: dict[str, set[str]] = {}
         # The catalog's prefix table, per set of extra graphs (the shapes);
         # dropped whenever the catalog changes.
         self._prefix_tables: dict[tuple[tuple[str, str], ...], PrefixTable] = {}
@@ -151,16 +156,13 @@ class OntologyManager(Tool):
         return aliases
 
     def validate_identity_uniqueness(self, ontology: Ontology) -> None:
-        """Validate catalog IRI and alias uniqueness across the manager.
+        """Refuse an ontology whose IRI is registered under another id.
 
-        Same IRI may not change its primary ``ontology_id``. The same
-        ``ontology_id`` alias may not point at two different IRIs. Author
-        ``prefix`` may differ from ``ontology_id`` (both register as aliases of
-        the same IRI); a *prefix* collision across IRIs does not block ingest —
-        the colliding prefix alias is simply skipped at registration and the
-        ontology stays addressable by IRI and ``ontology_id``.
+        The IRI is the identity. An id or an author prefix may repeat across
+        IRIs: a short reference that names several resolves to none
+        (:meth:`resolve_ontology_ref`).
         """
-        self._check_identity(ontology, self._iri_to_ontology_id, self._alias_to_iri)
+        self._check_identity(ontology, self._iri_to_ontology_id)
 
     def identity_conflicts(self, ontologies: list[Ontology]) -> dict[str, str]:
         """Why each of ``ontologies`` that cannot be registered cannot, by IRI.
@@ -170,25 +172,20 @@ class OntologyManager(Tool):
         those were registered. Registers nothing.
         """
         iri_to_id = dict(self._iri_to_ontology_id)
-        alias_to_iri = dict(self._alias_to_iri)
         conflicts: dict[str, str] = {}
         for ontology in ontologies:
             try:
-                self._check_identity(ontology, iri_to_id, alias_to_iri)
+                self._check_identity(ontology, iri_to_id)
             except ValueError as exc:
                 conflicts[ontology.iri] = str(exc)
                 continue
-            iri = ontology.iri.strip()
-            iri_to_id[iri] = self._primary_ontology_id(ontology)
-            for alias, _kind in self._collect_aliases(ontology):
-                alias_to_iri.setdefault(alias, iri)
+            iri_to_id[ontology.iri.strip()] = self._primary_ontology_id(ontology)
         return conflicts
 
     def _check_identity(
         self,
         ontology: Ontology,
         iri_to_id: dict[str, str],
-        alias_to_iri: dict[str, str],
     ) -> None:
         iri = (ontology.iri or "").strip()
         if not iri:
@@ -206,47 +203,25 @@ class OntologyManager(Tool):
                 f"received '{primary}'"
             )
 
-        for alias, kind in self._collect_aliases(ontology):
-            existing_iri = alias_to_iri.get(alias)
-            if existing_iri is None or existing_iri == iri:
-                continue
-            if kind == "prefix":
-                # Convenience alias only; degrades to IRI-only addressing.
-                continue
-            raise ValueError(
-                "Ontology identity conflict: identity "
-                f"'{alias}' is already bound to IRI '{existing_iri}', "
-                f"received '{iri}'"
-            )
-
     def _register_identity(self, ontology: Ontology) -> None:
         iri = ontology.iri.strip()
         primary = self._primary_ontology_id(ontology)
         self._iri_to_ontology_id[iri] = primary
-        for alias, _kind in self._collect_aliases(ontology):
-            existing_iri = self._alias_to_iri.get(alias)
-            if existing_iri is not None and existing_iri != iri:
-                # validate_identity_uniqueness raises on ontology_id conflicts,
-                # so only author-prefix aliases can reach this branch.
-                logger.warning(
-                    "Author prefix alias '%s' is already bound to IRI %s; "
-                    "skipping alias registration for %s (addressable by IRI "
-                    "and ontology_id only).",
-                    alias,
-                    existing_iri,
-                    iri,
-                )
-                continue
-            self._alias_to_iri[alias] = iri
-        # Also allow looking up by the raw IRI string and its normalized form.
-        self._alias_to_iri[iri.lower()] = iri
-        normalized = normalize_ontology_iri(iri).lower()
-        if normalized:
-            self._alias_to_iri[normalized] = iri
+        aliases = [alias for alias, _kind in self._collect_aliases(ontology)]
+        # The raw IRI and its normalized form resolve as well.
+        aliases += [iri.lower(), normalize_ontology_iri(iri).lower()]
+        for alias in aliases:
+            if alias:
+                self._alias_to_iri.setdefault(alias, set()).add(iri)
         self._prefix_tables.clear()
 
     def resolve_ontology_ref(self, ref: str) -> str | None:
-        """Resolve an absolute IRI or registered alias to a catalog ontology IRI."""
+        """The catalog IRI ``ref`` names: an IRI, or an id or prefix one IRI holds.
+
+        Raises:
+            AmbiguousOntologyRefError: ``ref`` is an id or a prefix that
+                several catalog ontologies hold.
+        """
         if not ref or not str(ref).strip():
             return None
         cleaned = str(ref).strip()
@@ -256,9 +231,12 @@ class OntologyManager(Tool):
         if normalized in self.ontology_versions:
             return normalized
         for key in (cleaned.lower(), normalized.lower()):
-            iri = self._alias_to_iri.get(key)
-            if iri is not None:
-                return iri
+            iris = self._alias_to_iri.get(key)
+            if not iris:
+                continue
+            if len(iris) > 1:
+                raise AmbiguousOntologyRefError(cleaned, sorted(iris))
+            return next(iter(iris))
         return None
 
     def prefix_table(self, others: Sequence[RDFGraph] = ()) -> PrefixTable:
@@ -290,9 +268,16 @@ class OntologyManager(Tool):
             item: The IRI, ontology_id, or author prefix to check.
 
         Returns:
-            bool: True if the item resolves to a tracked ontology IRI.
+            bool: True if the item names at least one tracked ontology.
         """
-        return self.resolve_ontology_ref(str(item)) is not None
+        ref = str(item).strip()
+        normalized = normalize_ontology_iri(ref)
+        return (
+            ref in self.ontology_versions
+            or normalized in self.ontology_versions
+            or bool(self._alias_to_iri.get(ref.lower()))
+            or bool(self._alias_to_iri.get(normalized.lower()))
+        )
 
     def _prepare_ontology_for_catalog(self, ontology: Ontology) -> bool:
         """Validate and register a stamped version; True if it is new here.
@@ -420,10 +405,12 @@ class OntologyManager(Tool):
         self.ontology_versions.pop(iri, None)
         self._cached_ontologies.pop(iri, None)
         self._iri_to_ontology_id.pop(iri, None)
-        # Drop all aliases pointing at this IRI.
-        stale = [alias for alias, bound in self._alias_to_iri.items() if bound == iri]
-        for alias in stale:
-            del self._alias_to_iri[alias]
+        # Drop this IRI from every alias; an alias no IRI holds goes.
+        for alias in list(self._alias_to_iri):
+            held = self._alias_to_iri[alias]
+            held.discard(iri)
+            if not held:
+                del self._alias_to_iri[alias]
         self._prefix_tables.clear()
 
     def register_vector_store(self, retriever: "OntologyPatchRetriever") -> None:
@@ -988,6 +975,10 @@ class OntologyManager(Tool):
         Without ``version_iri`` the head is returned (the newest head of a
         diverged ontology). IRI is preferred over ``ontology_id``.
 
+        Raises:
+            AmbiguousOntologyRefError: only ``ontology_id`` is given and
+                several catalog ontologies hold it.
+
         Returns:
             Ontology: The matching ontology, NULL_ONTOLOGY when none.
         """
@@ -1011,17 +1002,6 @@ class OntologyManager(Tool):
                     return heads[0]
                 if versions:
                     return versions[0]
-
-            if (
-                ontology_iri
-                and ontology_id
-                and self.resolve_ontology_ref(ontology_id) not in (None, resolved_iri)
-            ):
-                logger.warning(
-                    "Ontology id '%s' resolves differently from IRI '%s'",
-                    ontology_id,
-                    ontology_iri,
-                )
 
         return NULL_ONTOLOGY
 

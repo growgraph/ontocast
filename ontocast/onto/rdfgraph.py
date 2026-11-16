@@ -26,7 +26,11 @@ from ontocast.onto.constants import (
     prefix_lookup_for_ingest,
 )
 from ontocast.onto.enum import LLMGraphFormat
-from ontocast.onto.iri_policy import normalize_namespace_iri, sanitize_prefix_map
+from ontocast.onto.iri_policy import (
+    PN_PREFIX,
+    normalize_namespace_iri,
+    sanitize_prefix_map,
+)
 from ontocast.onto.namespace_merge import choose_best_prefix, merge_namespace_bindings
 from ontocast.onto.reification import (
     ProvenanceFormatError,
@@ -161,10 +165,11 @@ def retarget_reifiers(graph: Graph, replacements: Mapping[tuple, tuple]) -> int:
     return graph.reifications.retarget(replacements)
 
 
-PREFIX_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<[^>]+>\s+\.")
-PREFIX_DECLARATION_PATTERN = re.compile(r"@prefix\s+(\w+):\s+<([^>]+)>\s+\.")
-# Pattern to match prefix usage: prefix:something (not in @prefix declarations)
-PREFIX_USAGE_PATTERN = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*):[^\s]")
+PREFIX_PATTERN = re.compile(rf"@prefix\s+({PN_PREFIX}):\s+<[^>]+>\s+\.")
+PREFIX_DECLARATION_PATTERN = re.compile(rf"@prefix\s+({PN_PREFIX}):\s+<([^>]+)>\s+\.")
+#: ``prefix:local`` where a name starts: never inside a name, an IRI or a
+#: local part.
+PREFIX_USAGE_PATTERN = re.compile(rf"(?<![\w.:/#<-])({PN_PREFIX}):[^\s]")
 INTEGER_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:integer')
 DECIMAL_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:decimal')
 DOUBLE_TYPED_LITERAL_PATTERN = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^xsd:double')
@@ -184,10 +189,12 @@ NQUADS_DATE_TYPED_LITERAL_PATTERN = re.compile(
     r'"([^"\\]*(?:\\.[^"\\]*)*)"\^\^<http://www\.w3\.org/2001/XMLSchema#date(?!Time)>'
 )
 XSD_GYEAR_IRI = "http://www.w3.org/2001/XMLSchema#gYear"
-UNKNOWN_PREFIX_ERROR_PATTERN = re.compile(r"Unknown namespace prefix\s*:\s*(\w+)")
+UNKNOWN_PREFIX_ERROR_PATTERN = re.compile(
+    rf"Unknown namespace prefix\s*:\s*({PN_PREFIX})"
+)
 # Bare numeric value followed by ^^ datatype — missing surrounding quotes
 UNQUOTED_TYPED_LITERAL_PATTERN = re.compile(
-    r'(?<!")\b(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\^\^([\w:]+)'
+    r'(?<!")\b(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\^\^([\w.:-]*\w)'
 )
 _SPARQL_DATA_BLOCK_RE = re.compile(
     r"(?:INSERT|DELETE)\s+DATA\s*\{([^}]*)\}",
@@ -196,7 +203,9 @@ _SPARQL_DATA_BLOCK_RE = re.compile(
 # A prefixed name (its local part possibly empty) before a space where the parser
 # stopped, and the bare word after it. Together: one name split by a stray space
 # ("cd:lytt on", "cd: june_2021").
-_SPLIT_NAME_HEAD_RE = re.compile(rb"(?:^|[\s.;,(\[])[A-Za-z][\w-]*:[\w-]*$")
+_SPLIT_NAME_HEAD_RE = re.compile(
+    rb"(?:^|[\s.;,(\[])" + PN_PREFIX.encode() + rb":[\w-]*$"
+)
 _SPLIT_NAME_TAIL_RE = re.compile(rb"\w+(?=[\s,;.\]])")
 _MAX_SPLIT_NAME_JOINS = 8
 #: Statements one answer may have run together after a ``;``.
@@ -246,12 +255,13 @@ def _statement_subjects(data: bytes) -> set[bytes]:
     return subjects
 
 
+_PN = PN_PREFIX.encode()
 _RESTATED_SUBJECT_RE = re.compile(
-    rb";[ \t\r\n]*((?:<[^>\s]*>|_:[\w-]+|[A-Za-z][\w-]*:[\w.-]*)"
-    rb"[ \t\r\n]+(?:<[^>\s]*>|[A-Za-z][\w-]*:[\w.-]*|a))[ \t\r\n]+$"
+    rb";[ \t\r\n]*((?:<[^>\s]*>|_:[\w-]+|" + _PN + rb":[\w.-]*)"
+    rb"[ \t\r\n]+(?:<[^>\s]*>|" + _PN + rb":[\w.-]*|a))[ \t\r\n]+$"
 )
 _SPARQL_PREFIX_RE = re.compile(
-    r"^PREFIX\s+(\w*):\s*<([^>]+)>\s*\.?",
+    rf"^PREFIX\s+((?:{PN_PREFIX})?):\s*<([^>]+)>\s*\.?",
     re.IGNORECASE | re.MULTILINE,
 )
 

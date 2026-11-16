@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An ontology is identified by its IRI alone: catalog ontologies may share an `ontology_id` or prefix. A short name several ontologies hold no longer resolves (`AmbiguousOntologyRefError`, HTTP 400 on `/ontologies/{id}/…`, with their IRIs); loading, uploading or writing one is no longer refused.
+- An extension ontology's IRI is `CURRENT_DOMAIN/<id>-ext-<hash>`, keyed by the external IRI, so two externals with one id get two extensions. A deployment's stored `<id>-ext` ontologies are not migrated; new documents write to the new IRI.
+- A loaded file without `vann:preferredNamespacePrefix` takes the prefix it binds to its own namespace as its id (a DBpedia file binding `dbo:` loads as `dbo`).
+- The home-ontology prompt lists the catalog under shown prefixes with their IRIs, and the render and critic prompts name the home by its shown prefix; a catalog ontology under a standard prefix (`sosa`) can be chosen as home.
 - A property of the home ontology, or one a document mints, gets its class domain and range as `schema:domainIncludes` / `schema:rangeIncludes`: a render's or the plan's `rdfs:domain` / `rdfs:range` is restated at clean-up (`owned_sides_listed`), and each later document may add its own classes. A datatype range stays `rdfs:range`. Every reader of a property's sides (facts repairs and findings, retrieval, the vector index, the term sheet, side counts) reads both forms; a type is inferred only from an `rdfs` side or a listed side naming one class, and only an `rdfs:domain` can be contradicted (`domain_violation`).
 - `CHUNK_MAX_SIZE` defaults to 6000 (was 12000): shorter units extract more facts from long documents, at a proportional token cost. Set 12000 to keep the old behaviour.
 - `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` defaults to true: two IRI objects one unit gave a property are a warning, not an error that triggers the un-merge repair; numeric and string values are unchanged.
@@ -67,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A prefix with `-` or `.` in its name (`ontology-ext:`) is recognised when declared and is declared when an answer uses it undeclared, so such an answer no longer fails to parse.
 - A prefixed name a model splits with a stray space (`cd:lytt on`, `cd: june_2021`) is closed at every occurrence where the Turtle parser stops, kept only when the whole graph then parses, so the answer no longer costs a retry.
 - Statements a model runs together on one line after a `;` (`… ; cd:x p o .`, the node restating a subject) are split where the Turtle parser stops, kept only when the whole graph then parses.
 - A measurement counts as present in the graph when any node, blank or named, states its number (value or bound) with its unit, as an IRI or kept as text on that node; the gap pass no longer re-adds values a render already wrote.

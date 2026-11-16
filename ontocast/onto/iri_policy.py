@@ -5,6 +5,10 @@ from typing import Literal
 
 URIContext = Literal["ontology", "facts", "auto"]
 
+#: A Turtle prefix name (``PN_PREFIX``, ASCII-led): a letter, then name
+#: characters, ``-`` or ``.``, never ending in ``.``.
+PN_PREFIX = r"[A-Za-z](?:[\w.-]*[\w-])?"
+
 _ONTOLOGY_HINT_PATTERN = re.compile(
     r"(?:^|[/#:_-])(onto|ontology|owl|rdfs?|skos)(?:$|[/#:_-])",
     re.IGNORECASE,

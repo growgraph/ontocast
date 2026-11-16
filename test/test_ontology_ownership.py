@@ -3,6 +3,7 @@ deterministic clean-up of a document's ontology delta."""
 
 import asyncio
 import importlib
+import re
 from types import SimpleNamespace
 from typing import cast
 
@@ -25,6 +26,7 @@ from ontocast.onto.enum import RenderMode, Status
 from ontocast.onto.identity import (
     OntologyIdentity,
     extension_ontology_id,
+    extension_ontology_iri,
     is_owned_ontology,
 )
 from ontocast.onto.model import (
@@ -39,6 +41,7 @@ from ontocast.onto.ontology_apply import (
     refile_fresh_statements,
 )
 from ontocast.onto.ontology_header import mint_ontology
+from ontocast.onto.prefixes import build_prefix_table
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState, InputDocument
 from ontocast.onto.unit_states import UnitOntologyState
@@ -66,6 +69,8 @@ consolidate_module = importlib.import_module("ontocast.agent.consolidate_ontolog
 unit_loops = importlib.import_module("ontocast.stategraph.atomic")
 
 EXT_IRI = "http://ext.test/onto"
+#: The extension ontology of ``EXT_IRI`` (id ``ext``) under ``DOMAIN``.
+EXT_HOME = extension_ontology_iri(DOMAIN, EXT_IRI, "ext")
 SCHEMA_THING = URIRef("https://schema.org/Thing")
 
 
@@ -99,7 +104,12 @@ def _tools(manager: OntologyManager) -> ToolBox:
         return object()
 
     return cast(
-        ToolBox, SimpleNamespace(ontology_manager=manager, get_llm_tool=get_llm_tool)
+        ToolBox,
+        SimpleNamespace(
+            ontology_manager=manager,
+            get_llm_tool=get_llm_tool,
+            prefix_table=manager.prefix_table,
+        ),
     )
 
 
@@ -134,10 +144,19 @@ def test_an_ontology_is_owned_only_under_current_domain() -> None:
     assert not is_owned_ontology(f"{DOMAIN}x/tmi", DOMAIN)
 
 
-def test_the_extension_id_is_fixed_by_the_external_id_and_fits() -> None:
-    assert extension_ontology_id("dbo") == "dbo-ext"
-    long_id = "a" * 32
-    assert extension_ontology_id(long_id) == "a" * 28 + "-ext"
+def test_the_extension_id_is_keyed_by_the_external_iri_and_fits() -> None:
+    dbo = extension_ontology_id("http://dbpedia.org/ontology", "dbo")
+    assert re.fullmatch(r"dbo-ext-[0-9a-f]{10}", dbo)
+    # One external, however its IRI ends, has one extension.
+    assert extension_ontology_id("http://dbpedia.org/ontology/", "dbo") == dbo
+    # Two externals sharing an id have two.
+    assert extension_ontology_id(
+        "http://a.org/ontology", "ontology"
+    ) != extension_ontology_id("http://b.org/ontology", "ontology")
+    long_id = extension_ontology_id("http://x.org/o", "a" * 32)
+    assert len(long_id) == 32 and long_id.startswith("a" * 17 + "-ext-")
+    # A stem that is no id still gives one.
+    assert extension_ontology_id("http://x.org/o", "9.Foo").startswith("foo-ext-")
 
 
 def test_a_minted_extension_imports_what_it_extends() -> None:
@@ -162,18 +181,40 @@ async def test_an_external_home_becomes_its_extension(monkeypatch) -> None:
 
     home = state.home_ontology
     assert home is not None
-    assert home.iri == f"{DOMAIN}/ext-ext"
+    assert home.iri == EXT_HOME
     assert home.extends == EXT_IRI
-    assert home.namespace.startswith(f"{DOMAIN}/ext-ext")
+    assert home.namespace.startswith(EXT_HOME)
     assert state.ontology_reduce_metrics["home_extension"] == 1
+
+
+@pytest.mark.anyio
+async def test_an_extension_picked_by_its_own_id_keeps_what_it_extends(
+    monkeypatch,
+) -> None:
+    extension_id = EXT_HOME.rsplit("/", 1)[-1]
+    stored = stamped_ontology(
+        _classes(f"{EXT_HOME}#", "Tournament"),
+        ontology_id=extension_id,
+        title="Stored extension",
+    )
+    _answer_identity(monkeypatch, extension_id)
+    state = _state("A league of sports teams.")
+
+    await resolve_module.resolve_home_ontology(
+        state, _tools(_manager(_external_head(), stored))
+    )
+
+    assert state.home_ontology is not None
+    assert state.home_ontology.iri == EXT_HOME
+    assert state.home_ontology.extends == EXT_IRI
 
 
 @pytest.mark.anyio
 async def test_a_stored_extension_is_reused(monkeypatch) -> None:
     _answer_identity(monkeypatch, "ext")
     stored = stamped_ontology(
-        _classes(f"{DOMAIN}/ext-ext#", "Tournament"),
-        ontology_id="ext-ext",
+        _classes(f"{EXT_HOME}#", "Tournament"),
+        ontology_id=EXT_HOME.rsplit("/", 1)[-1],
         title="Stored extension",
     )
     state = _state("A league of sports teams.")
@@ -719,9 +760,11 @@ def test_the_critic_is_told_the_home_namespace() -> None:
     )
     unit = ContentUnit(text="Teams.", index=0, doc_iri=URIRef(f"{DOMAIN}/doc/d1"))
     state = UnitOntologyState(content_unit=unit, home_ontology=home)
-    assert f"<{home.namespace}>" in critic_module.critic_intro(state)
+    table = build_prefix_table([])
+    assert f"<{home.namespace}>" in critic_module.critic_intro(state, table)
+    assert "`ext-ext:`" in critic_module.critic_intro(state, table)
     bare = UnitOntologyState(content_unit=unit)
-    assert critic_module.critic_intro(bare) == critic_module.intro_instruction
+    assert critic_module.critic_intro(bare, table) == critic_module.intro_instruction
 
 
 def test_a_written_ontology_is_dumped_as_its_stored_version(tmp_path) -> None:
@@ -928,7 +971,7 @@ def test_update_renders_land_in_the_extension_and_never_in_the_external(
     final = asyncio.run(create_agent_graph(tools).ainvoke(document))
 
     home = final["home_ontology"]
-    assert home.iri == f"{DOMAIN}/ext-ext"
+    assert home.iri == EXT_HOME
     artifacts = final["ontology_artifacts"]
     assert [a.iri for a in artifacts] == [home.iri], [
         (a.iri, len(a.graph)) for a in artifacts
@@ -1018,7 +1061,7 @@ def test_the_update_prompt_names_the_home_namespace() -> None:
         home_ontology=home,
     )
     access = render_module.ontology_access_for_unit_ontology(state)
-    intro = render_module._build_update_intro(state, access)
+    intro = render_module._build_update_intro(state, access, "ext-ext")
     assert f"<{home.namespace}>" in intro
     assert "`ext-ext:`" in intro
 

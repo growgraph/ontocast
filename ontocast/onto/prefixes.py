@@ -12,8 +12,9 @@ applies and leaves the prefix free:
 5. else a slug of the namespace.
 
 Every other prefix seen bound to a namespace is an alias: accepted when the
-model writes it and rewritten where authored prose uses it, never shown. The
-ontology id stays the identity alias whatever is shown.
+model writes it and rewritten where authored prose uses it, never shown. Ids
+may repeat across ontologies; shown prefixes never do, so a shown prefix is
+the one short handle that names a single ontology.
 """
 
 from __future__ import annotations
@@ -28,14 +29,18 @@ from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDFS, SKOS
 
 from ontocast.onto.constants import prefix_lookup_for_ingest
-from ontocast.onto.identity import LIBRARY_ONTOLOGY_IDS, STANDARD_PREFIX_NAMESPACES
+from ontocast.onto.identity import (
+    LIBRARY_ONTOLOGY_IDS,
+    STANDARD_PREFIX_NAMESPACES,
+    validate_ontology_id,
+)
+from ontocast.onto.iri_policy import PN_PREFIX
 from ontocast.onto.well_known import WELL_KNOWN_VOCABULARIES
 
 if TYPE_CHECKING:
     from ontocast.onto.ontology import Ontology
 
-#: A Turtle prefix name (``PN_PREFIX``, ASCII subset) that ends in a name char.
-_PREFIX_NAME = re.compile(r"^[A-Za-z](?:[\w.-]*[\w-])?$")
+_PREFIX_NAME = re.compile(rf"^{PN_PREFIX}$")
 #: Names rdflib invents for unbound namespaces; never an author's.
 _GENERATED_PREFIX = re.compile(r"^(?:ns|default)\d*$")
 #: ``prefix:Local`` in prose. The prefix may not follow a name, ``:``, ``/``,
@@ -102,6 +107,17 @@ def _bound_prefix(graph: Graph, namespace: str) -> str | None:
         if prefix and str(bound) == namespace:
             return prefix
     return None
+
+
+def author_prefix_id(graph: Graph, namespace: str) -> str | None:
+    """The prefix ``graph`` binds to ``namespace``, when it is a valid ontology id."""
+    prefix = _bound_prefix(graph, str(namespace)) if namespace else None
+    if prefix is None or not valid_shown_prefix(prefix, namespace):
+        return None
+    try:
+        return validate_ontology_id(prefix)
+    except ValueError:
+        return None
 
 
 def _bind(graph: Graph, prefix: str, namespace: str) -> None:
@@ -172,6 +188,25 @@ class PrefixTable:
                 if local and re.fullmatch(r"[A-Za-z0-9_][\w.-]*", local):
                     return f"{prefix}:{local}"
         return text
+
+    def prefix_or_claim(self, namespace: str, candidate: str) -> str:
+        """The shown prefix of ``namespace``, else ``candidate`` as the table
+        would claim it: numbered when another namespace holds it.
+
+        For an ontology the catalog does not hold yet, such as a home being
+        minted.
+        """
+        shown = self.prefix_for(namespace)
+        if shown is not None:
+            return shown
+        taken = set(self.parse_map()) | set(STANDARD_PREFIX_NAMESPACES)
+        taken |= LIBRARY_ONTOLOGY_IDS
+        if candidate not in taken:
+            return candidate
+        number = 2
+        while f"{candidate}{number}" in taken:
+            number += 1
+        return f"{candidate}{number}"
 
     def parse_map(self) -> dict[str, str]:
         """Prefix -> namespace for every shown prefix and every alias."""

@@ -24,6 +24,7 @@ from ontocast.onto.model import (
     format_findings_for_prompt,
 )
 from ontocast.onto.ontology_access import ontology_access_for_unit_ontology
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import (
     system_preamble_ontology as system_preamble,
@@ -48,7 +49,7 @@ from ontocast.tool.ontology_validation import count_fixes_targeting_snapshot
 logger = logging.getLogger(__name__)
 
 
-def critic_intro(state: UnitOntologyState) -> str:
+def critic_intro(state: UnitOntologyState, table: PrefixTable) -> str:
     """The critic's intro, naming the document's home namespace when there is one.
 
     A critic that does not know where new terms belong reads the home prefix
@@ -59,7 +60,8 @@ def critic_intro(state: UnitOntologyState) -> str:
     if home is None:
         return intro_instruction
     return intro_instruction + home_namespace_clause.format(
-        namespace=home.namespace, ontology_id=home.ontology_id
+        namespace=home.namespace,
+        prefix=table.prefix_or_claim(home.namespace, home.ontology_id),
     )
 
 
@@ -169,7 +171,7 @@ async def criticise_ontology(
             parser=parser,
             prompt_kwargs={
                 "preamble": system_preamble,
-                "intro_instruction": critic_intro(state),
+                "intro_instruction": critic_intro(state, tools.prefix_table()),
                 "ontology_criteria": ontology_criteria_str,
                 "text_chapter": text_chapter,
                 "user_instruction": user_instruction,

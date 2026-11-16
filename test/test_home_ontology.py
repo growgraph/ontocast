@@ -91,7 +91,12 @@ def _tools_with_catalog(manager: OntologyManager) -> ToolBox:
         return object()
 
     return cast(
-        ToolBox, SimpleNamespace(ontology_manager=manager, get_llm_tool=get_llm_tool)
+        ToolBox,
+        SimpleNamespace(
+            ontology_manager=manager,
+            get_llm_tool=get_llm_tool,
+            prefix_table=manager.prefix_table,
+        ),
     )
 
 
@@ -791,3 +796,117 @@ def test_ontology_chapter_shows_terms_without_the_version_header() -> None:
     assert "vann:" not in chapter
     assert "preferredNamespace" not in chapter
     assert "Sample" in chapter
+
+
+# --- the catalog's handles are its shown prefixes ------------------------------
+
+
+def _answer_through_validation(monkeypatch, answer: str) -> dict[str, Any]:
+    """Answer ``answer``, validated as the real call validates it."""
+    seen: dict[str, Any] = {}
+
+    async def fake_call(**kwargs: Any) -> OntologyIdentityProposal:
+        seen.update(kwargs)
+        return OntologyIdentityProposal.model_validate(
+            {"ontology_id": answer, "title": "T", "description": "D."},
+            context=kwargs["validation_context"],
+        )
+
+    monkeypatch.setattr(resolve_home_ontology_module, "call_llm_with_retry", fake_call)
+    return seen
+
+
+@pytest.mark.anyio
+async def test_an_answer_naming_a_shown_prefix_picks_that_ontology(monkeypatch) -> None:
+    """Two catalog ontologies share the id ``ontology``; the list shows each
+    under its own prefix, and the answer picks by it."""
+    from ontocast.onto.identity import extension_ontology_iri
+
+    first, second = (
+        stamped_ontology(
+            _terms(f"http://{host}/ontology#", "Thing"),
+            ontology_id="ontology",
+            iri=f"http://{host}/ontology",
+        )
+        for host in ("a.org", "b.org")
+    )
+    manager = OntologyManager()
+    for head in (first, second):
+        manager.add_ontology(head, skip_vector_index=True)
+    seen = _answer_through_validation(monkeypatch, "ontology2")
+    state = _document_state()
+
+    await resolve_home_ontology_module.resolve_home_ontology(
+        state, _tools_with_catalog(manager)
+    )
+
+    listing = seen["prompt_kwargs"]["instruction"]
+    assert f"- ontology: ontology <{first.iri}>" in listing
+    assert f"- ontology2: ontology <{second.iri}>" in listing
+    home = state.home_ontology
+    assert home is not None
+    # The pick is external: its terms go to its own extension.
+    assert home.extends == second.iri
+    assert home.iri == extension_ontology_iri(DOMAIN, second.iri, "ontology")
+    assert home.iri != extension_ontology_iri(DOMAIN, first.iri, "ontology")
+
+
+@pytest.mark.anyio
+async def test_a_catalog_ontology_under_a_standard_prefix_can_be_picked(
+    monkeypatch,
+) -> None:
+    sosa = stamped_ontology(
+        """
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix sosa: <http://www.w3.org/ns/sosa/> .
+        <http://www.w3.org/ns/sosa/> a owl:Ontology ; owl:versionInfo "1.0" .
+        sosa:Observation a owl:Class .
+        """
+    )
+    assert sosa.ontology_id == "sosa"
+    manager = OntologyManager()
+    manager.add_ontology(sosa, skip_vector_index=True)
+    _answer_through_validation(monkeypatch, "sosa")
+    state = _document_state()
+
+    await resolve_home_ontology_module.resolve_home_ontology(
+        state, _tools_with_catalog(manager)
+    )
+
+    assert state.home_ontology is not None
+    assert state.home_ontology.extends == sosa.iri
+
+
+def test_a_new_id_must_still_be_mintable() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="standard prefix"):
+        OntologyIdentityProposal.model_validate(
+            {"ontology_id": "sosa", "title": "T", "description": "D."},
+            context={"catalog_handles": frozenset({"dbo"})},
+        )
+
+
+def test_the_home_is_bound_to_the_prefix_the_table_gives_it() -> None:
+    """A minted home whose id another namespace shows takes the next number,
+    in the prompt and in the parse map alike."""
+    from ontocast.agent.criticise_ontology import critic_intro
+    from ontocast.onto.prefixes import build_prefix_table
+    from ontocast.tool.ontology_validation.catalog_terms import catalog_prefixes
+
+    held = stamped_ontology(
+        _terms("http://a.org/ontology#", "Thing"),
+        ontology_id="ontology",
+        iri="http://a.org/ontology",
+    )
+    table = build_prefix_table([held])
+    home = OntologyIdentity(
+        ontology_id="ontology", iri=f"{DOMAIN}/ontology", title="Home"
+    )
+    unit = ContentUnit(text="Teams.", index=0, doc_iri=URIRef(f"{DOMAIN}/doc/d1"))
+
+    assert table.prefix_or_claim(home.namespace, home.ontology_id) == "ontology2"
+    assert "`ontology2:`" in critic_intro(
+        UnitOntologyState(content_unit=unit, home_ontology=home), table
+    )
+    assert catalog_prefixes([held], home, table)["ontology2"] == home.namespace

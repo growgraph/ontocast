@@ -126,7 +126,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `ontology/labels_derived` | `ontocast/stategraph/atomic.py` | `rdfs:label` triples derived from local names for minted terms left unlabelled |
 | `llm/ontology_identity` | `ontocast/agent/resolve_home_ontology.py` | Home-ontology calls, one per document that can create vocabulary |
 | `chunk/outline_windows_failed` | `ontocast/tool/chunk/section_llm.py` | Outline windows of the model section tier whose call raised; those regions got no model vote |
-| `serialize/ontology_identity_conflict` | `ontocast/toolbox.py` | Ontology versions not written because their identity collides with the catalog or another version of the document; the facts are still written |
+| `serialize/ontology_identity_conflict` | `ontocast/toolbox.py` | Ontology versions not written because their IRI is registered under another id; the facts are still written |
 
 `calls_count` equals `llm/calls_timed + llm/timeouts`: a call that raised for
 any other reason is not counted in `calls_count`. The

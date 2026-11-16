@@ -62,7 +62,7 @@ def test_a_partial_context_declares_itself_partial(
         OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE, writable, partial=True
     )
     intro = render_ontology_module._build_update_intro(
-        state, ontology_access_for_unit_ontology(state)
+        state, ontology_access_for_unit_ontology(state), None
     )
     assert "PARTIAL CONTEXT" in intro
     assert "RETRIEVED SUBSET" in intro
@@ -73,7 +73,7 @@ def test_a_document_union_of_retrieved_subsets_declares_itself_partial() -> None
     retrieved subsets is assembled as a merge and is still a subset."""
     state = _state(OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED, [ONTO], partial=True)
     intro = render_ontology_module._build_update_intro(
-        state, ontology_access_for_unit_ontology(state)
+        state, ontology_access_for_unit_ontology(state), None
     )
     assert "PARTIAL CONTEXT" in intro
 
@@ -81,7 +81,7 @@ def test_a_document_union_of_retrieved_subsets_declares_itself_partial() -> None
 def test_full_copy_context_keeps_the_whole_ontology_phrasing() -> None:
     state = _state(OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM, [ONTO])
     intro = render_ontology_module._build_update_intro(
-        state, ontology_access_for_unit_ontology(state)
+        state, ontology_access_for_unit_ontology(state), None
     )
     assert "PARTIAL CONTEXT" not in intro
     assert "Complement the domain ontology" in intro

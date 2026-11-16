@@ -1694,3 +1694,34 @@ def test_serve_bootstraps_and_serves_on_one_event_loop(
 
     assert result.exit_code == 0, result.output
     assert loops["bootstrap"] is loops["serve"]
+
+
+def test_ontologies_sharing_an_id_are_dumped_to_distinct_files(tmp_path) -> None:
+    from ontocast.api.process_helpers import _distinct_filename_ids
+    from test.ontology_helpers import stamped_ontology
+
+    shared = [
+        stamped_ontology(
+            f"""
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            <https://{host}/ontology> a owl:Ontology .
+            <https://{host}/ontology#Thing> a owl:Class .
+            """,
+            ontology_id="ontology",
+        )
+        for host in ("a.org", "b.org")
+    ]
+    other = stamped_ontology(
+        """
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        <https://c.org/finance> a owl:Ontology .
+        <https://c.org/finance#Account> a owl:Class .
+        """,
+        ontology_id="finance",
+    )
+
+    names = _distinct_filename_ids([*shared, other])
+
+    assert names[other.iri] == "finance"
+    assert len({names[o.iri] for o in shared}) == 2
+    assert all((names[o.iri] or "").startswith("ontology-") for o in shared)

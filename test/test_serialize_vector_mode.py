@@ -98,8 +98,8 @@ async def test_an_identity_conflict_skips_the_version_and_still_writes_the_facts
 ):
     """A colliding version is refused before any write; the job keeps its facts.
 
-    The collision used to raise at registration, after the version was already
-    in the store, and the facts write after it never ran.
+    Only an IRI registered under another id collides; an id another IRI holds
+    does not.
     """
     from ontocast.onto.enum import RenderMode
 
@@ -114,7 +114,7 @@ async def test_an_identity_conflict_skips_the_version_and_still_writes_the_facts
         writes.append(graph)
 
     state = AgentState(render_mode=RenderMode.ONTOLOGY_AND_FACTS)
-    clash = _artifact_named("fro", "https://example.com/frobase")
+    clash = _artifact_named("frob", "https://example.com/fro")
     fine = _artifact_named("other", "https://example.com/other")
     twin = _artifact_named("other", "https://example.com/other-twin")
     state.reduced_ontology_artifacts = [clash, fine, twin]
@@ -129,9 +129,14 @@ async def test_an_identity_conflict_skips_the_version_and_still_writes_the_facts
     await ToolBox.aserialize(cast(ToolBox, stub), state)
 
     assert [r.iri for r in state.ontology_versions_written] == [
-        "https://example.com/other"
+        "https://example.com/other",
+        "https://example.com/other-twin",
     ]
     written_iris = [getattr(graph, "iri", None) for graph in writes]
-    assert written_iris == ["https://example.com/other", None]
+    assert written_iris == [
+        "https://example.com/other",
+        "https://example.com/other-twin",
+        None,
+    ]
     assert writes[-1] is state.aggregated_facts
-    assert state.budget_tracker.counters["serialize/ontology_identity_conflict"] == 2
+    assert state.budget_tracker.counters["serialize/ontology_identity_conflict"] == 1

@@ -17,12 +17,19 @@ statement: an absolute `http(s)` IRI with no fragment, since its versions are
 named `<iri>#<key>`. An empty fragment (`http://www.w3.org/ns/prov#`) is
 dropped. Its **namespace**, where its terms live, is separate: `<iri>#` for an
 ontology OntoCast creates, and read from the file for one you load. Two
-shorter names point to the same entry: its `ontology_id` and the prefix its
+shorter names are labels of the entry: its `ontology_id` and the prefix its
 author bound in Turtle. They can differ (an ontology with id
-`observation` may use the prefix `obs:`), and wherever OntoCast asks for an
-ontology, such as
+`observation` may use the prefix `obs:`), and they need not be unique: two
+files whose IRIs end in `/ontology` both load with the id `ontology`. Wherever
+OntoCast asks for an ontology, such as
 [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](../reference/configuration/pipeline.md#ontology_context_fixed_ontology_id),
-any of the three works.
+the IRI always works, and a short name works when one ontology alone holds it;
+a short name several hold is refused with their IRIs.
+
+A loaded file's id is, in order: the id given with it, its
+`vann:preferredNamespacePrefix`, the prefix the file binds to its own namespace
+(a DBpedia file binding `dbo:` loads as `dbo`), else the last segment of its
+IRI.
 
 An `ontology_id` is a lowercase handle matching `^[a-z][a-z0-9_-]{1,31}$`. The
 names OntoCast uses itself (`cd`, `doc`, `facts`, `oc`, `ontocast`) are refused.
@@ -54,9 +61,10 @@ a shape's `sh:message` written with it is shown under the chosen prefix.
 Identity is minted by code, never written by the model. A run that can create
 vocabulary (`RENDER_MODE` `ontology` or `ontology_and_facts`) resolves one
 **home ontology** per document before its units are extracted, in one LLM
-call: the model proposes an `ontology_id`, a title and a description. An id
-already in the catalog means the document extends that ontology; any other id
-names a new one, whose IRI is
+call. The catalog is listed under each ontology's shown prefix (below), which
+unlike an id is unique; the model proposes an `ontology_id`, a title and a
+description. A shown prefix means the document extends that ontology; any
+other id names a new one, whose IRI is
 [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain)`/<ontology_id>`.
 A new id is overridden when the document's text names at least five terms of
 one catalog ontology (by label or local name, plurals included): the document
@@ -71,10 +79,12 @@ and counted (`ontology/model_header_triples_dropped`).
 An ontology whose IRI lies under `CURRENT_DOMAIN` is **owned** and is extended
 in place. Any other, such as a published vocabulary loaded as a seed, is
 **external**: OntoCast never writes to it. When a document's home would be an
-external ontology `<id>`, its terms go to the **extension ontology**
-`CURRENT_DOMAIN/<id>-ext`, created on first use, which `owl:imports` the
-external one; every document and every run that extends it shares the
-extension (`home_extension`). A triple whose subject is a term of an external
+external ontology, its terms go to the **extension ontology**
+`CURRENT_DOMAIN/<id>-ext-<hash>`, created on first use, which `owl:imports`
+the external one. `<hash>` is the first 10 hex digits of the SHA-256 of the
+external IRI (without a trailing `/` or `#`), so every document and every run
+that extends one external ontology shares its extension, and two externals
+with the same id never do (`home_extension`). A triple whose subject is a term of an external
 ontology is refused at the end of the document and counted
 (`external_subject_refused`): the external terms are used by IRI, never
 redeclared or given new axioms. To extend a seed ontology in place, serve it

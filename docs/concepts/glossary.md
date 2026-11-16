@@ -71,8 +71,9 @@ The terms these pages use, each with the page that explains it.
     facts](ontologies_and_facts.md#versions).
 
 **Extension ontology**
-:   The ontology `CURRENT_DOMAIN/<id>-ext` that holds the terms OntoCast adds
-    to the external ontology `<id>`, which it imports. See [Ontologies and
+:   The ontology `CURRENT_DOMAIN/<id>-ext-<hash>` that holds the terms
+    OntoCast adds to an external ontology, which it imports. `<id>` is the
+    external's id and `<hash>` is taken from its IRI. See [Ontologies and
     facts](ontologies_and_facts.md#owned-and-external-ontologies).
 
 **External ontology**

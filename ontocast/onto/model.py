@@ -3,9 +3,15 @@ from collections.abc import Sequence
 from enum import StrEnum
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
-from ontocast.onto.identity import MintedOntologyId
+from ontocast.onto.identity import validate_minted_ontology_id
 from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
@@ -672,16 +678,18 @@ class FactsIsolatedInstance(BaseModel):
 class OntologyIdentityProposal(BaseModel):
     """What the model proposes for a document's home ontology.
 
-    The IRI is never proposed: code mints it from ``ontology_id``. An
-    ``ontology_id`` already in the catalog means the document extends that
-    ontology; any other id names a new one.
+    The IRI is never proposed: code mints it from ``ontology_id``. A handle
+    the catalog list shows means the document extends that ontology; any other
+    value names a new one and must be a mintable id. Validated with the
+    context key ``catalog_handles`` (the shown handles); without it, only a
+    mintable id passes.
     """
 
-    ontology_id: MintedOntologyId = Field(
+    ontology_id: str = Field(
         description=(
-            "Short lowercase handle (2-32 chars, letters, digits, '_' or '-', "
-            "starting with a letter), e.g. 'abc' for a hypothetical A... B... C... "
-            "Ontology. Return an existing id to extend that ontology."
+            "The handle of a catalog ontology to extend it, or a new short "
+            "lowercase id (2-32 chars, letters, digits, '_' or '-', starting "
+            "with a letter), e.g. 'abc' for a hypothetical A... B... C... Ontology."
         )
     )
     title: str = Field(
@@ -694,6 +702,15 @@ class OntologyIdentityProposal(BaseModel):
         max_length=1200,
         description="3-4 sentences: domain, purpose, scope, applicability.",
     )
+
+    @field_validator("ontology_id")
+    @classmethod
+    def _catalog_handle_or_mintable(cls, value: str, info: ValidationInfo) -> str:
+        cleaned = value.strip()
+        handles = (info.context or {}).get("catalog_handles", ())
+        if cleaned in handles:
+            return cleaned
+        return validate_minted_ontology_id(cleaned)
 
 
 TermKind = Literal["class", "object_property", "datatype_property"]

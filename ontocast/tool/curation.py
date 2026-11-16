@@ -423,6 +423,8 @@ async def curate_catalog(
 
     Raises:
         ValueError: ``ontology`` names nothing in the catalog.
+        AmbiguousOntologyRefError: ``ontology`` is an id or a prefix that
+            several catalog ontologies hold.
         DivergedOntologyError: the named ontology has several heads.
     """
     manager = tools.ontology_manager

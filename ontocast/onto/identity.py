@@ -16,6 +16,7 @@ nothing else, and never an ontology minted here.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -24,7 +25,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 
 from ontocast.onto.constants import COMMON_PREFIXES, WELL_KNOWN_PREFIXES
 from ontocast.onto.iri_policy import normalize_namespace_iri
-from ontocast.onto.util import CONVENTIONAL_MAPPINGS
+from ontocast.onto.util import CONVENTIONAL_MAPPINGS, normalize_ontology_iri
 
 #: A valid Turtle prefix name that is also a safe path segment.
 ONTOLOGY_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
@@ -167,18 +168,32 @@ def is_owned_ontology(iri: str, current_domain: str) -> bool:
     return iri == domain or iri.startswith(f"{domain}/")
 
 
-#: Suffix of an extension ontology's id: ``<external id>-ext``.
+#: Marks an extension ontology's id: ``<stem>-ext-<hash>``.
 EXTENSION_SUFFIX = "-ext"
+#: Hex digits of the external IRI's digest in an extension id.
+EXTENSION_HASH_LENGTH = 10
+_EXTENSION_STEM_LENGTH = 32 - len(EXTENSION_SUFFIX) - 1 - EXTENSION_HASH_LENGTH
 
 
-def extension_ontology_id(external_id: str) -> str:
-    """The id of the extension ontology of the external ontology ``external_id``.
+def extension_ontology_id(external_iri: str, stem: str) -> str:
+    """The id of the extension ontology of the external ontology ``external_iri``.
 
-    The id is fixed by the external id, so every document and every run that
-    extends one external ontology writes to the same extension.
+    ``<stem>-ext-<hash>``: the hash is taken over the normalized external IRI,
+    so one external ontology (with or without a trailing ``/`` or ``#``) has
+    one extension in every document and run, and two externals never share
+    one. ``stem`` (the external's id) only makes it readable.
     """
-    stem = external_id[: 32 - len(EXTENSION_SUFFIX)].rstrip("_-")
-    return validate_minted_ontology_id(f"{stem}{EXTENSION_SUFFIX}")
+    digest = hashlib.sha256(normalize_ontology_iri(external_iri).encode()).hexdigest()
+    cleaned = re.sub(r"[^a-z0-9_-]+", "-", stem.strip().lower())
+    cleaned = re.sub(r"^[^a-z]+", "", cleaned)[:_EXTENSION_STEM_LENGTH].rstrip("_-")
+    return validate_minted_ontology_id(
+        f"{cleaned or 'onto'}{EXTENSION_SUFFIX}-{digest[:EXTENSION_HASH_LENGTH]}"
+    )
+
+
+def extension_ontology_iri(current_domain: str, external_iri: str, stem: str) -> str:
+    """The IRI of the extension ontology of ``external_iri`` under ``current_domain``."""
+    return mint_ontology_iri(current_domain, extension_ontology_id(external_iri, stem))
 
 
 def version_iri_for(iri: str, key: str) -> str:

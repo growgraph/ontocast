@@ -18,6 +18,7 @@ from ontocast.onto.enum import (
 from ontocast.onto.model import OntologyPlan
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import AmbiguousOntologyRefError
 from ontocast.onto.ontology_snapshot import OntologySnapshot
 from ontocast.onto.prefixes import CURIE_IN_TEXT, NOTE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
@@ -557,7 +558,10 @@ async def _resolve_fixed_single_ontology_context(
             confidence=0.0,
         )
     mgr = tools.ontology_manager
-    selected = mgr.get_head(ontology_id=cleaned)
+    try:
+        selected = mgr.get_head(ontology_id=cleaned)
+    except AmbiguousOntologyRefError as exc:
+        raise ValueError(f"ontology_context_fixed_ontology_id: {exc}") from exc
     if selected is None:
         logger.warning(
             "No catalog ontology match for ontology_context_fixed_ontology_id=%r; "

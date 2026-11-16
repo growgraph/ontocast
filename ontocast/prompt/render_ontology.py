@@ -35,7 +35,7 @@ The document is an example of its domain: name and scope the ontology at least o
 {catalog_clause}
 
 Return:
-- `ontology_id`: the short lowercase handle (2-32 characters: letters, digits, `_` or `-`, starting with a letter), for example `abc` for a hypothetical A... B... of C... Ontology. Return an EXISTING id from the catalog above when one covers the document's domain; otherwise a new one.
+- `ontology_id`: the short lowercase handle (2-32 characters: letters, digits, `_` or `-`, starting with a letter), for example `abc` for a hypothetical A... B... of C... Ontology. Return the handle of a catalog ontology above when one covers the document's domain; otherwise a new id.
 - `title`: a short noun phrase.
 - `description`: 3-4 sentences on domain, purpose, scope and applicability.
 
@@ -44,7 +44,7 @@ Do not return an IRI: it is derived from the id.
 
 home_ontology_catalog_clause_empty = "The catalog holds no ontology yet."
 
-home_ontology_catalog_clause = """The catalog holds these ontologies (id: title):
+home_ontology_catalog_clause = """The catalog holds these ontologies (handle: title <IRI>):
 {catalog_list}
 """
 
@@ -54,7 +54,7 @@ Develop the domain ontology `{ontology_id}` ({title}) from the provided document
 
 {description}
 
-Every new class and property lives under the namespace <{namespace}>, bound to the prefix `{ontology_id}:`. Do NOT write an `owl:Ontology` header, version, title or description triples: identity and versioning are added by the system.
+Every new class and property lives under the namespace <{namespace}>, bound to the prefix `{prefix}:`. Do NOT write an `owl:Ontology` header, version, title or description triples: identity and versioning are added by the system.
 """
 
 
@@ -68,7 +68,7 @@ Emit ONLY new classes/relations as GraphUpdate inserts. Do NOT restate triples a
 
 
 home_namespace_clause = """
-Every new class and property of this document lives under the namespace <{namespace}>, bound to the prefix `{ontology_id}:`. Terms under any other namespace are used by their IRIs only: never declare a new term in another namespace, and never add an axiom whose subject is a term of another namespace.
+Every new class and property of this document lives under the namespace <{namespace}>, bound to the prefix `{prefix}:`. Terms under any other namespace are used by their IRIs only: never declare a new term in another namespace, and never add an axiom whose subject is a term of another namespace.
 """
 
 

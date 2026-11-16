@@ -176,7 +176,9 @@ def _prepare_ontology_common_prompt_layers(
     return general_ontology_instruction_str, text_chapter, external_evidence
 
 
-def _build_update_intro(state: UnitOntologyState, access: UnitOntologyAccess) -> str:
+def _build_update_intro(
+    state: UnitOntologyState, access: UnitOntologyAccess, home_prefix: str | None
+) -> str:
     writable = access.writable_iris()
     ontology_desc = access.prompt_ontology_description()
     # Keyed on the snapshot, not on how many IRIs are writable: a retrieval
@@ -184,10 +186,8 @@ def _build_update_intro(state: UnitOntologyState, access: UnitOntologyAccess) ->
     notice = partial_context_notice if state.ontology_snapshot.partial else ""
     home = state.home_ontology
     home_clause = (
-        home_namespace_clause.format(
-            namespace=home.namespace, ontology_id=home.ontology_id
-        )
-        if home is not None
+        home_namespace_clause.format(namespace=home.namespace, prefix=home_prefix)
+        if home is not None and home_prefix is not None
         else ""
     )
     if len(writable) <= 1:
@@ -261,6 +261,9 @@ async def render_ontology_fresh(
         title=identity.title,
         description=identity.description,
         namespace=identity.namespace,
+        prefix=tools.prefix_table().prefix_or_claim(
+            identity.namespace, identity.ontology_id
+        ),
     )
     output_instruction = profile.render_fresh_output_instruction(target="ontology")
     ontology_ttl = ""
@@ -378,7 +381,14 @@ async def render_ontology_update(
     )
     parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
     access = ontology_access_for_unit_ontology(state)
-    intro_instruction = _build_update_intro(state, access)
+    home = state.home_ontology
+    intro_instruction = _build_update_intro(
+        state,
+        access,
+        tools.prefix_table().prefix_or_claim(home.namespace, home.ontology_id)
+        if home is not None
+        else None,
+    )
     ontology_chapter = profile.format_ontology_chapter(
         access.effective_graph_for_prompt(),
         max_triples=state.ontology_context_max_triples,
@@ -412,7 +422,9 @@ async def render_ontology_update(
     if state.home_ontology is not None:
         # The plan block and the intro name home terms by this prefix; unbound,
         # the model guesses a namespace for it.
-        known_prefixes[state.home_ontology.ontology_id] = state.home_ontology.namespace
+        home = state.home_ontology
+        prefix = tools.prefix_table().prefix_or_claim(home.namespace, home.ontology_id)
+        known_prefixes[prefix] = home.namespace
 
     previous_prefixes = RDFGraph.get_known_prefixes()
     try:

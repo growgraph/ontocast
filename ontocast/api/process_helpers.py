@@ -1,10 +1,13 @@
 """Shared helpers for local batch processing and HTTP response assembly."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import pathlib
 import re
+from collections import Counter
+from collections.abc import Sequence
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -123,6 +126,20 @@ def safe_ontology_filename_id(ontology: Ontology) -> str | None:
         return None
     cleaned = _SAFE_ONTOLOGY_ID_RE.sub("_", raw).strip("._-")
     return cleaned or None
+
+
+def _distinct_filename_ids(ontologies: Sequence[Ontology]) -> dict[str, str | None]:
+    """IRI -> file name id; ontologies sharing an id get their IRI's digest too."""
+    ids = {o.iri: safe_ontology_filename_id(o) for o in ontologies}
+    shared = Counter(ids.values())
+    return {
+        iri: (
+            f"{name}-{hashlib.sha256(iri.encode()).hexdigest()[:6]}"
+            if name is not None and shared[name] > 1
+            else name
+        )
+        for iri, name in ids.items()
+    }
 
 
 def ontology_ttl_output_path(
@@ -593,10 +610,10 @@ def dump_ontology_ttls(
         return []
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
-    include_ids = len(artifacts) > 1
+    names = _distinct_filename_ids(artifacts) if len(artifacts) > 1 else {}
     written: list[pathlib.Path] = []
     for artifact in artifacts:
-        ontology_id = safe_ontology_filename_id(artifact) if include_ids else None
+        ontology_id = names.get(artifact.iri)
         ttl_content = turtle_from_graph(artifact.graph, strip_provenance=True)
         output_path = ontology_ttl_output_path(
             file_path,

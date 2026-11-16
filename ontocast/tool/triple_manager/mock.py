@@ -61,12 +61,9 @@ class _InMemoryGraphStoreMixin:
                 iri=graph_uri,
                 graph=self._create_rdf_graph_from_graph(graph),
             )
-            existing = next(
-                (o for o in self.ontologies if o.ontology_id == ontology_id), None
-            )
+            existing = next((o for o in self.ontologies if o.iri == graph_uri), None)
             if existing:
                 existing.graph = self._create_rdf_graph_from_graph(graph)
-                existing.iri = graph_uri
             else:
                 self.ontologies.append(ontology)
         return graph_uri
