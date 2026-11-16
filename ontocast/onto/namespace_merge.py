@@ -44,17 +44,23 @@ def choose_best_prefix(
     """Pick one prefix for *namespace*, preferring a catalog author prefix."""
     if not prefixes:
         raise ValueError("prefixes must be non-empty")
-    preferred = None
-    if preferred_namespace_prefixes:
-        preferred = preferred_namespace_prefixes.get(namespace)
-        if preferred is None:
-            # Also try without trailing delimiter variance.
-            preferred = preferred_namespace_prefixes.get(namespace.rstrip("/#"))
-            if preferred is None:
-                for key, value in preferred_namespace_prefixes.items():
-                    if key.rstrip("/#") == namespace.rstrip("/#"):
-                        preferred = value
-                        break
-        if preferred is not None and preferred in prefixes:
-            return preferred
+    preferred = preferred_prefix_for(namespace, preferred_namespace_prefixes)
+    if preferred is not None and preferred in prefixes:
+        return preferred
     return sorted(prefixes, key=lambda p: (len(p), p))[0]
+
+
+def preferred_prefix_for(
+    namespace: str, preferred_namespace_prefixes: dict[str, str] | None
+) -> str | None:
+    """The preferred prefix of *namespace*, tolerant of a trailing ``/`` or ``#``."""
+    if not preferred_namespace_prefixes:
+        return None
+    preferred = preferred_namespace_prefixes.get(namespace)
+    if preferred is not None:
+        return preferred
+    bare = namespace.rstrip("/#")
+    for key, value in preferred_namespace_prefixes.items():
+        if key.rstrip("/#") == bare:
+            return value
+    return None

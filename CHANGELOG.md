@@ -118,6 +118,7 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 - A property's parent must be a property and a class's a class, in the plan, the prompts and the clean-up.
 - A derived label is never given to a catalog or well-known term.
 - One prefix per namespace in every prompt, parse and export: the standard prefix, else the author's, else the `ontology_id`; well-known namespaces come back from the triple store under their standard prefix.
+- A prefix ending in digits (`ex2`, an extension id `dbo-ext-<hash>`) keeps them; only rdflib's renames of a standard or preferred prefix (`schema1`) are undone.
 - An ontology with a description over 2000 characters loads.
 - A render left with only its header is not written as a new version; a critic patch that creates an ontology keeps the render.
 - The small-module closure uses an ontology's current head.

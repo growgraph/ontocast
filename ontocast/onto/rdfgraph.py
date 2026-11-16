@@ -31,7 +31,11 @@ from ontocast.onto.iri_policy import (
     normalize_namespace_iri,
     sanitize_prefix_map,
 )
-from ontocast.onto.namespace_merge import choose_best_prefix, merge_namespace_bindings
+from ontocast.onto.namespace_merge import (
+    choose_best_prefix,
+    merge_namespace_bindings,
+    preferred_prefix_for,
+)
 from ontocast.onto.reification import (
     ProvenanceFormatError,
     Reifications,
@@ -2116,16 +2120,22 @@ class RDFGraph(Graph):
         for prefix, namespace in merged.items():
             uri_to_prefixes[namespace].append(prefix)
 
-        # Offer digit-stripped stems as candidates: rdflib mints `schema1` when
-        # `schema` is contested at parse time, and after namespace
-        # canonicalization the stem is often free again. Only stems not claimed
-        # by a different namespace are eligible.
+        # Undo rdflib's rename of a contested prefix (`schema1`): after namespace
+        # canonicalization its stem is often free again. Only the namespace's
+        # standard or preferred prefix is restored -- trailing digits on any
+        # other prefix (`ex2`, a hash) are part of its name.
+        from ontocast.onto.prefixes import standard_prefix_for
+
         for namespace, prefixes in uri_to_prefixes.items():
+            known = {
+                standard_prefix_for(namespace),
+                preferred_prefix_for(namespace, preferred_namespace_prefixes),
+            }
             for prefix in list(prefixes):
                 stem = prefix.rstrip("0123456789")
                 if (
-                    stem
-                    and stem != prefix
+                    stem != prefix
+                    and stem in known
                     and stem not in prefixes
                     and merged.get(stem, namespace) == namespace
                 ):

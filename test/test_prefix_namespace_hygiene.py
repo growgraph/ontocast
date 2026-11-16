@@ -453,3 +453,57 @@ def test_the_domain_clause_names_where_a_standard_vocabularys_terms_live() -> No
     assert "http://www.w3.org/2002/07/owl#" not in namespaces
     bound = {str(namespace) for _, namespace in ontology.graph.namespaces()}
     assert "http://www.w3.org/ns/prov-o#" not in bound
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["dbo-ext-3013194dd5", "ex2"],
+    ids=["hash-ending-in-a-digit", "author-prefix-ending-in-a-digit"],
+)
+def test_sanitize_keeps_a_prefix_that_ends_in_digits(prefix: str) -> None:
+    """Trailing digits are only an rdflib rename of a known prefix.
+
+    Stripping them from any other prefix shows a name the graph never bound,
+    one the model then sees beside the real id.
+    """
+    namespace = "https://growgraph.dev/x-3013194dd5#"
+    graph = RDFGraph()
+    graph.parse(
+        data=f"@prefix {prefix}: <{namespace}> .\n{prefix}:A a {prefix}:B .\n",
+        format="turtle",
+    )
+    graph.sanitize_prefixes_namespaces()
+
+    bound = {p for p, uri in graph.namespaces() if str(uri) == namespace}
+    assert bound == {prefix}
+    assert f"@prefix {prefix}: <{namespace}>" in graph.serialize(format="turtle")
+
+
+def test_sanitize_restores_the_standard_prefix_from_an_rdflib_rename() -> None:
+    graph = RDFGraph()
+    graph.parse(
+        data="""
+@prefix schema1: <https://schema.org/> .
+<https://example.com/a> a schema1:Person .
+""",
+        format="turtle",
+    )
+    graph.sanitize_prefixes_namespaces()
+
+    assert "schema1" not in graph.serialize(format="turtle")
+
+
+def test_sanitize_restores_the_preferred_prefix_from_an_rdflib_rename() -> None:
+    namespace = "https://growgraph.dev/matsci#"
+    graph = RDFGraph()
+    graph.parse(
+        data=f"@prefix matsci1: <{namespace}> .\nmatsci1:A a matsci1:B .\n",
+        format="turtle",
+    )
+    graph.sanitize_prefixes_namespaces(
+        preferred_namespace_prefixes={namespace: "matsci"}
+    )
+
+    bound = {p for p, uri in graph.namespaces() if str(uri) == namespace}
+    assert "matsci" in bound
+    assert "@prefix matsci:" in graph.serialize(format="turtle")
