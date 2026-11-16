@@ -30,11 +30,11 @@ template_prompt = """
 home_ontology_instruction = """
 Decide which ontology this document's new vocabulary belongs to.
 
-The document is one example of a field. Name and scope the ontology for that field: wide enough that documents about other subjects of the same kind, and about neighbouring kinds, belong to it. Name it after the field, never after the document's own subject or that subject's immediate category.
+The document is one example of a field. Name and scope the ontology for that field: wide enough that documents about other subjects of the same kind, and about neighbouring kinds, belong to it. When the subject's category is one of several sibling categories in a family, the field is the family, not the category. Name it after the field, never after the document's own subject or that subject's immediate category.
 
 {catalog_clause}
 
-Prefer a catalog ontology whenever the document falls within the scope it describes, or within a modest widening of that scope. Propose a new ontology only when none does.
+Prefer a catalog ontology whenever the document falls within the scope it describes, or within a modest widening of that scope. Propose a new ontology only when none does. A catalog ontology for a sibling of the document's category shows the grain is too fine: propose the family the two share, never another sibling.
 
 Return:
 - `ontology_id`: the short lowercase handle (2-32 characters: letters, digits, `_` or `-`, starting with a letter), for example `abc` for a hypothetical A... B... of C... Ontology. Return the handle of a catalog ontology above when one covers the document's domain; otherwise a new id.

@@ -962,3 +962,5 @@ def test_the_home_instruction_asks_for_a_field_not_the_document_s_subject() -> N
     assert "field" in instruction
     assert "never after the document's own subject" in instruction
     assert "within the scope" in instruction
+    assert "the field is the family, not the category" in instruction
+    assert "never another sibling" in instruction
