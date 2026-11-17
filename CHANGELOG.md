@@ -7,52 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.1]
 
-Facts are extracted as statements against a selectable vocabulary and repaired without model calls where the graph shows the fix; the ontology lane plans, consolidates and curates the terms a document adds; an ontology is identified by its IRI, and external ontologies are extended in their own namespace.
+Facts are extracted as statements against a selectable vocabulary and repaired without a model call where the graph shows the fix. The ontology lane plans, consolidates and curates the terms a document adds; an ontology is identified by its IRI, and an external ontology is extended in its own namespace. Facts prompts and documents that add no ontology terms cost fewer tokens.
+
+### Changed (breaking)
+
+- An ontology is identified by its IRI alone: a short name or prefix that several catalog ontologies share no longer resolves (`AmbiguousOntologyRefError`; HTTP 400 on `/ontologies/{id}/…`, listing their IRIs). Only an IRI already registered under another id is refused.
+- A document whose home ontology is external writes its terms to `CURRENT_DOMAIN/<id>-ext-<hash>`. Extension ontologies stored under `CURRENT_DOMAIN/<id>-ext` by an earlier release are not migrated.
+- A minted property's class domain and range are written as `schema:domainIncludes` / `schema:rangeIncludes`, so each document may add its own classes; a datatype range stays `rdfs:range`.
 
 ### Added
 
 #### Facts
 
-- `FACTS_VOCABULARY` (`strict`, the default, or `open`). Facts use the catalog first, then the built-in well-known vocabularies (RDF, RDFS, OWL, XSD, SKOS, Dublin Core, PROV-O, SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF, schema.org, QUDT) and `FACTS_ADDITIONAL_STANDARD_NAMESPACES`. `strict` mints nothing beyond these and reports any other vocabulary as an error (`unknown_term`, `non_catalog_vocabulary`); `open` admits other established vocabularies as warnings.
-- Well-known terms are checked against their vocabulary: a term it does not define is `unknown_term`, with near-miss suggestions. The QUDT schema, QUDT unit and vCard term lists ship with the package. A unit is taken from the ontology context, then from the QUDT list, else kept as text on the value node.
+- `FACTS_VOCABULARY` (`strict`, the default, or `open`): facts use the catalog, then the built-in well-known vocabularies (RDF, RDFS, OWL, XSD, SKOS, Dublin Core, PROV-O, SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF, schema.org, QUDT) and `FACTS_ADDITIONAL_STANDARD_NAMESPACES`. `strict` reports any other vocabulary as an error (`non_catalog_vocabulary`), `open` as a warning.
+- Well-known terms are checked against their vocabulary (`unknown_term`, with near-miss suggestions); the QUDT and vCard term lists ship with the package. A unit comes from the ontology context, then the QUDT list, else stays text on the value node.
 - `FACTS_QUANTITY_FALLBACK_VOCABULARY` takes an optional `carrier` role.
-- Finding `statement_without_subject` (mandatory): an observation or value that states nothing about a subject. Metrics `facts_statements_without_subject_rendered` and `facts_statements_without_subject`; run manifest `facts_mandatory_residual_by_kind`.
-- Gap pass (`FACTS_COMPLETION_PASSES`, default 1): one insert-only call for a unit that still has a gap after its render — a statement without a subject, two or more instances linked to nothing (`FACTS_COMPLETION_DETACHED`, on), or, with `FACTS_COMPLETION_MEASUREMENTS=true`, a stated measurement missing from the graph. Every fix is kept or rolled back by the regression check. Metric `facts_completion_detached_linked`.
-- Domain repair: a unit that still holds a `domain_violation` gets one call that may only replace the property of each such statement; statements still in violation are then removed. Repair kind `domain_violation_dropped`; metrics `facts_domain_repair_calls`, `facts_domain_repair_fixed`, `facts_domain_violations_dropped`.
-- Deterministic repairs of a rendered graph, without a model call:
-  - a triple written backwards is turned around when both ends are outside the property's domain and range and fit them swapped (`triple_reversed`);
-  - a node on `sosa:hasSimpleResult` moves to `sosa:hasResult` (`paired_object_property`);
-  - a predicate or class that exists nowhere, but has exactly the name of a catalog term in another namespace, is rewritten to that term (`property_alias`, `class_alias`);
-  - an untyped instance takes the class a property's only listed range or domain names.
-- Facts gate, after aggregation:
-  - a node standing for a date that holds only a label gets the typed ISO 8601 value the label names (`date_value_added`, `facts_date_values_added`);
-  - a statement joining a node to itself is removed unless its property is `owl:sameAs` or declared `owl:ReflexiveProperty` (`self_loop_dropped`, `facts_self_loops_dropped`);
-  - an instance that states nothing, a value no statement carries and a value-typed instance linked to nothing are removed (`unlinked_dropped`, `facts_unlinked_dropped`);
-  - each remaining value is named under its carrier, `<carrier>.<property>`.
-- After an ontology stage, the facts context also holds, read-only, the catalog ontologies the document's home ontologies rest on (`ctx/facts_catalog_ontologies`), the terms the ontology plan reuses (`ctx/admitted_planned_terms`) and every catalog term the prompt's rules and notes name (`ctx/admitted_named_terms`).
-- `facts_merge_rejections_by_reason` and `facts_twin_labels` in `retrieval_metrics`.
+- Mandatory finding `statement_without_subject`: an observation or value that states nothing about a subject.
+- Gap pass (`FACTS_COMPLETION_PASSES`, default 1): one insert-only call for a unit left with a statement without a subject, unlinked instances (`FACTS_COMPLETION_DETACHED`, on) or, with `FACTS_COMPLETION_MEASUREMENTS=true`, a stated measurement missing from the graph. A fix the regression check rejects is rolled back.
+- Domain repair: a unit with a `domain_violation` gets one call that may only replace the property of each such statement; statements still in violation are removed (`domain_violation_dropped`).
+- Repairs without a model call: a triple written backwards is turned around (`triple_reversed`); a node on `sosa:hasSimpleResult` moves to `sosa:hasResult` (`paired_object_property`); an unknown term named exactly like a catalog term in another namespace is rewritten to it (`property_alias`, `class_alias`); an untyped instance takes the class of a property's only listed range or domain.
+- Facts gate after aggregation: a date node holding only a label gets its typed ISO 8601 value (`date_value_added`); a statement joining a node to itself is removed unless its property is `owl:sameAs` or reflexive (`self_loop_dropped`); instances and values that state nothing or link to nothing are removed (`unlinked_dropped`); each value is named `<carrier>.<property>`.
+- After an ontology stage, the facts context also holds, read-only, the catalog ontologies the home ontologies rest on, the terms the plan reuses and the catalog terms the prompt names.
+- Telemetry: `facts_statements_without_subject_rendered`, `facts_statements_without_subject`, `facts_completion_detached_linked`, `facts_domain_repair_calls`, `facts_domain_repair_fixed`, `facts_domain_violations_dropped`, `facts_date_values_added`, `facts_self_loops_dropped`, `facts_unlinked_dropped`, `facts_merge_rejections_by_reason` and `facts_twin_labels`; counters `ctx/facts_catalog_ontologies`, `ctx/admitted_planned_terms` and `ctx/admitted_named_terms`; run manifest `facts_mandatory_residual_by_kind`.
 
 #### Ontologies
 
-- Ontology plan (`ONTOLOGY_PLAN_ENABLED`, on by default): one call per document, before its units render, lists the terms the document adds, with each property's domain and range, checked against the whole catalog. Units render against the plan, and at reduce a planned term's parent and sides are the plan's. Node `Plan Ontology`, LLM phase `ontology_plan`; metrics `plan_generic_sides`, `plan_parents_written`, `plan_sides_written`.
-- Consolidation at reduce (`ONTOLOGY_CONSOLIDATION`, on by default; `ONTOLOGY_CONSOLIDATION_MAX_TERMS`): a minted term flagged without a model — outside the plan, one document's case, a value set, a catalog duplicate, a name variant or a well-known duplicate (`well_known_duplicate`) — is decided in a batched call as `keep`, `merge_into`, `generalise_to`, `demote_to_property_value` or `drop`. Each flag names the term it points at; a well-known target must exist in its vocabulary with the same role.
-- `ontocast curate` and `ontocast.curate_catalog`: review the terms documents added to a catalog ontology and keep, merge, generalise, demote or drop them; `--apply` writes a new version. Authored terms are never changed. LLM phase `ontology_curation`.
-- Owned and external ontologies: an ontology outside `CURRENT_DOMAIN` is never written to. A document whose home is external writes its terms to the extension ontology `CURRENT_DOMAIN/<id>-ext-<hash>`, keyed by the external IRI, which imports it. Statements about external terms are refused (`external_subject_refused`). The run manifest records `home_ontology`.
-- Ontology findings `hierarchy_too_deep` (blocking; `ONTOLOGY_MAX_CLASS_DEPTH`, default 6), `value_set_siblings`, `catalog_duplicate` and the advisory `specific_label_leaf`.
-- End-of-document clean-up of the ontology delta, before consolidation: example-domain IRIs (`example_namespace_dropped`), a second datatype range (`datatype_ranges_normalized`), `owl:Thing` as range, domain or second parent (`vacuous_upper_terms_dropped`), terms declared outside the home namespace (`minted_outside_home_dropped`), subjects that are not terms (`non_term_subjects_dropped`), references to undeclared owned terms (`undeclared_owned_references_rewritten`, `undeclared_owned_references_dropped`) and parents of the other role (`role_crossing_parents_dropped`).
-- A minted term without a label gets one derived from its local name (`ontology/labels_derived`).
+- Ontology plan (`ONTOLOGY_PLAN_ENABLED`, on): one call per document, before its units render, lists the terms it adds with each property's domain and range, checked against the whole catalog. Units render against the plan, and at reduce a planned term takes the plan's parent and sides. Node `Plan Ontology`, LLM phase `ontology_plan`.
+- Consolidation at reduce (`ONTOLOGY_CONSOLIDATION`, on; `ONTOLOGY_CONSOLIDATION_MAX_TERMS`): a minted term flagged without a model (outside the plan, one document's case, a value set, a catalog duplicate, a well-known duplicate (`well_known_duplicate`), a name variant) is decided in one batched call as `keep`, `merge_into`, `generalise_to`, `demote_to_property_value` or `drop`. A well-known target must exist in its vocabulary with the same role.
+- `ontocast curate` and `ontocast.curate_catalog` review the terms documents added to a catalog ontology with the same decisions; `--apply` writes a new version and never changes authored terms. LLM phase `ontology_curation`.
+- An ontology outside `CURRENT_DOMAIN` is never written to: an extension ontology that imports it takes the document's terms, statements about external terms are refused (`external_subject_refused`), and the run manifest records `home_ontology`.
+- Findings `hierarchy_too_deep` (blocking; `ONTOLOGY_MAX_CLASS_DEPTH`, default 6), `value_set_siblings`, `catalog_duplicate` and the advisory `specific_label_leaf`.
+- End-of-document clean-up of the ontology delta, before consolidation: example-domain IRIs (`example_namespace_dropped`), second datatype ranges (`datatype_ranges_normalized`), `owl:Thing` as a side or second parent (`vacuous_upper_terms_dropped`), terms outside the home namespace (`minted_outside_home_dropped`), subjects that are not terms (`non_term_subjects_dropped`), references to undeclared owned terms (`undeclared_owned_references_rewritten`, `undeclared_owned_references_dropped`) and parents of the other role (`role_crossing_parents_dropped`).
+- A minted term without a label gets one from its local name (`ontology/labels_derived`).
 - A document whose plan names terms but mints none makes no ontology update call (`ontology/render_skipped_reuse_only`).
-- In `ontology_reduce_metrics`: `minted_classes`, `unused_minted_classes`, `generic_parents`, `generic_property_sides`, `missing_property_sides` and `owned_sides_listed`; `ontology_critic_units_skipped` in `retrieval_metrics`.
+- `ontology_reduce_metrics` adds `minted_classes`, `unused_minted_classes`, `generic_parents`, `generic_property_sides`, `missing_property_sides`, `owned_sides_listed`, `plan_generic_sides`, `plan_parents_written` and `plan_sides_written`; `retrieval_metrics` adds `ontology_critic_units_skipped`.
 
 #### Cross-document identity
 
-- Classes declared `ontocast:globallyNamed`, `owl:hasKey`, `owl:InverseFunctionalProperty` and caller `identifier`s on metadata entities link one entity across documents: each document gets an `<graph>/identity-links` graph of `skos:closeMatch` links to match nodes; no document IRI changes. `LINK_ENABLED` writes it on store; `ontocast link build | add | remove` maintain it.
-- `GET /entities/cluster` and `ontocast.link.cluster_of` return the stored entities that are one with an entity, and the candidates kept apart by a declared conflict. `aselect` / `aconstruct` take `union=True` to query across a partition's named graphs.
+- Entities named globally (`ontocast:globallyNamed`, `owl:hasKey`, `owl:InverseFunctionalProperty`, or a caller `identifier` on a metadata entity) are linked across documents: each document gets an `<graph>/identity-links` graph of `skos:closeMatch` links to match nodes, and no document IRI changes. `LINK_ENABLED` writes it on store; `ontocast link build | add | remove` maintain it.
+- `GET /entities/cluster` and `ontocast.link.cluster_of` return the stored entities that are one with an entity, and the candidates a declared conflict keeps apart. `aselect` / `aconstruct` take `union=True` to query across a partition's named graphs.
 
 #### Models
 
-- `LLM_MODEL_BY_PHASE`: a model per LLM phase, recorded in the run manifest.
-- `LLM_REASONING_EFFORT_BY_PHASE`: a reasoning effort per LLM phase, recorded in the run manifest; a phase may also have its own model.
+- `LLM_MODEL_BY_PHASE` and `LLM_REASONING_EFFORT_BY_PHASE`: a model or a reasoning effort per LLM phase, recorded in the run manifest.
 
 ### Changed
 
@@ -62,21 +59,22 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 - `FACTS_CRITIC_PASSES` is 0: the facts critic runs only when enabled.
 - `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` is true: two IRI objects from one unit are a warning, not an error that triggers the un-merge repair.
 - `FACTS_ADDITIONAL_STANDARD_NAMESPACES` is empty and only adds to the built-in vocabularies.
+- `ONTOLOGY_CHAPTER_FORMAT=auto` is the term sheet in every render mode. The setting applies to the facts prompts only, so `term_sheet` is also accepted with the ontology loop.
+
+#### Settings
+
 - `ONTOLOGY_CRITIC_PASSES=1` reviews only units with a mandatory deterministic finding; 2 or more review every unit. The default stays 0.
-- `ONTOLOGY_CHAPTER_FORMAT=auto` is the term sheet in every render mode, and `term_sheet` is accepted with the ontology loop: the setting applies to the facts prompts only.
 - `FANOUT_WARMUP_UNITS` also applies to the ontology render fan-out.
 
 #### Ontology identity
 
-- An ontology is identified by its IRI alone. Catalog ontologies may share an `ontology_id` or a prefix; a short name that several hold no longer resolves (`AmbiguousOntologyRefError`; HTTP 400 on `/ontologies/{id}/…`, listing their IRIs). Only an IRI already registered under another id is refused.
 - A loaded ontology's id is the given id, else its `vann:preferredNamespacePrefix`, else the prefix the file binds to its own namespace, else the last segment of its IRI.
-- The home-ontology prompt lists the catalog by shown prefix and IRI, and the render and critic prompts name the home by its shown prefix. A catalog ontology under a standard prefix (`sosa`) can be chosen as home.
+- The home-ontology prompt lists the catalog by shown prefix and IRI, and the render and critic prompts name the home by its shown prefix. A catalog ontology under a standard prefix (`sosa`) can be the home.
 - A proposed new home ontology is replaced by the catalog ontology whose terms the text names at least five times (`home_new_overridden`).
-- Extension ontologies stored by an earlier release under `CURRENT_DOMAIN/<id>-ext` are not migrated; new documents write to the new IRI.
 
 #### Ontology content
 
-- A minted property's class domain and range are written as `schema:domainIncludes` / `schema:rangeIncludes`, so each document may add its own classes; a datatype range stays `rdfs:range`. Every reader of property sides reads both forms. A type is inferred only from an `rdfs` side or a listed side naming one class, and only an `rdfs:domain` can be contradicted.
+- Every reader of property sides reads both the `rdfs` and the `schema:…Includes` form. A type is inferred only from an `rdfs` side or a listed side naming one class, and only an `rdfs:domain` can be contradicted.
 - A value set is a class of its own under `skos:Concept`, used as the property's range.
 - Minted-term reconciliation (`ONTOLOGY_RECONCILE_MINTED_TERMS`) checks the whole catalog and matches labels case-insensitively, then local names.
 
@@ -84,15 +82,15 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 
 - The facts prompt asks for statements: an entity is minted only when a statement is about it, a structured value is a blank node under the property that carries it, and every stated quantity is extracted, as an observation where no property carries it. An observation names what it is about and holds its value node as its result; a property applies only to subjects of its domain; a date or time node carries its ISO 8601 value.
 - The ontology prompts share one criterion for a new term: a class is a kind with instances in the domain, a property's sides cover every subject it applies to, a distinction that varies per instance is a property value, existing terms are reused first, and a parent is the nearest kind.
-- A SKOS concept is the only individual an ontology update may declare; the render's value-set example uses SKOS concepts.
-- The home-ontology prompt asks for an ontology scoped to the document's field, not its subject, and lists each catalog ontology with the start of its description; a catalog ontology whose scope covers the document is preferred to a new one.
+- A SKOS concept is the only individual an ontology update may declare.
+- The home-ontology prompt scopes a new ontology to the document's field, not its subject (for a category with siblings, the family they share), lists each catalog ontology with the start of its description, and prefers a catalog ontology whose scope covers the document.
 - The facts term sheet lists `sosa:hasFeatureOfInterest`, `sosa:observedProperty` and `sosa:hasResult` beside a catalog's observation classes.
-- Every prompt uses domain-neutral examples.
-- A critic fix's `explanation` is optional.
+- Every prompt uses domain-neutral examples; a critic fix's `explanation` is optional.
 
 #### Aggregation
 
-- Different types no longer block merging two entities found in the text; only declared disjointness does. Types that share no class merge only on an equal label, initials, a shared key or a coreference verdict. A merge with an individual of the ontology still needs a shared type. Entities sharing a label are compared even when their embeddings are far apart.
+- Different types no longer block merging two entities found in the text; only declared disjointness does. Types that share no class merge only on an equal label, initials, a shared key or a coreference verdict; a merge with an ontology individual still needs a shared type.
+- Entities sharing a label are compared even when their embeddings are far apart.
 
 #### Documentation
 
@@ -101,22 +99,23 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 
 ### Removed
 
-- The `oxrdflib` dependency.
-- `FactsRenderReport.ontology_relevance_score` and `triples_generation_score`.
 - `ENABLE_ONTOLOGY_CONSOLIDATION` and the `Consolidate Ontology` node; consolidation runs at reduce (`ONTOLOGY_CONSOLIDATION`).
+- `FactsRenderReport.ontology_relevance_score` and `triples_generation_score`.
+- The `oxrdflib` dependency.
 
 ### Fixed
 
 #### Model output
 
-- Turtle answers that failed to parse are repaired where the parser stops: a prefixed name split by a space, statements run together on one line after `;`, and a prefix with `-` or `.` in its name used without its declaration.
+- Turtle that fails to parse is repaired where the parser stops: a prefixed name split by a space, statements run together after `;`, and an undeclared prefix with `-` or `.` in its name.
 - A JSON answer that closes its object early and continues with more members is parsed without a re-render (`llm/json_premature_closer`).
 - Under the JSON-LD wire, schema objects written as strings (`"ex:Bar"`) become IRIs (`repair/compact_iri_literal`).
-- An IRI that cannot be written in `<...>` no longer fails a unit: the rendered triple is dropped (`malformed_iri_dropped`) and a fix naming one is refused.
+- An IRI that cannot be written in `<...>` no longer fails a unit: the triple is dropped (`malformed_iri_dropped`), and a fix naming one is refused.
 
 #### Facts
 
-- Literals are checked against their datatypes: text on a date, time or duration range that is not a value of it is quarantined for repair and kept as `rdfs:comment` if unresolved; ill-typed date literals are quarantined; a calendar text naming one value is retyped to it; no number is retyped outside its datatype; a decade is no longer read as a duration; a quarantined triple stops counting once the graph states a valid value for it. Datatype ranges are read from the whole catalog and the published ranges of PROV-O, SOSA and OWL-Time.
+- Literals are checked against their datatypes, read from the whole catalog and the published ranges of PROV-O, SOSA and OWL-Time. Text that is not a valid date, time or duration is quarantined for repair and kept as `rdfs:comment` if unresolved; calendar text naming one value is retyped to it.
+- No number is retyped outside its datatype, a decade is no longer read as a duration, and a quarantined triple stops counting once the graph states a valid value for it.
 - Critic and gap-pass fixes get the same retyping and date checks as a render.
 - A measurement counts as present when any node states its number with its unit, so the gap pass no longer adds a value twice.
 - A unit IRI the context does not hold is `unknown_term`, so a fix linking one is rolled back.
@@ -126,14 +125,14 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 
 #### Ontologies
 
-- Statements are filed to the ontology that owns their subject: a fresh render is filed like an update; nothing is filed into an external ontology; an axiom or annotation goes with its source term; a term declared outside the home namespace is dropped with its axioms, not with the home axioms that reuse it.
+- Statements are filed to the ontology that owns their subject, and nothing is filed into an external ontology. An axiom or annotation goes with its source term; a term declared outside the home namespace is dropped with its own axioms, not with home axioms that reuse it.
 - OWL restrictions, lists and anonymous axioms are written whole with the term that uses them, and dropped with it.
-- Deletes keep blank-node structures whole (`apply_structure_deletes_expanded`, `apply_structure_deletes_dropped`), and a delete judged on a partial context needs a redeclaration (`deletes_dropped_unredeclared`); a unit is told whenever its context is partial.
+- Deletes keep blank-node structures whole (`apply_structure_deletes_expanded`, `apply_structure_deletes_dropped`); a delete judged on a partial context needs a redeclaration (`deletes_dropped_unredeclared`), and a unit is told when its context is partial.
 - Under vector retrieval, terms minted under a new home ontology are written, and `foreign_namespace` accepts the home namespace.
 - A property's parent must be a property and a class's a class, in the plan, the prompts and the clean-up.
 - A derived label is never given to a catalog or well-known term.
-- One prefix per namespace in every prompt, parse and export: the standard prefix, else the author's, else the `ontology_id`; well-known namespaces come back from the triple store under their standard prefix.
-- A prefix ending in digits (`ex2`, an extension id `dbo-ext-<hash>`) keeps them; only rdflib's renames of a standard or preferred prefix (`schema1`) are undone.
+- One prefix per namespace in every prompt, parse and export: the standard prefix, else the author's, else the `ontology_id`. Well-known namespaces come back from the triple store under their standard prefix.
+- A prefix ending in digits (`ex2`, `dbo-ext-<hash>`) keeps them; only rdflib's renames of a standard or preferred prefix (`schema1`) are undone.
 - An ontology with a description over 2000 characters loads.
 - A render left with only its header is not written as a new version; a critic patch that creates an ontology keeps the render.
 - The small-module closure uses an ontology's current head.
@@ -142,7 +141,7 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 #### Retrieval and caching
 
 - The retrieved context is the same in every run for the same text and catalog, and no hit scored at or below zero is kept.
-- Prompts are stable across runs (seed descriptions without load timestamps, canonical blank-node labels in critic listings, sorted types and labels in the gap pass), so replays are served from cache.
+- Prompts are stable across runs, so replays are served from cache.
 - A transient Qdrant transport error during retrieval is retried up to three times (`vector/transport_retry`).
 
 #### CLI and outputs
