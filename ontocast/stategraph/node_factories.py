@@ -2,7 +2,13 @@ import asyncio
 import logging
 import time
 from collections import Counter
-from collections.abc import AsyncGenerator, Collection, Coroutine, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    Callable,
+    Collection,
+    Coroutine,
+    Sequence,
+)
 from contextlib import asynccontextmanager
 from typing import Any, TypeVar
 
@@ -311,6 +317,46 @@ async def _gather_units(
     return results, failures
 
 
+async def _gather_units_with_warmup(
+    node: WorkflowNode,
+    state: AgentState,
+    process_unit: Callable[[int], Coroutine[Any, Any, T]],
+    *,
+    warmup: int,
+) -> tuple[list[T], int]:
+    """Run ``process_unit`` over every content unit, the first ``warmup`` alone.
+
+    A provider's prefix cache is populated by a request that has already
+    completed, so a fan-out that issues every call at once has all of them miss
+    a prefix they share. Completing the first units before the rest start turns
+    the rest into hits, at the cost of the warm-up units' time.
+
+    Returns:
+        tuple: Successful results and the number of units that raised, as
+        :func:`_gather_units` returns them.
+    """
+    total = len(state.content_units)
+    warmup = min(warmup, total)
+    results: list[T] = []
+    failures = 0
+    if warmup:
+        warm, warm_failures = await _gather_units(
+            node, state, [process_unit(i) for i in range(warmup)]
+        )
+        results.extend(warm)
+        failures += warm_failures
+    if warmup < total:
+        rest, rest_failures = await _gather_units(
+            node,
+            state,
+            [process_unit(i) for i in range(warmup, total)],
+            index_offset=warmup,
+        )
+        results.extend(rest)
+        failures += rest_failures
+    return results, failures
+
+
 def _index_ontologies_by_anchor(artifacts: list[Ontology]) -> dict[str, Ontology]:
     return {ontology.iri: ontology for ontology in artifacts if ontology.iri}
 
@@ -395,9 +441,11 @@ def make_render_ontology_node(tools: ToolBox):
                     result.assembly_mode_used,
                 )
 
-        tasks = [process_unit(i) for i, _ in enumerate(state.content_units)]
-        raw_results, unit_errors = await _gather_units(
-            WorkflowNode.RENDER_ONTOLOGY_UPDATE, state, tasks
+        raw_results, unit_errors = await _gather_units_with_warmup(
+            WorkflowNode.RENDER_ONTOLOGY_UPDATE,
+            state,
+            process_unit,
+            warmup=tools.config.server.fanout_warmup_units,
         )
         ordered_results = sorted(raw_results, key=lambda item: item[0])
 
@@ -873,32 +921,12 @@ def make_render_facts_node(tools: ToolBox):
                     result.assembly_mode_used,
                 )
 
-        # A provider's prefix cache is populated by a request that has already
-        # completed, so a fan-out that issues every call at once has all of them
-        # miss a prefix they all share. Running the first unit alone turns the
-        # rest into hits -- but only where the chapter is shared, which is why
-        # this is a separate knob rather than an implication of the scope.
-        warmup = min(
-            tools.config.server.fanout_warmup_units,
-            len(state.content_units),
+        raw_results, unit_errors = await _gather_units_with_warmup(
+            WorkflowNode.RENDER_FACTS,
+            state,
+            process_unit,
+            warmup=tools.config.server.fanout_warmup_units,
         )
-        raw_results: list = []
-        unit_errors = 0
-        if warmup:
-            warm_results, warm_errors = await _gather_units(
-                WorkflowNode.RENDER_FACTS,
-                state,
-                [process_unit(i) for i in range(warmup)],
-            )
-            raw_results.extend(warm_results)
-            unit_errors += warm_errors
-        rest = [process_unit(i) for i in range(warmup, len(state.content_units))]
-        if rest:
-            more_results, more_errors = await _gather_units(
-                WorkflowNode.RENDER_FACTS, state, rest, index_offset=warmup
-            )
-            raw_results.extend(more_results)
-            unit_errors += more_errors
         ordered_results = sorted(raw_results, key=lambda item: item[0])
 
         facts_units: list[ContentUnit] = []

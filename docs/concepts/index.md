@@ -94,7 +94,9 @@ when [`RENDER_MODE`](../reference/configuration/pipeline.md#render_mode) is
    proposes new classes and properties as a patch: triples to insert and
    triples to delete. It mints from the plan; a term it mints outside the plan
    is a *candidate*, held back for the next step. With an empty context it
-   renders the terms of a new ontology under the home ontology.
+   renders the terms of a new ontology under the home ontology. When the plan
+   names terms but mints none, there is nothing to render: no call is made,
+   and the unit adds nothing (`ontology/render_skipped_reuse_only`).
 5. **Review.** An optional critic reviews the patch; see [the per-unit
    loop](#the-per-unit-loop) below.
 6. **Merge.** When every unit is done, their patches are merged into one

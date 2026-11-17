@@ -688,12 +688,25 @@ class LLMTool(Tool):
         # Create and initialize the instance with the config
         self = cls(config=config, cache=cache, budget_tracker=budget_tracker, **kwargs)
         await self.setup()
-        for phase, model_name in config.model_by_phase.items():
-            if not model_name or model_name == str(config.model_name):
+        for phase in sorted(
+            set(config.model_by_phase) | set(config.reasoning_effort_by_phase)
+        ):
+            update: dict[str, Any] = {}
+            model_name = config.model_by_phase.get(phase)
+            if model_name and model_name != str(config.model_name):
+                update["model_name"] = model_name
+            effort = config.reasoning_effort_by_phase.get(phase)
+            if effort is not None and effort != config.reasoning_effort:
+                update["reasoning_effort"] = effort
+            if not update:
                 continue
             override = cls(
                 config=config.model_copy(
-                    update={"model_name": model_name, "model_by_phase": {}}
+                    update={
+                        **update,
+                        "model_by_phase": {},
+                        "reasoning_effort_by_phase": {},
+                    }
                 ),
                 cache=cache,
                 budget_tracker=budget_tracker,
@@ -707,7 +720,8 @@ class LLMTool(Tool):
         return self
 
     def phase_override(self, phase: str | None) -> "LLMTool | None":
-        """The tool ``LLM_MODEL_BY_PHASE`` routes ``phase`` to, if any."""
+        """The tool ``LLM_MODEL_BY_PHASE`` / ``LLM_REASONING_EFFORT_BY_PHASE``
+        route ``phase`` to, if any."""
         if phase is None:
             return None
         return self._phase_overrides.get(str(phase))

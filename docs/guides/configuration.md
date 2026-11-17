@@ -82,6 +82,7 @@ see [Embedding OntoCast in your agent](embedding.md).
 | [`LLM_MODEL_NAME`](../reference/configuration/llm.md#llm_model_name) | Any model name the provider accepts. Names OntoCast does not know are passed through with a warning |
 | [`LLM_API_KEY`](../reference/configuration/llm.md#llm_api_key) | The key for OpenAI, Anthropic or Google. OntoCast reads only this variable, not the providers' own ones |
 | [`LLM_BASE_URL`](../reference/configuration/llm.md#llm_base_url) | The Ollama server, or the endpoint of any OpenAI-compatible service (with `LLM_PROVIDER=openai`) |
+| [`LLM_REASONING_EFFORT_BY_PHASE`](../reference/configuration/llm.md#llm_reasoning_effort_by_phase) | Another reasoning effort for named phases, as JSON: `{"facts_coreference": "low"}`. A phase may also have its own model |
 | [`LLM_MODEL_BY_PHASE`](../reference/configuration/llm.md#llm_model_by_phase) | Another model for named phases, as JSON: `{"ontology_plan": "...", "ontology_consolidation": "..."}` gives the two document-level ontology decisions a stronger model than the per-part calls |
 
 Leave [`LLM_TEMPERATURE`](../reference/configuration/llm.md#llm_temperature) at

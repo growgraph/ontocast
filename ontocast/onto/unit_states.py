@@ -125,7 +125,8 @@ class UnitState(BasePydanticModel, Generic[UnitT]):
         default=OntologyChapterFormat.INHERIT,
         description=(
             "Syntax of the ontology chapter in this unit's prompts: 'inherit' "
-            "follows llm_graph_format, 'turtle' pins the chapter to Turtle. "
+            "follows llm_graph_format, 'turtle' pins the chapter to Turtle, "
+            "'term_sheet' lists one line per term. "
             "Threaded from ServerConfig like ontology_context_max_triples. "
             "Read by the facts loop only; the ontology loop keeps its chapter "
             "in the wire format because its output patches what it reads."

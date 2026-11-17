@@ -3,7 +3,7 @@ site_description: Ontology-guided extraction of RDF knowledge graphs from docume
 site_url: https://growgraph.github.io/ontocast
 repo_url: https://github.com/growgraph/ontocast
 repo_name: growgraph/ontocast
-copyright: Copyright &copy; 2025-2026 GrowGraph
+copyright: Copyright &copy; 2025-2026 <a href="https://growgraph.dev/open-source/ontocast">GrowGraph</a>
 edit_uri: edit/main/docs/
 theme:
     name: material

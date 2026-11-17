@@ -169,7 +169,7 @@ plot-graph = "ontocast.cli._entry:plot_graph"
 [project.urls]
 Changelog = "https://github.com/growgraph/ontocast/blob/main/CHANGELOG.md"
 Documentation = "https://growgraph.github.io/ontocast"
-Homepage = "https://github.com/growgraph/ontocast"
+Homepage = "https://growgraph.dev/open-source/ontocast"
 Issues = "https://github.com/growgraph/ontocast/issues"
 Repository = "https://github.com/growgraph/ontocast"
 

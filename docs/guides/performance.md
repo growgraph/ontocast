@@ -89,8 +89,8 @@ The defaults pair what the model reads with what it writes:
 
 | Run | Ontology the model reads | Graph the model writes |
 |---|---|---|
-| `RENDER_MODE=facts` | A term sheet ([below](#the-ontology-chapter-as-a-term-sheet)) | Turtle, compact layout |
-| `ontology` or `ontology_and_facts` | Turtle: its chapter follows the output format, because the loop patches what it reads | Turtle, compact layout |
+| Facts prompts | A term sheet ([below](#the-ontology-chapter-as-a-term-sheet)) | Turtle, compact layout |
+| Ontology prompts | Turtle: its chapter follows the output format, because the loop patches what it reads | Turtle, compact layout |
 
 [`LLM_GRAPH_FORMAT`](../reference/configuration/pipeline.md#llm_graph_format)
 sets the syntax the model writes graphs in. **Keep the default, `turtle`.** It
@@ -114,6 +114,10 @@ On a reasoning model, read `reasoning_share_of_output` first: reasoning tokens
 are output that no encoding touches, so when they dominate, the reasoning budget
 ([`LLM_REASONING_EFFORT`](../reference/configuration/llm.md#llm_reasoning_effort))
 matters more than either setting.
+[`LLM_REASONING_EFFORT_BY_PHASE`](../reference/configuration/llm.md#llm_reasoning_effort_by_phase)
+sets it per phase, for example `{"facts_coreference": "low"}`, so the small
+decision calls can reason less than the renders; `budget.tokens_by_phase`
+shows each phase's reasoning tokens.
 
 ### The ontology chapter as a term sheet
 
@@ -123,14 +127,13 @@ output keeps `LLM_GRAPH_FORMAT`.
 
 | Value | Chapter |
 |---|---|
-| `auto` (default) | `term_sheet` when `RENDER_MODE=facts`, `inherit` otherwise |
+| `auto` (default) | `term_sheet` |
 | `inherit` | A serialized graph in `LLM_GRAPH_FORMAT` |
 | `turtle` | A serialized graph in Turtle, whatever the output format |
 | `term_sheet` | One line per term: its name, other names, parent, domain and range, and one usage note. The shortest chapter |
 
-A term sheet is legal only when `RENDER_MODE=facts`: the ontology loop edits
-the statements in its chapter, so its chapter must stay a graph. An explicit
-`term_sheet` with any other render mode stops OntoCast at startup.
+The setting does not reach the ontology loop: it edits the statements in its
+chapter, so its chapter stays a graph in `LLM_GRAPH_FORMAT`.
 
 ### Size of the ontology context
 
@@ -179,9 +182,10 @@ Three settings make the whole fan-out share one:
   every term its own retrieval chose, plus its siblings' terms, so each call
   is longer.
 - [`FANOUT_WARMUP_UNITS=1`](../reference/configuration/pipeline.md#fanout_warmup_units)
-  runs the first unit before the others. A cached prefix can be read only once
-  the request that wrote it has completed, so units sent together all miss it.
-  This is useful in `ontology_and_facts` runs too.
+  runs the first unit before the others, in the ontology and the facts
+  fan-outs. A cached prefix can be read only once the request that wrote it
+  has completed, so units sent together all miss it. This is useful in
+  `ontology_and_facts` runs too.
 - [`LLM_PROMPT_CACHE_KEY`](../reference/configuration/llm.md#llm_prompt_cache_key)
   (OpenAI only) routes requests that share a prefix to the same cache. Use one
   fixed string per deployment, never one per request.
@@ -195,6 +199,40 @@ which makes the conformance chapter, and so the prefix, differ between units.
     These settings pay off only if the provider serves cached prefixes and
     reports it. Turn them on, then read `prefix_cache_hit_rate` in the budget.
     If it stays at zero, the union chapter only adds tokens: unset all three.
+
+## Two cost profiles
+
+The defaults sit between two profiles. Switch to one of them when either cost
+or yield clearly matters more to you.
+
+**Optimal: the defaults plus less reasoning on the small decision calls.**
+
+```bash
+LLM_REASONING_EFFORT_BY_PHASE='{"facts_completion":"low","facts_coreference":"low","ontology_identity":"low"}'
+```
+
+The renders and the ontology plan keep the run's reasoning effort. Coreference
+and the choice of home ontology are short classification calls. They lose
+little at low effort, so their reasoning tokens are mostly saved. The completion
+pass costs more to lower: it adds fewer facts per gap, so a document yields
+fewer facts, and fewer of the facts it does yield fail validation. Compare
+`facts_triples` and `completion.triples_inserted` in the run manifest with the
+profile on and off. This profile needs a model that accepts
+`LLM_REASONING_EFFORT`, and it cannot be combined with `LLM_THINKING_BUDGET`.
+
+**Maximal: the ontology chapter as a graph.**
+
+```bash
+ONTOLOGY_CHAPTER_FORMAT=inherit
+```
+
+The facts prompts read the ontology as the same graph the ontology prompts
+read, instead of the term sheet. That makes the prompt longer, and the model
+sees every statement of each term, not only the lines the term sheet keeps.
+Use it when yield matters more than input tokens.
+
+In every profile, a document whose ontology plan mints nothing makes no
+ontology update call (counter `ontology/render_skipped_reuse_only`).
 
 ## Local embedding models and memory
 

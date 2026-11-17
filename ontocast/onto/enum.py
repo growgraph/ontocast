@@ -263,9 +263,7 @@ class LLMOutputLayout(StrEnum):
 class OntologyChapterFormat(StrEnum):
     """Syntax of the ``# ONTOLOGY`` chapter in the facts prompts.
 
-    - ``auto`` (default): ``term_sheet`` where the render mode is facts-only,
-      ``inherit`` otherwise. The cheapest chapter each mode can legally read,
-      chosen without asking an operator to know which those are. Resolved once
+    - ``auto`` (default): ``term_sheet``, the shortest chapter. Resolved once
       when the configuration is built, so nothing downstream -- profile lookup,
       cache key, run manifest -- ever sees this member.
     - ``inherit``: the chapter follows :class:`LLMGraphFormat`, so
@@ -279,9 +277,9 @@ class OntologyChapterFormat(StrEnum):
     - ``term_sheet``: the chapter is a line-per-term listing rather than a
       serialized graph -- name, surface forms, type, hierarchy, domain/range
       and usage contract, without the per-statement RDF scaffolding or the
-      prose written for a human reader. Legal on the facts path only: the
-      ontology loop emits a patch against the statements it reads, so its
-      chapter has to remain a graph.
+      prose written for a human reader. Legal in every render mode: the
+      ontology loop never reads this setting and keeps its own graph chapter,
+      because it emits a patch against the statements it reads.
     """
 
     AUTO = "auto"

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -281,6 +282,20 @@ class SymbolCaseMismatchPolicy(StrEnum):
     DROP = "drop"
 
 
+#: Levels of LLM_REASONING_EFFORT; which a model accepts is the provider's call.
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+
+def _refuse_unknown_phases(setting: str, names: Iterable[str]) -> None:
+    """Raise when one of ``names`` is no LLM phase."""
+    phases = {phase.value for phase in LLMPhase}
+    unknown = sorted(set(names) - phases)
+    if unknown:
+        raise ValueError(
+            f"{setting} names unknown phase(s) {unknown}; known: {sorted(phases)}"
+        )
+
+
 class LLMConfig(BaseSettings):
     """LLM configuration settings."""
 
@@ -430,9 +445,7 @@ class LLMConfig(BaseSettings):
             "OpenAI only; other providers ignore it."
         ),
     )
-    reasoning_effort: (
-        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
-    ) = Field(
+    reasoning_effort: ReasoningEffort | None = Field(
         default=None,
         description=(
             "How much the model reasons before answering: none, minimal, low,"
@@ -470,6 +483,19 @@ class LLMConfig(BaseSettings):
         ),
     )
 
+    reasoning_effort_by_phase: dict[str, ReasoningEffort] = Field(
+        default_factory=dict,
+        description=(
+            "Reasoning effort per pipeline phase, as a JSON object from an LLM "
+            "phase to a level of LLM_REASONING_EFFORT, for example "
+            '`{"facts_coreference": "low"}`. A call made in a listed phase is '
+            "sent with that level; other phases use LLM_REASONING_EFFORT. A "
+            "phase may also be listed in LLM_MODEL_BY_PHASE: its calls then "
+            "take both. Use it to spend less reasoning on the small decision "
+            "calls than on the renders. Part of the LLM cache key."
+        ),
+    )
+
     model_config = SettingsConfigDict(
         env_prefix="LLM_",
         case_sensitive=False,
@@ -479,14 +505,17 @@ class LLMConfig(BaseSettings):
     @classmethod
     def validate_model_by_phase(cls, value: dict[str, str]) -> dict[str, str]:
         """Refuse a key that names no LLM phase."""
-        phases = {phase.value for phase in LLMPhase}
-        unknown = sorted(set(value) - phases)
-        if unknown:
-            raise ValueError(
-                f"LLM_MODEL_BY_PHASE names unknown phase(s) {unknown}; "
-                f"known: {sorted(phases)}"
-            )
+        _refuse_unknown_phases("LLM_MODEL_BY_PHASE", value)
         return {phase: str(model).strip() for phase, model in value.items()}
+
+    @field_validator("reasoning_effort_by_phase")
+    @classmethod
+    def validate_reasoning_effort_by_phase(
+        cls, value: dict[str, ReasoningEffort]
+    ) -> dict[str, ReasoningEffort]:
+        """Refuse a key that names no LLM phase."""
+        _refuse_unknown_phases("LLM_REASONING_EFFORT_BY_PHASE", value)
+        return value
 
     @field_validator("model_name")
     @classmethod
@@ -539,7 +568,7 @@ class LLMConfig(BaseSettings):
         """
         if (
             self.provider == LLMProvider.GOOGLE
-            and self.reasoning_effort is not None
+            and (self.reasoning_effort is not None or self.reasoning_effort_by_phase)
             and self.thinking_budget is not None
         ):
             raise ValueError(
@@ -1057,10 +1086,10 @@ class ServerConfig(BaseSettings):
             "prompts. 'inherit' follows LLM_GRAPH_FORMAT; 'turtle' always "
             "uses Turtle, which is shorter than JSON-LD; 'term_sheet' lists "
             "one line per term (name, labels, type, hierarchy, domain and "
-            "range, usage) and is the shortest. 'term_sheet' needs "
-            "RENDER_MODE=facts, because the ontology loop patches the "
-            "statements in its chapter. 'auto' picks 'term_sheet' for "
-            "facts-only runs and 'inherit' otherwise. Only the prompt context"
+            "range, usage) and is the shortest. 'auto' picks 'term_sheet'. The "
+            "ontology loop is not affected: it always reads its chapter in "
+            "LLM_GRAPH_FORMAT, because it patches the statements in it. Only "
+            "the prompt context"
             " changes; the model's output keeps LLM_GRAPH_FORMAT. Part of the"
             " LLM cache key for facts calls."
         ),
@@ -1183,12 +1212,12 @@ class ServerConfig(BaseSettings):
         default=0,
         ge=0,
         description=(
-            "Content units to complete before the rest are run concurrently; "
-            "0 runs all at once. A provider's prefix cache is filled by a "
-            "completed request, so calls sent together all miss it. Useful "
-            "only when calls share a prefix "
-            "(ONTOLOGY_CONTEXT_SCOPE=document); costs the time of the warm-up"
-            " units."
+            "Content units to complete before the rest are run concurrently, "
+            "in the ontology and the facts fan-outs; 0 runs all at once. A "
+            "provider's prefix cache is filled by a completed request, so calls"
+            " sent together all miss it. Useful when the units of a document "
+            "share a prompt prefix, as they do when their ontology chapters "
+            "agree; costs the time of the warm-up units."
         ),
     )
     ontology_context_max_triples: int | None = Field(
@@ -1273,45 +1302,22 @@ class ServerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_ontology_chapter_format(self) -> "ServerConfig":
-        """Resolve 'auto' against the render mode, and reject an illegal ask.
+        """Resolve 'auto' to the term sheet.
 
-        The facts renderer reads its chapter and writes an unrelated graph, so
-        the chapter is free to be any representation that names the terms. The
-        ontology renderer and its critic write a *patch against the statements
-        in the chapter*, which a line-per-term listing cannot express -- there
-        is nothing to insert into or delete from.
+        The chapter format reaches the facts agents only: the facts renderer
+        reads its chapter and writes an unrelated graph, so the chapter is free
+        to be any representation that names the terms. The ontology loop and
+        its critic always render their own chapter in LLM_GRAPH_FORMAT, because
+        they write a patch against its statements, and never read this field.
+        So the term sheet, the shortest chapter, is legal in every render mode.
 
-        So the cheapest legal chapter differs by mode, and ``auto`` picks it
-        rather than asking an operator to know which. It is resolved **here**,
-        not at the point of use: every consumer reads this field, and a value
-        that still meant "decide later" would reach the prompt profile, the
-        LLM cache key and the run manifest as a name for no chapter in
-        particular.
-
-        An *explicit* ``term_sheet`` on a mode that cannot read one still
-        fails. Falling back would be silent, and the run would spend an
-        ontology pass producing patches nobody could apply while the manifest
-        recorded a setting that never took effect -- which is exactly what
-        ``auto`` exists to make unnecessary.
+        ``auto`` is resolved **here**, not at the point of use: every consumer
+        reads this field, and a value that still meant "decide later" would
+        reach the prompt profile, the LLM cache key and the run manifest as a
+        name for no chapter in particular.
         """
         if self.ontology_chapter_format == OntologyChapterFormat.AUTO:
-            self.ontology_chapter_format = (
-                OntologyChapterFormat.TERM_SHEET
-                if self.render_mode == RenderMode.FACTS
-                else OntologyChapterFormat.INHERIT
-            )
-            return self
-        if (
-            self.ontology_chapter_format == OntologyChapterFormat.TERM_SHEET
-            and self.render_mode != RenderMode.FACTS
-        ):
-            raise ValueError(
-                "ONTOLOGY_CHAPTER_FORMAT=term_sheet requires RENDER_MODE=facts: "
-                f"got render_mode={self.render_mode.value}. The ontology loop "
-                "emits a patch against the statements in its chapter, so that "
-                "chapter has to be a graph. Use 'turtle' for a cheaper chapter "
-                "that stays one, or 'auto' to take whichever the mode allows."
-            )
+            self.ontology_chapter_format = OntologyChapterFormat.TERM_SHEET
         return self
 
 

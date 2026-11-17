@@ -67,6 +67,14 @@ class RunManifestLLM(BaseModel):
             "their usage is in budget.tokens_by_phase under the same keys."
         ),
     )
+    reasoning_effort_by_phase: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Phases sent with another reasoning effort than reasoning_effort "
+            "(LLM_REASONING_EFFORT_BY_PHASE); their usage is in "
+            "budget.tokens_by_phase under the same keys."
+        ),
+    )
     prompt_cache_key: str | None = Field(
         default=None,
         description=(

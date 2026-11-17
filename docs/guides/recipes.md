@@ -116,8 +116,8 @@ OntoCast logs a warning and extracts in generic vocabulary; with this setting
 `ontocast process` refuses to start on an empty catalog, and a part with no
 ontology context stops the run.
 
-On a facts-only run the prompt shows the ontology as a term sheet, one line per
-term, which is the shortest form; see [Performance tuning](performance.md).
+The facts prompts show the ontology as a term sheet, one line per term, which
+is the shortest form; see [Performance tuning](performance.md).
 
 **What to check.** In the run manifest, `validation_config.context_from_units`
 should be `true`, and `retrieval_metrics.ontology_snapshot_triples` should be

@@ -120,6 +120,7 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `ctx/admitted_named_terms` | `ontocast/stategraph/context_resolver.py` | Catalog terms the facts prompt names (conformance rules, notes) whose definitions were added to the ontology context |
 | `vector/transport_retry` | `ontocast/tool/vector_store/qdrant.py` | Qdrant reads retried after a transport error; the third failure fails the unit |
 | `<node>/unit_errors` | `ontocast/stategraph/node_factories.py` | Units of a fan-out node that raised |
+| `ontology/render_skipped_reuse_only` | `ontocast/agent/render_ontology.py` | Ontology update renders answered without a call because the document's plan mints nothing |
 | `ontology/update_rejected_over_budget` | `ontocast/agent/render_ontology.py` | Ontology updates discarded for exceeding `ONTOLOGY_MAX_TRIPLES` |
 | `ontology/deletes_dropped_insert_only` | `ontocast/agent/render_ontology.py`, `ontocast/stategraph/node_factories.py` | Ontology delete triples dropped under `ONTOLOGY_UPDATE_MODE=insert_only` |
 | `ontology/model_header_triples_dropped` | `ontocast/agent/render_ontology.py` | `owl:Ontology` header triples a fresh render wrote and that were dropped: identity and the version header are written by code |

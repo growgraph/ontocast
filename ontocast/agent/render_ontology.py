@@ -151,6 +151,20 @@ def format_plan_instruction(plan: OntologyPlan | None) -> str:
     )
 
 
+#: Budget counter: ontology update renders answered without a call because
+#: the document's plan mints nothing.
+RENDER_SKIPPED_REUSE_ONLY = "ontology/render_skipped_reuse_only"
+
+
+def plan_is_reuse_only(plan: OntologyPlan | None) -> bool:
+    """Whether a document's plan names terms and mints none of them.
+
+    A plan without terms (none proposed, or all refused) does not count: the
+    render then works without a plan block and may still mint.
+    """
+    return plan is not None and bool(plan.terms) and not plan.minted()
+
+
 def _handle_ontology_render_error(
     state: UnitOntologyState, error: Exception, stage: FailureStage
 ) -> UnitOntologyState:
@@ -431,29 +445,37 @@ async def render_ontology_update(
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
         RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
 
-        render_report: GraphUpdateRenderReport = await call_llm_with_retry(
-            llm_tool=llm_tool,
-            phase=LLMPhase.ONTOLOGY_RENDER,
-            prompt=prompt,
-            parser=parser,
-            prompt_kwargs={
-                "preamble": system_preamble,
-                "intro_instruction": intro_instruction,
-                "ontology_instruction": general_ontology_instruction_str,
-                "plan_instruction": format_plan_instruction(state.ontology_plan),
-                "output_instruction": output_instruction,
-                "improvement_instruction": improvement_instruction_str,
-                "ontology_ttl": ontology_chapter,
-                "user_instruction": state.ontology_user_instruction,
-                "text": text_chapter,
-                "external_evidence": external_evidence,
-                "format_instructions": profile.format_instructions(
-                    GraphUpdateRenderReport,
-                    web_search_enabled=web_search_enabled,
-                ),
-            },
-            llm_graph_format=state.llm_graph_format,
-        )
+        render_report: GraphUpdateRenderReport
+        if plan_is_reuse_only(state.ontology_plan):
+            # The plan mints nothing for this document, so the render may only
+            # restate terms that exist already: it is answered with the empty
+            # patch such a render returns, and no call is made.
+            render_report = GraphUpdateRenderReport()
+            state.budget_tracker.incr(RENDER_SKIPPED_REUSE_ONLY)
+        else:
+            render_report = await call_llm_with_retry(
+                llm_tool=llm_tool,
+                phase=LLMPhase.ONTOLOGY_RENDER,
+                prompt=prompt,
+                parser=parser,
+                prompt_kwargs={
+                    "preamble": system_preamble,
+                    "intro_instruction": intro_instruction,
+                    "ontology_instruction": general_ontology_instruction_str,
+                    "plan_instruction": format_plan_instruction(state.ontology_plan),
+                    "output_instruction": output_instruction,
+                    "improvement_instruction": improvement_instruction_str,
+                    "ontology_ttl": ontology_chapter,
+                    "user_instruction": state.ontology_user_instruction,
+                    "text": text_chapter,
+                    "external_evidence": external_evidence,
+                    "format_instructions": profile.format_instructions(
+                        GraphUpdateRenderReport,
+                        web_search_enabled=web_search_enabled,
+                    ),
+                },
+                llm_graph_format=state.llm_graph_format,
+            )
         persist_search_request(
             state,
             WorkflowNode.TEXT_TO_ONTOLOGY,

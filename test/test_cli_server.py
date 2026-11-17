@@ -846,7 +846,7 @@ def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
     assert payload["prompting"] == {
         "llm_graph_format": "turtle",
         "llm_output_layout": "compact",
-        "ontology_chapter_format": "inherit",
+        "ontology_chapter_format": "term_sheet",
         "ontology_context_scope": "unit",
         "fanout_warmup_units": 0,
         "parallel_workers": 16,

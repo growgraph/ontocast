@@ -100,17 +100,9 @@ super-property is a property, and one with a superclass is a class.
 ### How `auto` resolves
 
 `auto` is resolved once, when `ServerConfig` is validated
-(`ontocast/config/settings.py`): `term_sheet` when `RENDER_MODE=facts`,
-`inherit` otherwise. The prompt profile, the run manifest and the LLM cache key
-see only the resolved value. An explicit `term_sheet` with any other render
-mode is a configuration error, because the ontology loop answers with a patch
-against the statements in its chapter, and a listing has no statements to
-patch.
-
-A per-request `render_mode` does not re-resolve it. A request that switches an
-`ontology_and_facts` deployment to `facts` gets a graph chapter rather than a
-term sheet: more tokens, same result. The converse cannot fail, because the
-chapter format reaches only the facts loop. The ontology loop always renders
+(`ontocast/config/settings.py`): to `term_sheet`, in every render mode. The
+prompt profile, the run manifest and the LLM cache key see only the resolved
+value. The chapter format reaches only the facts loop. The ontology loop always renders
 its chapter in `LLM_GRAPH_FORMAT`, and the ontology critic reads an indexed
 version of it in which each statement carries an id it can cite.
 
@@ -215,8 +207,8 @@ on the render mode and
 
 [`FANOUT_WARMUP_UNITS`](../reference/configuration/pipeline.md#fanout_warmup_units)
 then runs that many units to completion before starting the rest, so the rest
-can read the prefix the first ones wrote. Both settings act only in the
-document fan-out. The single-unit path (`/process_unit`, and `ontocast
+can read the prefix the first ones wrote. It acts in both the ontology and the
+facts fan-outs. Both settings act only in the document fan-out. The single-unit path (`/process_unit`, and `ontocast
 process --use-unit-pipeline`) ignores them, and a run manifest from that path
 leaves them out.
 

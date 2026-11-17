@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
 ## [0.9.1]
 
 Facts are extracted as statements against a selectable vocabulary and repaired without model calls where the graph shows the fix; the ontology lane plans, consolidates and curates the terms a document adds; an ontology is identified by its IRI, and external ontologies are extended in their own namespace.
@@ -41,6 +43,7 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 - Ontology findings `hierarchy_too_deep` (blocking; `ONTOLOGY_MAX_CLASS_DEPTH`, default 6), `value_set_siblings`, `catalog_duplicate` and the advisory `specific_label_leaf`.
 - End-of-document clean-up of the ontology delta, before consolidation: example-domain IRIs (`example_namespace_dropped`), a second datatype range (`datatype_ranges_normalized`), `owl:Thing` as range, domain or second parent (`vacuous_upper_terms_dropped`), terms declared outside the home namespace (`minted_outside_home_dropped`), subjects that are not terms (`non_term_subjects_dropped`), references to undeclared owned terms (`undeclared_owned_references_rewritten`, `undeclared_owned_references_dropped`) and parents of the other role (`role_crossing_parents_dropped`).
 - A minted term without a label gets one derived from its local name (`ontology/labels_derived`).
+- A document whose plan names terms but mints none makes no ontology update call (`ontology/render_skipped_reuse_only`).
 - In `ontology_reduce_metrics`: `minted_classes`, `unused_minted_classes`, `generic_parents`, `generic_property_sides`, `missing_property_sides` and `owned_sides_listed`; `ontology_critic_units_skipped` in `retrieval_metrics`.
 
 #### Cross-document identity
@@ -51,6 +54,7 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 #### Models
 
 - `LLM_MODEL_BY_PHASE`: a model per LLM phase, recorded in the run manifest.
+- `LLM_REASONING_EFFORT_BY_PHASE`: a reasoning effort per LLM phase, recorded in the run manifest; a phase may also have its own model.
 
 ### Changed
 
@@ -61,6 +65,8 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 - `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` is true: two IRI objects from one unit are a warning, not an error that triggers the un-merge repair.
 - `FACTS_ADDITIONAL_STANDARD_NAMESPACES` is empty and only adds to the built-in vocabularies.
 - `ONTOLOGY_CRITIC_PASSES=1` reviews only units with a mandatory deterministic finding; 2 or more review every unit. The default stays 0.
+- `ONTOLOGY_CHAPTER_FORMAT=auto` is the term sheet in every render mode, and `term_sheet` is accepted with the ontology loop: the setting applies to the facts prompts only.
+- `FANOUT_WARMUP_UNITS` also applies to the ontology render fan-out.
 
 #### Ontology identity
 
@@ -89,6 +95,11 @@ Facts are extracted as statements against a selectable vocabulary and repaired w
 #### Aggregation
 
 - Different types no longer block merging two entities found in the text; only declared disjointness does. Types that share no class merge only on an equal label, initials, a shared key or a coreference verdict. A merge with an individual of the ontology still needs a shared type. Entities sharing a label are compared even when their embeddings are far apart.
+
+#### Documentation
+
+- The performance guide describes two cost profiles beside the defaults: optimal (`LLM_REASONING_EFFORT_BY_PHASE` low on completion, coreference and home ontology) and maximal (`ONTOLOGY_CHAPTER_FORMAT=inherit`).
+- The PyPI homepage, the README and the docs footer link to the project page on growgraph.dev.
 
 ### Removed
 

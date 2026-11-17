@@ -483,6 +483,9 @@ def dump_run_manifest(
             requests_per_second=llm_config.requests_per_second,
             max_retries=llm_config.max_retries,
             model_by_phase=dict(llm_config.model_by_phase) or None,
+            reasoning_effort_by_phase=(
+                dict(llm_config.reasoning_effort_by_phase) or None
+            ),
             prompt_cache_key=llm_config.prompt_cache_key,
             max_inflight=llm_config.llm_max_inflight,
         ),
