@@ -81,6 +81,7 @@ an install hint instead of failing with an import error.
 | `ontocast sections` | Print the section outline detected in a document and the route of each unit, without running extraction |
 | `ontocast cache` | Inspect (`stats`), trim (`prune`) or empty (`clear`) the on-disk cache |
 | `ontocast config check` | Classify each variable in settings files as unknown, invalid, redundant or pinned |
+| `ontocast check` | Check an RDF facts graph against a catalog without a model call; see [Checking facts](../concepts/checking_facts.md) |
 | `pdfs-to-markdown` | Convert a directory of PDFs to Markdown files (`<name>.md`) that `ontocast process` reads back with their headings |
 | `match-graphs` | Match the entities of two Turtle graphs; see [Entity disambiguation](../concepts/entity_disambiguation.md) |
 | `plot-graph` | Regenerate the workflow diagrams (needs the `plot` extra) |

@@ -189,6 +189,25 @@ def normalize_literals_against_schema(
 ) -> int:
     """Retype literals whose predicate declares a compatible datatype range.
 
+    Applies :func:`schema_retypings` to ``graph`` in place.
+
+    Returns:
+        Number of retyped literals.
+    """
+    replacements = schema_retypings(graph, ontology_graph, catalog_roles)
+    for old, new in replacements:
+        graph.remove(old)
+        graph.add(new)
+    return len(replacements)
+
+
+def schema_retypings(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    catalog_roles: CatalogRoles | None = None,
+) -> list[tuple[Triple, Triple]]:
+    """Literals whose predicate declares a compatible datatype range, retyped.
+
     Fixes the ``qudt:numericValue 230`` vs ``"230"^^xsd:decimal`` drift at parse
     time, and the same drift for the date, time and duration datatypes: when
     the range (:func:`literal_ranges`) is in :data:`_RETYPABLE_RANGE_DATATYPES`
@@ -201,14 +220,16 @@ def normalize_literals_against_schema(
     and language-tagged literals are left alone, since they are
     ``rdf:langString`` and retyping would discard the tag.
 
+    Reads ``graph`` only.
+
     Returns:
-        Number of retyped literals.
+        Each retyped triple with its replacement.
     """
     declared_ranges = literal_ranges(ontology_graph, catalog_roles)
     if not declared_ranges:
-        return 0
+        return []
 
-    replacements: list[tuple[tuple, tuple]] = []
+    replacements: list[tuple[Triple, Triple]] = []
     for subject, predicate, obj in graph:
         if not isinstance(obj, Literal) or not isinstance(predicate, URIRef):
             continue
@@ -232,11 +253,7 @@ def normalize_literals_against_schema(
         if value is None:
             continue
         replacements.append(((subject, predicate, obj), (subject, predicate, value)))
-
-    for old, new in replacements:
-        graph.remove(old)
-        graph.add(new)
-    return len(replacements)
+    return replacements
 
 
 def temporal_range_mismatches(
