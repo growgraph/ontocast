@@ -188,3 +188,6 @@ cython_debug/
 
 # plot-graph scratch output; the canonical copy lives in docs/assets/
 /graph.mmd
+
+# local run profiles for --env-file (secret-free; keys come from the shell)
+/local/

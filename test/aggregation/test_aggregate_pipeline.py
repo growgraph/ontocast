@@ -3,7 +3,7 @@ from typing import cast
 import pytest
 from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
-from ontocast.onto.constants import DEFAULT_IRI, PROV, RDF_REIFIES, SCHEMA
+from ontocast.onto.constants import DEFAULT_IRI, PROV, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import EmbeddingBasedAggregator
@@ -187,7 +187,7 @@ def test_aggregate_graphs_merges_overlapping_facts(monkeypatch) -> None:
     assert (us_entity, OWL.sameAs, original_camel) not in result
     assert (us_entity, OWL.sameAs, original_snake) not in result
 
-    statement_nodes = list(result.subjects(RDF_REIFIES, None))
+    statement_nodes = list(result.reifications.reifiers())
     assert statement_nodes
     assert all(
         len(set(result.objects(stmt, PROV.wasDerivedFrom))) >= 1
@@ -251,7 +251,7 @@ def test_aggregate_graphs_preserves_ontology_uris_and_provenance(monkeypatch) ->
     assert (typo, OWL.sameAs, canonical) not in result
     assert str(canonical).startswith("http://example.org/onto#")
 
-    statement_nodes = list(result.subjects(RDF_REIFIES, None))
+    statement_nodes = list(result.reifications.reifiers())
     assert statement_nodes
     assert all(
         len(set(result.objects(stmt, PROV.wasDerivedFrom))) >= 1

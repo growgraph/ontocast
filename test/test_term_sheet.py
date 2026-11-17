@@ -8,6 +8,9 @@ what must survive, and what must refuse to happen on the ontology path.
 
 from __future__ import annotations
 
+import importlib
+import inspect
+
 import pytest
 from rdflib import OWL, RDF, RDFS, SKOS, Literal, Namespace, URIRef
 
@@ -186,18 +189,18 @@ def test_text_caps_reach_the_term_sheet(catalog: RDFGraph) -> None:
 
 
 @pytest.mark.parametrize("mode", [RenderMode.ONTOLOGY, RenderMode.ONTOLOGY_AND_FACTS])
-def test_term_sheet_is_rejected_on_the_ontology_path(mode: RenderMode) -> None:
-    """The ontology loop patches the statements in its chapter.
+def test_term_sheet_is_allowed_with_the_ontology_loop(mode: RenderMode) -> None:
+    """The setting reaches the facts agents only.
 
-    A listing has nothing to insert into or delete from, and a silent fallback
-    would spend an ontology pass producing patches nobody could apply while the
-    manifest recorded a setting that never took effect.
+    The ontology loop patches the statements in its own chapter, which it
+    always renders in the wire format, so a term sheet for the facts prompts
+    cannot reach it.
     """
-    with pytest.raises(ValueError, match="RENDER_MODE=facts"):
-        ServerConfig(
-            render_mode=mode,
-            ontology_chapter_format=OntologyChapterFormat.TERM_SHEET,
-        )
+    config = ServerConfig(
+        render_mode=mode,
+        ontology_chapter_format=OntologyChapterFormat.TERM_SHEET,
+    )
+    assert config.ontology_chapter_format == OntologyChapterFormat.TERM_SHEET
 
 
 def test_term_sheet_is_allowed_on_a_facts_run() -> None:
@@ -334,19 +337,11 @@ def test_auto_takes_the_term_sheet_on_a_facts_run() -> None:
 
 
 @pytest.mark.parametrize("mode", [RenderMode.ONTOLOGY, RenderMode.ONTOLOGY_AND_FACTS])
-def test_auto_falls_back_to_a_graph_where_a_listing_is_illegal(
-    mode: RenderMode,
-) -> None:
-    """`auto` never fails: where a listing cannot be patched, it yields a graph.
-
-    That is the whole difference from an explicit `term_sheet`, which is
-    rejected on these modes -- asking for something impossible is an error,
-    while asking for the best available is not.
-    """
+def test_auto_takes_the_term_sheet_with_the_ontology_loop(mode: RenderMode) -> None:
     config = ServerConfig(
         render_mode=mode, ontology_chapter_format=OntologyChapterFormat.AUTO
     )
-    assert config.ontology_chapter_format == OntologyChapterFormat.INHERIT
+    assert config.ontology_chapter_format == OntologyChapterFormat.TERM_SHEET
 
 
 def test_auto_is_resolved_before_anything_downstream_sees_it() -> None:
@@ -367,3 +362,15 @@ def test_auto_is_resolved_before_anything_downstream_sees_it() -> None:
             LLMGraphFormat.JSONLD,
             ontology_chapter_format=OntologyChapterFormat.AUTO,
         )
+
+
+def test_the_ontology_loop_never_reads_the_chapter_format() -> None:
+    """The term sheet is legal in every mode only because of this.
+
+    The ontology renderer and critic patch the statements of their chapter, so
+    they must build it from LLM_GRAPH_FORMAT alone; a term sheet reaching them
+    would leave nothing to patch.
+    """
+    for name in ("render_ontology", "criticise_ontology"):
+        module = importlib.import_module(f"ontocast.agent.{name}")
+        assert "ontology_chapter_format" not in inspect.getsource(module), name

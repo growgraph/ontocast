@@ -17,7 +17,8 @@ your ontologies and it extracts facts against them; give it none and it builds
 one as it reads. Run it as an HTTP service, as a batch command, or inside your
 own LangChain or LangGraph agent.
 
-**Documentation:** [growgraph.github.io/ontocast](https://growgraph.github.io/ontocast/)
+**Documentation:** [growgraph.github.io/ontocast](https://growgraph.github.io/ontocast/) ·
+**Project page:** [growgraph.dev/open-source/ontocast](https://growgraph.dev/open-source/ontocast)
 
 ## Features
 

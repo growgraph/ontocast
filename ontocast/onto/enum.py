@@ -122,6 +122,13 @@ class RetrievalMetric(StrEnum):
     FACTS_REPAIR_DELETE_ONLY = "facts_repair_delete_only"
     FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
     FACTS_MANDATORY_RESIDUAL = "facts_mandatory_residual"
+    FACTS_MANDATORY_RESIDUAL_BY_KIND = "facts_mandatory_residual_by_kind"
+    #: Statements and values linked to nothing in the units' renders, and
+    #: those left after the gap pass (``statement_without_subject``).
+    FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED = (
+        "facts_statements_without_subject_rendered"
+    )
+    FACTS_STATEMENTS_WITHOUT_SUBJECT = "facts_statements_without_subject"
     FACTS_CRITIC_CALLS = "facts_critic_calls"
     FACTS_CRITIC_FIXES_APPLIED = "facts_critic_fixes_applied"
     FACTS_CRITIC_FIXES_RESIDUAL = "facts_critic_fixes_residual"
@@ -131,6 +138,9 @@ class RetrievalMetric(StrEnum):
     ONTOLOGY_CRITIC_FIXES_RESIDUAL = "ontology_critic_fixes_residual"
     ONTOLOGY_CRITIC_FIXES_NOOP = "ontology_critic_fixes_noop"
     ONTOLOGY_CRITIC_PATCHES_ROLLED_BACK = "ontology_critic_patches_rolled_back"
+    #: Units the ontology loop did not send to the critic: at one pass, a unit
+    #: with no mandatory deterministic finding.
+    ONTOLOGY_CRITIC_UNITS_SKIPPED = "ontology_critic_units_skipped"
     FACTS_CRITIC_ACCEPTED = "facts_critic_accepted"
     #: Units whose critic call failed (timeout, unparseable response) and
     #: left the loop unreviewed, and units the loop did not send to the
@@ -148,9 +158,20 @@ class RetrievalMetric(StrEnum):
     FACTS_COMPLETION_CALLS = "facts_completion_calls"
     FACTS_COMPLETION_TRIPLES_INSERTED = "facts_completion_triples_inserted"
     FACTS_COMPLETION_MEASUREMENTS_RECOVERED = "facts_completion_measurements_recovered"
+    #: Instances linked to nothing that the gap pass linked.
+    FACTS_COMPLETION_DETACHED_LINKED = "facts_completion_detached_linked"
+    #: Domain-repair calls, statements they gave a fitting property, and
+    #: statements still violating a declared domain that were dropped.
+    FACTS_DOMAIN_REPAIR_CALLS = "facts_domain_repair_calls"
+    FACTS_DOMAIN_REPAIR_FIXED = "facts_domain_repair_fixed"
+    FACTS_DOMAIN_VIOLATIONS_DROPPED = "facts_domain_violations_dropped"
 
     # Aggregation and the un-merge repair.
     FACTS_REJECTED_MERGES = "facts_rejected_merges"
+    #: The refused merges by reason (same_unit, sibling, literal_conflict,
+    #: functional_iri_conflict, initials_conflict, role, type, lexical,
+    #: cluster_veto), a pair counting under each reason that refused it.
+    FACTS_MERGE_REJECTIONS_BY_REASON = "facts_merge_rejections_by_reason"
     FACTS_MERGE_REPAIR_PASSES = "facts_merge_repair_passes"
     FACTS_MERGE_VETOES = "facts_merge_vetoes"
     FACTS_MERGE_REPAIRS_REJECTED = "facts_merge_repairs_rejected"
@@ -175,13 +196,26 @@ class RetrievalMetric(StrEnum):
     #: domains and ranges of their links (against the whole ontology context,
     #: which a unit's context may have lacked), instead of dropping them.
     FACTS_UNTYPED_INFERRED = "facts_untyped_inferred"
+    #: Instances dropped for stating nothing: linked to no other instance nor
+    #: the document, and holding no value, only a type and names.
+    FACTS_UNLINKED_DROPPED = "facts_unlinked_dropped"
+    #: Statements linking a node to itself through a property not declared
+    #: reflexive, dropped at the gate (``self_loop_dropped`` repairs).
+    FACTS_SELF_LOOPS_DROPPED = "facts_self_loops_dropped"
+    #: Nodes standing for a date that held only a label, given the typed
+    #: ISO 8601 value the label names (``date_value_added`` repairs).
+    FACTS_DATE_VALUES_ADDED = "facts_date_values_added"
     #: Links between instances the gate's repairs removed (SHACL prune and
     #: the untyped drop), counted after any un-merge pass.
     FACTS_LINKS_REMOVED = "facts_links_removed"
     #: Connected groups of instances in the served facts, the document node
-    #: joining what it links, and instances linked to nothing.
+    #: joining what it links, and instances linked to nothing (those left hold
+    #: a value of their own). Both describe the served graph.
     FACTS_COMPONENTS = "facts_components"
     FACTS_ISOLATED = "facts_isolated"
+    #: Labels two or more served instances share: the duplicates aggregation
+    #: left, or distinct things with one name.
+    FACTS_TWIN_LABELS = "facts_twin_labels"
 
     # Post-aggregation checks.
     STRUCTURAL_ONTOLOGY_COMPONENTS_MAX = "structural_ontology_components_max"
@@ -229,9 +263,7 @@ class LLMOutputLayout(StrEnum):
 class OntologyChapterFormat(StrEnum):
     """Syntax of the ``# ONTOLOGY`` chapter in the facts prompts.
 
-    - ``auto`` (default): ``term_sheet`` where the render mode is facts-only,
-      ``inherit`` otherwise. The cheapest chapter each mode can legally read,
-      chosen without asking an operator to know which those are. Resolved once
+    - ``auto`` (default): ``term_sheet``, the shortest chapter. Resolved once
       when the configuration is built, so nothing downstream -- profile lookup,
       cache key, run manifest -- ever sees this member.
     - ``inherit``: the chapter follows :class:`LLMGraphFormat`, so
@@ -245,9 +277,9 @@ class OntologyChapterFormat(StrEnum):
     - ``term_sheet``: the chapter is a line-per-term listing rather than a
       serialized graph -- name, surface forms, type, hierarchy, domain/range
       and usage contract, without the per-statement RDF scaffolding or the
-      prose written for a human reader. Legal on the facts path only: the
-      ontology loop emits a patch against the statements it reads, so its
-      chapter has to remain a graph.
+      prose written for a human reader. Legal in every render mode: the
+      ontology loop never reads this setting and keeps its own graph chapter,
+      because it emits a patch against the statements it reads.
     """
 
     AUTO = "auto"
@@ -311,6 +343,7 @@ class WorkflowNode(StrEnum):
     CONVERT_TO_TEXT = "Convert to Text"
     CHUNK = "Chunk Text"
     RESOLVE_HOME_ONTOLOGY = "Resolve Home Ontology"
+    ONTOLOGY_PLAN = "Plan Ontology"
     TEXT_TO_ONTOLOGY = "Text to Ontology"
     TEXT_TO_FACTS = "Text to Facts"
     CRITICISE_ONTOLOGY = "Criticise Ontology"
@@ -319,7 +352,6 @@ class WorkflowNode(StrEnum):
     RENDER_ONTOLOGY_UPDATE = "Update Ontology"
     RENDER_FACTS = "Render Facts"
     NORMALIZE_ONTOLOGY_UPDATES = "Normalize Ontology Updates"
-    CONSOLIDATE_ONTOLOGY = "Consolidate Ontology"
     MERGE_FACTS = "Merge Facts"
     RESOLVE_COREFERENCE = "Resolve Coreference"
     VALIDATE_FACTS = "Validate Facts"
@@ -342,9 +374,11 @@ class LLMPhase(StrEnum):
     FACTS_COMPLETION = "facts_completion"
     FACTS_COREFERENCE = "facts_coreference"
     ONTOLOGY_IDENTITY = "ontology_identity"
+    ONTOLOGY_PLAN = "ontology_plan"
     ONTOLOGY_RENDER = "ontology_render"
     ONTOLOGY_CRITIC = "ontology_critic"
     ONTOLOGY_CONSOLIDATION = "ontology_consolidation"
+    ONTOLOGY_CURATION = "ontology_curation"
     ONTOLOGY_SELECTION = "ontology_selection"
     EVIDENCE_PLANNING = "evidence_planning"
     UNIT_SUMMARY = "unit_summary"

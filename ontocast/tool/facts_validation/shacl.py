@@ -29,7 +29,7 @@ from ontocast.onto.rdfgraph import (
     retarget_reifiers,
 )
 from ontocast.tool.facts_validation.literal_repair import (
-    _literal_parses_as,
+    typed_literal,
 )
 from ontocast.tool.facts_validation.terms import (
     ValidationPolicy,
@@ -107,8 +107,8 @@ def run_shacl(
 
     RDFS inference is the default for the same reason. SHACL resolves class
     targets through ``rdfs:subClassOf`` on its own, but property paths carry no
-    entailment: a shape on ``obs:hasResult`` does not see the
-    ``life:hasStorageResult`` the renderer emitted, and reports the more
+    entailment: a shape on ``ex:hasResult`` does not see the
+    ``ex:hasFinalResult`` the renderer emitted, and reports the more
     specific statement as a missing one, so turning inference off raises the
     violation count rather than lowering it.
 
@@ -141,13 +141,10 @@ def run_shacl(
         )
         return None
 
-    # pyshacl clones and mixes the data graph through plain rdflib graphs,
-    # which cannot hold the RDF 1.2 triple terms an oxigraph-backed aggregated
-    # graph carries (rdflib ``Graph.add`` asserts on them). Hand pyshacl a
-    # sanitised copy; the dropped reification provenance carries no shape
-    # targets, so validation loses nothing.
+    # pyshacl sees the triples only: the reifications carry no shape targets,
+    # and rdflib graphs cannot hold their triple terms.
     data_graph = RDFGraph()
-    copy_triples(graph, data_graph, origin="run_shacl")
+    copy_triples(graph, data_graph)
     for prefix, namespace in graph.namespaces():
         data_graph.bind(prefix, namespace, override=True)
 
@@ -421,13 +418,12 @@ def _shacl_repairs_for(
             and shape is not None
         ):
             target = shapes_graph.value(shape, SH.datatype)
-            lexical = str(violation.value).strip()
-            if (
-                isinstance(target, URIRef)
-                and violation.value.datatype != target
-                and _literal_parses_as(lexical, target)
-            ):
-                retyped = Literal(lexical, datatype=target)
+            retyped = (
+                typed_literal(str(violation.value), target)
+                if isinstance(target, URIRef) and violation.value.datatype != target
+                else None
+            )
+            if retyped is not None:
                 removed = (violation.focus, violation.path, violation.value)
                 replacement = (violation.focus, violation.path, retyped)
                 removals.append(removed)
@@ -638,10 +634,9 @@ def apply_shacl_repairs(
     constraints -- is reported, never repaired.
 
     Args:
-        graph: Aggregated facts graph, repaired **in place**: it may be
-            oxigraph-backed and carry RDF 1.2 triple terms, which a copied
-            rdflib graph would silently drop. A pass that fails the accept
-            test is rolled back triple-for-triple instead.
+        graph: Aggregated facts graph, repaired **in place**, so its
+            reifications stay with it and follow each rewrite. A pass that
+            fails the accept test is rolled back triple-for-triple instead.
         shapes_graph: Shapes to validate against; ``None`` disables the pass.
         ontology_graph: Merged ontology context, indexed for surface forms.
         mode: ``off`` | ``rewrite`` (rewrites only) | ``prune`` (also prunes).

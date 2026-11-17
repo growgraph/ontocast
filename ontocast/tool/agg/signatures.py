@@ -19,6 +19,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from itertools import combinations
 
 from rdflib import OWL, RDF, Literal, URIRef
 from rdflib.namespace import XSD
@@ -249,6 +250,29 @@ def canonical_literal(literal: Literal) -> tuple[str, str] | None:
     return None
 
 
+def harvest_disjoint_classes(
+    ontology_graph: RDFGraph | None,
+) -> set[frozenset[URIRef]]:
+    """Class pairs the ontology declares disjoint.
+
+    Reads ``owl:disjointWith`` and the members of ``owl:AllDisjointClasses``.
+    Only a declared disjointness proves that two typings name two things.
+    """
+    if ontology_graph is None:
+        return set()
+    pairs: set[frozenset[URIRef]] = set()
+    for left, right in ontology_graph.subject_objects(OWL.disjointWith):
+        if isinstance(left, URIRef) and isinstance(right, URIRef) and left != right:
+            pairs.add(frozenset((left, right)))
+    for group in ontology_graph.subjects(RDF.type, OWL.AllDisjointClasses):
+        for members in ontology_graph.objects(group, OWL.members):
+            classes = [
+                m for m in ontology_graph.items(members) if isinstance(m, URIRef)
+            ]
+            pairs.update(frozenset(pair) for pair in combinations(classes, 2))
+    return pairs
+
+
 def harvest_max_one_predicates(ontology_graph: RDFGraph | None) -> set[URIRef]:
     """Harvest predicates the schema constrains to at most one value.
 
@@ -298,10 +322,18 @@ class MergeGuardContext:
             individuals.
         functional_predicates: Predicates with a schema-asserted or
             empirically observed max-1 object constraint.
+        disjoint_classes: Class pairs the ontology declares disjoint.
+        class_ancestors: Each asserted type with its superclasses (itself
+            included); a type missing here stands for itself alone.
+        fact_entities: Instances the document minted. Their types are each
+            unit's reading; a catalog entity's types define it.
     """
 
     sibling_pairs: set[frozenset[URIRef]] = field(default_factory=set)
     functional_predicates: set[URIRef] = field(default_factory=set)
+    disjoint_classes: set[frozenset[URIRef]] = field(default_factory=set)
+    class_ancestors: dict[URIRef, frozenset[URIRef]] = field(default_factory=dict)
+    fact_entities: set[URIRef] = field(default_factory=set)
 
 
 def build_sibling_pairs(

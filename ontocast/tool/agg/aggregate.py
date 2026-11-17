@@ -15,6 +15,7 @@ Pipeline:
 
 import logging
 import re
+from collections import Counter
 from collections.abc import Sequence
 from difflib import SequenceMatcher
 from enum import StrEnum
@@ -41,6 +42,7 @@ from ontocast.onto.iri_policy import (
     normalize_namespace_iri,
 )
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.tool.facts_validation.terms import superclass_closure
 from ontocast.tool.representation_text import (
     normalize_identifier,
     normalize_text,
@@ -54,6 +56,7 @@ from .signatures import (
     MergeGuardContext,
     build_sibling_pairs,
     empirically_functional_predicates,
+    harvest_disjoint_classes,
     harvest_max_one_predicates,
     label_tokens,
     labels_alias_with_initials,
@@ -551,6 +554,11 @@ class AggregationResult(BaseModel):
             :class:`~ontocast.onto.state.AgentState` between graph nodes.
         rejected_merge_count: Candidate merges rejected by symbolic
             validation (guards, roles, types, lexical bar).
+        rejected_by_reason: How many of those each reason refused
+            (``same_unit``, ``sibling``, ``literal_conflict``,
+            ``functional_iri_conflict``, ``initials_conflict``, ``role``,
+            ``type``, ``lexical``, ``cluster_veto``); a pair refused for
+            several reasons counts under each.
         key_supported_clusters: Final URIs of merged clusters containing at
             least one natural-key pair (a shared identifier value). The
             validation gate treats label disagreement inside these clusters
@@ -573,6 +581,7 @@ class AggregationResult(BaseModel):
     decisions: dict[URIRef, EntityDecision] = Field(default_factory=dict)
     merged_clusters: dict[str, list[str]] = Field(default_factory=dict)
     rejected_merge_count: int = 0
+    rejected_by_reason: dict[str, int] = Field(default_factory=dict)
     key_supported_clusters: list[str] = Field(default_factory=list)
     cross_unit_object_pairs: list[tuple[str, str]] = Field(default_factory=list)
     unconfirmed_merges: list[tuple[str, str, float]] = Field(default_factory=list)
@@ -815,7 +824,19 @@ class EmbeddingBasedAggregator:
         left: URIRef,
         right: URIRef,
         representations: dict[URIRef, EntityRepresentation],
+        guard_context: MergeGuardContext | None = None,
     ) -> bool:
+        """Whether the two entities' types allow one identity at all.
+
+        Between two instances the document minted, asserted types are
+        evidence, not identity: units type one thing at different levels or
+        from different vocabularies (a place as a location in one, a feature
+        of interest in another), so only a declared ``owl:disjointWith``
+        between their superclass closures says they are two things; types
+        that merely differ ask for a name that confirms identity instead
+        (:meth:`_types_overlap`). A catalog entity's types define it, so a
+        merge with one needs a shared type.
+        """
         left_rep = representations.get(left)
         right_rep = representations.get(right)
         if left_rep is None or right_rep is None:
@@ -829,7 +850,53 @@ class EmbeddingBasedAggregator:
                 # evidence in either direction.
                 return not left_types and not right_types
             return True
-        return bool(left_types & right_types)
+        if guard_context is None or not {left, right} <= guard_context.fact_entities:
+            return bool(left_types & right_types)
+        disjoint = guard_context.disjoint_classes
+        if not disjoint:
+            return True
+        right_closure = self._type_closure(right_types, guard_context)
+        return not any(
+            frozenset((left_class, right_class)) in disjoint
+            for left_class in self._type_closure(left_types, guard_context)
+            for right_class in right_closure
+        )
+
+    @staticmethod
+    def _type_closure(
+        types: set[URIRef], guard_context: MergeGuardContext | None
+    ) -> set[URIRef]:
+        ancestors = guard_context.class_ancestors if guard_context else {}
+        return {
+            ancestor
+            for class_iri in types
+            for ancestor in ancestors.get(class_iri, frozenset((class_iri,)))
+        }
+
+    def _types_overlap(
+        self,
+        left: URIRef,
+        right: URIRef,
+        representations: dict[URIRef, EntityRepresentation],
+        guard_context: MergeGuardContext | None,
+    ) -> bool:
+        """True when the two typings share a class, superclasses included.
+
+        Types that share nothing do not prove two things, but they cost
+        evidence: such a pair merges only on a name that confirms identity
+        (an equal label, initials), a shared key or a coreference verdict,
+        never on a plausible name match alone.
+        """
+        left_rep = representations.get(left)
+        right_rep = representations.get(right)
+        if left_rep is None or right_rep is None:
+            return False
+        if not left_rep.types or not right_rep.types:
+            return True
+        return bool(
+            self._type_closure(set(left_rep.types), guard_context)
+            & self._type_closure(set(right_rep.types), guard_context)
+        )
 
     def _entity_label_values(self, rep: EntityRepresentation) -> set[str]:
         """Normalized name strings an entity is identified by.
@@ -1111,7 +1178,7 @@ class EmbeddingBasedAggregator:
                 return True
         if not self._are_roles_compatible(left, right, representations):
             return True
-        if not self._are_types_compatible(left, right, representations):
+        if not self._are_types_compatible(left, right, representations, guard_context):
             return True
         return False
 
@@ -1137,7 +1204,12 @@ class EmbeddingBasedAggregator:
             # positive identity evidence in its own right; the guards above
             # still had their say.
             return True
-        return self._are_lexical_aliases(left, right, representations)
+        tier = self._lexical_alias_tier(left, right, representations)
+        if tier is None:
+            return False
+        return tier in CONFIRMING_ALIAS_TIERS or self._types_overlap(
+            left, right, representations, guard_context
+        )
 
     def _collect_natural_key_pairs(
         self,
@@ -1187,6 +1259,31 @@ class EmbeddingBasedAggregator:
                     continue
                 for left, right in combinations(sorted(entities, key=str), 2):
                     pairs.add(frozenset((left, right)))
+        return pairs
+
+    def _collect_label_pairs(
+        self, representations: dict[URIRef, EntityRepresentation]
+    ) -> set[frozenset[URIRef]]:
+        """Instance pairs that share a normalised name.
+
+        A name shared by more than ``_NATURAL_KEY_MAX_VALUE_ENTITIES``
+        instances is generic, not identifying. The pairs only bring entities
+        into one candidate cluster; every veto still decides.
+        """
+        instance_role = str(EntityRole.INSTANCE)
+        by_label: dict[str, list[URIRef]] = {}
+        for entity, rep in representations.items():
+            if self._role_key(rep) != instance_role:
+                continue
+            for label in self._entity_label_values(rep):
+                by_label.setdefault(label, []).append(entity)
+        pairs: set[frozenset[URIRef]] = set()
+        for entities in by_label.values():
+            if 2 <= len(entities) <= _NATURAL_KEY_MAX_VALUE_ENTITIES:
+                pairs.update(
+                    frozenset(pair)
+                    for pair in combinations(sorted(entities, key=str), 2)
+                )
         return pairs
 
     @staticmethod
@@ -1298,9 +1395,16 @@ class EmbeddingBasedAggregator:
                     failures.append("initials_conflict")
         if not self._are_roles_compatible(left, right, representations):
             failures.append("role")
-        if not self._are_types_compatible(left, right, representations):
+        tier = self._lexical_alias_tier(left, right, representations)
+        if not self._are_types_compatible(
+            left, right, representations, guard_context
+        ) or (
+            tier is not None
+            and tier not in CONFIRMING_ALIAS_TIERS
+            and not self._types_overlap(left, right, representations, guard_context)
+        ):
             failures.append("type")
-        if not self._are_lexical_aliases(left, right, representations):
+        if tier is None:
             failures.append("lexical")
         return failures
 
@@ -1706,10 +1810,22 @@ class EmbeddingBasedAggregator:
                 object_groups,
                 min_support=self.functional_min_empirical_support,
             ),
+            disjoint_classes=harvest_disjoint_classes(ontology_graph),
+            fact_entities={
+                entity
+                for entity, classification in entity_classification.items()
+                if classification == EntityClassification.FACT
+            },
         )
         representations = self.normalizer.create_representations_batch(
             entities, entity_graphs
         )
+        for representation in representations.values():
+            for class_iri in representation.types:
+                if class_iri not in guard_context.class_ancestors:
+                    guard_context.class_ancestors[class_iri] = frozenset(
+                        superclass_closure(class_iri, ontology_graph)
+                    )
         decisions: dict[URIRef, EntityDecision] = {
             entity: EntityDecision(
                 classification=classification,
@@ -1793,6 +1909,12 @@ class EmbeddingBasedAggregator:
                     candidate_clusters = self._merge_candidate_clusters_by_key_pairs(
                         candidate_clusters, key_pairs
                     )
+            # Embedding clusters can split entities that share a name (their
+            # types and neighbourhoods differ by unit); a shared name must at
+            # least bring them together for symbolic validation.
+            candidate_clusters = self._merge_candidate_clusters_by_key_pairs(
+                candidate_clusters, self._collect_label_pairs(representations)
+            )
             confirmed = {
                 pair
                 for pair in confirmed_pairs or set()
@@ -2007,6 +2129,13 @@ class EmbeddingBasedAggregator:
             decisions=decisions,
             merged_clusters=merged_clusters,
             rejected_merge_count=len(rejected_merges),
+            rejected_by_reason=dict(
+                sorted(
+                    Counter(
+                        reason for *_, failed in rejected_merges for reason in failed
+                    ).items()
+                )
+            ),
             key_supported_clusters=key_supported_clusters,
             cross_unit_object_pairs=build_cross_unit_object_pairs(
                 active_units, final_mapping

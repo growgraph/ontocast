@@ -3,7 +3,9 @@
 from rdflib import OWL, RDF, RDFS, XSD, Graph, URIRef
 
 from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.onto.iri_policy import is_opaque_local_name
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.property_sides import side_classes
 
 #: The RDF languages and the facts namespace: never a domain vocabulary, even
 #: where a graph declares terms in them (``owl:Thing``).
@@ -81,24 +83,6 @@ def format_ontologies_clause(pairs: list[tuple[str, str]]) -> str:
     return f"domain ontologies {', '.join(items)}"
 
 
-def _is_opaque_local_name(local: str) -> bool:
-    """Return True when a local IRI name carries no human-readable semantics.
-
-    Heuristic: opaque if the local name is a Q/P-number (Wikidata style),
-    a pure numeric string, or a hex/hash string of length >= 8.
-    """
-    if not local:
-        return False
-    if local[0] in ("Q", "P") and local[1:].isdigit():
-        return True
-    if local.isdigit():
-        return True
-    hex_chars = set("0123456789abcdefABCDEF")
-    if len(local) >= 8 and all(c in hex_chars for c in local):
-        return True
-    return False
-
-
 def _qname(graph: Graph, uri: URIRef) -> str:
     """Return the prefixed name for *uri*, falling back to the full IRI."""
     try:
@@ -120,7 +104,7 @@ def build_label_index(graph: Graph) -> str:
         if not isinstance(subj, URIRef):
             continue
         local = str(subj).rsplit("/", 1)[-1].rsplit("#", 1)[-1]
-        if not _is_opaque_local_name(local):
+        if not is_opaque_local_name(local):
             continue
         qn = _qname(graph, subj)
         entries.append((str(label_node), qn))
@@ -161,7 +145,7 @@ def build_property_summary(graph: Graph) -> str:
     opaque_props = [
         p
         for p in props
-        if _is_opaque_local_name(str(p).rsplit("/", 1)[-1].rsplit("#", 1)[-1])
+        if is_opaque_local_name(str(p).rsplit("/", 1)[-1].rsplit("#", 1)[-1])
     ]
     if not opaque_props:
         return ""
@@ -174,13 +158,13 @@ def build_property_summary(graph: Graph) -> str:
         prop_label = label_map.get(str(prop), "?")
         qn = _qname(graph, prop)
         domain_parts: list[str] = []
-        for _, _, d in graph.triples((prop, RDFS.domain, None)):
+        for d in sorted(side_classes(prop, [graph], "domain"), key=str):
             if isinstance(d, URIRef):
                 dl = label_map.get(str(d), "")
                 dqn = _qname(graph, d)
                 domain_parts.append(f"{dl} ({dqn})" if dl else dqn)
         range_parts: list[str] = []
-        for _, _, r in graph.triples((prop, RDFS.range, None)):
+        for r in sorted(side_classes(prop, [graph], "range"), key=str):
             if isinstance(r, URIRef):
                 rl = label_map.get(str(r), "")
                 rqn = _qname(graph, r)

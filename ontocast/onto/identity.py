@@ -16,6 +16,7 @@ nothing else, and never an ontology minted here.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -24,15 +25,15 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 
 from ontocast.onto.constants import COMMON_PREFIXES, WELL_KNOWN_PREFIXES
 from ontocast.onto.iri_policy import normalize_namespace_iri
-from ontocast.onto.util import CONVENTIONAL_MAPPINGS
+from ontocast.onto.util import CONVENTIONAL_MAPPINGS, normalize_ontology_iri
 
 #: A valid Turtle prefix name that is also a safe path segment.
 ONTOLOGY_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 
-#: Ids of the library's own namespaces (facts, documents, its vocabulary):
-#: never an ontology's.
+#: Ids of the library's own namespaces (facts, documents, identity match nodes,
+#: its vocabulary): never an ontology's.
 LIBRARY_ONTOLOGY_IDS: frozenset[str] = frozenset(
-    {"cd", "doc", "facts", "oc", "ontocast"}
+    {"cd", "doc", "facts", "match", "oc", "ontocast"}
 )
 
 
@@ -157,6 +158,44 @@ def mint_ontology_iri(current_domain: str, ontology_id: str) -> str:
     )
 
 
+def is_owned_ontology(iri: str, current_domain: str) -> bool:
+    """Whether the ontology ``iri`` is this deployment's, i.e. under ``current_domain``.
+
+    An owned ontology is extended in place. Any other is external: its
+    namespace is never written to, and new terms go to its extension ontology.
+    """
+    domain = validate_current_domain(current_domain)
+    return iri == domain or iri.startswith(f"{domain}/")
+
+
+#: Marks an extension ontology's id: ``<stem>-ext-<hash>``.
+EXTENSION_SUFFIX = "-ext"
+#: Hex digits of the external IRI's digest in an extension id.
+EXTENSION_HASH_LENGTH = 10
+_EXTENSION_STEM_LENGTH = 32 - len(EXTENSION_SUFFIX) - 1 - EXTENSION_HASH_LENGTH
+
+
+def extension_ontology_id(external_iri: str, stem: str) -> str:
+    """The id of the extension ontology of the external ontology ``external_iri``.
+
+    ``<stem>-ext-<hash>``: the hash is taken over the normalized external IRI,
+    so one external ontology (with or without a trailing ``/`` or ``#``) has
+    one extension in every document and run, and two externals never share
+    one. ``stem`` (the external's id) only makes it readable.
+    """
+    digest = hashlib.sha256(normalize_ontology_iri(external_iri).encode()).hexdigest()
+    cleaned = re.sub(r"[^a-z0-9_-]+", "-", stem.strip().lower())
+    cleaned = re.sub(r"^[^a-z]+", "", cleaned)[:_EXTENSION_STEM_LENGTH].rstrip("_-")
+    return validate_minted_ontology_id(
+        f"{cleaned or 'onto'}{EXTENSION_SUFFIX}-{digest[:EXTENSION_HASH_LENGTH]}"
+    )
+
+
+def extension_ontology_iri(current_domain: str, external_iri: str, stem: str) -> str:
+    """The IRI of the extension ontology of ``external_iri`` under ``current_domain``."""
+    return mint_ontology_iri(current_domain, extension_ontology_id(external_iri, stem))
+
+
 def version_iri_for(iri: str, key: str) -> str:
     """The named graph holding version ``key`` of the ontology ``iri``."""
     return f"{iri}#{key}"
@@ -180,7 +219,8 @@ class OntologyIdentity(BaseModel):
     """What names an ontology: its id, its IRI, and how it describes itself.
 
     ``namespace`` is where its terms live: an existing ontology's own, else
-    ``<iri>#``, where a new ontology's terms are minted.
+    ``<iri>#``, where a new ontology's terms are minted. ``extends`` names the
+    external ontology an extension ontology adds terms to.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -188,8 +228,11 @@ class OntologyIdentity(BaseModel):
     ontology_id: OntologyId
     iri: OntologyIri
     title: str = Field(min_length=1, max_length=200)
-    description: str = Field(default="", max_length=2000)
+    #: An author's description, however long; a listing shows its start.
+    description: str = ""
     namespace: str = Field(default="")
+    #: The external ontology this one extends; minted with ``owl:imports`` of it.
+    extends: str | None = None
 
     @model_validator(mode="before")
     @classmethod

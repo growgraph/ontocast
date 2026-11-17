@@ -11,13 +11,13 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
 from ontocast.agent import chunk_text, convert_document
+from ontocast.agent.plan_ontology import plan_ontology
 from ontocast.agent.resolve_home_ontology import resolve_home_ontology
 from ontocast.agent.serialize import serialize
 from ontocast.onto.enum import WorkflowNode
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.node_factories import (
     make_consistency_critic_node,
-    make_consolidate_ontology_node,
     make_merge_facts_node,
     make_normalize_ontology_node,
     make_render_facts_node,
@@ -108,10 +108,10 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
     chunk_text_node = partial(chunk_text, tools=tools)
     serialize_node = partial(serialize, tools=tools)
     resolve_home_ontology_node = partial(resolve_home_ontology, tools=tools)
+    plan_ontology_node = partial(plan_ontology, tools=tools)
 
     render_ontology_node = make_render_ontology_node(tools)
     normalize_ontology_node = make_normalize_ontology_node(tools)
-    consolidate_ontology_node = make_consolidate_ontology_node(tools)
     render_facts_node = make_render_facts_node(tools)
     merge_facts_node = make_merge_facts_node(tools)
     resolve_coreference_node = make_resolve_coreference_node(tools)
@@ -123,9 +123,9 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
         WorkflowNode.CONVERT_TO_TEXT: convert_document_node,
         WorkflowNode.CHUNK: chunk_text_node,
         WorkflowNode.RESOLVE_HOME_ONTOLOGY: resolve_home_ontology_node,
+        WorkflowNode.ONTOLOGY_PLAN: plan_ontology_node,
         WorkflowNode.RENDER_ONTOLOGY_UPDATE: render_ontology_node,
         WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES: normalize_ontology_node,
-        WorkflowNode.CONSOLIDATE_ONTOLOGY: consolidate_ontology_node,
         WorkflowNode.RENDER_FACTS: render_facts_node,
         WorkflowNode.MERGE_FACTS: merge_facts_node,
         WorkflowNode.RESOLVE_COREFERENCE: resolve_coreference_node,
@@ -146,16 +146,14 @@ def build_agent_graph(tools: ToolBox) -> StateGraph:
             WorkflowNode.RENDER_FACTS: WorkflowNode.RENDER_FACTS,
         },
     )
-    workflow.add_edge(
-        WorkflowNode.RESOLVE_HOME_ONTOLOGY, WorkflowNode.RENDER_ONTOLOGY_UPDATE
-    )
+    workflow.add_edge(WorkflowNode.RESOLVE_HOME_ONTOLOGY, WorkflowNode.ONTOLOGY_PLAN)
+    workflow.add_edge(WorkflowNode.ONTOLOGY_PLAN, WorkflowNode.RENDER_ONTOLOGY_UPDATE)
     workflow.add_edge(
         WorkflowNode.RENDER_ONTOLOGY_UPDATE, WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES
     )
     workflow.add_edge(
-        WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES, WorkflowNode.CONSOLIDATE_ONTOLOGY
+        WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES, WorkflowNode.STRUCTURAL_CHECK
     )
-    workflow.add_edge(WorkflowNode.CONSOLIDATE_ONTOLOGY, WorkflowNode.STRUCTURAL_CHECK)
     workflow.add_edge(WorkflowNode.RENDER_FACTS, WorkflowNode.MERGE_FACTS)
 
     workflow.add_edge(WorkflowNode.STRUCTURAL_CHECK, WorkflowNode.CONSISTENCY_CRITIC)

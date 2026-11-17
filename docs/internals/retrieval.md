@@ -196,6 +196,13 @@ sets a different depth for the sparse lane. The lanes fail differently: dense
 lanes drift to topical near-misses, the sparse lane to unrelated text sharing a
 token, so the depth at which each stops helping differs.
 
+A lane's hits are ranked in one total order: score, then IRI, then atom id.
+Stores return equal scores in no fixed order and may cut inside a run of them,
+so each lane asks its store for twice its depth, and again for twice that,
+until the score at the cut ends before the last hit returned. The same query
+over the same index therefore yields the same hits, and so the same context,
+in every run.
+
 The lanes are combined by weighted reciprocal rank. A hit at rank *r* in a
 lane adds `weight / (constant + r)` to the atom's fused score. The weights,
 [`VECTOR_STORE_FUSION_CORE_WEIGHT`](../reference/configuration/ontology-retrieval.md#vector_store_fusion_core_weight),
@@ -294,7 +301,8 @@ Consequences at the default weights and constant:
 ## From seeds to subgraph
 
 1. **Reference expansion.** Ontologies declaring classes that the seeds point
-   to through `rdfs:subClassOf`, `rdfs:domain` or `rdfs:range` join the set
+   to through `rdfs:subClassOf` or a domain or range (`rdfs:domain`,
+   `rdfs:range`, `schema:domainIncludes`, `schema:rangeIncludes`) join the set
    (`expanded_ontology_iris` in the metrics).
 2. **Version filter.** Each hit names the ontology version and content hash
    it was indexed from, and the catalog is narrowed to those. When no catalog
@@ -358,7 +366,9 @@ Consequences at the default weights and constant:
    caps their total, skipping a module too large for what is left and moving
    on to the next. This runs after the triple budget, so it can take the
    context past it; `ONTOLOGY_CONTEXT_MAX_TRIPLES` still applies. The per-ontology
-   atom floor is what lets a small module win its first seed.
+   atom floor is what lets a small module win its first seed. A module is read at
+   its current head on every retrieval, never kept from an earlier one: a home
+   ontology gains a version with each document.
 
 ## Catalog I/O
 

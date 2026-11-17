@@ -26,9 +26,11 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.model import GraphUpdateRenderReport, Suggestions
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_snapshot import OntologySnapshot
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.tool.atomic import AtomicLLMProvider, AtomicToolBox
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from test.snapshot_helpers import snapshot_from_ontology
 
 pytestmark = [pytest.mark.anyio, pytest.mark.unit]
@@ -79,11 +81,14 @@ def _tools() -> AtomicToolBox:
     return cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_llm_tool=get_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
             object_property_literal_check=True,
             property_alias_min_ratio=0.85,
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
+            subject_contract=lambda: None,
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,
@@ -184,7 +189,7 @@ def test_insert_hook_never_sees_the_delete_side() -> None:
         insert_graph=_graph(GOOD_TTL),
         delete_graph=_graph(STALE_TTL),
     )
-    update, _ = finalize_update_report(report, insert_hook=hook)
+    update, _, _ = finalize_update_report(report, insert_hook=hook)
 
     assert len(seen) == 1
     assert seen[0] is report.insert_graph
@@ -245,3 +250,40 @@ def test_insert_only_mode_gives_the_critic_no_delete_allowance() -> None:
     assert tools.ontology_insert_only is True
     assert tools.ontology_patch_policy.max_delete_share == 0.0
     assert tools.ontology_patch_policy.min_deletes == 0
+
+
+#: An IRI no SPARQL ``IRIREF`` can hold. rdflib reads it with a warning; the
+#: update compiled from it cannot be parsed.
+MALFORMED_IRI_TTL = """
+@prefix ex: <https://example.com/ns#> .
+@prefix bad: <https://example.com/qual quantity/> .
+ex:item a bad:Thing ; ex:note "kept" .
+"""
+
+
+def test_a_triple_naming_a_malformed_iri_is_dropped_with_a_record() -> None:
+    from ontocast.agent.update_common import finalize_update_report
+    from ontocast.onto.model import FactsGateRepairKind
+
+    report = GraphUpdateRenderReport(
+        insert_graph=_graph(MALFORMED_IRI_TTL),
+        delete_graph=_graph(MALFORMED_IRI_TTL),
+    )
+    update, _, dropped = finalize_update_report(report)
+
+    target = RDFGraph()
+    for query in update.generate_sparql_queries():
+        target.update(query)
+    assert len(target) == 1, "only the well-formed note survives"
+    assert [(r.kind, r.source, r.triple_count) for r in dropped] == [
+        (
+            FactsGateRepairKind.MALFORMED_IRI_DROPPED,
+            "https://example.com/qual quantity/Thing",
+            1,
+        ),
+        (
+            FactsGateRepairKind.MALFORMED_IRI_DROPPED,
+            "https://example.com/qual quantity/Thing",
+            1,
+        ),
+    ]

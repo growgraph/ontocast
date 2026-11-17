@@ -29,6 +29,11 @@ from ontocast.agent.external_evidence import (
 )
 from ontocast.agent.render_facts import render_facts
 from ontocast.agent.render_ontology import render_ontology
+from ontocast.agent.repair_facts_domain import (
+    property_swaps,
+    repair_domain_violations,
+)
+from ontocast.config import OntologyValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, Status, WorkflowNode
 from ontocast.onto.model import (
@@ -39,6 +44,7 @@ from ontocast.onto.model import (
     GraphRepairRecord,
     LoopAttempt,
     OntologyUnitFinding,
+    OntologyUnitFindingKind,
     RolledBackFix,
     Suggestions,
 )
@@ -49,12 +55,16 @@ from ontocast.onto.ontology_access import (
 )
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import OntologyContextConfigError
+from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.triple_index import Triple
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.stategraph.context_resolver import (
     UnitOntologyContext,
+    admit_facts_context_terms,
     resolve_unit_ontology_context,
+    snapshot_context_terms,
 )
+from ontocast.stategraph.facts_gate import drop_domain_violations
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import (
@@ -62,10 +72,17 @@ from ontocast.tool.facts_validation import (
     ValidationPolicy,
     collect_unit_findings,
     expand_vocabulary_terms,
+    isolated_instances,
     material_defects,
     materialize_entailed_types,
+    normalize_literals_against_schema,
     repair_compact_iri_literals,
+    repair_paired_object_properties,
+    repair_reversed_triples,
+    temporal_range_mismatches,
     unit_numeric_inventory,
+    unresolved_quarantine,
+    write_back_temporal_quarantine,
 )
 from ontocast.tool.facts_validation.critic_patch import (
     CriticPatchPolicy,
@@ -74,7 +91,9 @@ from ontocast.tool.facts_validation.critic_patch import (
 )
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.ontology_validation import collect_ontology_unit_findings
+from ontocast.tool.ontology_validation.label_repair import derive_missing_labels
 from ontocast.toolbox import ToolBox
+from ontocast.util.numeric_inventory import NumericInventory
 
 logger = logging.getLogger(__name__)
 
@@ -147,23 +166,67 @@ def _repair_facts_patch(
 
     Patches are parsed outside the render, so they miss its parse-time repairs;
     a bare-string IRI they insert would otherwise read as a missing property,
-    and a node they add would miss the type its predicates entail.
+    a node they add would miss the type its predicates entail, an untyped
+    number would stay untyped, and text on a date property would pass. Such
+    text is quarantined as the render quarantines it, which raises the
+    mandatory count and so rolls the patch back.
     """
     graph = unit_state.content_unit.graph
     context = ontology_access_for_unit_facts(unit_state).effective_ontology_for_prompt()
+    roles = atomic.catalog_roles()
     known = atomic.catalog_terms() | expand_vocabulary_terms(
         atomic.quantity_fallback_vocabulary, graph, context.graph
     )
+    normalize_literals_against_schema(graph, context.graph, roles)
     _, records = repair_compact_iri_literals(graph, context.graph, known)
-    _, entailed = materialize_entailed_types(graph, context.graph)
-    return [*records, *entailed]
+    _, paired = repair_paired_object_properties(graph)
+    axioms = roles.with_axioms(context.graph)
+    _, turned = repair_reversed_triples(graph, axioms)
+    _, entailed = materialize_entailed_types(graph, axioms)
+    for triple, record in temporal_range_mismatches(graph, context.graph, roles):
+        graph.remove(triple)
+        if record not in unit_state.quarantined_literal_triples:
+            unit_state.quarantined_literal_triples.append(record)
+    return [*records, *paired, *turned, *entailed]
+
+
+def _derive_ontology_labels(
+    unit_state: UnitOntologyState, atomic: AtomicToolBox
+) -> list[GraphRepairRecord]:
+    """Label the unit's unlabelled minted terms from their local names.
+
+    Applied as an insert update, so the labels reach the delta and the reduce
+    step like any rendered triple. Counted in ``ontology/labels_derived``.
+    """
+    snapshot_graph = (
+        None
+        if unit_state.ontology_snapshot.is_empty()
+        else unit_state.ontology_snapshot.graph
+    )
+    labels = derive_missing_labels(
+        unit_state.build_delta().inserts, snapshot_graph, atomic.catalog_terms()
+    )
+    if len(labels) == 0:
+        return []
+    update = GraphUpdate(triple_operations=[TripleOp(type="insert", graph=labels)])
+    if not unit_state.apply_patch(update):
+        return []
+    unit_state.budget_tracker.incr("ontology/labels_derived", len(labels))
+    return [
+        GraphRepairRecord(
+            kind=OntologyUnitFindingKind.MISSING_LABEL,
+            source=str(subject),
+            target=str(label),
+        )
+        for subject, _, label in sorted(labels, key=str)
+    ]
 
 
 def _repair_ontology_patch(
     unit_state: UnitOntologyState, atomic: AtomicToolBox
 ) -> list[GraphRepairRecord]:
-    """The ontology loop applies patches as updates; nothing to repair here."""
-    return []
+    """Label what a critic patch minted without a label, before it is judged."""
+    return _derive_ontology_labels(unit_state, atomic)
 
 
 def _collect_facts_findings(
@@ -200,7 +263,11 @@ def _collect_facts_findings(
     return collect_unit_findings(
         graph=unit_state.content_unit.graph,
         ontology_graph=unit_state.ontology_snapshot.graph,
-        quarantined=unit_state.quarantined_literal_triples,
+        # A quarantined triple the graph has since made good no longer holds
+        # the unit back; the full list stays on the state as the record.
+        quarantined=unresolved_quarantine(
+            unit_state.content_unit.graph, unit_state.quarantined_literal_triples
+        ),
         extraction_text=unit_state.content_unit.extraction_text,
         fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
         full_catalog_terms=full_catalog_terms,
@@ -213,6 +280,9 @@ def _collect_facts_findings(
         policy=policy,
         is_citation_metadata=unit_state.content_unit.is_citation_metadata,
         is_non_content=unit_state.content_unit.is_non_content,
+        # Read over the whole catalog: a unit's snapshot may lack the
+        # hierarchy placing its observation class under a statement class.
+        subject_contract=atomic.subject_contract() if atomic is not None else None,
     )
 
 
@@ -241,6 +311,17 @@ def _collect_ontology_findings(
         merged_graph=unit_state.working_graph,
         fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
         policy=atomic.validation_policy if atomic is not None else None,
+        max_class_depth=(
+            atomic.ontology_max_class_depth
+            if atomic is not None
+            else OntologyValidationConfig().max_class_depth
+        ),
+        catalog_index=atomic.catalog_surface_index() if atomic is not None else None,
+        home_namespace=(
+            unit_state.home_ontology.namespace
+            if unit_state.home_ontology is not None
+            else None
+        ),
     )
     unit_state.budget_tracker.add_duration(
         "ontology_validation/unit_findings", time.perf_counter() - started
@@ -252,7 +333,13 @@ def _record_attempt(
     unit_state: UnitStateT,
     *,
     kind: Literal[
-        "render", "critic", "critic_patch", "critic_skipped", "completion", "llm_repair"
+        "render",
+        "critic",
+        "critic_patch",
+        "critic_skipped",
+        "completion",
+        "domain_repair",
+        "llm_repair",
     ],
     render_attempt: int,
     critic_attempt: int = 0,
@@ -270,6 +357,8 @@ def _record_attempt(
     n_fixes_junk_refused: int = 0,
     n_fixes_unresolved_prefix: int = 0,
     n_measurements_recovered: int = 0,
+    n_subjects_linked: int = 0,
+    n_detached_linked: int = 0,
 ) -> None:
     """Append one telemetry record for the current loop attempt.
 
@@ -302,6 +391,8 @@ def _record_attempt(
             n_fixes_junk_refused=n_fixes_junk_refused,
             n_fixes_unresolved_prefix=n_fixes_unresolved_prefix,
             n_measurements_recovered=n_measurements_recovered,
+            n_subjects_linked=n_subjects_linked,
+            n_detached_linked=n_detached_linked,
         )
     )
 
@@ -663,6 +754,95 @@ def _apply_critic_patch(
     )
 
 
+async def _run_domain_repair(
+    unit_state: UnitFactsState,
+    atomic: AtomicToolBox,
+    phase: "LoopPhase",
+    *,
+    render_attempt: int,
+) -> None:
+    """One call giving each statement in domain violation a fitting property.
+
+    Runs when a mandatory ``domain_violation`` finding survives the critic
+    loop. Only a patch that swaps the property of the statements it cites,
+    for one whose domain the subject fits, is applied, and each goes through
+    :func:`_apply_patches` like a critic fix. Whatever is still in violation
+    afterwards is dropped by :func:`_drop_domain_violations`.
+    """
+    findings = phase.collect_findings(unit_state, atomic)
+    if not any(
+        finding.kind == FactsUnitFindingKind.DOMAIN_VIOLATION and finding.mandatory
+        for finding in findings
+    ):
+        return
+    mandatory_before = sum(1 for finding in findings if finding.mandatory)
+    fixes, index = await repair_domain_violations(unit_state, atomic, findings)
+    graph = unit_state.patch_target_graph()
+    compiled = compile_critic_fixes(
+        fixes, graph, index=index, policy=atomic.facts_patch_policy
+    )
+    patches = property_swaps(
+        compiled.patches, index, graph, unit_state.ontology_snapshot.graph
+    )
+    run = _apply_patches(
+        unit_state,
+        atomic,
+        phase,
+        patches,
+        mandatory_before=mandatory_before,
+        findings_before=findings,
+    )
+    unit_state.deterministic_findings = run.findings
+    _reevaluate_unit_status(unit_state, phase, atomic, run.findings)
+    logger.info(
+        "Unit facts domain repair: %d statement(s) listed, %d fix(es) applied, "
+        "%d refused, %d rolled back",
+        len(index.by_id),
+        len(run.applied),
+        len(compiled.patches) - len(patches),
+        len(run.rolled_back),
+    )
+    _record_attempt(
+        unit_state,
+        kind="domain_repair",
+        render_attempt=render_attempt,
+        n_findings=len(run.findings),
+        n_mandatory=run.mandatory_after,
+        n_fixes_applied=len(run.applied),
+        n_fixes_noop=len(compiled.noop),
+        n_triples_deleted=run.deleted,
+        n_triples_inserted=run.inserted,
+        rolled_back_fixes=run.rolled_back,
+        patch_delete_capped=compiled.delete_capped,
+        n_fixes_junk_refused=compiled.junk_refused,
+        n_fixes_unresolved_prefix=compiled.unresolved_prefix,
+    )
+
+
+def _drop_domain_violations(
+    unit_state: UnitFactsState, atomic: AtomicToolBox, phase: "LoopPhase"
+) -> None:
+    """Remove the statements still in domain violation, with a record each.
+
+    A statement whose property's declared domain contradicts its subject's
+    types asserts a type the subject does not have; served, it entails it.
+    """
+    findings = phase.collect_findings(unit_state, atomic)
+    records = drop_domain_violations(unit_state.content_unit.graph, findings)
+    if not records:
+        unit_state.deterministic_findings = findings
+        return
+    logger.info(
+        "Unit facts: dropped %d statement(s) still in domain violation",
+        sum(record.triple_count for record in records),
+    )
+    unit_state.applied_repairs.extend(records)
+    unit_state.deterministic_findings = phase.collect_findings(unit_state, atomic)
+    _reevaluate_unit_status(
+        unit_state, phase, atomic, unit_state.deterministic_findings
+    )
+
+
 async def _run_completion_passes(
     unit_state: UnitFactsState,
     atomic: AtomicToolBox,
@@ -670,32 +850,62 @@ async def _run_completion_passes(
     *,
     render_attempt: int,
 ) -> None:
-    """Insert-only completion passes, run once the critic loop is done.
+    """Insert-only gap passes, run once the critic loop is done.
 
-    Each pass asks :func:`ontocast.agent.complete_facts.complete_facts` for
-    subjects recovering measurements the numeric inventory still lists as
-    missing, then applies the proposal through :func:`_apply_patches` -- the
-    same per-subject regression check a critic fix goes through, so an
-    insert that leaves the unit worse is rolled back on its own. Stops early
-    once the inventory is empty; the caller has already checked
-    ``atomic.facts_completion_passes > 0`` and that this is the facts phase.
+    Each pass asks :func:`ontocast.agent.complete_facts.complete_facts` to
+    close the unit's gaps -- statements or values linked to nothing, and,
+    when ``atomic.facts_completion_measurements`` is on, measurements the
+    numeric inventory still lists as missing -- then applies
+    the proposal through :func:`_apply_patches`, the same per-subject
+    regression check a critic fix goes through, so an insert that leaves the
+    unit worse is rolled back on its own. Stops once no gap is left; the
+    caller has already checked ``atomic.facts_completion_passes > 0`` and
+    that this is the facts phase.
     """
-    for pass_index in range(1, atomic.facts_completion_passes + 1):
-        inventory = unit_numeric_inventory(
+
+    def missing_measurements() -> NumericInventory:
+        if not atomic.facts_completion_measurements:
+            return NumericInventory()
+        return unit_numeric_inventory(
             graph=unit_state.content_unit.graph,
             ontology_graph=unit_state.ontology_snapshot.graph,
             extraction_text=unit_state.content_unit.extraction_text,
             policy=atomic.validation_policy,
             limit=atomic.numeric_coverage_limit,
         )
-        if not inventory.measurements:
-            break
 
+    def detached_instances(subject_gaps: Sequence[FactsUnitFinding]) -> list[URIRef]:
+        if not atomic.facts_completion_detached:
+            return []
+        named = {finding.subject for finding in subject_gaps}
+        return sorted(
+            (
+                node
+                for node in isolated_instances(
+                    unit_state.content_unit.graph, [DEFAULT_IRI]
+                )
+                if str(node) not in named
+            ),
+            key=str,
+        )
+
+    for pass_index in range(1, atomic.facts_completion_passes + 1):
+        inventory = missing_measurements()
         findings = phase.collect_findings(unit_state, atomic)
         unit_state.deterministic_findings = findings
+        subject_gaps = _subject_gaps(findings)
+        detached = detached_instances(subject_gaps)
+        if (
+            not inventory.measurements
+            and not subject_gaps
+            and len(detached) < DETACHED_TRIGGER_MIN
+        ):
+            break
         mandatory_before = sum(1 for finding in findings if finding.mandatory)
 
-        fixes = await complete_facts(unit_state, atomic, inventory)
+        fixes = await complete_facts(
+            unit_state, atomic, inventory, subject_gaps, detached
+        )
         compiled = compile_critic_fixes(
             fixes, unit_state.patch_target_graph(), policy=atomic.facts_patch_policy
         )
@@ -710,24 +920,31 @@ async def _run_completion_passes(
         unit_state.deterministic_findings = run.findings
         _reevaluate_unit_status(unit_state, phase, atomic, run.findings)
 
-        post_inventory = unit_numeric_inventory(
-            graph=unit_state.content_unit.graph,
-            ontology_graph=unit_state.ontology_snapshot.graph,
-            extraction_text=unit_state.content_unit.extraction_text,
-            policy=atomic.validation_policy,
-            limit=atomic.numeric_coverage_limit,
-        )
+        post_inventory = missing_measurements()
         recovered = max(
             0, len(inventory.measurements) - len(post_inventory.measurements)
         )
+        linked = max(0, len(subject_gaps) - len(_subject_gaps(run.findings)))
+        still_detached = isolated_instances(
+            unit_state.content_unit.graph, [DEFAULT_IRI]
+        )
+        detached_linked = sum(
+            1
+            for node in detached
+            if node not in still_detached
+            and (node, None, None) in unit_state.content_unit.graph
+        )
         logger.info(
-            "Unit facts completion pass %s/%s: %d applied, %d rolled back, "
-            "%d measurement(s) recovered",
+            "Unit facts gap pass %s/%s: %d applied, %d rolled back, "
+            "%d measurement(s) recovered, %d statement(s) given a subject, "
+            "%d detached instance(s) linked",
             pass_index,
             atomic.facts_completion_passes,
             len(run.applied),
             len(run.rolled_back),
             recovered,
+            linked,
+            detached_linked,
         )
         _record_attempt(
             unit_state,
@@ -745,9 +962,31 @@ async def _run_completion_passes(
             n_fixes_junk_refused=compiled.junk_refused,
             n_fixes_unresolved_prefix=compiled.unresolved_prefix,
             n_measurements_recovered=recovered,
+            n_subjects_linked=linked,
+            n_detached_linked=detached_linked,
         )
-        if not post_inventory.measurements:
+        if (
+            not post_inventory.measurements
+            and not _subject_gaps(run.findings)
+            and len(detached_instances(_subject_gaps(run.findings)))
+            < DETACHED_TRIGGER_MIN
+        ):
             break
+
+
+#: Detached instances that call the gap pass on their own. A lone unlinked
+#: instance is often an aside the text relates to nothing, so it does not pay
+#: for a call; a pass called for another gap still lists it.
+DETACHED_TRIGGER_MIN = 2
+
+
+def _subject_gaps(findings: Sequence) -> list[FactsUnitFinding]:
+    """The ``statement_without_subject`` findings among ``findings``."""
+    return [
+        finding
+        for finding in findings
+        if finding.kind == FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT
+    ]
 
 
 def _reset_node_evidence_context(
@@ -786,10 +1025,15 @@ async def _apply_facts_ontology_context(
 ) -> None:
     """Set ontology_snapshot for facts from the per-unit context resolver.
 
-    Only reached when the caller has no merged document context to hand down
-    (single-unit pipelines, or facts-only runs with no ontology stage).
+    Reached whenever the caller has no merged document context to hand down:
+    facts-only runs, single-unit pipelines, and documents whose ontology stage
+    wrote nothing (a plan that only reuses terms). The plan's reuses are
+    admitted here as on the merged context.
     """
     ctx = await resolve_unit_ontology_context(context, tools, unit_state.content_unit)
+    ctx = admit_facts_context_terms(
+        ctx, context.ontology_plan, tools, budget_tracker=context.budget_tracker
+    )
     logger.info(
         "Ontology context for mode %s: sources=%s writable=%s",
         context.ontology_context_mode,
@@ -810,11 +1054,9 @@ def _select_conformance_chapter(unit_state: UnitFactsState, tools: ToolBox) -> N
     subclass -- plus the writable IRIs. An empty snapshot selects nothing:
     a unit with no ontology context has no classes to hold to their rules.
     """
-    context_terms: set[str] = set(unit_state.writable_iris or ())
-    for triple in unit_state.ontology_snapshot.graph:
-        for term in triple:
-            if isinstance(term, URIRef):
-                context_terms.add(str(term))
+    context_terms = snapshot_context_terms(
+        unit_state.ontology_snapshot.graph, unit_state.writable_iris or ()
+    )
     unit_state.conformance_chapter = tools.shapes_chapter_for_context(context_terms)
     unit_state.conformance_selection_pending = False
     logger.debug(
@@ -863,6 +1105,8 @@ async def _render_ontology_phase(state, atomic, supplemental) -> None:
         await render_ontology(state, atomic, supplemental_ontologies=supplemental),
         state,
     )
+    if state.status == Status.SUCCESS:
+        state.applied_repairs.extend(_derive_ontology_labels(state, atomic))
 
 
 async def _criticise_facts_phase(state, atomic) -> None:
@@ -897,7 +1141,16 @@ def _facts_critic_skip_reason(
 def _ontology_critic_skip_reason(
     unit_state: UnitOntologyState, atomic: AtomicToolBox
 ) -> str | None:
-    """The ontology critic has no skip rule; its budget alone decides."""
+    """Why the ontology critic should not be spent on this unit, or ``None``.
+
+    One pass is a repair budget: it is spent only on a unit the deterministic
+    validator faulted with a mandatory finding. Two or more passes make the
+    critic a judge, and every pass runs.
+    """
+    if atomic.ontology_critic_passes == 1 and not any(
+        finding.mandatory for finding in unit_state.deterministic_findings
+    ):
+        return "no_mandatory_findings"
     return None
 
 
@@ -1093,6 +1346,7 @@ async def run_unit_loop(
         catalog_prefixes = build_llm_prefix_map(
             unit_state.ontology_snapshot,
             _supplemental_ontologies_for_unit(document_context, unit_state, tools),
+            tools.prefix_table(),
         )
         RDFGraph.set_known_prefixes(catalog_prefixes if catalog_prefixes else None)
         installed_prefixes = True
@@ -1126,6 +1380,12 @@ async def run_unit_loop(
                 unit_state, atomic
             )
             return unit_state
+
+        if isinstance(unit_state, UnitFactsState):
+            # The render's own lapses, before any pass repairs them.
+            unit_state.statements_without_subject_rendered = len(
+                _subject_gaps(phase.collect_findings(unit_state, atomic))
+            )
 
         stage = phase.critic_stage
         for pass_index in range(1, phase.critic_passes(atomic) + 1):
@@ -1217,14 +1477,29 @@ async def run_unit_loop(
                     unit_state, atomic
                 )
 
-        if (
-            phase.name == "facts"
-            and atomic.facts_completion_passes > 0
-            and isinstance(unit_state, UnitFactsState)
-        ):
-            await _run_completion_passes(
-                unit_state, atomic, phase, render_attempt=render_attempt
+        if phase.name == "facts" and isinstance(unit_state, UnitFactsState):
+            if atomic.facts_completion_passes > 0:
+                await _run_domain_repair(
+                    unit_state, atomic, phase, render_attempt=render_attempt
+                )
+            _drop_domain_violations(unit_state, atomic, phase)
+            if atomic.facts_completion_passes > 0:
+                await _run_completion_passes(
+                    unit_state, atomic, phase, render_attempt=render_attempt
+                )
+
+        if isinstance(unit_state, UnitFactsState):
+            written_back, unit_state.quarantined_literal_triples = (
+                write_back_temporal_quarantine(
+                    unit_state.content_unit.graph,
+                    unit_state.quarantined_literal_triples,
+                )
             )
+            if written_back:
+                unit_state.applied_repairs.extend(written_back)
+                unit_state.deterministic_findings = phase.collect_findings(
+                    unit_state, atomic
+                )
 
         mandatory = sum(
             1 for finding in unit_state.deterministic_findings if finding.mandatory

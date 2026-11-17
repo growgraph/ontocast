@@ -110,6 +110,31 @@ def test_batch_state_merge_carries_the_critic_telemetry() -> None:
     assert state.ontology_reduce_metrics["minted_duplicates"] == 2
 
 
+def test_batch_state_merge_carries_the_ontology_versions() -> None:
+    """Serialization records the versions it wrote and read; off the copy list
+    the batch manifest's ``ontology_versions`` was always empty, and the dump
+    could not find the stored version of a new ontology."""
+    from ontocast.api.process_helpers import _merge_workflow_state_into_agent_state
+    from ontocast.onto.state import AgentState, OntologyVersionRecord, VersionRef
+
+    written = OntologyVersionRecord(
+        iri="https://example.com/o",
+        version_iri="https://example.com/o#v1",
+        ontology_id="o",
+        version="1.0.0",
+        role="created",
+    )
+    read = VersionRef(
+        iri="https://example.com/c", version_iri="https://example.com/c#v3"
+    )
+    chunk = {"ontology_versions_written": [written], "ontology_versions_read": [read]}
+
+    state = _merge_workflow_state_into_agent_state(AgentState(), chunk)
+
+    assert state.ontology_versions_written == [written]
+    assert state.ontology_versions_read == [read]
+
+
 def test_batch_state_merge_carries_the_selection_census_and_unit_ledgers() -> None:
     """The selection census and the per-unit ledgers ride the same copy list.
 
@@ -299,3 +324,72 @@ def test_the_model_tier_report_reaches_the_manifest_from_workflow_state() -> Non
     assert (report.windows, report.windows_failed) == (3, 1)
     assert report.errors == {"LLMRequestTimeoutError": 1}
     assert _selection_manifest(AgentState(), Config()).outline_labels is None
+
+
+def test_batch_state_merge_carries_every_field_of_the_final_state() -> None:
+    """Any field the graph sets reaches the dumps and the manifest.
+
+    The merge once copied a list of fields, and each field left off it arrived
+    empty without a sign: critic telemetry, the selection census, the ontology
+    versions, the home ontology, the plan.
+    """
+    from ontocast.api.process_helpers import _merge_workflow_state_into_agent_state
+    from ontocast.onto.identity import OntologyIdentity
+    from ontocast.onto.model import OntologyPlan
+    from ontocast.onto.state import AgentState
+
+    final = AgentState(current_domain="https://example.com")
+    final.home_ontology = OntologyIdentity(
+        ontology_id="sports", iri="https://example.com/sports", title="Sports"
+    )
+    final.ontology_plan = OntologyPlan(resolved_to_catalog=3)
+    final.budget_tracker.incr("llm/calls", 7)
+    final.ontology_minted_classes = ["https://example.com/sports#League"]
+    chunk = {name: getattr(final, name) for name in AgentState.model_fields}
+
+    state = _merge_workflow_state_into_agent_state(AgentState(), chunk)
+
+    for name in AgentState.model_fields:
+        assert getattr(state, name) == getattr(final, name), name
+    assert state.home_ontology is not None
+    assert state.ontology_plan is not None
+    assert state.ontology_plan.resolved_to_catalog == 3
+
+
+def test_the_manifest_names_the_home_ontology(tmp_path) -> None:
+    """A check of where a document minted its terms needs the home on record;
+    a run without the ontology lane records none."""
+    import json
+    import pathlib
+
+    from ontocast.api.process_helpers import dump_run_manifest
+    from ontocast.config import Config
+    from ontocast.onto.identity import OntologyIdentity
+    from test.test_cli_server import _batch_state as batch_state
+
+    state = batch_state()
+    state.home_ontology = OntologyIdentity(
+        ontology_id="ext-ext",
+        iri="https://example.com/ext-ext",
+        title="Extension",
+        extends="http://ext.test/onto",
+    )
+    with_home = dump_run_manifest(
+        state, pathlib.Path("doc.txt"), config=Config(), output_dir=tmp_path / "a"
+    )
+    without = dump_run_manifest(
+        batch_state(),
+        pathlib.Path("doc.txt"),
+        config=Config(),
+        output_dir=tmp_path / "b",
+    )
+
+    assert with_home is not None and without is not None
+    home = json.loads(with_home.read_text())["home_ontology"]
+    assert home == {
+        "iri": "https://example.com/ext-ext",
+        "ontology_id": "ext-ext",
+        "namespace": "https://example.com/ext-ext#",
+        "extends": "http://ext.test/onto",
+    }
+    assert "home_ontology" not in json.loads(without.read_text())

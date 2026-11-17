@@ -2,10 +2,11 @@ import asyncio
 import logging
 import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from pydantic import BaseModel, Field
+from rdflib import OWL, RDF, RDFS, Literal, URIRef
 
 from ontocast.agent.select_ontology_catalog import select_catalog_ontology_for_excerpt
 from ontocast.onto.content_unit import SourceUnit
@@ -14,8 +15,12 @@ from ontocast.onto.enum import (
     OntologyContextMode,
     RetrievalMetric,
 )
+from ontocast.onto.model import OntologyPlan
 from ontocast.onto.null import NULL_ONTOLOGY
+from ontocast.onto.ontology import Ontology
+from ontocast.onto.ontology_header import AmbiguousOntologyRefError
 from ontocast.onto.ontology_snapshot import OntologySnapshot
+from ontocast.onto.prefixes import CURIE_IN_TEXT, NOTE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     EmptyOntologyContextError,
@@ -52,6 +57,210 @@ class UnitOntologyContext(BaseModel):
         return NULL_ONTOLOGY.iri
 
 
+def snapshot_context_terms(graph: RDFGraph, writable_iris: Sequence[str]) -> set[str]:
+    """Every IRI of a snapshot graph, in any position, plus the writable IRIs.
+
+    The join key the conformance chapter is selected on: the schema closure
+    carries superclass IRIs as objects, which is how a shape targeting a
+    superclass reaches a unit typed with the subclass.
+    """
+    terms: set[str] = set(writable_iris)
+    for triple in graph:
+        for term in triple:
+            if isinstance(term, URIRef):
+                terms.add(str(term))
+    return terms
+
+
+#: Admission rounds: an admitted term can join a further shape, whose own terms
+#: are then named. The catalog is finite; this only bounds the work.
+_ADMISSION_ROUNDS = 3
+
+
+def _note_terms(graph: RDFGraph) -> set[str]:
+    """Catalog-shaped IRIs that the snapshot's notes name in prose."""
+    prefixes = dict(RDFGraph.get_known_prefixes() or {})
+    prefixes.update(
+        {prefix: str(namespace) for prefix, namespace in graph.namespaces() if prefix}
+    )
+    named: set[str] = set()
+    for predicate in NOTE_PREDICATES:
+        for note in graph.objects(None, predicate):
+            if not isinstance(note, Literal):
+                continue
+            for prefix, local in CURIE_IN_TEXT.findall(str(note)):
+                namespace = prefixes.get(prefix)
+                if namespace:
+                    named.add(f"{namespace}{local}")
+    return named
+
+
+def admit_named_catalog_terms(
+    ctx: UnitOntologyContext,
+    tools: ToolBox,
+    *,
+    budget_tracker: Any = None,
+) -> UnitOntologyContext:
+    """Add the definitions of catalog terms the prompt names but the snapshot lacks.
+
+    The conformance chapter prints every rule of a shape it selects, and a
+    term's note may quote another term, so a facts prompt can tell the model
+    to use a catalog term its ``# ONTOLOGY`` chapter never defines. Each such
+    term that the catalog defines gets its defining statements
+    (:meth:`OntologyManager.term_definitions`) added to a copy of the
+    snapshot. Only catalog terms are admitted, and only ones the prompt
+    already names, so the pass adds no vocabulary the prompt did not mention.
+
+    Returns ``ctx`` itself when nothing is admitted, else a context over a
+    new snapshot: a shared document context is never changed in place.
+    """
+    snapshot = ctx.snapshot
+    if snapshot.is_empty():
+        return ctx
+    current = snapshot.graph
+    admitted: RDFGraph | None = None
+    tried: set[str] = set()
+    for _ in range(_ADMISSION_ROUNDS):
+        named = tools.shapes_chapter_terms(
+            snapshot_context_terms(current, ctx.writable_iris)
+        ) | _note_terms(current)
+        defined = {str(s) for s in current.subjects() if isinstance(s, URIRef)}
+        undefined = named - defined - tried
+        if not undefined:
+            break
+        missing = sorted(undefined & tools.ontology_manager.catalog_terms())
+        if not missing:
+            break
+        tried.update(missing)
+        definitions = tools.ontology_manager.term_definitions(missing)
+        if not len(definitions):
+            break
+        if admitted is None:
+            admitted = snapshot.graph.copy()
+        admitted += definitions
+        for prefix, namespace in definitions.namespaces():
+            if prefix:
+                admitted.bind(prefix, namespace, override=False)
+        current = admitted
+    if admitted is None:
+        return ctx
+    added = {str(s) for s in admitted.subjects() if isinstance(s, URIRef)} - {
+        str(s) for s in snapshot.graph.subjects() if isinstance(s, URIRef)
+    }
+    logger.info(
+        "Admitted %d catalog term(s) the prompt names into the ontology context",
+        len(added),
+    )
+    if budget_tracker is not None:
+        budget_tracker.incr("ctx/admitted_named_terms", len(added))
+    return ctx.model_copy(
+        update={
+            "snapshot": snapshot.model_copy(
+                update={"graph": admitted, "content_hash": ""}
+            )
+        }
+    )
+
+
+_KIND_TYPES = {
+    "class": OWL.Class,
+    "object_property": OWL.ObjectProperty,
+    "datatype_property": OWL.DatatypeProperty,
+}
+
+
+def admit_planned_terms(
+    ctx: UnitOntologyContext,
+    plan: OntologyPlan | None,
+    tools: ToolBox,
+    *,
+    budget_tracker: Any = None,
+) -> UnitOntologyContext:
+    """Add the terms the document's ontology plan chose to reuse.
+
+    A reused term is never minted, so without this the facts prompt never
+    shows it, and the relation the plan assigned to it is left unstated. A
+    catalog term brings its catalog definition
+    (:meth:`OntologyManager.term_definitions`); a well-known term is declared
+    from the plan entry: its kind, the plan's label and the plan's definition
+    of it for this document. Terms the context already defines are skipped.
+
+    Returns ``ctx`` itself when nothing is added, else a context over a new
+    snapshot: a shared document context is never changed in place.
+    """
+    snapshot = ctx.snapshot
+    if plan is None or snapshot.is_empty():
+        return ctx
+    defined = {str(s) for s in snapshot.graph.subjects() if isinstance(s, URIRef)}
+    pending = [term for term in plan.reused() if term.iri not in defined]
+    if not pending:
+        return ctx
+    catalog = tools.ontology_manager.catalog_terms()
+    definitions = tools.ontology_manager.term_definitions(
+        [term.iri for term in pending if term.iri in catalog]
+    )
+    from_catalog = {str(s) for s in definitions.subjects() if isinstance(s, URIRef)}
+    admitted = snapshot.graph.copy()
+    admitted += definitions
+    for prefix, namespace in definitions.namespaces():
+        if prefix:
+            admitted.bind(prefix, namespace, override=False)
+    for term in pending:
+        if term.iri in from_catalog:
+            continue
+        node = URIRef(term.iri)
+        admitted.add((node, RDF.type, _KIND_TYPES[term.kind]))
+        admitted.add((node, RDFS.label, Literal(term.label)))
+        if term.definition:
+            admitted.add((node, RDFS.comment, Literal(term.definition)))
+        for prefix, namespace in plan.prefixes.items():
+            if prefix and term.iri.startswith(namespace):
+                admitted.bind(prefix, namespace, override=False)
+    logger.info(
+        "Admitted %d planned reuse term(s) into the facts ontology context",
+        len(pending),
+    )
+    if budget_tracker is not None:
+        budget_tracker.incr("ctx/admitted_planned_terms", len(pending))
+    return ctx.model_copy(
+        update={
+            "snapshot": snapshot.model_copy(
+                update={"graph": admitted, "content_hash": ""}
+            )
+        }
+    )
+
+
+def admit_facts_context_terms(
+    ctx: UnitOntologyContext,
+    plan: OntologyPlan | None,
+    tools: ToolBox,
+    *,
+    budget_tracker: Any = None,
+) -> UnitOntologyContext:
+    """Complete a facts ontology context: planned reuses, then named catalog terms.
+
+    Every path that resolves a facts context goes through here, so the plan's
+    reuses reach the facts prompt whether the context is the merged document
+    context or a unit's own. Planned terms come first so the named-term pass
+    also admits terms their definitions quote.
+    """
+    ctx = admit_planned_terms(ctx, plan, tools, budget_tracker=budget_tracker)
+    ctx = admit_named_catalog_terms(ctx, tools, budget_tracker=budget_tracker)
+    show_prefixes(ctx.snapshot, tools)
+    return ctx
+
+
+def show_prefixes(snapshot: OntologySnapshot, tools: ToolBox) -> None:
+    """Make a prompt context read under the catalog's prefix table, in place.
+
+    Every context a prompt is rendered from passes through here, so the term
+    sheet, its notes, the domain clause and the conformance chapter show one
+    prefix per namespace, the one answers are parsed with.
+    """
+    tools.prefix_table().normalize(snapshot.graph)
+
+
 def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
     vcfg = tools.config.tool_config.vector_store
     text = unit.text.strip()
@@ -79,40 +288,94 @@ def _unit_queries(unit: SourceUnit, tools: ToolBox) -> list[str]:
     )
 
 
+def _catalog_ontologies(
+    artifacts: Sequence[Ontology],
+    context: UnitLoopContext,
+    catalog_head: Callable[[str], Ontology | None],
+) -> list[Ontology]:
+    """The catalog ontologies the document's facts context must hold beside its homes.
+
+    Every ontology the ontology units were rendered against, and every one a
+    home imports or extends, followed through the catalog's own imports. An
+    IRI the catalog does not hold (a well-known vocabulary) is skipped.
+    """
+    held = {ontology.iri for ontology in artifacts}
+    pending = list(context.ontology_sources)
+    if context.home_ontology is not None and context.home_ontology.extends:
+        pending.append(context.home_ontology.extends)
+    for ontology in artifacts:
+        pending.extend(
+            str(target)
+            for target in ontology.graph.objects(URIRef(ontology.iri), OWL.imports)
+        )
+    found: dict[str, Ontology] = {}
+    while pending:
+        iri = pending.pop()
+        if iri in held or iri in found:
+            continue
+        head = catalog_head(iri)
+        if head is None or head.is_null() or not len(head.graph):
+            continue
+        found[iri] = head
+        pending.extend(
+            str(target) for target in head.graph.objects(URIRef(iri), OWL.imports)
+        )
+    return [found[iri] for iri in sorted(found)]
+
+
 def build_merged_document_ontology_context(
     context: UnitLoopContext,
+    catalog_head: Callable[[str], Ontology | None],
 ) -> UnitOntologyContext | None:
-    """Build merged ontology context from reduced document artifacts.
+    """The one ontology context every facts unit of a document is rendered against.
 
-    The result depends only on document-level state, so it should be computed
-    once per document. ``"ctx/merge_document_ontology.calls"`` on the budget
-    tracker exists to make a regression to per-unit calls visible.
+    The document's home ontologies as the ontology stage left them, merged
+    with the catalog ontologies they rest on (:func:`_catalog_ontologies`):
+    a home that extends an external catalog, or a fresh home, holds only the
+    terms documents added, so without the catalog the facts render would
+    fall back on generic vocabulary. Catalog ontologies are read, never
+    writable. The result depends only on document-level state, so it is
+    computed once per document; ``"ctx/merge_document_ontology.calls"`` makes
+    a regression to per-unit calls visible.
+
+    Args:
+        context: Document-level loop inputs.
+        catalog_head: The catalog's head of an ontology IRI, or ``None``.
+
+    Returns:
+        The merged context, or ``None`` when no ontology stage ran.
     """
     started = time.perf_counter()
     context.budget_tracker.incr("ctx/merge_document_ontology.calls")
-    artifacts = [
-        ontology
-        for ontology in context.reduced_artifacts()
-        if not ontology.is_null() and len(ontology.graph) > 0
-    ]
-    if not artifacts:
+    artifacts = sorted(
+        (
+            ontology
+            for ontology in context.reduced_artifacts()
+            if not ontology.is_null() and len(ontology.graph) > 0
+        ),
+        key=lambda ontology: ontology.iri or "",
+    )
+    catalog = _catalog_ontologies(artifacts, context, catalog_head)
+    if not artifacts and not catalog:
         context.budget_tracker.add_duration(
             "ctx/merge_document_ontology", time.perf_counter() - started
         )
         return None
+    context.budget_tracker.incr("ctx/facts_catalog_ontologies", len(catalog))
 
-    sorted_artifacts = sorted(artifacts, key=lambda ontology: ontology.iri or "")
     merged_graph = RDFGraph()
     patch_sources: list[str] = []
-    for ontology in sorted_artifacts:
+    for ontology in artifacts:
         merged_graph += ontology.graph
         if ontology.iri:
             patch_sources.append(ontology.iri)
+    for ontology in catalog:
+        merged_graph += ontology.graph
     merged_graph.sanitize_prefixes_namespaces()
 
     snapshot = OntologySnapshot.from_graph(
         merged_graph,
-        source_iris=patch_sources,
+        source_iris=[*patch_sources, *(ontology.iri for ontology in catalog)],
         assembly_mode=OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED,
         title="Merged document ontology context",
         description=(
@@ -191,10 +454,12 @@ async def build_unioned_document_ontology_context(
     merged_graph = RDFGraph()
     writable: list[str] = []
     sources: list[str] = []
+    partial = False
     for ctx in resolved:
         if ctx is None or not len(ctx.snapshot.graph):
             continue
         merged_graph += ctx.snapshot.graph
+        partial = partial or ctx.snapshot.partial
         writable.extend(ctx.writable_iris)
         sources.extend(ctx.snapshot.source_iris)
     if not len(merged_graph):
@@ -211,6 +476,8 @@ async def build_unioned_document_ontology_context(
         # unstable prompt is the thing this whole path exists to avoid.
         source_iris=sorted(set(sources)),
         assembly_mode=OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED,
+        # A union of retrieved subsets is still a subset.
+        partial=partial,
         title="Unioned document ontology context",
         description=(
             "Union of the per-unit retrieved contexts, shared by every unit so "
@@ -230,6 +497,7 @@ async def build_unioned_document_ontology_context(
         len(snapshot.graph),
         len(snapshot.source_iris),
     )
+    show_prefixes(snapshot, tools)
     return UnitOntologyContext(
         snapshot=snapshot,
         writable_iris=sorted(set(writable)),
@@ -290,7 +558,10 @@ async def _resolve_fixed_single_ontology_context(
             confidence=0.0,
         )
     mgr = tools.ontology_manager
-    selected = mgr.get_head(ontology_id=cleaned)
+    try:
+        selected = mgr.get_head(ontology_id=cleaned)
+    except AmbiguousOntologyRefError as exc:
+        raise ValueError(f"ontology_context_fixed_ontology_id: {exc}") from exc
     if selected is None:
         logger.warning(
             "No catalog ontology match for ontology_context_fixed_ontology_id=%r; "
@@ -447,13 +718,13 @@ async def _resolve_ensemble_context(
         context.retrieval_metrics[RetrievalMetric.EMPTY_SNAPSHOT_REASON] = reason
         logger.warning("Ontology context for this unit is empty (%s)", reason)
 
-    preferred = tools.ontology_manager.preferred_namespace_prefixes or None
-    patch_graph.sanitize_prefixes_namespaces(preferred_namespace_prefixes=preferred)
+    patch_graph.sanitize_prefixes_namespaces()
 
     snapshot = OntologySnapshot.from_graph(
         patch_graph,
         source_iris=source_iris,
         assembly_mode=mode,
+        partial=True,
         title="Vector search ensemble context",
         description="Stitched induced subgraphs from hybrid retrieval.",
         strip_headers=True,
@@ -549,11 +820,13 @@ async def resolve_unit_ontology_context(
             context.retrieval_metrics[RetrievalMetric.ONTOLOGY_SNAPSHOT_TRIPLES] = len(
                 home.snapshot.graph
             )
+            show_prefixes(home.snapshot, tools)
             return home
         logger.info(
             "No ontology context for this unit; rendering a fresh ontology from "
             "its text"
         )
+    show_prefixes(resolved.snapshot, tools)
     return resolved
 
 

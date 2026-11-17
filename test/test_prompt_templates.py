@@ -255,8 +255,6 @@ async def test_render_and_critic_prompts_share_the_prefix_through_the_ontology(
             "render",
             FactsRenderReport(
                 semantic_graph=rendered,
-                ontology_relevance_score=90,
-                triples_generation_score=90,
             ),
         ),
     )
@@ -299,27 +297,41 @@ async def test_render_and_critic_prompts_share_the_prefix_through_the_ontology(
         assert prompt.index("# TEXT") >= end_of_ontology
 
 
+def _rendered_facts_guidelines() -> list[str]:
+    """The facts guidelines as a prompt sees them, in both vocabulary modes."""
+    from ontocast.prompt.facts_guidelines import (
+        VOCABULARY_MODES,
+        format_facts_operational_guidelines,
+    )
+
+    return [
+        format_facts_operational_guidelines(
+            facts_namespace="https://example.com/facts/",
+            domain_ontologies_clause="`ex:`",
+            jsonld=False,
+            vocabulary=mode,
+        )
+        for mode in VOCABULARY_MODES
+    ]
+
+
 def test_quantitative_completeness_rule_is_stated() -> None:
     """Rule 3a counters the ontology-scoped selectivity of rule 3 without
     weakening the anti-junk guard of rule 4."""
-    from ontocast.prompt import facts_guidelines
-
-    text = facts_guidelines.facts_instruction_shared
-    assert "QUANTITATIVE COMPLETENESS" in text
-    assert "EVERY quantitative statement" in text
-    # The anti-junk guard stays verbatim.
-    assert "Do NOT mint an entity for a bare number" in text
+    for text in _rendered_facts_guidelines():
+        assert "QUANTITATIVE COMPLETENESS" in text
+        assert "EVERY quantitative statement" in text
+        # The anti-junk guard stays verbatim.
+        assert "Do NOT mint an entity for a bare number" in text
 
 
 def test_facts_guidelines_never_permit_an_untyped_instance() -> None:
     """Rule 2 must not undercut rule 4: a concept the ontology lacks is typed
     with a generic class, never left without a type."""
-    from ontocast.prompt import facts_guidelines
-
-    text = facts_guidelines.facts_instruction_shared
-    assert "untyped" not in text.lower()
-    assert "must be linked via `rdf:type`" in text
-    assert "owl:Thing" in text
+    for text in _rendered_facts_guidelines():
+        assert "untyped" not in text.lower()
+        assert "must be linked via `rdf:type`" in text
+        assert "owl:Thing" in text
 
 
 def test_critic_completeness_guideline_routes_misses_to_the_completion_pass() -> None:
@@ -337,3 +349,119 @@ def test_critic_completeness_guideline_routes_misses_to_the_completion_pass() ->
     assert "systemic_critique_summary" in text
     assert "completion pass" in text
     assert "NEVER mint an entity or placeholder node" in text
+
+
+def test_ontology_prompts_ask_for_the_reuse_level() -> None:
+    """Render and critic share one rule: mint what another document would reuse."""
+    from ontocast.prompt.criticise_ontology import ontology_criteria
+    from ontocast.prompt.render_ontology import general_ontology_instruction
+
+    for text in (general_ontology_instruction, ontology_criteria):
+        assert "second document" in text
+        assert "property value" in text
+        assert "no instances" not in text
+
+
+def test_value_list_example_gives_the_property_a_class_of_its_own() -> None:
+    """Rule 5a's example: values are typed with their own class under
+    skos:Concept, and that class is the property's range."""
+    from rdflib import RDF, RDFS, SKOS, Graph, URIRef
+
+    from ontocast.onto.property_sides import RANGE_INCLUDES
+    from ontocast.prompt.render_ontology import general_ontology_instruction
+
+    statements = re.findall(r"`(ex:[^`]+)`", general_ontology_instruction)
+    body = "\n".join(
+        f"{s} ." for s in statements if " " in s and not s.startswith("ex:Vehicle")
+    )
+    graph = Graph().parse(
+        data="@prefix ex: <http://ex.org/> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+        "@prefix skos: <http://www.w3.org/2004/02/skos/core#> .\n"
+        "@prefix schema: <https://schema.org/> .\n" + body,
+        format="turtle",
+    )
+    ex = "http://ex.org/"
+    fuel_type = URIRef(f"{ex}FuelType")
+    assert (URIRef(f"{ex}hasFuelType"), RANGE_INCLUDES, fuel_type) in graph
+    assert (fuel_type, RDFS.subClassOf, SKOS.Concept) in graph
+    for value in ("Diesel", "Petrol"):
+        assert (URIRef(f"{ex}{value}"), RDF.type, SKOS.Concept) in graph
+        assert (URIRef(f"{ex}{value}"), RDF.type, fuel_type) in graph
+
+
+def test_every_ontology_prompt_states_the_instance_criterion_once() -> None:
+    """Plan, render, consolidation and critic judge terms by one test."""
+    from ontocast.prompt.consolidate_ontology import consolidation_instruction
+    from ontocast.prompt.criticise_ontology import ontology_criteria
+    from ontocast.prompt.ontology_terms import INSTANCE_CRITERION
+    from ontocast.prompt.plan_ontology import plan_instruction
+    from ontocast.prompt.render_ontology import general_ontology_instruction
+
+    for text in (
+        plan_instruction,
+        general_ontology_instruction,
+        consolidation_instruction,
+        ontology_criteria,
+    ):
+        assert text.count(INSTANCE_CRITERION) == 1
+    assert "no fact needs" not in consolidation_instruction
+
+
+def test_a_side_lists_expected_classes_and_a_general_property_is_reused() -> None:
+    """A side fitted to one document's subject makes a narrower copy of a general property."""
+    from ontocast.prompt.ontology_terms import INSTANCE_CRITERION
+    from ontocast.prompt.plan_ontology import plan_instruction
+
+    assert "most specific class" not in INSTANCE_CRITERION
+    assert "expected on" in INSTANCE_CRITERION
+    assert "claim about every use" not in INSTANCE_CRITERION
+    assert "nearest kind the term's instances belong to" in INSTANCE_CRITERION
+    assert "broader than this document's subject" in INSTANCE_CRITERION
+    assert "never plan a narrower copy" in plan_instruction
+
+
+def test_the_plan_block_shows_a_property_domain_and_range() -> None:
+    from ontocast.agent.render_ontology import format_plan_instruction
+    from ontocast.onto.model import OntologyPlan, OntologyPlanTerm
+
+    home = "https://example.com/home#"
+    plan = OntologyPlan(
+        terms=[
+            OntologyPlanTerm(
+                kind="object_property",
+                label="has fuel type",
+                local_name="hasFuelType",
+                iri=f"{home}hasFuelType",
+                decision="mint",
+                domain_iri=f"{home}Vehicle",
+                range_iri=f"{home}FuelType",
+            )
+        ],
+        prefixes={"home": home},
+    )
+    block = format_plan_instruction(plan)
+    assert "domain `home:Vehicle` → range `home:FuelType`" in block
+
+
+@pytest.mark.parametrize(
+    "report",
+    ["FactsRenderReport", "GraphUpdateRenderReport", "FreshOntologyRenderReport"],
+)
+def test_render_output_schema_asks_only_for_what_code_reads(report: str) -> None:
+    """The schema sent with every render is short: the graph fields, one line."""
+    import json
+
+    from langchain_core.output_parsers import PydanticOutputParser
+
+    from ontocast.onto import model
+
+    instructions = PydanticOutputParser(
+        pydantic_object=getattr(model, report)
+    ).get_format_instructions()
+    schema = json.loads(
+        instructions[instructions.index("```") + 3 : instructions.rindex("```")]
+    )
+    assert not [name for name in schema["properties"] if name.endswith("_score")]
+    assert "\n" not in schema["description"]
+    assert len(schema["description"]) <= 100

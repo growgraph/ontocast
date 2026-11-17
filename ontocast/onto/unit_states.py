@@ -27,6 +27,7 @@ from ontocast.onto.model import (
     FactsUnitFinding,
     GraphRepairRecord,
     LoopAttempt,
+    OntologyPlan,
     OntologyUnitFinding,
     Suggestions,
 )
@@ -124,7 +125,8 @@ class UnitState(BasePydanticModel, Generic[UnitT]):
         default=OntologyChapterFormat.INHERIT,
         description=(
             "Syntax of the ontology chapter in this unit's prompts: 'inherit' "
-            "follows llm_graph_format, 'turtle' pins the chapter to Turtle. "
+            "follows llm_graph_format, 'turtle' pins the chapter to Turtle, "
+            "'term_sheet' lists one line per term. "
             "Threaded from ServerConfig like ontology_context_max_triples. "
             "Read by the facts loop only; the ontology loop keeps its chapter "
             "in the wire format because its output patches what it reads."
@@ -145,6 +147,13 @@ class UnitState(BasePydanticModel, Generic[UnitT]):
     critic_fixes_applied: int = Field(
         default=0,
         description="Critic fixes compiled straight to a patch with no LLM call.",
+    )
+    statements_without_subject_rendered: int = Field(
+        default=0,
+        description=(
+            "Facts only: statement_without_subject findings on the render, "
+            "before any critic or gap pass."
+        ),
     )
     critic_fixes_residual: int = Field(
         default=0,
@@ -195,6 +204,15 @@ class UnitState(BasePydanticModel, Generic[UnitT]):
         ),
     )
 
+    applied_repairs: list[GraphRepairRecord] = Field(
+        default_factory=list,
+        description=(
+            "Deterministic rewrites the machine applied to rendered graphs "
+            "(alias repairs, rdf:type literal coercions, derived labels) — the "
+            "provenance trail distinguishing machine-altered triples from LLM "
+            "output."
+        ),
+    )
     attempt_log: list[LoopAttempt] = Field(
         default_factory=list,
         description="Per-attempt telemetry (render/critic/repair) for this unit.",
@@ -337,14 +355,6 @@ class UnitFactsState(UnitState[ContentUnit]):
             "fixes into the next repair render."
         ),
     )
-    applied_repairs: list[GraphRepairRecord] = Field(
-        default_factory=list,
-        description=(
-            "Deterministic rewrites the machine applied to rendered graphs "
-            "(alias repairs, rdf:type literal coercions) — the provenance "
-            "trail distinguishing machine-altered triples from LLM output."
-        ),
-    )
     critic_outcome: Literal["reviewed", "unavailable", "skipped"] | None = Field(
         default=None,
         description=(
@@ -386,11 +396,15 @@ class UnitFactsState(UnitState[ContentUnit]):
         return len(self.content_unit.graph)
 
     def snapshot_for_rollback(self) -> object:
-        return self.content_unit.graph.copy()
+        # The quarantine travels with the graph: a patch's repairs may add to it.
+        return self.content_unit.graph.copy(), list(self.quarantined_literal_triples)
 
     def restore(self, token: object) -> None:
-        assert isinstance(token, RDFGraph)
-        self.content_unit.graph = token
+        assert isinstance(token, tuple)
+        graph, quarantined = token
+        assert isinstance(graph, RDFGraph)
+        self.content_unit.graph = graph
+        self.quarantined_literal_triples = list(quarantined)
         self.facts_updates = []
 
 
@@ -412,6 +426,10 @@ class UnitOntologyState(UnitState[SourceUnit]):
             "The document's home ontology: where fresh terms are minted. None "
             "when the document cannot create vocabulary."
         ),
+    )
+    ontology_plan: OntologyPlan | None = Field(
+        default=None,
+        description="The document's plan: the terms this unit may mint or must reuse.",
     )
     ontology_updates: list[GraphUpdate] = Field(default_factory=list)
     ontology_updates_applied: list[GraphUpdate] = Field(default_factory=list)
@@ -447,11 +465,20 @@ class UnitOntologyState(UnitState[SourceUnit]):
         - ``deletes``: snapshot triples removed by delete operations, to be
           propagated onto catalog terminals during reduce.
 
-        Fresh path (no GraphUpdates, empty seed): full working graph as
-        inserts. Costs a snapshot copy per call, which is why the snapshot is
+        Fresh path (empty seed): the full working graph -- render plus applied
+        patches -- as inserts. Costs a snapshot copy per call, which is why the snapshot is
         otherwise shared by reference -- callers on the per-unit hot path
         budget-time it.
         """
+        if self.ontology_snapshot.is_empty():
+            # The create path: there is no catalog context to diff against, so
+            # the product is the working graph -- the render plus every patch
+            # applied since. Replaying the updates onto the empty snapshot
+            # would report the patches alone and drop the render.
+            if len(self.working_graph) > 0:
+                return OntologyDelta(inserts=self.working_graph.copy())
+            return OntologyDelta()
+
         if self.all_updates:
             snapshot_graph = self.ontology_snapshot.graph
             final_graph, _ = AgentState.render_updated_graph(
@@ -477,10 +504,6 @@ class UnitOntologyState(UnitState[SourceUnit]):
                 )
             return OntologyDelta(inserts=inserts, deletes=deletes)
 
-        # Fresh generation with no structured updates: emit the working graph
-        # only when the seed was empty (true create path).
-        if self.ontology_snapshot.is_empty() and len(self.working_graph) > 0:
-            return OntologyDelta(inserts=self.working_graph.copy())
         return OntologyDelta()
 
     def update_ontology(self) -> bool:
@@ -506,7 +529,19 @@ class UnitOntologyState(UnitState[SourceUnit]):
         self.ontology_updates_applied += self.ontology_updates
         self.working_graph = updated_graph
         self.ontology_updates = []
+        self._sync_fresh_product()
         return True
+
+    def _sync_fresh_product(self) -> None:
+        """Keep the fresh root artifact equal to the working graph.
+
+        On the create path the unit's product is ``fresh_ontology``, minted
+        from the render. A patch applied afterwards (the critic, a derived
+        label) changes the working graph only; without this the artifact
+        written out would be the unpatched render.
+        """
+        if self.fresh_ontology is not None and self.ontology_snapshot.is_empty():
+            self.fresh_ontology.graph = self.working_graph.copy()
 
     def patch_target_graph(self) -> RDFGraph:
         return self.working_graph
@@ -564,6 +599,7 @@ class UnitOntologyState(UnitState[SourceUnit]):
         self.working_graph = graph
         self.ontology_updates_applied = list(applied)
         self.ontology_updates = list(pending)
+        self._sync_fresh_product()
 
     def working_graph_changed(self) -> bool:
         """True when the scratchpad graph differs from the seed snapshot.

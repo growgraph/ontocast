@@ -43,6 +43,15 @@ class OntologySnapshot(BasePydanticModel):
         default=OntologyAssemblyMode.SELECTED_SINGLE_ONTOLOGY_LLM,
         description="How this snapshot was assembled.",
     )
+    partial: bool = Field(
+        default=False,
+        description=(
+            "True when the graph is a retrieved subset of the catalog ontologies "
+            "it draws on, not each of them whole. The renderer and critic are "
+            "told so, and a unit's deletes judged on such a view are kept only "
+            "where the document redeclares their subject."
+        ),
+    )
     title: str | None = Field(default=None, description="Optional prompt title.")
     description: str | None = Field(
         default=None, description="Optional prompt description."
@@ -185,6 +194,7 @@ class OntologySnapshot(BasePydanticModel):
         cls,
         *,
         assembly_mode: OntologyAssemblyMode = OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE,
+        partial: bool = False,
         title: str | None = None,
         description: str | None = None,
     ) -> OntologySnapshot:
@@ -193,6 +203,7 @@ class OntologySnapshot(BasePydanticModel):
             graph=RDFGraph(),
             source_iris=[],
             assembly_mode=assembly_mode,
+            partial=partial,
             title=title,
             description=description,
             content_hash="",
@@ -231,6 +242,7 @@ class OntologySnapshot(BasePydanticModel):
         *,
         source_iris: list[str],
         assembly_mode: OntologyAssemblyMode,
+        partial: bool = False,
         title: str | None = None,
         description: str | None = None,
         strip_headers: bool = True,
@@ -243,6 +255,7 @@ class OntologySnapshot(BasePydanticModel):
             graph=working,
             source_iris=list(source_iris),
             assembly_mode=assembly_mode,
+            partial=partial,
             title=title,
             description=description,
         )

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import MutableMapping, Sequence
+from collections.abc import Set as AbstractSet
 from itertools import combinations
 
 from pydantic import BaseModel, Field
@@ -26,6 +27,7 @@ from ontocast.onto.rdfgraph import (
     RDFGraph,
 )
 from ontocast.onto.scaffolding import document_nodes, is_scaffolding, scaffolding_nodes
+from ontocast.onto.well_known import well_known_vocabulary
 from ontocast.tool.agg.signatures import (
     canonical_literal,
     harvest_max_one_predicates,
@@ -308,8 +310,11 @@ def _non_catalog_vocabulary_findings(
     *,
     scaffolding: set[Node],
     document: set[Node],
+    severity: str = "warning",
+    declared_namespaces: tuple[str, ...] = (),
+    catalog_terms: AbstractSet[str] = frozenset(),
 ) -> list[FactsValidationFinding]:
-    """Report terms the facts graph uses that the ontology context never supplied.
+    """Report terms the facts graph uses that neither the context nor the catalog has.
 
     When the renderer cannot find a term for something the text states, the
     prompt's documented fallback is to reach for a well-known vocabulary
@@ -320,14 +325,25 @@ def _non_catalog_vocabulary_findings(
     evidence of a *retrieval* miss, so it is worth a finding even though the
     facts graph itself is well-formed.
 
-    Warning severity: this is telemetry about context assembly, not the
-    signature of a bad merge, and must not drive the un-merge repair.
+    Never the signature of a bad merge, so it must not drive the un-merge
+    repair whatever its severity. Under an open vocabulary it is a warning:
+    telemetry about context assembly. Under a strict one a term outside the
+    catalog is a defect, reported at ``severity``; a term of a namespace the
+    deployment declared as its own (``declared_namespaces``) or of the
+    configured fallback vocabulary stays a warning in both, and so does a
+    term of a well-known vocabulary (:mod:`ontocast.onto.well_known`) that
+    exists in it; one it does not have is reported at ``severity``.
 
     Args:
         graph: Aggregated facts graph.
         ontology_graph: Merged ontology context that was offered to the renderer.
         namespaces: Fact namespaces; terms minted there are the extraction, not
             borrowed vocabulary.
+        severity: Severity of a term outside every configured vocabulary.
+        declared_namespaces: Namespaces the deployment counts as its own.
+        catalog_terms: Every term the whole catalog declares or references.
+            A term a unit's snapshot omitted is still a catalog term: the unit
+            validator and the shapes chapter both count it, so the gate does too.
 
     Returns:
         list: One finding per non-catalog term, ordered by IRI.
@@ -344,7 +360,7 @@ def _non_catalog_vocabulary_findings(
     # all three triple positions). A subjects()-only view calls a term supplied
     # solely as an rdfs:range object non-catalog -- exactly the terms the
     # domain/range schema closure is designed to admit.
-    supplied = collect_catalog_terms(ontology_graph)
+    supplied = collect_catalog_terms(ontology_graph) | catalog_terms
     used: dict[str, set[str]] = {}
     for subject, predicate, obj in graph:
         if not isinstance(subject, URIRef) or is_scaffolding(
@@ -374,22 +390,50 @@ def _non_catalog_vocabulary_findings(
         # choice the prompt instructed. Still a retrieval miss worth reporting,
         # but not the same signal as vocabulary invented out of nowhere -- the
         # message must not accuse the renderer of improvising what it was told.
-        configured = _is_configured_fallback(term, fallback_namespaces)
+        vocabulary = well_known_vocabulary(term)
+        missing_from = (
+            vocabulary
+            if vocabulary is not None
+            and not vocabulary.has_term(term[len(_namespace_of(term)) :])
+            else None
+        )
+        configured = missing_from is None and (
+            vocabulary is not None
+            or _is_configured_fallback(term, fallback_namespaces)
+            or (bool(declared_namespaces) and term.startswith(declared_namespaces))
+        )
+        if missing_from is not None:
+            message = (
+                f"<{term}> is used by {len(subjects)} subject(s) but is not a "
+                f"term of {missing_from.title}."
+            )
+        elif configured:
+            message = (
+                f"<{term}> is used by {len(subjects)} subject(s) but was "
+                "absent from the ontology context — the renderer took the "
+                "configured fallback vocabulary, which points at a "
+                "retrieval miss rather than a modeling choice."
+            )
+        elif severity == "error":
+            message = (
+                f"<{term}> is used by {len(subjects)} subject(s) but is not "
+                "a term of the catalog — the vocabulary is strict, so the "
+                "statements carrying it are outside the projection."
+            )
+        else:
+            message = (
+                f"<{term}> is used by {len(subjects)} subject(s) but was "
+                "absent from the ontology context — the renderer fell back "
+                "to outside vocabulary, which points at a retrieval miss "
+                "rather than a modeling choice."
+            )
         findings.append(
             FactsValidationFinding(
                 kind=FactsValidationFindingKind.NON_CATALOG_VOCABULARY,
-                severity="warning",
-                message=(
-                    f"<{term}> is used by {len(subjects)} subject(s) but was "
-                    "absent from the ontology context — the renderer took the "
-                    "configured fallback vocabulary, which points at a "
-                    "retrieval miss rather than a modeling choice."
-                    if configured
-                    else f"<{term}> is used by {len(subjects)} subject(s) but "
-                    "was absent from the ontology context — the renderer fell "
-                    "back to outside vocabulary, which points at a retrieval "
-                    "miss rather than a modeling choice."
-                ),
+                severity="error"
+                if severity == "error" and not configured
+                else "warning",
+                message=message,
                 subject=subjects[0],
                 predicate=term,
                 values=subjects,
@@ -449,6 +493,9 @@ def validate_aggregated_facts(
     shacl_max_triples: int = 0,
     key_supported_subjects: Sequence[str] | None = None,
     cross_unit_pairs: Sequence[tuple[str, str]] | None = None,
+    non_catalog_severity: str = "warning",
+    additional_standard_namespaces: Sequence[str] = (),
+    catalog_terms: AbstractSet[str] = frozenset(),
 ) -> FactsValidationReport:
     """Check post-merge invariants over the aggregated facts graph.
 
@@ -475,9 +522,12 @@ def validate_aggregated_facts(
         - ``DEGENERATE_COREFERENCE``: one IRI object shared by >= 2 distinct
           functional-ish predicates of one subject (collapsed range bounds).
         - ``SHACL``: optional, when ``pyshacl`` is installed and shapes exist.
-        - ``NON_CATALOG_VOCABULARY``: warning-only telemetry for terms the
-          ontology context never supplied, which mark a retrieval miss the
-          renderer papered over with a documented fallback.
+        - ``NON_CATALOG_VOCABULARY``: terms neither the ontology context nor
+          ``catalog_terms`` supplies. A warning under an open vocabulary (a retrieval miss the
+          renderer papered over with a documented fallback);
+          ``non_catalog_severity`` under a strict one, where such a term is
+          outside the projection. Terms of ``additional_standard_namespaces``
+          and of the fallback vocabulary are warnings either way.
         - ``MIXED_OBJECT_KINDS``: warning-only telemetry for predicates used
           with both IRI and literal objects across the graph.
 
@@ -507,6 +557,8 @@ def validate_aggregated_facts(
             and a full title can be two names for one key-confirmed record,
             and an error here would drive the un-merge repair to split a
             correct merge.
+        catalog_terms: Every term of the whole catalog, so NON_CATALOG_VOCABULARY
+            agrees with the unit validator on what "in the catalog" means.
 
     Returns:
         Report with all findings, ordered by subject.
@@ -754,6 +806,9 @@ def validate_aggregated_facts(
             quantity_fallback_vocabulary,
             scaffolding=scaffolding,
             document=document,
+            severity=non_catalog_severity,
+            declared_namespaces=tuple(additional_standard_namespaces),
+            catalog_terms=catalog_terms,
         )
     )
 

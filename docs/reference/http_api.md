@@ -35,11 +35,12 @@ FastAPI serves interactive documentation at `/docs` and the OpenAPI schema at
 | `POST /match/entities` | Align entities across several graphs |
 | `POST /match/derive-matches` | Turn alignment clusters into one-to-one entity matches |
 | `POST /match/evaluate` | Score a predicted graph against a reference graph |
+| `GET /entities/cluster` | The stored entities that are one with an entity, across documents |
 
 ## Tenant and project
 
-`/process`, `/process_unit`, `/ontologies`, `/shapes` and `/flush` work on one
-tenant and project partition. Pass `tenant` and `project` as **query
+`/process`, `/process_unit`, `/ontologies`, `/shapes`, `/flush` and
+`/entities` work on one tenant and project partition. Pass `tenant` and `project` as **query
 parameters** to choose it; they are not read from a JSON body or form. With
 neither, a route uses the partition the server started with (`ontocast serve
 --tenant ... --project ...`, `ontocast`/`test` by default). With only one, the
@@ -329,6 +330,25 @@ strings in the JSON body.
   "regime": "ontology_loose",
   "similarity_threshold": 0.8
 }
+```
+
+## Cross-document identity
+
+`GET /entities/cluster?iri=<entity IRI>` reads the stored identity links (see
+[Cross-document identity](../concepts/cross_document_identity.md)) and returns
+the entity's cluster:
+
+| Field | Meaning |
+|---|---|
+| `members` | The entities that are one with `iri`: each with its document `graph`, `labels`, `types`, the `reason` it joined (`self`, `key`, `ifp`, `identifier` or `label`) and the match nodes it shares (`via`) |
+| `kept_apart` | Candidates that share a match node but are not in the cluster, each with its `veto` |
+| `truncated` | `true` when more candidates were linked than one read collects |
+
+Returns `404` when no stored document holds the entity, and `501` when the
+triple store cannot answer SPARQL.
+
+```bash
+curl "http://127.0.0.1:8999/entities/cluster?iri=https://example.org/doc/a1b2/echr&tenant=acme&project=reports"
 ```
 
 ## Errors

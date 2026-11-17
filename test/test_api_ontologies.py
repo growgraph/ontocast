@@ -25,13 +25,13 @@ _TURTLE = f"""
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix dcterms: <http://purl.org/dc/terms/> .
-@prefix fin: <{_IRI}#> .
+@prefix finance: <{_IRI}#> .
 
 <{_IRI}> a owl:Ontology ;
     dcterms:title "Finance" ;
     owl:versionInfo "2.1.0" .
 
-fin:Account a owl:Class ; rdfs:label "Account" .
+finance:Account a owl:Class ; rdfs:label "Account" .
 """
 
 
@@ -131,14 +131,14 @@ _TURTLE_V2 = f"""
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix dcterms: <http://purl.org/dc/terms/> .
-@prefix fin: <{_IRI}#> .
+@prefix finance: <{_IRI}#> .
 
 <{_IRI}> a owl:Ontology ;
     dcterms:title "Finance" ;
     owl:versionInfo "2.2.0" .
 
-fin:Account a owl:Class ; rdfs:label "Account" .
-fin:Ledger a owl:Class ; rdfs:label "Ledger" .
+finance:Account a owl:Class ; rdfs:label "Account" .
+finance:Ledger a owl:Class ; rdfs:label "Ledger" .
 """
 
 
@@ -294,3 +294,16 @@ def test_put_onto_a_diverged_ontology_merges_its_heads() -> None:
     assert sorted(entry["prior_version_iris"]) == sorted([left, right])
     [head] = tools.ontology_manager.get_heads_by_iri(_IRI)
     assert head.version_iri == tip
+
+
+def test_an_id_two_ontologies_hold_is_answered_with_their_iris(
+    client: TestClient,
+) -> None:
+    other = "https://example.com/finance"
+    _upload(client)
+    _upload(client, _TURTLE.replace(_IRI, other))
+
+    response = client.get("/ontologies/finance/versions")
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["candidates"] == [other, _IRI]

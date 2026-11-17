@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Generator, Sequence
+from contextlib import contextmanager
 from difflib import SequenceMatcher
 
 from rdflib import RDF, RDFS, BNode, Literal, URIRef
-from rdflib.namespace import XSD
+from rdflib.namespace import OWL, XSD
 from rdflib.term import Node
 
 from ontocast.onto.model import (
@@ -22,24 +24,40 @@ from ontocast.onto.model import (
     FactsUnitFindingKind,
     GraphRepairRecord,
 )
+from ontocast.onto.property_sides import sides_by_property
 from ontocast.onto.rdfgraph import (
     RDFGraph,
+    RejectedLiteralTriple,
 )
+from ontocast.onto.reification import Triple
+from ontocast.onto.well_known import (
+    is_well_known_term,
+    well_known_object_pairs,
+    well_known_role,
+)
+from ontocast.onto.xsd_lexical import TEMPORAL_DATATYPES, is_valid_temporal_lexical
+from ontocast.tool.facts_validation.date_values import parse_date_label
 from ontocast.tool.facts_validation.terms import (
     _COMPACT_IRI,
     _VACUOUS_TYPES,
+    CatalogRoles,
     _alias_candidates,
+    _catalog_term_roles,
     _declared_domains,
+    _described_classes,
     _local_name,
     _name_tokens,
     _namespace_of,
     _resolve_type_literal,
-    _superclass_closure,
     _vocabulary_role_subset,
     collect_catalog_terms,
     collect_declared_namespaces,
+    declared_class_ranges,
     expand_vocabulary_terms,
     resolve_unique_surface,
+    sole_listed_classes,
+    superclass_closure,
+    types_compatible,
 )
 from ontocast.tool.llm import record_active_count
 from ontocast.tool.validate import _predicate_expects_iri_object
@@ -56,52 +74,127 @@ _NUMERIC_RANGE_DATATYPES = {
     XSD.positiveInteger,
 }
 
-# Datatypes whose rdflib value parser actually rejects a wrong lexical form, so
-# ``_literal_parses_as`` is evidence. Deliberately excluded, each measured:
-#   xsd:string / xsd:anyURI -- every lexical form parses;
-#   xsd:boolean -- Literal("2019", datatype=xsd:boolean).value is False, not None;
-#   xsd:time    -- "2019" parses as 20:19, so a time range would mangle years.
-# Admitting any of those lets one sloppy range declaration rewrite unrelated
-# literals on that predicate, including correctly typed ones.
-_PARSE_CHECKED_RANGE_DATATYPES = {XSD.date, XSD.dateTime, XSD.duration}
+# The date, time and duration datatypes, decided by their XSD lexical spaces
+# (:func:`~ontocast.onto.xsd_lexical.is_valid_temporal_lexical`), not by
+# rdflib's lax ISO parsers. A text that fails is no value of the type, so these
+# are also the ranges text is set aside on; a number in prose is left to the
+# numeric checks. Other datatypes are not retyped: every lexical form is an
+# ``xsd:string`` or ``xsd:anyURI``, and rdflib reads ``"2019"`` as a boolean,
+# so admitting them lets one sloppy range declaration rewrite unrelated literals.
+_TEMPORAL_RANGE_DATATYPES = set(TEMPORAL_DATATYPES)
 
-# The gregorian datatypes have no rdflib value parser at all -- ``.value`` is
-# always None -- so they need explicit lexical validation or they could never be
-# retyped, which is precisely the "xsd:gYear range receiving a string" case this
-# widening exists for. Patterns are the XSD lexical spaces, timezone included.
-_GREGORIAN_RANGE_PATTERNS = {
-    XSD.gYear: re.compile(r"^-?\d{4,}(Z|[+-]\d{2}:\d{2})?$"),
-    XSD.gYearMonth: re.compile(r"^-?\d{4,}-\d{2}(Z|[+-]\d{2}:\d{2})?$"),
-}
+# Ranges a declared ``rdfs:range`` may retype a literal *to*.
+_RETYPABLE_RANGE_DATATYPES = _NUMERIC_RANGE_DATATYPES | _TEMPORAL_RANGE_DATATYPES
 
-# Ranges a declared ``rdfs:range`` may retype a literal *to*. An allowlist, not
-# "any XSD datatype" -- see the two sets above for why.
-_RETYPABLE_RANGE_DATATYPES = (
-    _NUMERIC_RANGE_DATATYPES
-    | _PARSE_CHECKED_RANGE_DATATYPES
-    | set(_GREGORIAN_RANGE_PATTERNS)
+
+def literal_ranges(
+    ontology_graph: RDFGraph | None, catalog_roles: CatalogRoles | None = None
+) -> dict[URIRef, URIRef]:
+    """Each predicate with one declared retypable datatype range, with it.
+
+    Read from the unit's ``ontology_graph``, the whole catalog
+    (``catalog_roles``, memoised there with the well-known vocabularies'
+    ranges) and the well-known vocabularies, so a property the unit's snapshot
+    did not retrieve is still known. A predicate declared with two different
+    datatypes anywhere is left out: no single value fits both. Ranges
+    inherited through ``rdfs:subPropertyOf`` are not followed.
+    """
+    roles = catalog_roles if catalog_roles is not None else CatalogRoles()
+    declared = {prop: set(found) for prop, found in roles.declared_ranges().items()}
+    if ontology_graph is not None:
+        for predicate, range_iri in ontology_graph.subject_objects(RDFS.range):
+            if (
+                isinstance(predicate, URIRef)
+                and isinstance(range_iri, URIRef)
+                and str(range_iri).startswith(str(XSD))
+            ):
+                declared.setdefault(str(predicate), set()).add(str(range_iri))
+    return {
+        URIRef(predicate): URIRef(next(iter(datatypes)))
+        for predicate, datatypes in declared.items()
+        if len(datatypes) == 1
+        and URIRef(next(iter(datatypes))) in _RETYPABLE_RANGE_DATATYPES
+    }
+
+
+_INTEGER_LEXICAL = re.compile(r"[+-]?[0-9]+")
+_DECIMAL_LEXICAL = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)")
+_DOUBLE_LEXICAL = re.compile(
+    r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
 )
 
-# Meta-vocabularies: the RDF/OWL substrate plus the annotation and provenance
-# terms every facts graph carries regardless of catalog. Exempting these from
-# UNKNOWN_TERM keeps the signal readable -- flagging rdfs:label would bury it.
-#
-# Domain vocabularies do NOT belong here. SOSA/SSN (sensor observations),
-# CSVW (tabular metadata), FOAF and schema.org (people, organizations,
-# creative works) model a subject area; a catalog that does not declare them
-# should hear about it. They are exempted by configuration
-# (FACTS_ADDITIONAL_STANDARD_NAMESPACES) when a deployment wants them, not by
+
+def _numeric_fits(lexical: str, datatype: URIRef) -> bool:
+    """Whether ``lexical`` is a finite number of ``datatype`` as XSD writes it.
+
+    An integer type takes no fraction and keeps its sign constraint; a number
+    in prose such as ``NaN``, ``Infinity`` or ``1_0`` is no value of any.
+    """
+    if datatype in (XSD.integer, XSD.nonNegativeInteger, XSD.positiveInteger):
+        if not _INTEGER_LEXICAL.fullmatch(lexical):
+            return False
+        value = int(lexical)
+        if datatype == XSD.nonNegativeInteger:
+            return value >= 0
+        if datatype == XSD.positiveInteger:
+            return value > 0
+        return True
+    if datatype == XSD.decimal:
+        return bool(_DECIMAL_LEXICAL.fullmatch(lexical))
+    return bool(_DOUBLE_LEXICAL.fullmatch(lexical))
+
+
+# A date with no zone: the one form widened to midnight on a date-time range.
+_ZONELESS_DATE = re.compile(r"-?[0-9]{4,}-[0-9]{2}-[0-9]{2}")
+
+
+def _typed_value(lexical: str, datatype: URIRef) -> Literal | None:
+    """``lexical`` as a well-formed literal of a retypable ``datatype``, or ``None``.
+
+    A date, time or duration must be a value of ``datatype`` in its XSD lexical
+    space as written: rdflib's readers are laxer (``"2019"`` reads as the
+    ``xsd:time`` 20:19). One widening matches what parsing does to a typed
+    literal: an ISO date with no zone on an ``xsd:dateTime`` range is that day
+    at midnight.
+    A calendar text (``"29 June 2021"``) is first read as the ISO value it
+    names exactly; ``"June 2021"`` names no day, so it is no date.
+    """
+    if datatype in _NUMERIC_RANGE_DATATYPES:
+        if not _numeric_fits(lexical, datatype):
+            return None
+        return Literal(lexical, datatype=datatype)
+    candidates = [lexical]
+    named = parse_date_label(lexical, allow_year=True)
+    if named is not None:
+        candidates.append(str(named))
+    for candidate in candidates:
+        if datatype == XSD.dateTime and _ZONELESS_DATE.fullmatch(candidate):
+            candidate = f"{candidate}T00:00:00"
+        if is_valid_temporal_lexical(candidate, datatype):
+            # As written: rdflib's normal form can move a zone into the hour.
+            with _quiet_rdflib_casts():
+                return Literal(candidate, datatype=datatype, normalize=False)
+    return None
+
+
+def _fits_range(lexical: str, datatype: URIRef) -> bool:
+    """Whether ``lexical`` is a value of a retypable ``datatype``."""
+    return _typed_value(lexical, datatype) is not None
 
 
 def normalize_literals_against_schema(
-    graph: RDFGraph, ontology_graph: RDFGraph | None
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    catalog_roles: CatalogRoles | None = None,
 ) -> int:
-    """Retype literals whose predicate declares a compatible ``rdfs:range``.
+    """Retype literals whose predicate declares a compatible datatype range.
 
     Fixes the ``qudt:numericValue 230`` vs ``"230"^^xsd:decimal`` drift at parse
-    time, and the same drift for the date-like datatypes: when the schema
-    declares a range in :data:`_RETYPABLE_RANGE_DATATYPES` and the lexical form
-    parses as that datatype, the literal is rewritten with it.
+    time, and the same drift for the date, time and duration datatypes: when
+    the range (:func:`literal_ranges`) is in :data:`_RETYPABLE_RANGE_DATATYPES`
+    and the lexical form is a value of it, the literal is rewritten with it. A
+    calendar text that names exactly one value of the range (``"29 June
+    2021"`` on an ``xsd:date`` range) is rewritten to that value.
 
     A literal is only retyped from an untyped, ``xsd:string``, or numeric source
     -- a string range must never be able to clobber a correctly typed value --
@@ -111,17 +204,7 @@ def normalize_literals_against_schema(
     Returns:
         Number of retyped literals.
     """
-    if ontology_graph is None:
-        return 0
-    declared_ranges: dict[URIRef, URIRef] = {}
-    for predicate, range_iri in ontology_graph.subject_objects(RDFS.range):
-        if (
-            isinstance(predicate, URIRef)
-            and isinstance(range_iri, URIRef)
-            and range_iri in _RETYPABLE_RANGE_DATATYPES
-        ):
-            declared_ranges[predicate] = range_iri
-
+    declared_ranges = literal_ranges(ontology_graph, catalog_roles)
     if not declared_ranges:
         return 0
 
@@ -145,27 +228,207 @@ def normalize_literals_against_schema(
             )
         if not source_admissible:
             continue
-        lexical = str(obj).strip()
-        gregorian = _GREGORIAN_RANGE_PATTERNS.get(target_datatype)
-        if numeric_target:
-            parses = canonical_number(lexical) is not None
-        elif gregorian is not None:
-            parses = gregorian.match(lexical) is not None
-        else:
-            parses = _literal_parses_as(lexical, target_datatype)
-        if not parses:
+        value = _typed_value(str(obj).strip(), target_datatype)
+        if value is None:
             continue
-        replacements.append(
-            (
-                (subject, predicate, obj),
-                (subject, predicate, Literal(lexical, datatype=target_datatype)),
-            )
-        )
+        replacements.append(((subject, predicate, obj), (subject, predicate, value)))
 
     for old, new in replacements:
         graph.remove(old)
         graph.add(new)
     return len(replacements)
+
+
+def temporal_range_mismatches(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    catalog_roles: CatalogRoles | None = None,
+) -> list[tuple[tuple[Node, Node, Node], RejectedLiteralTriple]]:
+    """Text on a date, time or duration range that is not a value of it.
+
+    Run after :func:`normalize_literals_against_schema`, so a text that is such
+    a value has already been retyped: what is left untyped, ``xsd:string`` or
+    language-tagged on a predicate whose range (:func:`literal_ranges`) is a
+    temporal datatype is not one -- a recurrence or a phrase where a date
+    belongs. Numeric ranges are left to the numeric checks.
+
+    Returns:
+        Each such triple with its quarantine record (``expected_datatype``
+        names the range).
+    """
+    temporal_ranges = {
+        predicate: datatype
+        for predicate, datatype in literal_ranges(ontology_graph, catalog_roles).items()
+        if datatype in _TEMPORAL_RANGE_DATATYPES
+    }
+    if not temporal_ranges:
+        return []
+    found: list[tuple[tuple[Node, Node, Node], RejectedLiteralTriple]] = []
+    for subject, predicate, obj in graph:
+        if not isinstance(obj, Literal) or obj.datatype not in (None, XSD.string):
+            continue
+        datatype = temporal_ranges.get(predicate)
+        if datatype is None or _fits_range(str(obj).strip(), datatype):
+            continue
+        standing = tuple(
+            sorted(
+                str(value)
+                for value in graph.objects(subject, predicate)
+                if isinstance(value, Literal)
+                and value.datatype == datatype
+                and RDFGraph._is_valid_typed_literal(value)
+            )
+        )
+        found.append(
+            (
+                (subject, predicate, obj),
+                RejectedLiteralTriple(
+                    subject=str(subject),
+                    predicate=str(predicate),
+                    object_lexical=str(obj),
+                    datatype=str(obj.datatype or ""),
+                    subject_is_blank=isinstance(subject, BNode),
+                    standing_values=standing,
+                    reason=(
+                        "this text is not a value of the property's datatype; "
+                        "write a value of that datatype, or state the text with "
+                        "a property that takes text"
+                    ),
+                    expected_datatype=str(datatype),
+                ),
+            )
+        )
+    return found
+
+
+def partition_literals_outside_temporal_ranges(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    catalog_roles: CatalogRoles | None = None,
+) -> tuple[RDFGraph, list[RejectedLiteralTriple]]:
+    """Split off :func:`temporal_range_mismatches`, quarantined for the critic.
+
+    Returns:
+        Tuple of (clean graph, quarantined triples).
+    """
+    found = temporal_range_mismatches(graph, ontology_graph, catalog_roles)
+    if not found:
+        return graph, []
+    set_aside = {triple for triple, _ in found}
+    clean = RDFGraph()
+    for prefix, namespace_uri in graph.namespaces():
+        if prefix:
+            clean.bind(prefix, namespace_uri)
+    for triple in graph:
+        if triple not in set_aside:
+            clean.add(triple)
+    return clean, [record for _, record in found]
+
+
+def _quarantined_subject(item: RejectedLiteralTriple) -> Node:
+    return BNode(item.subject) if item.subject_is_blank else URIRef(item.subject)
+
+
+def _states_text(graph: RDFGraph, subject: Node, text: str) -> bool:
+    return any(
+        isinstance(obj, Literal) and str(obj) == text
+        for obj in graph.objects(subject, None)
+    )
+
+
+def _replaces(obj: Node, item: RejectedLiteralTriple) -> bool:
+    """Whether ``obj`` is a value of the kind ``item`` was set aside for lacking.
+
+    A date, time or duration counts only when it was not already standing on
+    the predicate when the text was set aside.
+    """
+    if item.expected_datatype:
+        return (
+            isinstance(obj, Literal)
+            and str(obj.datatype) == item.expected_datatype
+            and RDFGraph._is_valid_typed_literal(obj)
+            and str(obj) not in item.standing_values
+        )
+    if item.reason:
+        return isinstance(obj, URIRef | BNode)
+    return (
+        isinstance(obj, Literal)
+        and obj.datatype is not None
+        and RDFGraph._is_valid_typed_literal(obj)
+    )
+
+
+def unresolved_quarantine(
+    graph: RDFGraph, items: Sequence[RejectedLiteralTriple]
+) -> list[RejectedLiteralTriple]:
+    """The quarantined triples ``graph`` has not since made good.
+
+    One is resolved when it was written back, when its subject now states its
+    predicate with a new value of the kind it was set aside for lacking (an
+    IRI for an object property, a valid literal of the expected or declared
+    datatype), or when the subject states its text under another predicate.
+    """
+    unresolved: list[RejectedLiteralTriple] = []
+    for item in items:
+        if item.written_back:
+            continue
+        subject = _quarantined_subject(item)
+        if _states_text(graph, subject, item.object_lexical):
+            continue
+        if any(
+            _replaces(obj, item)
+            for obj in graph.objects(subject, URIRef(item.predicate))
+        ):
+            continue
+        unresolved.append(item)
+    return unresolved
+
+
+def _in_graph(graph: RDFGraph, node: Node) -> bool:
+    return (node, None, None) in graph or (None, None, node) in graph
+
+
+def write_back_temporal_quarantine(
+    graph: RDFGraph, items: Sequence[RejectedLiteralTriple]
+) -> tuple[list[GraphRepairRecord], list[RejectedLiteralTriple]]:
+    """Put back, as ``rdfs:comment``, date text the unit still holds aside.
+
+    A text set aside for not being a value of a date, time or duration
+    datatype -- written plain on such a range, or typed with such a datatype
+    it is not a value of -- and not since resolved (:func:`unresolved_quarantine`)
+    is kept verbatim on its subject, so nothing is lost and no false date is
+    stated. A subject the graph no longer names, in either position, gets
+    nothing: a comment would make a node of a comment alone. Quarantined strings on object properties
+    and bad numbers are not written back.
+
+    Returns:
+        One ``quarantine_as_comment`` record per text written back, and
+        ``items`` with those marked ``written_back``.
+    """
+    pending = set(unresolved_quarantine(graph, items))
+    records: list[GraphRepairRecord] = []
+    marked: list[RejectedLiteralTriple] = []
+    for item in items:
+        datatype = item.expected_datatype or item.datatype
+        subject = _quarantined_subject(item)
+        if (
+            item not in pending
+            or not datatype
+            or URIRef(datatype) not in _TEMPORAL_RANGE_DATATYPES
+            or not _in_graph(graph, subject)
+        ):
+            marked.append(item)
+            continue
+        graph.add((subject, RDFS.comment, Literal(item.object_lexical)))
+        records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.QUARANTINE_AS_COMMENT,
+                source=f"<{item.predicate}> {item.object_lexical!r}",
+                target=item.subject,
+            )
+        )
+        marked.append(item.model_copy(update={"written_back": True}))
+    return records, marked
 
 
 def repair_literal_type_objects(
@@ -298,29 +561,6 @@ def repair_compact_iri_literals(
     return len(applied), applied
 
 
-def _declared_class_ranges(ontology_graph: RDFGraph) -> dict[URIRef, set[URIRef]]:
-    """Predicate -> its declared ``rdfs:range`` classes, named classes only.
-
-    A datatype range (XSD, ``rdfs:Literal``, a declared ``rdfs:Datatype``)
-    types a literal, not a node, and is left out.
-    """
-    datatypes = {
-        subject
-        for subject in ontology_graph.subjects(RDF.type, RDFS.Datatype)
-        if isinstance(subject, URIRef)
-    }
-    ranges: dict[URIRef, set[URIRef]] = {}
-    for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
-        if not isinstance(predicate, URIRef) or not isinstance(range_iri, URIRef):
-            continue
-        if range_iri in datatypes or range_iri in (RDFS.Literal, RDF.langString):
-            continue
-        if str(range_iri).startswith(str(XSD)):
-            continue
-        ranges.setdefault(predicate, set()).add(range_iri)
-    return ranges
-
-
 def materialize_entailed_types(
     graph: RDFGraph, ontology_graph: RDFGraph | None
 ) -> tuple[int, list[GraphRepairRecord]]:
@@ -340,6 +580,12 @@ def materialize_entailed_types(
     the ``DOMAIN_VIOLATION`` finding's to report, and materialising the
     domain there would hide it.
 
+    An IRI still untyped after that takes the class a link lists through
+    ``schema:domainIncludes`` / ``schema:rangeIncludes``, when the property
+    lists exactly one class and declares no ``rdfs`` counterpart, and all of
+    the node's links agree on it. A listed class never joins an asserted type
+    and never types a blank node.
+
     Args:
         graph: Facts graph, repaired in place.
         ontology_graph: Ontology context declaring domains and ranges.
@@ -349,16 +595,20 @@ def materialize_entailed_types(
     """
     if ontology_graph is None or not len(ontology_graph):
         return 0, []
-    domains = _declared_domains(ontology_graph)
-    ranges = _declared_class_ranges(ontology_graph)
-    if not domains and not ranges:
+    # Only an rdfs side entails; a listed side types a node only when it
+    # names one class (below).
+    domains = _declared_domains(ontology_graph, source="rdfs")
+    ranges = declared_class_ranges(ontology_graph, source="rdfs")
+    listed_domains = sole_listed_classes(ontology_graph, "domain", domains)
+    listed_ranges = sole_listed_classes(ontology_graph, "range", ranges)
+    if not (domains or ranges or listed_domains or listed_ranges):
         return 0, []
 
     closures: dict[URIRef, set[URIRef]] = {}
 
     def closure(class_iri: URIRef) -> set[URIRef]:
         if class_iri not in closures:
-            closures[class_iri] = _superclass_closure(class_iri, ontology_graph)
+            closures[class_iri] = superclass_closure(class_iri, ontology_graph)
         return closures[class_iri]
 
     def admissible(node: Node, entailed: URIRef) -> bool:
@@ -390,6 +640,31 @@ def materialize_entailed_types(
             if admissible(obj, entailed):
                 additions.setdefault((obj, entailed), predicate)
 
+    # A node still untyped takes the one class its links list, when they agree.
+    listed: dict[URIRef, dict[URIRef, URIRef]] = {}
+    entailed_nodes = {node for node, _ in additions}
+    for subject, predicate, obj in graph:
+        if not isinstance(predicate, URIRef):
+            continue
+        for node, table in ((subject, listed_domains), (obj, listed_ranges)):
+            cls = table.get(predicate)
+            if (
+                cls is not None
+                and isinstance(node, URIRef)
+                and node not in entailed_nodes
+                and admissible(node, cls)
+                and not any(
+                    value not in _VACUOUS_TYPES
+                    for value in graph.objects(node, RDF.type)
+                )
+            ):
+                classes = listed.setdefault(node, {})
+                classes[cls] = min(classes.get(cls, predicate), predicate)
+    for node, classes in listed.items():
+        if len(classes) == 1:
+            ((cls, predicate),) = classes.items()
+            additions[(node, cls)] = predicate
+
     applied: list[GraphRepairRecord] = []
     for (node, entailed), predicate in sorted(
         additions.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
@@ -407,6 +682,125 @@ def materialize_entailed_types(
         logger.info("Materialised entailed type <%s> on <%s>", entailed, node)
     if applied:
         record_active_count("repair/entailed_type", len(applied))
+    return len(applied), applied
+
+
+def repair_reversed_triples(
+    graph: RDFGraph, ontology_graph: RDFGraph | None
+) -> tuple[int, list[GraphRepairRecord]]:
+    """Turn around a triple the context shows was written backwards.
+
+    ``x p y`` becomes ``y p x`` when ``p`` has a domain and a class range,
+    both ends are typed IRIs, ``x`` is outside the domain and ``y`` outside the
+    range as written, and swapped both fit. One end fitting, or a type the
+    context cannot place, leaves the triple as it is: the subject may be
+    mistyped, or the property wrong, and neither is a direction. The sides are
+    read from ``rdfs`` and from listed (``schema:*Includes``) classes alike:
+    a listed class contradicts nothing on its own, but evidence at all four
+    positions is a direction. A symmetric property is never turned. A reifier
+    follows its statement.
+
+    Args:
+        graph: Facts graph, repaired in place.
+        ontology_graph: Ontology context declaring domains and ranges.
+
+    Returns:
+        Tuple of (number of triples turned, applied-repair records).
+    """
+    if ontology_graph is None or not len(ontology_graph):
+        return 0, []
+    domains = _declared_domains(ontology_graph)
+    ranges = declared_class_ranges(ontology_graph)
+    directed = {
+        predicate
+        for predicate in domains.keys() & ranges.keys()
+        if (predicate, RDF.type, OWL.SymmetricProperty) not in ontology_graph
+    }
+    if not directed:
+        return 0, []
+    described = _described_classes(ontology_graph)
+    closures: dict[URIRef, set[URIRef]] = {}
+
+    def fits(node: URIRef, declared: set[URIRef]) -> bool | None:
+        asserted = {
+            value
+            for value in graph.objects(node, RDF.type)
+            if isinstance(value, URIRef) and value not in _VACUOUS_TYPES
+        }
+        return types_compatible(
+            asserted, declared, ontology_graph, described=described, closures=closures
+        )
+
+    reversed_: dict[Triple, Triple] = {}
+    for subject, predicate, obj in graph:
+        if not isinstance(predicate, URIRef) or predicate not in directed:
+            continue
+        if not isinstance(subject, URIRef) or not isinstance(obj, URIRef):
+            continue
+        domain, range_ = domains[predicate], ranges[predicate]
+        if (
+            fits(subject, domain) is False
+            and fits(obj, range_) is False
+            and fits(obj, domain) is True
+            and fits(subject, range_) is True
+        ):
+            reversed_[(subject, predicate, obj)] = (obj, predicate, subject)
+
+    applied: list[GraphRepairRecord] = []
+    for written in sorted(reversed_, key=lambda t: tuple(str(term) for term in t)):
+        turned = reversed_[written]
+        graph.remove(written)
+        graph.add(turned)
+        applied.append(
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.TRIPLE_REVERSED,
+                source=f"{written[0]} {written[1]}",
+                target=str(written[2]),
+            )
+        )
+        logger.info("Turned around <%s> <%s> <%s>", *written)
+    if applied:
+        if graph.has_reifications:
+            graph.reifications.retarget(reversed_)
+        record_active_count("repair/triple_reversed", len(applied))
+    return len(applied), applied
+
+
+def repair_paired_object_properties(
+    graph: RDFGraph,
+) -> tuple[int, list[GraphRepairRecord]]:
+    """Move a node off a datatype property onto the object property paired with it.
+
+    A well-known vocabulary can state one relation twice, once for a literal
+    and once for a node (``sosa:hasSimpleResult`` / ``sosa:hasResult``,
+    :func:`~ontocast.onto.well_known.well_known_object_pairs`). A node written
+    on the datatype one is rewritten to the object one. A reifier follows its
+    statement.
+
+    Returns:
+        Tuple of (number of triples moved, applied-repair records).
+    """
+    pairs = well_known_object_pairs()
+    moved: dict[Triple, Triple] = {}
+    for subject, predicate, obj in graph:
+        paired = pairs.get(str(predicate))
+        if paired is not None and isinstance(obj, (URIRef, BNode)):
+            moved[(subject, predicate, obj)] = (subject, URIRef(paired), obj)
+    applied: list[GraphRepairRecord] = []
+    for written in sorted(moved, key=lambda t: tuple(str(term) for term in t)):
+        graph.remove(written)
+        graph.add(moved[written])
+        applied.append(
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.PAIRED_OBJECT_PROPERTY,
+                source=f"{written[0]} {written[1]}",
+                target=str(moved[written][1]),
+            )
+        )
+    if applied:
+        if graph.has_reifications:
+            graph.reifications.retarget(moved)
+        record_active_count("repair/paired_object_property", len(applied))
     return len(applied), applied
 
 
@@ -473,6 +867,50 @@ def _select_alias_target(
     return best
 
 
+def _same_name_elsewhere(alias: URIRef, properties: set[str]) -> str | None:
+    """The one catalog property in another namespace spelled exactly like ``alias``.
+
+    A property name written under the wrong prefix (``a:usedMethod`` for
+    ``b:usedMethod``) means that property: the name is exact, only the prefix
+    slipped. Two such properties are ambiguous, so neither is taken; only a
+    term the catalog states is a property can replace a predicate.
+    """
+    namespace = _namespace_of(str(alias))
+    local = _local_name(str(alias))
+    matches = {
+        term
+        for term in properties
+        if _namespace_of(term) != namespace and _local_name(term) == local
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _most_specific_same_name(
+    alias: URIRef, classes: set[str], hierarchy: RDFGraph
+) -> str | None:
+    """The catalog class in another namespace spelled like ``alias``, if one is meant.
+
+    With one candidate, that one. With several, the one that is a subclass of
+    every other: typing with it entails them all, so the choice loses nothing.
+    Otherwise none.
+    """
+    namespace, local = _namespace_of(str(alias)), _local_name(str(alias))
+    candidates = sorted(
+        term
+        for term in classes
+        if _namespace_of(term) != namespace and _local_name(term) == local
+    )
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    under_all = [
+        candidate
+        for candidate in candidates
+        if {URIRef(c) for c in candidates} - {URIRef(candidate)}
+        <= superclass_closure(URIRef(candidate), hierarchy)
+    ]
+    return under_all[0] if len(under_all) == 1 else None
+
+
 def repair_property_aliases(
     graph: RDFGraph,
     ontology_graph: RDFGraph | None,
@@ -480,12 +918,18 @@ def repair_property_aliases(
     min_ratio: float = 0.95,
     exempt_terms: set[str] | None = None,
     full_catalog_terms: set[str] | None = None,
+    catalog_roles: CatalogRoles | None = None,
 ) -> tuple[int, list[FactsUnitFinding], list[GraphRepairRecord]]:
     """Rewrite near-miss predicates in catalog namespaces; report ambiguity.
 
-    A predicate whose namespace belongs to the ontology context but which is
-    not itself a catalog term is a near-miss (``qqval:lowerBound`` for
-    ``qqval:hasLowerBound``). The rewrite is deterministic and fires only when
+    A predicate that is not a catalog term and not a real term of a
+    well-known vocabulary (:func:`~ontocast.onto.well_known.is_well_known_term`)
+    exists nowhere. When exactly one catalog property (``catalog_roles``, the
+    whole catalog, else the snapshot) in another namespace has its very local
+    name, the prefix slipped and that property is the target; this holds for
+    a predicate in a catalog namespace or a well-known one. A predicate in a
+    namespace the catalog declares terms in is otherwise a near-miss
+    (``ex:lowerBound`` for ``ex:hasLowerBound``), and the rewrite fires only when
     exactly one candidate *qualifies*: its name tokens contain the alias's,
     the alias's contain its, or the two spell the same once case and
     separators are folded. Several qualifying candidates are a tie that the
@@ -495,8 +939,13 @@ def repair_property_aliases(
     and rewriting across that gap substitutes one property for another.
     Anything else becomes a mandatory finding carrying the top suggestions.
 
-    Only namespaces the catalog *declares* terms in are eligible (see
-    :func:`collect_declared_namespaces`); ``exempt_terms`` (expanded fallback
+    A class written as an ``rdf:type`` object follows the same exact-name
+    rule: one that exists nowhere is rewritten to the catalog class, in
+    another namespace, with exactly its local name -- the only one, or among
+    several the one that is a subclass of every other (``class_alias``).
+
+    Only namespaces the catalog *declares* terms in are eligible for the
+    near-miss rewrite (see :func:`collect_declared_namespaces`); ``exempt_terms`` (expanded fallback
     vocabulary) are never treated as near-misses, and neither is a predicate
     in ``full_catalog_terms``: a term the whole catalog declares is real even
     when this unit's snapshot did not retrieve it, and the snapshot's
@@ -518,20 +967,42 @@ def repair_property_aliases(
     findings: list[FactsUnitFinding] = []
     applied: list[GraphRepairRecord] = []
     rewritten = 0
-    predicates = {
+    nowhere = {
         predicate
         for predicate in graph.predicates()
         if isinstance(predicate, URIRef)
         and str(predicate) not in catalog_terms
         and str(predicate) not in exempt
         and str(predicate) not in known_elsewhere
-        and _namespace_of(str(predicate)) in declared_namespaces
+        and is_well_known_term(str(predicate)) is not True
     }
-    for alias in sorted(predicates, key=str):
-        candidates = _alias_candidates(
-            alias, graph, catalog_terms, ontology_graph=ontology_graph
+    snapshot_properties, snapshot_classes = _catalog_term_roles(ontology_graph)
+    # A well-known property the catalog only references is a property too.
+    properties = (
+        set(snapshot_properties)
+        | (set(catalog_roles.properties) if catalog_roles is not None else set())
+        | {
+            term
+            for term in catalog_terms | known_elsewhere
+            if well_known_role(term) == "property"
+        }
+    )
+    for alias in sorted(nowhere, key=str):
+        near_miss = _namespace_of(str(alias)) in declared_namespaces
+        if not near_miss and is_well_known_term(str(alias)) is None:
+            continue
+        candidates = (
+            _alias_candidates(
+                alias, graph, catalog_terms, ontology_graph=ontology_graph
+            )
+            if near_miss
+            else []
         )
-        target = _select_alias_target(str(alias), candidates, min_ratio)
+        target = _same_name_elsewhere(alias, properties) or (
+            _select_alias_target(str(alias), candidates, min_ratio)
+            if near_miss
+            else None
+        )
         if target is not None:
             replacement = URIRef(target)
             alias_triples = 0
@@ -550,6 +1021,8 @@ def repair_property_aliases(
             )
             logger.info("Repaired property alias %s -> %s", alias, replacement)
             continue
+        if not near_miss:
+            continue
         findings.append(
             FactsUnitFinding(
                 kind=FactsUnitFindingKind.PROPERTY_ALIAS,
@@ -561,6 +1034,47 @@ def repair_property_aliases(
                 suggestions=candidates,
             )
         )
+
+    # A class named under the wrong prefix: the same exact-name rule, on types.
+    classes = set(snapshot_classes) | (
+        set(catalog_roles.classes) if catalog_roles is not None else set()
+    )
+    unknown_types = {
+        cls
+        for cls in graph.objects(None, RDF.type)
+        if isinstance(cls, URIRef)
+        and str(cls) not in catalog_terms
+        and str(cls) not in exempt
+        and str(cls) not in known_elsewhere
+        and is_well_known_term(str(cls)) is not True
+    }
+    context = ontology_graph if ontology_graph is not None else RDFGraph()
+    hierarchy = (
+        catalog_roles.with_axioms(context) if catalog_roles is not None else context
+    )
+    for alias in sorted(unknown_types, key=str):
+        if (
+            _namespace_of(str(alias)) not in declared_namespaces
+            and is_well_known_term(str(alias)) is None
+        ):
+            continue
+        target = _most_specific_same_name(alias, classes, hierarchy)
+        if target is None:
+            continue
+        typed = list(graph.subjects(RDF.type, alias))
+        for subject in typed:
+            graph.remove((subject, RDF.type, alias))
+            graph.add((subject, RDF.type, URIRef(target)))
+        rewritten += len(typed)
+        applied.append(
+            GraphRepairRecord(
+                kind=FactsUnitFindingKind.CLASS_ALIAS,
+                source=str(alias),
+                target=target,
+                triple_count=len(typed),
+            )
+        )
+        logger.info("Repaired class alias %s -> %s", alias, target)
     return rewritten, findings, applied
 
 
@@ -659,17 +1173,14 @@ def resolve_code_literals(
         return 0, []
 
     domains = _declared_domains(ontology_graph)
-    ranges: dict[URIRef, set[URIRef]] = {}
-    for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
-        if isinstance(predicate, URIRef) and isinstance(range_iri, URIRef):
-            ranges.setdefault(predicate, set()).add(range_iri)
+    ranges = sides_by_property(ontology_graph, "range")
 
     # Superclass closures repeat heavily across literals; memoise per call.
     closures: dict[URIRef, set[URIRef]] = {}
 
     def closure(class_iri: URIRef) -> set[URIRef]:
         if class_iri not in closures:
-            closures[class_iri] = _superclass_closure(class_iri, ontology_graph)
+            closures[class_iri] = superclass_closure(class_iri, ontology_graph)
         return closures[class_iri]
 
     # The usage-evidence scan is a full graph walk; build it lazily, once,
@@ -845,9 +1356,50 @@ def promote_degenerate_bounds(
     return promoted
 
 
-def _literal_parses_as(lexical: str, datatype: URIRef) -> bool:
-    """True when ``lexical`` is a well-formed literal of ``datatype``."""
-    return Literal(lexical, datatype=datatype).value is not None
+def _not_a_failed_cast(record: logging.LogRecord) -> bool:
+    return not record.getMessage().startswith("Failed to convert Literal lexical")
+
+
+_QUIET_LOCK = threading.Lock()
+_QUIET_DEPTH = 0
+
+
+@contextmanager
+def _quiet_rdflib_casts() -> Generator[None]:
+    """Filter rdflib's warning and traceback for a lexical form that does not parse.
+
+    Building a literal is how a lexical form is tried here, so a failure is an
+    answer, not an error. Re-entrant and thread-safe: the filter stays while
+    any caller is inside.
+    """
+    global _QUIET_DEPTH
+    rdflib_term = logging.getLogger("rdflib.term")
+    with _QUIET_LOCK:
+        if _QUIET_DEPTH == 0:
+            rdflib_term.addFilter(_not_a_failed_cast)
+        _QUIET_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _QUIET_LOCK:
+            _QUIET_DEPTH -= 1
+            if _QUIET_DEPTH == 0:
+                rdflib_term.removeFilter(_not_a_failed_cast)
+
+
+def typed_literal(lexical: str, datatype: URIRef) -> Literal | None:
+    """``lexical`` as a well-formed literal of ``datatype``, or ``None``.
+
+    The one constructor the retypes share. A number, date, time or duration is
+    judged by its XSD lexical space (see :func:`_typed_value`); another
+    datatype by whether rdflib reads a value from the form.
+    """
+    lexical = lexical.strip()
+    if datatype in _RETYPABLE_RANGE_DATATYPES:
+        return _typed_value(lexical, datatype)
+    with _quiet_rdflib_casts():
+        value = Literal(lexical, datatype=datatype)
+    return value if value.value is not None else None
 
 
 def dedupe_literal_variants(

@@ -12,6 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from ontocast._version import __version__
 from ontocast.api.batch import run_documents
+from ontocast.api.entities import build_entities_router
 from ontocast.api.match_models import (
     AlignEntitiesRequest,
     AlignEntitiesResponse,
@@ -24,10 +25,10 @@ from ontocast.api.ontologies import build_ontology_router
 from ontocast.api.parse import RequestParamError
 from ontocast.api.process_helpers import (
     calculate_recursion_limit,
+    finish_unit_pipeline_facts,
     get_supported_input_extensions,
     select_unit_facts_ontology_graph,
     turtle_from_graph,
-    validate_unit_pipeline_facts,
 )
 from ontocast.api.process_request import (
     ParsedProcessRequest,
@@ -133,6 +134,15 @@ def create_app(
 
     app.include_router(
         build_shapes_router(
+            tools,
+            active_tenant=active_tenant,
+            active_project=active_project,
+            server_config=server_config,
+        )
+    )
+
+    app.include_router(
+        build_entities_router(
             tools,
             active_tenant=active_tenant,
             active_project=active_project,
@@ -719,11 +729,8 @@ def create_app(
                 # invariant findings, SHACL, and the LLM-free autofix, so the
                 # served graph and conformance report match the CLI unit path.
                 initial_state.aggregated_facts = postprocessed_facts.graph
-                await asyncio.to_thread(
-                    validate_unit_pipeline_facts,
-                    initial_state,
-                    ontology_graph,
-                    scoped_tools,
+                await finish_unit_pipeline_facts(
+                    initial_state, ontology_graph, scoped_tools
                 )
                 facts_ttl = turtle_from_graph(
                     initial_state.aggregated_facts,

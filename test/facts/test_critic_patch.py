@@ -733,3 +733,23 @@ def test_each_kept_fix_is_its_own_patch() -> None:
     assert compiled.update is not None
     apply_compiled_patch(graph, compiled.update)
     assert set(one_at_a_time) == set(graph)
+
+
+@pytest.mark.parametrize(
+    "correct",
+    [
+        "@prefix qq: <https://ex.org/qual quantity/> . "
+        'cd:sample_1 matsci:hasAmount [ a qq:Value ; rdfs:label "4 %" ] .',
+        '{"@id": "https://ex.org/a b", "@type": "https://ex.org/Thing", '
+        '"http://www.w3.org/2000/01/rdf-schema#label": "x"}',
+    ],
+)
+def test_a_payload_with_an_iri_no_iriref_can_hold_is_refused(correct) -> None:
+    """rdflib reads ``<a b>`` with a warning; no update could then write it."""
+    graph = _graph()
+    fix = _fix("ADD", correct=correct)
+
+    compiled = compile_critic_fixes([fix], graph)
+
+    assert compiled.update is None
+    assert compiled.residual == [fix]

@@ -31,6 +31,7 @@ from ontocast.onto.model import (
     Suggestions,
     TripleFix,
 )
+from ontocast.onto.prefixes import build_prefix_table
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.unit_states import UnitOntologyState
@@ -80,6 +81,7 @@ def _tools() -> AtomicToolBox:
         AtomicToolBox,
         SimpleNamespace(
             get_llm_tool=_llm_tool,
+            prefix_table=lambda: build_prefix_table([]),
             web_grounding_enabled_for_node=lambda _node: False,
             ontology_acceptance_policy=FactsAcceptancePolicy(
                 blocking_finding_kinds=frozenset(

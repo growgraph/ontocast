@@ -85,8 +85,8 @@ def test_external_evidence_plan_rationale_accepts_a_list() -> None:
     assert plan.rationale == "term is ambiguous\nno catalog match"
 
 
-def test_triple_fix_required_free_text_accepts_a_list() -> None:
-    """``text_fragment``/``explanation`` are required, so a list used to raise.
+def test_triple_fix_free_text_accepts_a_list() -> None:
+    """``text_fragment``/``explanation`` are coerced, so a list does not raise.
 
     Both are prose the model writes, and both are the shape providers bullet.
     Rejecting them discarded every fix in the report, not just the one field.
@@ -100,6 +100,27 @@ def test_triple_fix_required_free_text_accepts_a_list() -> None:
 
     assert fix.text_fragment == "The sample was annealed at 350 C\nfor two hours."
     assert fix.explanation == "Missing datatype.\nTemporal literal needs xsd:date."
+
+
+def test_a_fix_without_an_explanation_keeps_the_report() -> None:
+    """A fix is actionable without its reason; the report must not be lost."""
+    report = FactsCritiqueReport.model_validate(
+        {
+            "success": False,
+            "score": 78,
+            "actionable_triple_fixes": [
+                {"text_fragment": "q", "action": "ADD", "severity": "important"},
+                {
+                    "text_fragment": "q",
+                    "action": "ADD",
+                    "severity": "minor",
+                    "explanation": "why",
+                },
+            ],
+        }
+    )
+    fixes = report.actionable_triple_fixes
+    assert [fix.explanation for fix in fixes] == ["", "why"]
 
 
 def test_triple_fix_graph_syntax_fields_are_not_coerced() -> None:

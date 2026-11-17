@@ -1,6 +1,7 @@
 """Minimal tool contracts for atomic render/critic loops."""
 
 import copy
+from collections.abc import Callable
 from typing import Protocol
 
 from pydantic import BaseModel
@@ -11,12 +12,19 @@ from ontocast.config import (
     WebSearchConfig,
 )
 from ontocast.onto.enum import WorkflowNode
+from ontocast.onto.prefixes import PrefixTable, standard_namespace_prefixes
 from ontocast.tool.facts_validation import (
     CriticPatchPolicy,
     FactsAcceptancePolicy,
     ValidationPolicy,
 )
+from ontocast.tool.facts_validation.terms import (
+    CatalogRoles,
+    SubjectContract,
+    value_class_base,
+)
 from ontocast.tool.llm import LLMTool
+from ontocast.tool.ontology_validation.shape import CatalogSurfaceIndex
 
 
 class SearchHit(BaseModel):
@@ -53,6 +61,14 @@ class AtomicOntologyCatalog(Protocol):
 
     def catalog_terms(self) -> set[str]:
         """Every IRI any served ontology declares or references."""
+        ...
+
+    def catalog_surface_index(self) -> CatalogSurfaceIndex:
+        """Labels and local names of every catalog term, case-insensitive."""
+        ...
+
+    def catalog_roles(self) -> CatalogRoles:
+        """What every catalog term is, and the catalog's class hierarchy."""
         ...
 
 
@@ -110,6 +126,7 @@ class AtomicToolBox:
 
         self.llm_provider = llm_provider
         self.search_provider = search_provider
+        self._prefix_tables: Callable[[], PrefixTable] | None = None
         self.web_search_config = web_search
         self.ontology_catalog: AtomicOntologyCatalog | None = ontology_catalog
 
@@ -119,12 +136,16 @@ class AtomicToolBox:
         # Review-and-patch passes: each one is a provider call.
         self.facts_critic_passes = facts_validation.critic_passes
         self.ontology_critic_passes = ontology_validation.critic_passes
+        self.ontology_max_class_depth = ontology_validation.max_class_depth
         # Below this many rendered triples the facts critic is skipped: a
         # review of an empty graph is a call that changes nothing.
         self.facts_critic_min_triples = facts_validation.critic_min_triples
-        # Insert-only completion passes after the critic loop, each a provider
-        # call, taken only while measurements are still missing.
+        # Insert-only gap passes after the critic loop, each a provider call,
+        # taken only while a gap is left; missed measurements count as one
+        # only when their recovery is on.
         self.facts_completion_passes = facts_validation.completion_passes
+        self.facts_completion_measurements = facts_validation.completion_measurements
+        self.facts_completion_detached = facts_validation.completion_detached
         self.facts_patch_policy = CriticPatchPolicy(
             max_delete_share=facts_validation.critic_max_delete_share,
             min_deletes=facts_validation.critic_min_deletes,
@@ -164,10 +185,15 @@ class AtomicToolBox:
         self.additional_standard_namespaces: tuple[str, ...] = tuple(
             facts_validation.additional_standard_namespaces
         )
+        # strict: the facts are projected onto the catalog and the declared
+        # vocabulary above; open: generic core vocabularies fill its gaps.
+        # Read by the facts prompt and by the term checks alike.
+        self.facts_vocabulary: str = facts_validation.vocabulary
         # Everything the deterministic term checks must treat as blessed, as
         # one object -- see ValidationPolicy.
         self.validation_policy = ValidationPolicy(
             additional_standard_namespaces=self.additional_standard_namespaces,
+            vocabulary=facts_validation.vocabulary,
             quantity_fallback_vocabulary=self.quantity_fallback_vocabulary,
             code_predicates=self.code_predicates,
             numeric_identifier_guard=facts_validation.numeric_identifier_guard,
@@ -208,17 +234,37 @@ class AtomicToolBox:
         self.web_search_blocked_domains = _domain_set(web_search.blocked_domains)
         self.web_search_min_snippet_chars = web_search.min_snippet_chars
 
-    def scoped_to_catalog(self, catalog: AtomicOntologyCatalog) -> "AtomicToolBox":
+    def scoped_to_catalog(
+        self,
+        catalog: AtomicOntologyCatalog,
+        prefix_tables: Callable[[], PrefixTable] | None = None,
+    ) -> "AtomicToolBox":
         """A shallow copy of this surface bound to ``catalog``.
 
         The surface is tenancy-independent and shared by every scope; a
         catalog is not. Binding on a copy rather than on ``self`` keeps one
         scope's catalog from being read by a unit of another scope that runs on
         the same shared instance.
+
+        Args:
+            catalog: The scope's ontology catalog.
+            prefix_tables: Returns the scope's current prefix table; read on
+                every call, since the catalog changes while a document runs.
         """
         scoped = copy.copy(self)
         scoped.ontology_catalog = catalog
+        scoped._prefix_tables = prefix_tables
         return scoped
+
+    def prefix_table(self) -> PrefixTable:
+        """The bound scope's prefix table; an empty one when none is bound.
+
+        An empty table still shows every well-known namespace under its
+        standard prefix.
+        """
+        if self._prefix_tables is None:
+            return PrefixTable({}, {})
+        return self._prefix_tables()
 
     def catalog_terms(self) -> set[str]:
         """Every IRI the bound catalog declares or references, across all of it.
@@ -233,6 +279,55 @@ class AtomicToolBox:
         if self.ontology_catalog is None:
             return set()
         return self.ontology_catalog.catalog_terms()
+
+    def catalog_surface_index(self) -> CatalogSurfaceIndex:
+        """Labels and local names of every term of the bound catalog.
+
+        Read by the per-unit duplicate check: a term the unit's snapshot did
+        not retrieve is still a term a render must not re-mint. Empty when no
+        catalog is bound; memoised by the catalog, so treat it as read-only.
+        """
+        if self.ontology_catalog is None:
+            return CatalogSurfaceIndex()
+        return self.ontology_catalog.catalog_surface_index()
+
+    def catalog_roles(self) -> CatalogRoles:
+        """What the bound catalog says each term is; empty when none is bound."""
+        if self.ontology_catalog is None:
+            return CatalogRoles()
+        return self.ontology_catalog.catalog_roles()
+
+    def value_classes(self) -> frozenset[str]:
+        """Classes whose instances are values, over the bound catalog.
+
+        The well-known value classes and the configured
+        ``FACTS_QUANTITY_FALLBACK_VOCABULARY`` ``value_class``, with every
+        catalog class under one of them.
+        """
+        bindings = {
+            prefix: namespace
+            for namespace, prefix in standard_namespace_prefixes().items()
+        }
+        bindings.update(self.prefix_table().parse_map())
+        return self.catalog_roles().classes_under(
+            value_class_base(self.quantity_fallback_vocabulary, bindings)
+        )
+
+    def subject_contract(self) -> SubjectContract:
+        """What makes a statement name its subject, over the bound catalog.
+
+        The statement classes (an observation is about its feature of
+        interest), the value classes (:meth:`value_classes`), and the
+        properties linking a statement and its subject in each direction.
+        """
+        bindings = {
+            prefix: namespace
+            for namespace, prefix in standard_namespace_prefixes().items()
+        }
+        bindings.update(self.prefix_table().parse_map())
+        return self.catalog_roles().subject_contract(
+            value_class_base(self.quantity_fallback_vocabulary, bindings)
+        )
 
     async def get_llm_tool(self, budget_tracker) -> LLMTool:
         """Return a budget-aware LLM tool instance."""

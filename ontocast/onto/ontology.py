@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rdflib import DCTERMS, OWL, RDF, RDFS, SH, URIRef
 
+from ontocast.onto.blank_structures import remove_with_structures
 from ontocast.onto.constants import ONTOCAST, ONTOLOGY_NULL_IRI, PROV, VANN
 from ontocast.onto.iri_policy import normalize_namespace_iri
 from ontocast.onto.llm_graph_payload import LLMGraphWire
@@ -30,6 +31,10 @@ if TYPE_CHECKING:
     import networkx as nx
 
 logger = logging.getLogger(__name__)
+
+#: A catalog listing shows the start of a description: one line per ontology,
+#: not the author's whole text.
+_DESCRIBE_MAX_CHARS = 600
 
 #: Semantic version label, MAJOR.MINOR.PATCH. A label, never an identity: the
 #: identity of a version is its version IRI.
@@ -362,20 +367,35 @@ class Ontology(OntologyPropertiesWithLineage):
 
     @staticmethod
     def strip_ontology_header_triples(graph: RDFGraph) -> RDFGraph:
-        """Remove every ``owl:Ontology`` subject and its triples, in place."""
-        for onto_subject in {
-            s for s, _, _ in graph.triples((None, RDF.type, OWL.Ontology))
-        }:
-            for triple in list(graph.triples((onto_subject, None, None))):
-                graph.remove(triple)
+        """Remove every ``owl:Ontology`` subject and its triples, in place.
+
+        Blank structures that only the header points at (its ``sh:declare``
+        prefix declarations) go with it, so no orphaned ``[]`` is left behind.
+        """
+        header_triples = [
+            triple
+            for onto_subject in {
+                s for s, _, _ in graph.triples((None, RDF.type, OWL.Ontology))
+            }
+            for triple in graph.triples((onto_subject, None, None))
+        ]
+        remove_with_structures(graph, header_triples)
         return graph
 
+    def description_preview(self) -> str:
+        """The description on one line; a long one is cut."""
+        description = " ".join((self.description or "").split())
+        if len(description) > _DESCRIBE_MAX_CHARS:
+            description = description[: _DESCRIBE_MAX_CHARS - 1].rstrip() + "…"
+        return description
+
     def describe(self) -> str:
-        """A short human-readable description."""
+        """A short human-readable description; a long description is cut."""
+        description = self.description_preview()
         return (
             f"Ontology id: {self.ontology_id}\n"
             f"Prefix: {self.prefix}\n"
-            f"Description: {self.description}\n"
+            f"Description: {description}\n"
             f"Ontology IRI: {self.iri}\n"
         )
 

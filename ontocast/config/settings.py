@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -23,6 +24,7 @@ from ontocast.onto.constants import (
 from ontocast.onto.enum import (
     LLMGraphFormat,
     LLMOutputLayout,
+    LLMPhase,
     OntologyChapterFormat,
     OntologyContextMode,
     OntologyContextScope,
@@ -49,6 +51,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "OntologyValidationConfig",
     "AggregationConfig",
+    "LinkConfig",
     "ChunkConfig",
     "ClaudeModel",
     "Config",
@@ -279,6 +282,20 @@ class SymbolCaseMismatchPolicy(StrEnum):
     DROP = "drop"
 
 
+#: Levels of LLM_REASONING_EFFORT; which a model accepts is the provider's call.
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+
+def _refuse_unknown_phases(setting: str, names: Iterable[str]) -> None:
+    """Raise when one of ``names`` is no LLM phase."""
+    phases = {phase.value for phase in LLMPhase}
+    unknown = sorted(set(names) - phases)
+    if unknown:
+        raise ValueError(
+            f"{setting} names unknown phase(s) {unknown}; known: {sorted(phases)}"
+        )
+
+
 class LLMConfig(BaseSettings):
     """LLM configuration settings."""
 
@@ -428,9 +445,7 @@ class LLMConfig(BaseSettings):
             "OpenAI only; other providers ignore it."
         ),
     )
-    reasoning_effort: (
-        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None
-    ) = Field(
+    reasoning_effort: ReasoningEffort | None = Field(
         default=None,
         description=(
             "How much the model reasons before answering: none, minimal, low,"
@@ -456,10 +471,51 @@ class LLMConfig(BaseSettings):
         ),
     )
 
+    model_by_phase: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Model per pipeline phase, as a JSON object from an LLM phase "
+            "(e.g. `ontology_plan`, `ontology_consolidation`) to a model name, "
+            'for example `{"ontology_plan": "gpt-5.5"}`. A call made in a '
+            "listed phase goes to that model, with every other setting "
+            "unchanged; other phases use LLM_MODEL_NAME. Use it to give the few "
+            "document-level decisions a stronger model than the per-unit calls."
+        ),
+    )
+
+    reasoning_effort_by_phase: dict[str, ReasoningEffort] = Field(
+        default_factory=dict,
+        description=(
+            "Reasoning effort per pipeline phase, as a JSON object from an LLM "
+            "phase to a level of LLM_REASONING_EFFORT, for example "
+            '`{"facts_coreference": "low"}`. A call made in a listed phase is '
+            "sent with that level; other phases use LLM_REASONING_EFFORT. A "
+            "phase may also be listed in LLM_MODEL_BY_PHASE: its calls then "
+            "take both. Use it to spend less reasoning on the small decision "
+            "calls than on the renders. Part of the LLM cache key."
+        ),
+    )
+
     model_config = SettingsConfigDict(
         env_prefix="LLM_",
         case_sensitive=False,
     )
+
+    @field_validator("model_by_phase")
+    @classmethod
+    def validate_model_by_phase(cls, value: dict[str, str]) -> dict[str, str]:
+        """Refuse a key that names no LLM phase."""
+        _refuse_unknown_phases("LLM_MODEL_BY_PHASE", value)
+        return {phase: str(model).strip() for phase, model in value.items()}
+
+    @field_validator("reasoning_effort_by_phase")
+    @classmethod
+    def validate_reasoning_effort_by_phase(
+        cls, value: dict[str, ReasoningEffort]
+    ) -> dict[str, ReasoningEffort]:
+        """Refuse a key that names no LLM phase."""
+        _refuse_unknown_phases("LLM_REASONING_EFFORT_BY_PHASE", value)
+        return value
 
     @field_validator("model_name")
     @classmethod
@@ -512,7 +568,7 @@ class LLMConfig(BaseSettings):
         """
         if (
             self.provider == LLMProvider.GOOGLE
-            and self.reasoning_effort is not None
+            and (self.reasoning_effort is not None or self.reasoning_effort_by_phase)
             and self.thinking_budget is not None
         ):
             raise ValueError(
@@ -535,11 +591,11 @@ class ChunkConfig(BaseSettings):
         ),
     )
     max_size: int = Field(
-        default=12000,
+        default=6000,
         description=(
-            "Largest chunk in characters. Raising it gives each LLM call more "
-            "context and makes fewer calls; lower it if the model loses track "
-            "of long chunks."
+            "Largest chunk in characters. Raising it makes fewer, longer LLM "
+            "calls, and the facts render then extracts fewer facts per "
+            "character; lowering it extracts more at a proportional token cost."
         ),
     )
     embedding_model: str = Field(
@@ -1030,10 +1086,10 @@ class ServerConfig(BaseSettings):
             "prompts. 'inherit' follows LLM_GRAPH_FORMAT; 'turtle' always "
             "uses Turtle, which is shorter than JSON-LD; 'term_sheet' lists "
             "one line per term (name, labels, type, hierarchy, domain and "
-            "range, usage) and is the shortest. 'term_sheet' needs "
-            "RENDER_MODE=facts, because the ontology loop patches the "
-            "statements in its chapter. 'auto' picks 'term_sheet' for "
-            "facts-only runs and 'inherit' otherwise. Only the prompt context"
+            "range, usage) and is the shortest. 'auto' picks 'term_sheet'. The "
+            "ontology loop is not affected: it always reads its chapter in "
+            "LLM_GRAPH_FORMAT, because it patches the statements in it. Only "
+            "the prompt context"
             " changes; the model's output keeps LLM_GRAPH_FORMAT. Part of the"
             " LLM cache key for facts calls."
         ),
@@ -1156,12 +1212,12 @@ class ServerConfig(BaseSettings):
         default=0,
         ge=0,
         description=(
-            "Content units to complete before the rest are run concurrently; "
-            "0 runs all at once. A provider's prefix cache is filled by a "
-            "completed request, so calls sent together all miss it. Useful "
-            "only when calls share a prefix "
-            "(ONTOLOGY_CONTEXT_SCOPE=document); costs the time of the warm-up"
-            " units."
+            "Content units to complete before the rest are run concurrently, "
+            "in the ontology and the facts fan-outs; 0 runs all at once. A "
+            "provider's prefix cache is filled by a completed request, so calls"
+            " sent together all miss it. Useful when the units of a document "
+            "share a prompt prefix, as they do when their ontology chapters "
+            "agree; costs the time of the warm-up units."
         ),
     )
     ontology_context_max_triples: int | None = Field(
@@ -1210,10 +1266,6 @@ class ServerConfig(BaseSettings):
             "reasoning tokens count as output. None means unlimited."
         ),
     )
-    enable_ontology_consolidation: bool = Field(
-        default=False,
-        description="Run optional ontology consolidation pass after normalization",
-    )
     max_concurrent_processes: int | None = Field(
         default=None,
         ge=1,
@@ -1250,45 +1302,22 @@ class ServerConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_ontology_chapter_format(self) -> "ServerConfig":
-        """Resolve 'auto' against the render mode, and reject an illegal ask.
+        """Resolve 'auto' to the term sheet.
 
-        The facts renderer reads its chapter and writes an unrelated graph, so
-        the chapter is free to be any representation that names the terms. The
-        ontology renderer and its critic write a *patch against the statements
-        in the chapter*, which a line-per-term listing cannot express -- there
-        is nothing to insert into or delete from.
+        The chapter format reaches the facts agents only: the facts renderer
+        reads its chapter and writes an unrelated graph, so the chapter is free
+        to be any representation that names the terms. The ontology loop and
+        its critic always render their own chapter in LLM_GRAPH_FORMAT, because
+        they write a patch against its statements, and never read this field.
+        So the term sheet, the shortest chapter, is legal in every render mode.
 
-        So the cheapest legal chapter differs by mode, and ``auto`` picks it
-        rather than asking an operator to know which. It is resolved **here**,
-        not at the point of use: every consumer reads this field, and a value
-        that still meant "decide later" would reach the prompt profile, the
-        LLM cache key and the run manifest as a name for no chapter in
-        particular.
-
-        An *explicit* ``term_sheet`` on a mode that cannot read one still
-        fails. Falling back would be silent, and the run would spend an
-        ontology pass producing patches nobody could apply while the manifest
-        recorded a setting that never took effect -- which is exactly what
-        ``auto`` exists to make unnecessary.
+        ``auto`` is resolved **here**, not at the point of use: every consumer
+        reads this field, and a value that still meant "decide later" would
+        reach the prompt profile, the LLM cache key and the run manifest as a
+        name for no chapter in particular.
         """
         if self.ontology_chapter_format == OntologyChapterFormat.AUTO:
-            self.ontology_chapter_format = (
-                OntologyChapterFormat.TERM_SHEET
-                if self.render_mode == RenderMode.FACTS
-                else OntologyChapterFormat.INHERIT
-            )
-            return self
-        if (
-            self.ontology_chapter_format == OntologyChapterFormat.TERM_SHEET
-            and self.render_mode != RenderMode.FACTS
-        ):
-            raise ValueError(
-                "ONTOLOGY_CHAPTER_FORMAT=term_sheet requires RENDER_MODE=facts: "
-                f"got render_mode={self.render_mode.value}. The ontology loop "
-                "emits a patch against the statements in its chapter, so that "
-                "chapter has to be a graph. Use 'turtle' for a cheaper chapter "
-                "that stays one, or 'auto' to take whichever the mode allows."
-            )
+            self.ontology_chapter_format = OntologyChapterFormat.TERM_SHEET
         return self
 
 
@@ -1371,8 +1400,10 @@ class DomainConfig(BaseSettings):
         validation_alias=AliasChoices("current_domain", "CURRENT_DOMAIN"),
         description=(
             "IRI stem document and ontology IRIs are minted under: an absolute "
-            "http(s) IRI with no fragment, query or trailing slash. Used by "
-            "AgentState when no explicit value is supplied."
+            "http(s) IRI with no fragment, query or trailing slash. A catalog "
+            "ontology under it is owned and extended in place; any other is "
+            "external and gets an extension ontology. Used by AgentState when "
+            "no explicit value is supplied."
         ),
     )
 
@@ -1779,6 +1810,27 @@ class AggregationConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="AGG_",
+        case_sensitive=False,
+    )
+
+
+class LinkConfig(BaseSettings):
+    """Cross-document identity: the links graph written beside each document."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Write each document's identity links graph (<graph>/identity-links) "
+            "when its facts are stored: skos:closeMatch links from its entities "
+            "to match nodes, for the keys, inverse-functional properties and "
+            "globally named classes the catalog declares, and for caller "
+            "identifiers on metadata entities. Off writes nothing; "
+            "`ontocast link build` derives the same graphs later."
+        ),
+    )
+
+    model_config = SettingsConfigDict(
+        env_prefix="LINK_",
         case_sensitive=False,
     )
 
@@ -2698,15 +2750,15 @@ class FactsValidationConfig(BaseSettings):
         ),
     )
     critic_passes: int = Field(
-        default=1,
+        default=0,
         ge=0,
         description=(
             "Review-and-patch passes per facts unit, in **LLM calls**. Each "
             "pass re-runs the deterministic checks for free, sends the graph "
             "and its findings to the critic, and applies what comes back as a "
-            "compiled patch. At the default of 1 a unit costs two provider "
-            "calls: one extraction, one review. Set 0 for extraction only, "
-            "leaving findings to the LLM-free repairs and the gate."
+            "compiled patch. 0 (default) is extraction only: findings go to "
+            "the LLM-free repairs, the gap pass and the gate. 1 adds one "
+            "review call per unit."
         ),
     )
     critic_max_delete_share: float = Field(
@@ -2805,7 +2857,7 @@ class FactsValidationConfig(BaseSettings):
         ),
     )
     suspect_multi_value_require_cross_unit: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Report a multi-valued IRI predicate as an error only when the "
             "values came from merging different units; otherwise report a "
@@ -2843,16 +2895,29 @@ class FactsValidationConfig(BaseSettings):
             "identifier as a quantity value. 0 judges every non-empty render."
         ),
     )
-    additional_standard_namespaces: list[str] = Field(
-        default_factory=lambda: ["https://schema.org/", "http://schema.org/"],
+    vocabulary: Literal["strict", "open"] = Field(
+        default="strict",
         description=(
-            "Namespaces exempt from UNKNOWN_TERM findings in addition to the "
-            "RDF/OWL substrate and annotation/provenance terms. Only "
-            "meta-vocabularies are built in; a domain vocabulary a deployment "
-            "genuinely shares across catalogs (SOSA/SSN, CSVW, FOAF, "
-            "schema.org, Dublin Core application profiles) is exempted here. "
-            "schema.org is the default because the shipped citation "
-            "vocabulary uses it."
+            "Which vocabulary the facts may use. Both modes use the catalog "
+            "first and, where it has no term, the built-in well-known "
+            "vocabularies (RDF, RDFS, OWL, XSD, SKOS, Dublin Core, PROV-O, SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF, schema.org and QUDT) plus "
+            "FACTS_ADDITIONAL_STANDARD_NAMESPACES; a well-known term must "
+            "exist in its vocabulary. 'strict' stops there: a thing these "
+            "cannot type or relate is not minted, a term of any other "
+            "vocabulary is an UNKNOWN_TERM finding, and "
+            "NON_CATALOG_VOCABULARY is an error at the gate for it. 'open' "
+            "also admits any other established vocabulary, reported as "
+            "NON_CATALOG_VOCABULARY warnings."
+        ),
+    )
+    additional_standard_namespaces: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Namespaces of a deployment's own shared vocabularies, admitted "
+            "beside the catalog and the built-in well-known vocabularies "
+            "(RDF, RDFS, OWL, XSD, SKOS, Dublin Core, PROV-O, SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF, schema.org and QUDT) and named to the model with them. A term in one "
+            "is never UNKNOWN_TERM; unlike a well-known term, its existence "
+            "is not checked."
         ),
     )
     quantity_fallback_vocabulary: dict[str, str] = Field(
@@ -2997,15 +3062,41 @@ class FactsValidationConfig(BaseSettings):
         ),
     )
     completion_passes: int = Field(
-        default=0,
+        default=1,
         ge=0,
         description=(
-            "Insert-only completion passes per facts unit, in LLM calls, run "
-            "after the critic loop when numbers written with a unit are still"
-            " missing from the graph. A pass sees a term sheet, the unit's "
-            "typed subjects, the text and the missing measurements, and each "
-            "subject it adds is kept or rolled back by the same regression "
-            "check as a critic fix. 0 disables it."
+            "Insert-only gap passes per facts unit, in LLM calls, run after "
+            "the critic loop only when the unit has a gap: statements and "
+            "values linked to nothing (statement_without_subject findings), "
+            "and, with FACTS_COMPLETION_MEASUREMENTS, numbers written with a "
+            "unit missing from the graph. A pass "
+            "sees a term sheet, the unit's typed subjects, the text and the "
+            "gaps, not the ontology chapter; each fix it adds is kept or "
+            "rolled back by the same regression check as a critic fix. A "
+            "unit with no gap costs nothing. The same budget enables one "
+            "domain-repair call on a unit holding a statement whose subject "
+            "contradicts its property's declared domain. 0 disables both."
+        ),
+    )
+    completion_detached: bool = Field(
+        default=True,
+        description=(
+            "Let the gap pass also ask for a link for each instance the render "
+            "linked to nothing, when the text relates it to another instance "
+            "of the unit. Unlinked instances call the pass on their own only "
+            "when there are at least two; a pass called for another gap lists "
+            "a lone one too. Such an instance is otherwise kept unlinked when "
+            "it holds a value, and dropped at the gate when it holds none."
+        ),
+    )
+    completion_measurements: bool = Field(
+        default=False,
+        description=(
+            "Let the gap pass also recover numbers written with a unit that "
+            "the render left out of the graph. Off by default: such a gap is "
+            "common in numeric prose, so the pass then runs on most units for "
+            "a few values each. Statements without a subject are gaps "
+            "either way."
         ),
     )
     shacl_max_triples: int = Field(
@@ -3066,10 +3157,11 @@ class OntologyValidationConfig(BaseSettings):
     reconcile_minted_terms: Literal["off", "detect", "rewrite"] = Field(
         default="detect",
         description=(
-            "What to do when a newly minted term's label or notation exactly "
-            "matches an existing term of compatible role in the full catalog."
-            " Under vector retrieval the renderer sees only part of the "
-            "catalog, so it can mint a duplicate of a term it was not shown. "
+            "What to do when a newly minted term's label, notation or local "
+            "name matches, case-insensitively, an existing term of compatible "
+            "role in any catalog ontology. Under vector retrieval the renderer "
+            "sees only part of the catalog, so it can mint a duplicate of a "
+            "term it was not shown. "
             "'detect' logs each pair and changes nothing; 'rewrite' also "
             "replaces the minted IRI with the catalog IRI in the merged "
             "update (enable it once 'detect' shows the matches are true "
@@ -3091,9 +3183,82 @@ class OntologyValidationConfig(BaseSettings):
         ge=0,
         description=(
             "Review-and-patch passes per ontology unit, in LLM calls. 0 "
-            "(default) disables the ontology critic; each pass adds one call "
-            "per unit."
+            "(default) disables the ontology critic. With 1 the pass is spent "
+            "only on a unit whose deterministic findings include a mandatory "
+            "one, so a clean unit costs no critic call. With 2 or more every "
+            "pass runs on every unit."
         ),
+    )
+    max_class_depth: int = Field(
+        default=6,
+        ge=1,
+        description=(
+            "Deepest named-class chain a newly minted class may sit on, "
+            "counted from owl:Thing, a well-known vocabulary term, or a class "
+            "with no named superclass. A deeper minted class is a "
+            "`hierarchy_too_deep` finding: chains of single-use intermediates "
+            "are what a document-driven render builds and another document "
+            "does not reuse."
+        ),
+    )
+    plan_enabled: bool = Field(
+        default=True,
+        description=(
+            "Plan a document's ontology before its units render: one LLM call "
+            "over the whole document proposes the classes and properties it "
+            "adds to the domain, checked against the whole catalog without a "
+            "model. Every unit renders against the plan, and a term a unit "
+            "mints outside it is held back for consolidation. Off, units mint "
+            "freely, each from its own chunk."
+        ),
+    )
+    plan_max_chars: int = Field(
+        default=60000,
+        ge=1000,
+        description=(
+            "Characters of document text the plan call sees. Beyond it, every "
+            "unit is cut to the same share of its length."
+        ),
+    )
+    plan_max_terms: int = Field(
+        default=60,
+        ge=1,
+        description="Largest number of terms one document's plan accepts.",
+    )
+    plan_catalog_max_terms: int = Field(
+        default=400,
+        ge=0,
+        description=(
+            "Catalog terms listed to the plan call as reuse candidates: the "
+            "home ontology's first, then the rest of the catalog."
+        ),
+    )
+    plan_neighbours: int = Field(
+        default=3,
+        ge=0,
+        description=(
+            "Catalog terms the vector index finds nearest each planned term, "
+            "shown to the renderer and to consolidation as reuse candidates. "
+            "Needs an indexed catalog; 0 disables the lookup."
+        ),
+    )
+    consolidation: Literal["off", "on"] = Field(
+        default="on",
+        description=(
+            "Decide every term a document minted before it is written. Terms "
+            "that need a decision are found without a model (outside the "
+            "plan, one document's case, a value set, a catalog duplicate, a "
+            "name variant); only they go to one LLM call per batch, which "
+            "returns keep, merge into another term, generalise, demote to a "
+            "property value, or drop, compiled into the update without a "
+            "model. No such term, no call. Off, planned terms are kept and "
+            "terms outside the plan are dropped."
+        ),
+    )
+    consolidation_max_terms: int = Field(
+        default=80,
+        ge=1,
+        description="Terms per consolidation call; more terms take more calls.",
     )
     critic_max_delete_share: float = Field(
         default=0.10,
@@ -3117,10 +3282,12 @@ class OntologyValidationConfig(BaseSettings):
             "foreign_namespace",
             "subclass_cycle",
             "role_confusion",
+            "hierarchy_too_deep",
         ],
         description=(
             "Deterministic ontology findings that block acceptance. The default "
-            "is the destructive-or-lossy subset only. Blocking on every "
+            "is the destructive-or-lossy subset plus `hierarchy_too_deep`. "
+            "Blocking on every "
             "mandatory finding would put `missing_label` in the set, which "
             "fires whenever a render mints a term without a label -- routine, "
             "and a permanent per-unit tax rather than a defect signal."
@@ -3144,6 +3311,7 @@ class ToolConfig(BaseSettings):
     domain: DomainConfig = Field(default_factory=DomainConfig)
     web_search: WebSearchConfig = Field(default_factory=WebSearchConfig)
     aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
+    link: LinkConfig = Field(default_factory=LinkConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     patch_retrieval: PatchRetrievalConfig = Field(
         default_factory=PatchRetrievalConfig,

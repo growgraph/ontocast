@@ -20,7 +20,13 @@ from ontocast.config import (
 from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import LLMGraphFormat, RenderMode, Status, WorkflowNode
 from ontocast.onto.identity import OntologyIdentity
-from ontocast.onto.model import FreshOntologyRenderReport, OntologyIdentityProposal
+from ontocast.onto.model import (
+    FreshOntologyRenderReport,
+    OntologyConsolidationReport,
+    OntologyIdentityProposal,
+    OntologyPlan,
+    OntologyPlanReport,
+)
 from ontocast.onto.ontology_header import DivergedOntologyError, mint_ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState, InputDocument
@@ -43,6 +49,10 @@ resolve_home_ontology_module = importlib.import_module(
 )
 render_ontology_module = importlib.import_module("ontocast.agent.render_ontology")
 create_module = importlib.import_module("ontocast.stategraph.create")
+plan_ontology_module = importlib.import_module("ontocast.agent.plan_ontology")
+consolidate_ontology_module = importlib.import_module(
+    "ontocast.agent.consolidate_ontology"
+)
 unit_loops = importlib.import_module("ontocast.stategraph.atomic")
 
 OWL_CLASS = URIRef("http://www.w3.org/2002/07/owl#Class")
@@ -81,7 +91,12 @@ def _tools_with_catalog(manager: OntologyManager) -> ToolBox:
         return object()
 
     return cast(
-        ToolBox, SimpleNamespace(ontology_manager=manager, get_llm_tool=get_llm_tool)
+        ToolBox,
+        SimpleNamespace(
+            ontology_manager=manager,
+            get_llm_tool=get_llm_tool,
+            prefix_table=manager.prefix_table,
+        ),
     )
 
 
@@ -291,11 +306,21 @@ def _fake_fanout_graph(monkeypatch, proposals: dict[str, str]) -> tuple[Any, lis
     monkeypatch.setattr(create_module, "serialize", passthrough_serialize)
     for factory in (
         "make_normalize_ontology_node",
-        "make_consolidate_ontology_node",
         "make_structural_check_node",
         "make_consistency_critic_node",
     ):
         monkeypatch.setattr(create_module, factory, passthrough_factory)
+
+    async def empty_plan(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport()
+
+    async def keep_everything(**_kwargs) -> OntologyConsolidationReport:
+        return OntologyConsolidationReport()
+
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", empty_plan)
+    monkeypatch.setattr(
+        consolidate_ontology_module, "call_llm_with_retry", keep_everything
+    )
     monkeypatch.setattr(unit_loops, "render_ontology", fake_render)
     monkeypatch.setattr(unit_loops, "criticise_ontology", fake_critic)
     monkeypatch.setattr(unit_loops, "resolve_unit_ontology_context", fake_resolve)
@@ -348,6 +373,280 @@ def test_concurrent_documents_never_share_a_home_ontology(monkeypatch) -> None:
         assert [artifact.iri for artifact in final["ontology_artifacts"]] == [
             final["home_ontology"].iri
         ]
+
+
+def _render_minting(names: list[str]):
+    """A fresh-path render whose unit ``i`` mints the class ``names[i]``."""
+
+    async def render(
+        state: UnitOntologyState, tools: AtomicToolBox, **kwargs
+    ) -> UnitOntologyState:
+        home = state.home_ontology
+        assert home is not None
+        ontology = mint_ontology(
+            home, _terms(home.namespace, names[state.content_unit.index])
+        )
+        state.fresh_ontology = ontology
+        state.working_graph = ontology.graph.copy()
+        state.writable_iris = [ontology.iri]
+        state.assembly_anchor_iri = ontology.iri
+        state.status = Status.SUCCESS
+        return state
+
+    return render
+
+
+def test_the_plan_reaches_every_unit_and_decides_what_is_written(monkeypatch) -> None:
+    """Plan before the fan-out, candidates held back, actions compiled.
+
+    Three units mint Film, Layer and Device. The plan names Film, so Layer and
+    Device are candidates, the only terms put to consolidation. It merges Layer
+    into Film and keeps Device; the written ontology holds Film and Device.
+    """
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+    seen_plans: list[OntologyPlan | None] = []
+    real_render = _render_minting(["Film", "Layer", "Device"])
+
+    async def recording_render(state: UnitOntologyState, tools, **kwargs):
+        seen_plans.append(state.ontology_plan)
+        return await real_render(state, tools, **kwargs)
+
+    async def plan_call(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport.model_validate(
+            {
+                "proposals": [
+                    {"kind": "class", "label": "Film", "local_name": "Film"},
+                    {"kind": "class", "label": "Planned", "local_name": "Planned"},
+                ]
+            }
+        )
+
+    consolidation_prompts: list[str] = []
+
+    async def consolidation_call(**kwargs) -> OntologyConsolidationReport:
+        consolidation_prompts.append(str(kwargs["prompt_kwargs"]["terms"]))
+        return OntologyConsolidationReport.model_validate(
+            {
+                "actions": [
+                    {"term": "alpha:Layer", "action": "merge_into", "target": "Film"},
+                    {"term": "alpha:Device", "action": "keep"},
+                ]
+            }
+        )
+
+    monkeypatch.setattr(unit_loops, "render_ontology", recording_render)
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", plan_call)
+    monkeypatch.setattr(
+        consolidate_ontology_module, "call_llm_with_retry", consolidation_call
+    )
+
+    final = asyncio.run(app.ainvoke(_document("alpha one\n\nalpha two\n\nalpha three")))
+
+    home = final["home_ontology"]
+    assert len(seen_plans) == 3
+    assert all(plan is not None and len(plan.terms) == 2 for plan in seen_plans)
+    metrics = final["ontology_reduce_metrics"]
+    assert metrics["plan_minted"] == 2
+    assert metrics["plan_candidates"] == 2
+    assert metrics["consolidation_flagged"] == 2
+    assert metrics["consolidation_merge_into"] == 1
+    # Full blocks for the two candidates only; Film is a one-line target.
+    (prompt,) = consolidation_prompts
+    assert prompt.count("(class, candidate)") == 2
+    assert "alpha:Film` (" not in prompt
+
+    (artifact,) = final["ontology_artifacts"]
+    terms = {str(s) for s, _, _ in artifact.graph.triples((None, RDF.type, OWL_CLASS))}
+    assert terms == {f"{home.namespace}Film", f"{home.namespace}Device"}
+
+
+def test_a_document_with_nothing_flagged_makes_no_consolidation_call(
+    monkeypatch,
+) -> None:
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+
+    async def plan_call(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport.model_validate(
+            {
+                "proposals": [
+                    {"kind": "class", "label": name, "local_name": name}
+                    for name in ("Film", "Device")
+                ]
+            }
+        )
+
+    async def no_call(**_kwargs) -> OntologyConsolidationReport:
+        raise AssertionError("consolidation was called with nothing to decide")
+
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", plan_call)
+    monkeypatch.setattr(consolidate_ontology_module, "call_llm_with_retry", no_call)
+    monkeypatch.setattr(
+        unit_loops, "render_ontology", _render_minting(["Film", "Device"])
+    )
+
+    final = asyncio.run(app.ainvoke(_document("alpha one\n\nalpha two")))
+
+    metrics = final["ontology_reduce_metrics"]
+    assert metrics["consolidation_skipped"] == 1
+    assert metrics["consolidation_keep"] == 2
+
+
+def test_without_consolidation_candidates_are_dropped(monkeypatch) -> None:
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+    monkeypatch.setenv("ONTOLOGY_CONSOLIDATION", "off")
+
+    async def plan_call(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport.model_validate(
+            {"proposals": [{"kind": "class", "label": "Term0", "local_name": "Term0"}]}
+        )
+
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", plan_call)
+    app = create_agent_graph(ToolBox(_config()))
+
+    final = asyncio.run(app.ainvoke(_document("alpha one\n\nalpha two")))
+
+    (artifact,) = final["ontology_artifacts"]
+    terms = {str(s) for s, _, _ in artifact.graph.triples((None, RDF.type, OWL_CLASS))}
+    assert terms == {f"{final['home_ontology'].namespace}Term0"}
+    assert final["ontology_reduce_metrics"]["plan_candidates_dropped"] == 1
+
+
+def test_a_fresh_render_keeps_only_what_its_home_owns(monkeypatch) -> None:
+    """A fresh ontology is filed by subject like an update: an axiom about a
+    well-known term belongs to no writable ontology and is not written."""
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+    place = URIRef("https://schema.org/Place")
+
+    async def render(state: UnitOntologyState, tools, **kwargs):
+        home = state.home_ontology
+        assert home is not None
+        graph = _terms(home.namespace, "Venue")
+        graph.add((place, RDFS.subClassOf, URIRef(f"{home.namespace}Venue")))
+        ontology = mint_ontology(home, graph)
+        state.fresh_ontology = ontology
+        state.working_graph = ontology.graph.copy()
+        state.writable_iris = [ontology.iri]
+        state.assembly_anchor_iri = ontology.iri
+        state.status = Status.SUCCESS
+        return state
+
+    monkeypatch.setattr(unit_loops, "render_ontology", render)
+
+    final = asyncio.run(app.ainvoke(_document("alpha one")))
+
+    (artifact,) = final["ontology_artifacts"]
+    assert place not in set(artifact.graph.subjects())
+    assert final["ontology_reduce_metrics"]["fresh_triples_unattributed"] >= 1
+
+
+def test_a_fresh_render_with_nothing_of_its_own_writes_no_ontology(
+    monkeypatch,
+) -> None:
+    """When every statement of a fresh render is filed elsewhere, only the
+    header is left; a header alone is not an ontology the document wrote."""
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+    place = URIRef("https://schema.org/Place")
+
+    async def render(state: UnitOntologyState, tools, **kwargs):
+        home = state.home_ontology
+        assert home is not None
+        graph = RDFGraph()
+        graph.add((place, RDFS.subClassOf, URIRef(f"{home.namespace}Venue")))
+        ontology = mint_ontology(home, graph)
+        state.fresh_ontology = ontology
+        state.working_graph = ontology.graph.copy()
+        state.writable_iris = [ontology.iri]
+        state.assembly_anchor_iri = ontology.iri
+        state.status = Status.SUCCESS
+        return state
+
+    monkeypatch.setattr(unit_loops, "render_ontology", render)
+
+    final = asyncio.run(app.ainvoke(_document("alpha one")))
+
+    assert final["ontology_artifacts"] == []
+
+
+def test_consolidation_decides_every_batch(monkeypatch) -> None:
+    """With one term per call, each candidate gets its own call, and the actions
+    of every call are compiled, not only the last one's."""
+    monkeypatch.setenv("ONTOLOGY_CONSOLIDATION_MAX_TERMS", "1")
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+
+    async def plan_call(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport.model_validate(
+            {"proposals": [{"kind": "class", "label": "Film", "local_name": "Film"}]}
+        )
+
+    batches: list[str] = []
+
+    async def consolidation_call(**kwargs) -> OntologyConsolidationReport:
+        terms = str(kwargs["prompt_kwargs"]["terms"])
+        batches.append(terms)
+        if "alpha:Layer" in terms:
+            action = {"term": "alpha:Layer", "action": "merge_into", "target": "Film"}
+        else:
+            action = {"term": "alpha:Device", "action": "drop"}
+        return OntologyConsolidationReport.model_validate({"actions": [action]})
+
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", plan_call)
+    monkeypatch.setattr(
+        consolidate_ontology_module, "call_llm_with_retry", consolidation_call
+    )
+    monkeypatch.setattr(
+        unit_loops, "render_ontology", _render_minting(["Film", "Layer", "Device"])
+    )
+    app = create_agent_graph(ToolBox(_config()))
+
+    final = asyncio.run(app.ainvoke(_document("alpha one\n\nalpha two\n\nalpha three")))
+
+    assert len(batches) == 2
+    metrics = final["ontology_reduce_metrics"]
+    assert metrics["consolidation_merge_into"] == 1
+    assert metrics["consolidation_drop"] == 1
+    (artifact,) = final["ontology_artifacts"]
+    terms = {str(s) for s, _, _ in artifact.graph.triples((None, RDF.type, OWL_CLASS))}
+    assert terms == {f"{final['home_ontology'].namespace}Film"}
+
+
+def test_a_planned_term_with_a_review_finding_goes_to_consolidation(
+    monkeypatch,
+) -> None:
+    """A finding alone is reason enough: a planned leaf whose label names one
+    case (a digit in it) is reviewed, and the other planned term is not."""
+    app, _calls = _fake_fanout_graph(monkeypatch, {"alpha": "alpha"})
+
+    async def plan_call(**_kwargs) -> OntologyPlanReport:
+        return OntologyPlanReport.model_validate(
+            {
+                "proposals": [
+                    {"kind": "class", "label": name, "local_name": name}
+                    for name in ("Film", "Sample42")
+                ]
+            }
+        )
+
+    reviewed: list[str] = []
+
+    async def consolidation_call(**kwargs) -> OntologyConsolidationReport:
+        reviewed.append(str(kwargs["prompt_kwargs"]["terms"]))
+        return OntologyConsolidationReport()
+
+    monkeypatch.setattr(plan_ontology_module, "call_llm_with_retry", plan_call)
+    monkeypatch.setattr(
+        consolidate_ontology_module, "call_llm_with_retry", consolidation_call
+    )
+    monkeypatch.setattr(
+        unit_loops, "render_ontology", _render_minting(["Film", "Sample42"])
+    )
+
+    final = asyncio.run(app.ainvoke(_document("alpha one\n\nalpha two")))
+
+    (prompt,) = reviewed
+    assert "alpha:Sample42" in prompt
+    assert "specific_label_leaf" in prompt
+    assert "alpha:Film` (" not in prompt
+    assert final["ontology_reduce_metrics"]["consolidation_flagged"] == 1
 
 
 # --- render_ontology_fresh -------------------------------------------------------
@@ -470,6 +769,10 @@ def test_agent_graph_resolves_the_home_ontology_before_the_fan_out() -> None:
     assert WorkflowNode.RESOLVE_HOME_ONTOLOGY in workflow.nodes
     assert (
         WorkflowNode.RESOLVE_HOME_ONTOLOGY,
+        WorkflowNode.ONTOLOGY_PLAN,
+    ) in workflow.edges
+    assert (
+        WorkflowNode.ONTOLOGY_PLAN,
         WorkflowNode.RENDER_ONTOLOGY_UPDATE,
     ) in workflow.edges
 
@@ -493,3 +796,171 @@ def test_ontology_chapter_shows_terms_without_the_version_header() -> None:
     assert "vann:" not in chapter
     assert "preferredNamespace" not in chapter
     assert "Sample" in chapter
+
+
+# --- the catalog's handles are its shown prefixes ------------------------------
+
+
+def _answer_through_validation(monkeypatch, answer: str) -> dict[str, Any]:
+    """Answer ``answer``, validated as the real call validates it."""
+    seen: dict[str, Any] = {}
+
+    async def fake_call(**kwargs: Any) -> OntologyIdentityProposal:
+        seen.update(kwargs)
+        return OntologyIdentityProposal.model_validate(
+            {"ontology_id": answer, "title": "T", "description": "D."},
+            context=kwargs["validation_context"],
+        )
+
+    monkeypatch.setattr(resolve_home_ontology_module, "call_llm_with_retry", fake_call)
+    return seen
+
+
+@pytest.mark.anyio
+async def test_an_answer_naming_a_shown_prefix_picks_that_ontology(monkeypatch) -> None:
+    """Two catalog ontologies share the id ``ontology``; the list shows each
+    under its own prefix, and the answer picks by it."""
+    from ontocast.onto.identity import extension_ontology_iri
+
+    first, second = (
+        stamped_ontology(
+            _terms(f"http://{host}/ontology#", "Thing"),
+            ontology_id="ontology",
+            iri=f"http://{host}/ontology",
+        )
+        for host in ("a.org", "b.org")
+    )
+    manager = OntologyManager()
+    for head in (first, second):
+        manager.add_ontology(head, skip_vector_index=True)
+    seen = _answer_through_validation(monkeypatch, "ontology2")
+    state = _document_state()
+
+    await resolve_home_ontology_module.resolve_home_ontology(
+        state, _tools_with_catalog(manager)
+    )
+
+    listing = seen["prompt_kwargs"]["instruction"]
+    assert f"- ontology: ontology <{first.iri}>" in listing
+    assert f"- ontology2: ontology <{second.iri}>" in listing
+    home = state.home_ontology
+    assert home is not None
+    # The pick is external: its terms go to its own extension.
+    assert home.extends == second.iri
+    assert home.iri == extension_ontology_iri(DOMAIN, second.iri, "ontology")
+    assert home.iri != extension_ontology_iri(DOMAIN, first.iri, "ontology")
+
+
+@pytest.mark.anyio
+async def test_a_catalog_ontology_under_a_standard_prefix_can_be_picked(
+    monkeypatch,
+) -> None:
+    sosa = stamped_ontology(
+        """
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix sosa: <http://www.w3.org/ns/sosa/> .
+        <http://www.w3.org/ns/sosa/> a owl:Ontology ; owl:versionInfo "1.0" .
+        sosa:Observation a owl:Class .
+        """
+    )
+    assert sosa.ontology_id == "sosa"
+    manager = OntologyManager()
+    manager.add_ontology(sosa, skip_vector_index=True)
+    _answer_through_validation(monkeypatch, "sosa")
+    state = _document_state()
+
+    await resolve_home_ontology_module.resolve_home_ontology(
+        state, _tools_with_catalog(manager)
+    )
+
+    assert state.home_ontology is not None
+    assert state.home_ontology.extends == sosa.iri
+
+
+def test_a_new_id_must_still_be_mintable() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="standard prefix"):
+        OntologyIdentityProposal.model_validate(
+            {"ontology_id": "sosa", "title": "T", "description": "D."},
+            context={"catalog_handles": frozenset({"dbo"})},
+        )
+
+
+def test_the_home_is_bound_to_the_prefix_the_table_gives_it() -> None:
+    """A minted home whose id another namespace shows takes the next number,
+    in the prompt and in the parse map alike."""
+    from ontocast.agent.criticise_ontology import critic_intro
+    from ontocast.onto.prefixes import build_prefix_table
+    from ontocast.tool.ontology_validation.catalog_terms import catalog_prefixes
+
+    held = stamped_ontology(
+        _terms("http://a.org/ontology#", "Thing"),
+        ontology_id="ontology",
+        iri="http://a.org/ontology",
+    )
+    table = build_prefix_table([held])
+    home = OntologyIdentity(
+        ontology_id="ontology", iri=f"{DOMAIN}/ontology", title="Home"
+    )
+    unit = ContentUnit(text="Teams.", index=0, doc_iri=URIRef(f"{DOMAIN}/doc/d1"))
+
+    assert table.prefix_or_claim(home.namespace, home.ontology_id) == "ontology2"
+    assert "`ontology2:`" in critic_intro(
+        UnitOntologyState(content_unit=unit, home_ontology=home), table
+    )
+    assert catalog_prefixes([held], home, table)["ontology2"] == home.namespace
+
+
+# --- the catalog list tells the model what each ontology covers ----------------
+
+
+@pytest.mark.anyio
+async def test_the_catalog_list_shows_each_ontology_s_scope(monkeypatch) -> None:
+    """A title alone does not say whether an ontology covers a document."""
+    long_description = "Covers a wide field. " * 60
+    described, long, bare = (
+        stamped_ontology(
+            _terms(f"{DOMAIN}/{ontology_id}#", "Thing"),
+            ontology_id=ontology_id,
+            iri=f"{DOMAIN}/{ontology_id}",
+            description=description,
+        )
+        for ontology_id, description in (
+            ("alpha", "Agents, their roles\nand the events they take part in."),
+            ("beta", long_description),
+            ("gamma", ""),
+        )
+    )
+    manager = OntologyManager()
+    for head in (described, long, bare):
+        manager.add_ontology(head, skip_vector_index=True)
+    seen = _answer_through_validation(monkeypatch, "alpha")
+
+    await resolve_home_ontology_module.resolve_home_ontology(
+        _document_state(), _tools_with_catalog(manager)
+    )
+
+    lines = seen["prompt_kwargs"]["instruction"].splitlines()
+    alpha = next(line for line in lines if line.startswith("- alpha:"))
+    beta = next(line for line in lines if line.startswith("- beta:"))
+    gamma = next(line for line in lines if line.startswith("- gamma:"))
+    # One line per ontology, whatever the author's line breaks.
+    assert alpha.endswith(
+        f"<{described.iri}>: Agents, their roles and the events they take part in."
+    )
+    assert beta.endswith("…")
+    assert len(beta) < len(long_description)
+    assert gamma.endswith(f"<{bare.iri}>")
+
+
+def test_the_home_instruction_asks_for_a_field_not_the_document_s_subject() -> None:
+    from ontocast.prompt.render_ontology import home_ontology_instruction
+
+    instruction = " ".join(home_ontology_instruction.split())
+    assert "one level of abstraction" not in instruction
+    assert "field" in instruction
+    assert "never after the document's own subject" in instruction
+    assert "within the scope" in instruction
+    assert "the field is the family, not the category" in instruction
+    assert "never another sibling" in instruction

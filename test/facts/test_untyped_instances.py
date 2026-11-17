@@ -19,7 +19,8 @@ from ontocast.config import FactsValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import FactsGateRepairKind, FactsUnitFindingKind
-from ontocast.onto.rdfgraph import RDFGraph, is_rdflib_triple
+from ontocast.onto.prefixes import PrefixTable
+from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import drop_untyped_instances, run_facts_gate
 from ontocast.tool.facts_validation import (
@@ -259,65 +260,35 @@ def test_entailment_without_context_is_a_no_op() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _reified_oxigraph_graph(body: str) -> RDFGraph:
-    """An oxigraph-backed facts graph, every triple reified as the aggregator does."""
-    pytest.importorskip("oxrdflib")
-    import pyoxigraph as ox
-
-    from ontocast.onto.constants import RDF_REIFIES
-    from ontocast.onto.rdfgraph import _oxigraph_inner_store
-
-    parsed = _facts(body)
-    graph = RDFGraph(store="oxigraph")
-    for triple in parsed:
-        graph.add(triple)
-    store = cast(ox.Store, _oxigraph_inner_store(graph.store))
-    context = ox.BlankNode(str(graph.identifier))
-    for subject, predicate, obj in parsed:
+def _reified_graph(body: str) -> RDFGraph:
+    """A facts graph whose IRI-to-IRI triples are reified, as the aggregator does."""
+    graph = _facts(body)
+    for subject, predicate, obj in list(graph):
         if not isinstance(subject, URIRef) or not isinstance(obj, URIRef):
             continue
-        reifier = ox.BlankNode()
-        store.add(
-            ox.Quad(
-                reifier,
-                ox.NamedNode(str(RDF_REIFIES)),
-                ox.Triple(
-                    ox.NamedNode(str(subject)),
-                    ox.NamedNode(str(predicate)),
-                    ox.NamedNode(str(obj)),
-                ),
-                context,
-            )
-        )
-        store.add(
-            ox.Quad(
-                reifier,
-                ox.NamedNode(str(PROV.wasDerivedFrom)),
-                ox.NamedNode(f"{CD}chunk_0"),
-                context,
-            )
-        )
+        reifier = BNode()
+        graph.reifications.add(reifier, (subject, predicate, obj))
+        graph.add((reifier, PROV.wasDerivedFrom, URIRef(f"{CD}chunk_0")))
     return graph
 
 
 def _reifier_count(graph: RDFGraph) -> int:
-    return sum(1 for triple in graph if not is_rdflib_triple(triple))
+    return len(graph.reifications)
 
 
 def _value_blank_nodes(graph: RDFGraph) -> set[BNode]:
     """Blank nodes of the facts themselves; reifiers are not counted."""
-    reifiers = {triple[0] for triple in graph if not is_rdflib_triple(triple)}
+    reifiers = graph.reifications.reifiers()
     return {
         term
         for triple in graph
-        if is_rdflib_triple(triple)
         for term in triple
         if isinstance(term, BNode) and term not in reifiers
     }
 
 
 def test_drop_cascades_through_triples_blank_nodes_and_reifiers() -> None:
-    graph = _reified_oxigraph_graph(
+    graph = _reified_graph(
         """
         cd:typed a ex:Sample ; rdfs:label "typed" ;
             ex:measuredOn cd:ghost ;
@@ -334,9 +305,10 @@ def test_drop_cascades_through_triples_blank_nodes_and_reifiers() -> None:
     blank_before = _value_blank_nodes(graph)
     assert len(blank_before) == 3
 
-    _, dropped = drop_untyped_instances(graph, [CD])
+    records = drop_untyped_instances(graph, [CD])
 
-    assert dropped == [str(ghost)]
+    assert [record.source for record in records] == [str(ghost)]
+    assert records[0].triple_count
     assert (ghost, None, None) not in graph
     assert (None, None, ghost) not in graph
     # The typed neighbours keep everything that does not mention the ghost.
@@ -359,9 +331,7 @@ def test_drop_is_a_no_op_on_a_typed_graph() -> None:
     )
     size = len(graph)
 
-    _, dropped = drop_untyped_instances(graph, [CD])
-
-    assert dropped == []
+    assert drop_untyped_instances(graph, [CD]) == []
     assert len(graph) == size
 
 
@@ -370,9 +340,12 @@ def _fake_tools() -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             shapes_catalog=SimpleNamespace(graph=lambda: None),
             shapes_prompt_contract=lambda: ("", (), False),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
             ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
                     facts_validation=facts_validation
@@ -388,7 +361,8 @@ def test_gate_records_dropped_instances_on_the_state() -> None:
     state.doc_hid = "1"
     state.aggregated_facts = _facts(
         """
-        cd:s a ex:Sample ; rdfs:label "s" ; ex:relatesTo cd:ghost_b, cd:ghost_a .
+        cd:s a ex:Sample ; rdfs:label "s" ; ex:hasCode "S1" ;
+            ex:relatesTo cd:ghost_b, cd:ghost_a .
         cd:ghost_a rdfs:label "a" .
         cd:ghost_b rdfs:label "b" .
         """
@@ -413,7 +387,9 @@ def test_gate_metric_is_zero_when_nothing_is_dropped() -> None:
     state = AgentState()
     state.current_domain = "https://x.org"
     state.doc_hid = "1"
-    state.aggregated_facts = _facts('cd:s a ex:Sample ; rdfs:label "s" .')
+    state.aggregated_facts = _facts(
+        'cd:s a ex:Sample ; rdfs:label "s" ; ex:hasCode "S1" .'
+    )
 
     run_facts_gate(state, _ontology(), _fake_tools(), merge_repair=False)
 
@@ -457,13 +433,109 @@ def test_gate_counts_components_and_isolated_instances() -> None:
         """
         cd:s a ex:Sample ; ex:measuredOn cd:d .
         cd:d a ex:Device .
-        cd:alone a ex:Process ; rdfs:label "alone" .
+        cd:alone a ex:Process ; rdfs:label "alone" ; ex:hasCode "P7" .
         """
     )
 
     run_facts_gate(state, _ontology(), _fake_tools(), merge_repair=False)
 
+    # An isolated instance holding a value of its own stays, and counts.
     assert state.retrieval_metrics[RetrievalMetric.FACTS_COMPONENTS] == 2
     assert state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED] == 1
     assert state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_INFERRED] == 0
     assert state.retrieval_metrics[RetrievalMetric.FACTS_LINKS_REMOVED] == 0
+
+
+# ---------------------------------------------------------------------------
+# A single listed class (schema:rangeIncludes / domainIncludes)
+# ---------------------------------------------------------------------------
+
+_LISTED = """
+ex:Trait a owl:Class .
+ex:Reading a owl:Class .
+ex:Probe a owl:Class .
+ex:observes a owl:ObjectProperty ; schema:rangeIncludes ex:Trait .
+ex:takenBy a owl:ObjectProperty ;
+    schema:rangeIncludes ex:Probe , ex:Device .
+ex:reads a owl:ObjectProperty ; schema:domainIncludes ex:Probe .
+ex:checks a owl:ObjectProperty ;
+    rdfs:range ex:Device ; schema:rangeIncludes ex:Trait .
+"""
+
+
+def _listed_ontology(schema: str = "https://schema.org/") -> RDFGraph:
+    graph = RDFGraph()
+    graph.parse(
+        data=PREFIXES.replace("https://schema.org/", schema) + ONTOLOGY + _LISTED,
+        format="turtle",
+    )
+    return graph
+
+
+@pytest.mark.parametrize("schema", ["https://schema.org/", "http://schema.org/"])
+def test_an_untyped_node_takes_the_one_class_a_property_lists(schema) -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:observes cd:t . cd:p ex:reads cd:r .")
+
+    added, records = materialize_entailed_types(graph, _listed_ontology(schema))
+
+    assert added == 2
+    assert (_cd("t"), RDF.type, URIRef(f"{EX}Trait")) in graph
+    assert (_cd("p"), RDF.type, URIRef(f"{EX}Probe")) in graph
+    assert {record.kind for record in records} == {FactsUnitFindingKind.ENTAILED_TYPE}
+    assert untyped_instances(graph, [CD]) == []
+
+
+def test_two_listed_classes_type_nothing() -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:takenBy cd:p .")
+    assert materialize_entailed_types(graph, _listed_ontology())[0] == 0
+
+
+def test_a_listed_class_never_joins_an_asserted_type() -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:observes cd:t . cd:t a ex:Process .")
+    assert materialize_entailed_types(graph, _listed_ontology())[0] == 0
+
+
+def test_a_declared_range_wins_over_a_listed_class() -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:checks cd:d .")
+
+    materialize_entailed_types(graph, _listed_ontology())
+
+    assert set(graph.objects(_cd("d"), RDF.type)) == {URIRef(f"{EX}Device")}
+
+
+def test_listed_classes_that_disagree_type_nothing() -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:observes cd:x . cd:x ex:reads cd:r .")
+    assert (_cd("x"), RDF.type, None) not in graph
+    assert materialize_entailed_types(graph, _listed_ontology())[0] == 0
+
+
+def test_a_listed_class_never_types_a_blank_node() -> None:
+    graph = _facts("cd:r a ex:Reading ; ex:observes [ rdfs:label 'colour' ] .")
+    assert materialize_entailed_types(graph, _listed_ontology())[0] == 0
+
+
+def test_a_listed_class_the_snapshot_lacks_comes_from_the_whole_catalog() -> None:
+    from ontocast.tool.facts_validation.terms import CatalogRoles
+
+    graph = _facts("cd:r a ex:Reading ; ex:observes cd:t .")
+    context = CatalogRoles.of([_listed_ontology()]).with_axioms(_ontology())
+
+    assert materialize_entailed_types(graph, context)[0] == 1
+    assert (_cd("t"), RDF.type, URIRef(f"{EX}Trait")) in graph
+
+
+def test_the_whole_catalog_never_types_a_catalog_individual() -> None:
+    """A snapshot may drop an individual's own type; the catalog still has it."""
+    from ontocast.tool.facts_validation.terms import CatalogRoles
+
+    catalog = _ontology()
+    catalog.parse(
+        data=PREFIXES + "ex:inUnit a owl:ObjectProperty ; rdfs:range ex:Unit .",
+        format="turtle",
+    )
+    graph = _facts("cd:s ex:inUnit ex:unit_m .")
+    context = CatalogRoles.of([catalog]).with_axioms(RDFGraph())
+
+    materialize_entailed_types(graph, context)
+
+    assert (URIRef(f"{EX}unit_m"), RDF.type, None) not in graph

@@ -73,6 +73,32 @@ DCTERMS = Namespace("http://purl.org/dc/terms/")
 #: target.
 ONTOCAST = Namespace(f"{DEFAULT_DOMAIN}/ontocast#")
 
+#: Class annotation: the labels of this class's instances identify them across
+#: documents (``true``), or stop a superclass's annotation (``false``).
+GLOBALLY_NAMED = ONTOCAST.globallyNamed
+
+#: Suffix of the named graph holding a document's ontology provenance.
+ONTOLOGY_PROVENANCE_SUFFIX = "/ontology-provenance"
+#: Suffix of the named graph holding a document's identity links. Minted local
+#: names never contain ``-``, so neither suffix can name an entity.
+IDENTITY_LINKS_SUFFIX = "/identity-links"
+#: Graphs written beside a document's facts graph: not documents themselves.
+AUXILIARY_GRAPH_SUFFIXES: tuple[str, ...] = (
+    ONTOLOGY_PROVENANCE_SUFFIX,
+    IDENTITY_LINKS_SUFFIX,
+)
+
+
+def auxiliary_graph_uri(graph_uri: str, suffix: str) -> str:
+    """The auxiliary graph ``suffix`` of the facts graph ``graph_uri``."""
+    return f"{graph_uri.rstrip('/')}{suffix}"
+
+
+def is_auxiliary_graph(graph_uri: str) -> bool:
+    """Whether ``graph_uri`` is an auxiliary graph rather than a document's facts."""
+    return graph_uri.endswith(AUXILIARY_GRAPH_SUFFIXES)
+
+
 #: Classes and predicates the pipeline mints on the document node itself
 #: (``apply_document_metadata_provenance``): metadata the pipeline writes, not
 #: vocabulary the renderer was offered and then invented, so the

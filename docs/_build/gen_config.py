@@ -82,8 +82,8 @@ PAGES: list[tuple[str, str, str, list[str]]] = [
     (
         "aggregation",
         "Entity disambiguation",
-        "When two extracted entities are merged into one.",
-        ["AggregationConfig"],
+        "When two extracted entities are merged into one, within a document and across documents.",
+        ["AggregationConfig", "LinkConfig"],
     ),
     (
         "web-search",
@@ -110,6 +110,8 @@ GROUP_TITLES = {
     "QdrantConfig": "Qdrant",
     "FusekiConfig": "Fuseki",
     "PathConfig": "Paths and caches",
+    "AggregationConfig": "Within a document",
+    "LinkConfig": "Across documents",
 }
 
 _RST_LITERAL = re.compile(r"``(.+?)``")

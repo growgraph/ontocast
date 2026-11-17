@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+import typing
+from collections.abc import Mapping, Sequence
 from difflib import SequenceMatcher
 
 from pydantic import BaseModel
@@ -17,6 +18,13 @@ from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 from rdflib.namespace import DCTERMS, XSD
 from rdflib.term import Node
 
+from ontocast.onto.property_sides import (
+    SIDE_PREDICATES,
+    Side,
+    SideSource,
+    is_datatype_value,
+    sides_by_property,
+)
 from ontocast.onto.rdfgraph import (
     RDFGraph,
 )
@@ -24,6 +32,13 @@ from ontocast.onto.scaffolding import (
     document_nodes,
     is_scaffolding,
     scaffolding_nodes,
+)
+from ontocast.onto.well_known import (
+    well_known_datatype_ranges,
+    well_known_namespaces,
+    well_known_statement_classes,
+    well_known_subject_links,
+    well_known_value_classes,
 )
 
 logger = logging.getLogger(__name__)
@@ -149,6 +164,11 @@ class ValidationPolicy(BaseModel):
     """
 
     additional_standard_namespaces: tuple[str, ...] = ()
+    #: ``strict`` closes the vocabulary to the catalog, the vocabularies it
+    #: borrows from, the well-known vocabularies and the terms named here:
+    #: any other class or property is UNKNOWN_TERM. ``open`` lets any other
+    #: vocabulary pass, so only a member of a closed namespace is unknown.
+    vocabulary: typing.Literal["strict", "open"] = "strict"
     quantity_fallback_vocabulary: dict[str, str] | None = None
     code_predicates: tuple[str, ...] = ()
     #: IRIs the shapes-derived conformance chapter instructs the renderer to
@@ -171,8 +191,14 @@ class ValidationPolicy(BaseModel):
     domain_adherence_min_terms: int = 4
 
     def standard_namespaces(self) -> tuple[str, ...]:
-        """Built-in meta-vocabulary namespaces plus the configured ones."""
-        return (*_STANDARD_NAMESPACES, *self.additional_standard_namespaces)
+        """Namespaces no catalog owns: the meta-vocabularies, the well-known
+        vocabularies (:mod:`ontocast.onto.well_known`) and the configured
+        ones. A term of a well-known vocabulary must still exist in it."""
+        return (
+            *_STANDARD_NAMESPACES,
+            *well_known_namespaces(),
+            *self.additional_standard_namespaces,
+        )
 
     def exempt_terms(self, *graphs: RDFGraph | None) -> set[str]:
         """Exact IRIs configuration blessed: fallback vocabulary, code
@@ -192,7 +218,7 @@ def _catalog_term_roles(
     """Split catalog terms into (known properties, known classes).
 
     Only what the catalog states is used: explicit property/class typing,
-    ``rdfs:domain``/``rdfs:range`` (property evidence), and
+    a domain or a range (``rdfs`` or ``schema:*Includes``, property evidence), and
     ``rdfs:subClassOf`` / ``rdf:type``-object position (class evidence). Terms
     with no evidence land in neither set and pass every role filter.
     """
@@ -207,7 +233,7 @@ def _catalog_term_roles(
     for subject in ontology_graph.subjects(RDF.type, RDF.Property):
         if isinstance(subject, URIRef):
             properties.add(str(subject))
-    for predicate in (RDFS.domain, RDFS.range):
+    for predicate in SIDE_PREDICATES:
         for subject in ontology_graph.subjects(predicate, None):
             if isinstance(subject, URIRef):
                 properties.add(str(subject))
@@ -347,7 +373,7 @@ def resolve_unique_surface(index: dict[str, set[str]], text: str) -> URIRef | No
     return URIRef(next(iter(candidates)))
 
 
-def _superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIRef]:
+def superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIRef]:
     """Asserted supertypes of *class_iri*, including itself.
 
     Walks ``rdfs:subClassOf`` and steps through ``owl:equivalentClass``
@@ -369,10 +395,242 @@ def _superclass_closure(class_iri: URIRef, ontology_graph: RDFGraph) -> set[URIR
     return seen
 
 
+#: What a term's domain, range and listed classes say, kept catalog-wide so a
+#: repair does not depend on which axioms retrieval kept for a unit.
+_AXIOM_PREDICATES = tuple(sorted(SIDE_PREDICATES, key=str))
+#: Statements that place a class in the hierarchy; the catalog-wide hierarchy
+#: graph keeps only these, so a closure over it equals one over the catalog.
+_HIERARCHY_PREDICATES = (
+    RDFS.subClassOf,
+    OWL.equivalentClass,
+    OWL.intersectionOf,
+    RDF.first,
+    RDF.rest,
+)
+
+
+class SubjectContract(BaseModel):
+    """What makes a statement name its subject, over the whole catalog.
+
+    Attributes:
+        statement_classes: Classes whose instances are statements about
+            something else (an observation), with every catalog class under one.
+        value_classes: Classes whose instances are values, likewise.
+        forward: Properties running from a statement to its subject.
+        inverse: Properties running from a subject to a statement.
+    """
+
+    model_config = {"frozen": True}
+
+    statement_classes: frozenset[str] = frozenset()
+    value_classes: frozenset[str] = frozenset()
+    forward: frozenset[str] = frozenset()
+    inverse: frozenset[str] = frozenset()
+
+
+class CatalogRoles:
+    """What the whole catalog says each term is, read once per catalog state.
+
+    A unit sees a retrieved snapshot; the role of a term (property or class)
+    and a class's place in the hierarchy are read from every held ontology, so
+    a term the snapshot omits is still known for what it is.
+
+    Attributes:
+        properties: Terms the catalog states are properties.
+        classes: Terms the catalog states are classes.
+        hierarchy: The catalog's subclass statements, for closures.
+        axioms: The catalog's domains, ranges, listed classes and the types
+            of its terms, with the hierarchy.
+        datatype_ranges: Each property's declared ``rdfs:range`` IRIs in the
+            XSD namespace, across every graph; more than one means the catalog
+            contradicts itself.
+    """
+
+    def __init__(
+        self,
+        properties: frozenset[str] = frozenset(),
+        classes: frozenset[str] = frozenset(),
+        hierarchy: RDFGraph | None = None,
+        datatype_ranges: dict[str, frozenset[str]] | None = None,
+        axioms: RDFGraph | None = None,
+    ) -> None:
+        self.properties = properties
+        self.classes = classes
+        self.hierarchy = hierarchy if hierarchy is not None else RDFGraph()
+        self.axioms = axioms if axioms is not None else RDFGraph()
+        self.datatype_ranges = datatype_ranges or {}
+        self._declared_ranges: dict[str, frozenset[str]] | None = None
+        self._subject_links: tuple[frozenset[str], frozenset[str]] | None = None
+        self._classes_under: dict[frozenset[str], frozenset[str]] = {}
+
+    @classmethod
+    def of(cls, graphs: typing.Iterable[RDFGraph]) -> "CatalogRoles":
+        """The roles and hierarchy stated across ``graphs``."""
+        properties: set[str] = set()
+        classes: set[str] = set()
+        hierarchy = RDFGraph()
+        axioms = RDFGraph()
+        ranges: dict[str, set[str]] = {}
+        for graph in graphs:
+            for predicate in _AXIOM_PREDICATES:
+                for triple in graph.triples((None, predicate, None)):
+                    axioms.add(triple)
+            # Every catalog term's own type: what is a class, a datatype, a
+            # symmetric property, and which IRIs are the catalog's individuals,
+            # which entailment must never type.
+            for triple in graph.triples((None, RDF.type, None)):
+                if isinstance(triple[0], URIRef):
+                    axioms.add(triple)
+            known_properties, known_classes = _catalog_term_roles(graph)
+            properties |= known_properties
+            classes |= known_classes
+            for predicate in (
+                *_HIERARCHY_PREDICATES,
+                RDFS.subPropertyOf,
+                OWL.inverseOf,
+            ):
+                for triple in graph.triples((None, predicate, None)):
+                    hierarchy.add(triple)
+            for subject, range_iri in graph.subject_objects(RDFS.range):
+                if isinstance(subject, URIRef) and str(range_iri).startswith(str(XSD)):
+                    ranges.setdefault(str(subject), set()).add(str(range_iri))
+        # A term typed both ways across files is contradictory; trust neither.
+        ambiguous = properties & classes
+        return cls(
+            frozenset(properties - ambiguous),
+            frozenset(classes - ambiguous),
+            hierarchy,
+            {iri: frozenset(found) for iri, found in ranges.items()},
+            axioms + hierarchy,
+        )
+
+    def with_axioms(self, graph: RDFGraph) -> RDFGraph:
+        """``graph`` together with the catalog's axioms, as a new graph.
+
+        A unit's snapshot may keep a property's domain and drop its range, or a
+        class without its place in the hierarchy; domain and range repairs read
+        this union so the answer does not depend on what retrieval kept.
+        """
+        if not len(self.axioms):
+            return graph
+        return graph + self.axioms
+
+    def declared_ranges(self) -> dict[str, frozenset[str]]:
+        """Each property's declared XSD ranges: the catalog's and the well-known.
+
+        Read once per catalog state; a unit adds only its snapshot's.
+        """
+        if self._declared_ranges is None:
+            merged: dict[str, set[str]] = {}
+            for prop, datatype in well_known_datatype_ranges().items():
+                merged.setdefault(prop, set()).add(datatype)
+            for prop, datatypes in self.datatype_ranges.items():
+                merged.setdefault(prop, set()).update(datatypes)
+            self._declared_ranges = {
+                prop: frozenset(found) for prop, found in merged.items()
+            }
+        return self._declared_ranges
+
+    def subject_links(self) -> tuple[frozenset[str], frozenset[str]]:
+        """The properties linking a statement and its subject, each direction.
+
+        The well-known ones, every catalog sub-property of one, and every
+        catalog inverse of one in the other direction.
+
+        Returns:
+            ``(forward, inverse)``: statement -> subject, subject -> statement.
+        """
+        if self._subject_links is None:
+            forward, inverse = (set(found) for found in well_known_subject_links())
+            changed = True
+            while changed:
+                before = len(forward) + len(inverse)
+                for side, other in ((forward, inverse), (inverse, forward)):
+                    for prop in list(side):
+                        node = URIRef(prop)
+                        side |= {
+                            str(s)
+                            for s in self.hierarchy.subjects(RDFS.subPropertyOf, node)
+                            if isinstance(s, URIRef)
+                        }
+                        other |= {
+                            str(term)
+                            for term in (
+                                *self.hierarchy.subjects(OWL.inverseOf, node),
+                                *self.hierarchy.objects(node, OWL.inverseOf),
+                            )
+                            if isinstance(term, URIRef)
+                        }
+                changed = len(forward) + len(inverse) != before
+            self._subject_links = (frozenset(forward), frozenset(inverse))
+        return self._subject_links
+
+    def subject_contract(self, value_base: frozenset[str]) -> SubjectContract:
+        """The :class:`SubjectContract` of this catalog.
+
+        Args:
+            value_base: The value classes to anchor on (:func:`value_class_base`).
+        """
+        forward, inverse = self.subject_links()
+        return SubjectContract(
+            statement_classes=self.classes_under(well_known_statement_classes()),
+            value_classes=self.classes_under(value_base),
+            forward=forward,
+            inverse=inverse,
+        )
+
+    def classes_under(self, base: frozenset[str]) -> frozenset[str]:
+        """``base`` and every catalog class whose supertypes meet it.
+
+        Args:
+            base: Anchor classes, such as the classes of structured values
+                (:func:`value_class_base`) or of statements.
+        """
+        found = self._classes_under.get(base)
+        if found is None:
+            candidates = self.classes | {
+                str(s) for s in self.hierarchy.subjects(RDFS.subClassOf, None)
+            }
+            found = frozenset(base) | {
+                iri
+                for iri in candidates
+                if {str(c) for c in superclass_closure(URIRef(iri), self.hierarchy)}
+                & base
+            }
+            self._classes_under[base] = found
+        return found
+
+
+def value_class_base(
+    configured: dict[str, str] | None, bindings: dict[str, str]
+) -> frozenset[str]:
+    """The well-known value classes plus the deployment's configured one.
+
+    Args:
+        configured: ``FACTS_QUANTITY_FALLBACK_VOCABULARY``; its ``value_class``
+            role, a CURIE or an IRI, names the deployment's value class.
+        bindings: Prefix -> namespace, to expand a CURIE.
+    """
+    base = set(well_known_value_classes())
+    term = (configured or {}).get("value_class", "")
+    if term.startswith(("http://", "https://")):
+        base.add(term)
+    elif term:
+        prefix, _, local = term.partition(":")
+        if local and prefix in bindings:
+            base.add(bindings[prefix] + local)
+    return frozenset(base)
+
+
+def is_value_node(graph: RDFGraph, node: Node, value_classes: frozenset[str]) -> bool:
+    """Whether a type of ``node`` is a value class (see :meth:`CatalogRoles.value_classes`)."""
+    return any(str(t) in value_classes for t in graph.objects(node, RDF.type))
+
+
 def _described_classes(ontology_graph: RDFGraph) -> set[URIRef]:
     """Classes whose position in the hierarchy the context actually states.
 
-    A class named only as the object of an ``rdfs:domain`` or an ``rdf:type``
+    A class named only as the object of a domain or an ``rdf:type``
     carries no subclass edges here -- typically because it belongs to an
     imported vocabulary (SOSA, QUDT) that the context does not vendor, since
     ``owl:imports`` is not dereferenced. Its ancestors are unknown, so nothing
@@ -388,15 +646,239 @@ def _described_classes(ontology_graph: RDFGraph) -> set[URIRef]:
     return described
 
 
-def _declared_domains(ontology_graph: RDFGraph) -> dict[URIRef, set[URIRef]]:
-    """Predicate -> its declared ``rdfs:domain`` classes, named classes only."""
-    domains: dict[URIRef, set[URIRef]] = {}
-    for predicate, _, domain in ontology_graph.triples((None, RDFS.domain, None)):
-        # Anonymous domains are class expressions (unions, restrictions); they
-        # need a reasoner to decide membership, so they are out of scope here.
-        if isinstance(predicate, URIRef) and isinstance(domain, URIRef):
-            domains.setdefault(predicate, set()).add(domain)
-    return domains
+def _declared_domains(
+    ontology_graph: RDFGraph, *, source: SideSource | None = None
+) -> dict[URIRef, set[URIRef]]:
+    """Predicate -> the named classes its domain names.
+
+    Both ``rdfs:domain`` and ``schema:domainIncludes`` by default: the classes
+    a subject is expected to fit. ``source="rdfs"`` keeps the entailing ones.
+    Anonymous domains are class expressions (unions, restrictions); they need
+    a reasoner to decide membership, so they are out of scope here.
+    """
+    return sides_by_property(ontology_graph, "domain", source=source)
+
+
+def declared_class_ranges(
+    ontology_graph: RDFGraph, *, source: SideSource | None = None
+) -> dict[URIRef, set[URIRef]]:
+    """Predicate -> the named classes its range names, datatypes left out.
+
+    Both ``rdfs:range`` and ``schema:rangeIncludes`` by default;
+    ``source="rdfs"`` keeps the entailing ones. A datatype range (XSD,
+    ``rdfs:Literal``, a declared ``rdfs:Datatype``) types a literal, not a
+    node, and is left out.
+    """
+    ranges: dict[URIRef, set[URIRef]] = {}
+    for predicate, values in sides_by_property(
+        ontology_graph, "range", source=source
+    ).items():
+        classes = {v for v in values if not is_datatype_value(v, ontology_graph)}
+        if classes:
+            ranges[predicate] = classes
+    return ranges
+
+
+def sole_listed_classes(
+    ontology_graph: RDFGraph, side: Side, declared: Mapping[URIRef, set[URIRef]]
+) -> dict[URIRef, URIRef]:
+    """Predicate -> the one class its ``schema:<side>Includes`` lists.
+
+    Listed classes are alternatives, so they entail nothing in general; a
+    predicate listing exactly one named class, and declaring no ``rdfs``
+    counterpart, leaves one reading.
+
+    Args:
+        ontology_graph: Ontology context.
+        side: ``domain`` or ``range``.
+        declared: The predicate's ``rdfs`` classes of that side; a predicate
+            present here is left out.
+
+    Returns:
+        The sole listed class per predicate; datatypes are never a class.
+    """
+    listed = sides_by_property(ontology_graph, side, source="includes")
+    return {
+        predicate: next(iter(classes))
+        for predicate, classes in listed.items()
+        if len(classes) == 1
+        and predicate not in declared
+        and not is_datatype_value(next(iter(classes)), ontology_graph)
+    }
+
+
+def types_compatible(
+    asserted: set[URIRef],
+    declared: set[URIRef],
+    ontology_graph: RDFGraph,
+    *,
+    described: set[URIRef],
+    closures: dict[URIRef, set[URIRef]],
+) -> bool | None:
+    """Whether a node typed ``asserted`` fits classes ``declared`` (a domain or range).
+
+    Compatible in either direction: an asserted type specializes a declared
+    class, or a declared class specializes an asserted type. ``None`` when the
+    context cannot decide: no declared class it places in a hierarchy
+    (``described``), or an asserted type it does not describe.
+
+    Args:
+        asserted: The node's asserted types.
+        declared: The declared domain or range classes.
+        ontology_graph: The ontology context.
+        described: :func:`_described_classes` of ``ontology_graph``.
+        closures: Cache of :func:`superclass_closure` results, filled in place.
+    """
+    declared = {value for value in declared if value in described}
+    if not declared or not asserted or not asserted <= described:
+        return None
+
+    def closure(class_iri: URIRef) -> set[URIRef]:
+        if class_iri not in closures:
+            closures[class_iri] = superclass_closure(class_iri, ontology_graph)
+        return closures[class_iri]
+
+    declared_closure = set().union(*(closure(value) for value in declared))
+    return any(
+        closure(asserted_type) & declared or asserted_type in declared_closure
+        for asserted_type in asserted
+    )
+
+
+def domain_fitting_properties(
+    subject: URIRef,
+    obj: Node,
+    graph: RDFGraph,
+    ontology_graph: RDFGraph,
+    *,
+    replacing: URIRef,
+    limit: int = 8,
+) -> list[tuple[URIRef, set[URIRef]]]:
+    """Context properties that may link ``subject`` to ``obj`` in place of ``replacing``.
+
+    A candidate declares a domain (``rdfs:domain`` or ``schema:domainIncludes``)
+    that the subject's asserted types fit, and no range the object's types
+    contradict; a literal object takes only a property with no class range.
+    Ranked by the local-name tokens shared with ``replacing``, then by IRI.
+
+    Returns:
+        Up to ``limit`` (property, its domain classes) pairs.
+    """
+    asserted = {t for t in graph.objects(subject, RDF.type) if isinstance(t, URIRef)}
+    if not asserted:
+        return []
+    described = _described_classes(ontology_graph)
+    closures: dict[URIRef, set[URIRef]] = {}
+    domains = _declared_domains(ontology_graph)
+    ranges = declared_class_ranges(ontology_graph)
+    object_types = (
+        {t for t in graph.objects(obj, RDF.type) if isinstance(t, URIRef)}
+        if isinstance(obj, URIRef)
+        else set()
+    )
+    wanted = _name_tokens(_local_name(str(replacing)))
+    scored: list[tuple[int, str, URIRef, set[URIRef]]] = []
+    for predicate, declared in domains.items():
+        if predicate == replacing:
+            continue
+        fits = types_compatible(
+            asserted, declared, ontology_graph, described=described, closures=closures
+        )
+        if fits is not True:
+            continue
+        declared_range = ranges.get(predicate)
+        if isinstance(obj, Literal):
+            if declared_range:
+                continue
+        elif declared_range and object_types:
+            if (
+                types_compatible(
+                    object_types,
+                    declared_range,
+                    ontology_graph,
+                    described=described,
+                    closures=closures,
+                )
+                is False
+            ):
+                continue
+        shared = len(wanted & _name_tokens(_local_name(str(predicate))))
+        scored.append((-shared, str(predicate), predicate, declared))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [(predicate, declared) for _, _, predicate, declared in scored[:limit]]
+
+
+def link_properties(
+    node: URIRef,
+    graph: RDFGraph,
+    ontology_graph: RDFGraph,
+    *,
+    limit: int = 8,
+) -> list[tuple[URIRef, str]]:
+    """Context object properties that may link ``node`` to another instance.
+
+    A property qualifies with ``node`` as its subject when its declared domain
+    (``rdfs:domain`` or ``schema:domainIncludes``) fits ``node``'s asserted
+    types and it has a class range; as its object when its class range fits
+    them. Ordered by IRI, subject direction first.
+
+    Returns:
+        Up to ``limit`` (property, ``"from"`` or ``"to"``) pairs: ``from``
+        when ``node`` is the subject.
+    """
+    asserted = {t for t in graph.objects(node, RDF.type) if isinstance(t, URIRef)}
+    if not asserted:
+        return []
+    described = _described_classes(ontology_graph)
+    closures: dict[URIRef, set[URIRef]] = {}
+    domains = _declared_domains(ontology_graph)
+    ranges = declared_class_ranges(ontology_graph)
+
+    def fits(declared: set[URIRef] | None) -> bool:
+        return bool(declared) and (
+            types_compatible(
+                asserted,
+                declared or set(),
+                ontology_graph,
+                described=described,
+                closures=closures,
+            )
+            is True
+        )
+
+    found: list[tuple[URIRef, str]] = []
+    for predicate in sorted(ranges, key=str):
+        if fits(domains.get(predicate)):
+            found.append((predicate, "from"))
+    for predicate in sorted(ranges, key=str):
+        if fits(ranges.get(predicate)):
+            found.append((predicate, "to"))
+    return found[:limit]
+
+
+def domain_fits(
+    subject: URIRef, predicate: URIRef, graph: RDFGraph, ontology_graph: RDFGraph
+) -> bool:
+    """Whether ``subject``'s asserted types contradict no ``rdfs:domain`` of ``predicate``.
+
+    The test :func:`domain_violation_findings` applies: only ``rdfs:domain``
+    entails, so only it can be contradicted; a listed class is an expected
+    one.
+    """
+    declared = _declared_domains(ontology_graph, source="rdfs").get(predicate)
+    if not declared:
+        return True
+    asserted = {t for t in graph.objects(subject, RDF.type) if isinstance(t, URIRef)}
+    return (
+        types_compatible(
+            asserted,
+            declared,
+            ontology_graph,
+            described=_described_classes(ontology_graph),
+            closures={},
+        )
+        is not False
+    )
 
 
 _COMPACT_IRI = re.compile(r"^([A-Za-z][\w.-]*):([^\s/][^\s]*)$")

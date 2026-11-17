@@ -1,7 +1,7 @@
 """Tests for deterministic literal-object checks on rendered facts graphs."""
 
 import pytest
-from rdflib import Literal, Namespace
+from rdflib import Literal, Namespace, URIRef
 from rdflib.namespace import OWL, RDF, RDFS, XSD
 
 from ontocast.onto.enum import LLMGraphFormat
@@ -348,3 +348,68 @@ def test_a_structured_quantity_with_matching_unit_clears_the_finding() -> None:
 
     assert "measurements" not in findings
     assert findings["unclassified"].value == "3"
+
+
+def _units_flagged(
+    full_catalog_terms: set[str] | None = None,
+    *,
+    with_units: bool = True,
+    quantity_vocabulary: bool = True,
+    second_unit: URIRef = UNIT.Kilometer,
+) -> list[str]:
+    from ontocast.onto.model import FactsUnitFindingKind
+    from ontocast.prompt.facts_guidelines import DEFAULT_QUANTITY_FALLBACK_VOCABULARY
+    from ontocast.tool.facts_validation import ValidationPolicy
+    from ontocast.tool.facts_validation.unit_findings import collect_unit_findings
+
+    onto = _unit_ontology()
+    onto.add((UNIT.DEG_C, RDF.type, QUDT.Unit))
+    facts = RDFGraph()
+    for value, unit in (("v1", UNIT.DEG_C), ("v2", second_unit)):
+        facts.add((CD[value], QUDT.numericValue, Literal("2", datatype=XSD.decimal)))
+        if with_units:
+            facts.add((CD[value], QUDT.unit, unit))
+        else:
+            facts.add((CD[value], RDFS.comment, Literal("unit: km")))
+    policy = ValidationPolicy(
+        quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY)
+        if quantity_vocabulary
+        else None
+    )
+    return [
+        f.predicate
+        for f in collect_unit_findings(
+            graph=facts,
+            ontology_graph=onto,
+            quarantined=[],
+            extraction_text="",
+            fact_namespaces=[str(CD)],
+            coverage_limit=0,
+            policy=policy,
+            full_catalog_terms=full_catalog_terms,
+        )
+        if f.kind == FactsUnitFindingKind.UNKNOWN_TERM and f.mandatory
+    ]
+
+
+def test_a_unit_neither_the_context_nor_qudt_has_is_an_unknown_term() -> None:
+    """``unit:Kilometer`` is a plausible name QUDT does not have."""
+    assert _units_flagged() == [str(UNIT.Kilometer)]
+
+
+def test_a_qudt_unit_the_context_lacks_is_known() -> None:
+    assert _units_flagged(second_unit=UNIT.KiloM) == []
+
+
+def test_a_unit_of_the_full_catalog_is_known() -> None:
+    assert _units_flagged({str(UNIT.Kilometer)}) == []
+
+
+def test_a_unit_kept_as_text_is_not_flagged() -> None:
+    """The prompt's fallback for a domain whose context has no unit for it."""
+    assert _units_flagged(with_units=False) == []
+
+
+def test_no_unit_property_configured_means_no_unit_check() -> None:
+    """Units are read from the configured quantity vocabulary, never assumed."""
+    assert _units_flagged(quantity_vocabulary=False) == []

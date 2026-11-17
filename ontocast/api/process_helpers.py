@@ -1,10 +1,13 @@
 """Shared helpers for local batch processing and HTTP response assembly."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import pathlib
 import re
+from collections import Counter
+from collections.abc import Sequence
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -20,6 +23,7 @@ from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.run_manifest import (
     RunManifest,
+    RunManifestHome,
     RunManifestLLM,
     RunManifestLoops,
     RunManifestPrompting,
@@ -33,12 +37,12 @@ from ontocast.onto.run_meter import (
     active_run_meter,
     run_meter_scope,
 )
-from ontocast.onto.section_models import OutlineLabelReport
 from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph.facts_gate import run_facts_gate
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.llm import LLMConfigurationError
+from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.triple_manager.core import TripleStoreManager
 from ontocast.toolbox import ToolBox
 from ontocast.util.graph_metrics import facts_graph_shape_metrics
@@ -122,6 +126,20 @@ def safe_ontology_filename_id(ontology: Ontology) -> str | None:
         return None
     cleaned = _SAFE_ONTOLOGY_ID_RE.sub("_", raw).strip("._-")
     return cleaned or None
+
+
+def _distinct_filename_ids(ontologies: Sequence[Ontology]) -> dict[str, str | None]:
+    """IRI -> file name id; ontologies sharing an id get their IRI's digest too."""
+    ids = {o.iri: safe_ontology_filename_id(o) for o in ontologies}
+    shared = Counter(ids.values())
+    return {
+        iri: (
+            f"{name}-{hashlib.sha256(iri.encode()).hexdigest()[:6]}"
+            if name is not None and shared[name] > 1
+            else name
+        )
+        for iri, name in ids.items()
+    }
 
 
 def ontology_ttl_output_path(
@@ -437,11 +455,14 @@ def dump_run_manifest(
             shacl_inference=str(facts_validation.shacl_inference),
             numeric_coverage_mandatory=facts_validation.numeric_coverage_mandatory,
             facts_user_instruction_chars=len(state.facts_user_instruction or ""),
+            ontology_plan_enabled=tool_config.ontology_validation.plan_enabled,
+            ontology_consolidation=tool_config.ontology_validation.consolidation,
         ),
         graph_metrics=(
             facts_graph_shape_metrics(
                 serialized_facts,
                 [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""],
+                document=state.doc_iri,
             )
             if serialized_facts is not None
             else None
@@ -461,6 +482,10 @@ def dump_run_manifest(
             thinking_budget=llm_config.thinking_budget,
             requests_per_second=llm_config.requests_per_second,
             max_retries=llm_config.max_retries,
+            model_by_phase=dict(llm_config.model_by_phase) or None,
+            reasoning_effort_by_phase=(
+                dict(llm_config.reasoning_effort_by_phase) or None
+            ),
             prompt_cache_key=llm_config.prompt_cache_key,
             max_inflight=llm_config.llm_max_inflight,
         ),
@@ -494,6 +519,7 @@ def dump_run_manifest(
             len(serialized_facts) if serialized_facts is not None else 0
         ),
         retrieval_metrics=dict(state.retrieval_metrics),
+        facts_isolated=list(state.facts_isolated_report),
         unit_context_sources=state.unit_context_sources,
         ontology_versions=[
             record.model_dump(mode="json") for record in state.ontology_versions_written
@@ -502,6 +528,16 @@ def dump_run_manifest(
             {**ref.model_dump(mode="json"), "role": "read"}
             for ref in state.ontology_versions_read
         ],
+        home_ontology=(
+            RunManifestHome(
+                iri=state.home_ontology.iri,
+                ontology_id=state.home_ontology.ontology_id,
+                namespace=state.home_ontology.namespace,
+                extends=state.home_ontology.extends,
+            )
+            if state.home_ontology is not None
+            else None
+        ),
     )
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -531,23 +567,56 @@ def _ontology_artifacts_for_dump(state: AgentState) -> list[Ontology]:
     ]
 
 
+def _as_written(
+    artifacts: list[Ontology], state: AgentState, ontology_manager: OntologyManager
+) -> list[Ontology]:
+    """Each artifact the document wrote a version of, replaced by that version.
+
+    The reduced artifact precedes stamping, so a new ontology has no header
+    yet and an updated one still carries its prior version's.
+    """
+    written = {
+        record.iri: record.version_iri for record in state.ontology_versions_written
+    }
+    result: list[Ontology] = []
+    for artifact in artifacts:
+        version_iri = written.get(artifact.iri)
+        head = (
+            ontology_manager.get_ontology(ontology_iri=artifact.iri)
+            if version_iri
+            else None
+        )
+        if head is not None and not head.is_null() and head.version_iri == version_iri:
+            result.append(head)
+        else:
+            result.append(artifact)
+    return result
+
+
 def dump_ontology_ttls(
     state: AgentState,
     file_path: pathlib.Path,
     *,
     line_number: int | None = None,
     output_dir: pathlib.Path | None = None,
+    ontology_manager: OntologyManager | None = None,
 ) -> list[pathlib.Path]:
-    """Write provenance-stripped ontology Turtle dumps when artifacts exist."""
+    """Write provenance-stripped ontology Turtle dumps when artifacts exist.
+
+    With ``ontology_manager``, an ontology the document wrote a version of is
+    dumped as that stored version, header included.
+    """
     artifacts = _ontology_artifacts_for_dump(state)
+    if ontology_manager is not None:
+        artifacts = _as_written(artifacts, state, ontology_manager)
     if not artifacts:
         return []
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
-    include_ids = len(artifacts) > 1
+    names = _distinct_filename_ids(artifacts) if len(artifacts) > 1 else {}
     written: list[pathlib.Path] = []
     for artifact in artifacts:
-        ontology_id = safe_ontology_filename_id(artifact) if include_ids else None
+        ontology_id = names.get(artifact.iri)
         ttl_content = turtle_from_graph(artifact.graph, strip_provenance=True)
         output_path = ontology_ttl_output_path(
             file_path,
@@ -747,7 +816,7 @@ async def persist_unit_pipeline_outputs(
             document_metadata=_effective_document_metadata(state),
             doc_namespace=state.doc_namespace,
         ).graph
-        validate_unit_pipeline_facts(state, ontology_graph, tools)
+        await finish_unit_pipeline_facts(state, ontology_graph, tools)
     await asyncio.to_thread(serialize_agent_state, state, tools)
 
 
@@ -758,12 +827,6 @@ def validate_unit_pipeline_facts(
 ) -> None:
     """Run the post-aggregation invariant gate for the single-unit path.
 
-    The document graph reaches this gate at VALIDATE_FACTS; the unit pipeline
-    does not run the graph, so both single-unit callers -- the CLI
-    ``--use-unit-pipeline`` batch path and the ``/process_unit`` route -- invoke
-    it here after aggregation. Without it they would ship facts with no
-    functional-violation, coreference, or SHACL check at all.
-
     ``merge_repair=False``: un-merging re-aggregates *retained units against
     each other*, which has no meaning for a single unit. Everything else is the
     document path verbatim, so batch dumps stay comparable across the two entry
@@ -772,112 +835,42 @@ def validate_unit_pipeline_facts(
     run_facts_gate(state, ontology_graph, tools, merge_repair=False)
 
 
+async def finish_unit_pipeline_facts(
+    state: AgentState,
+    ontology_graph: RDFGraph,
+    tools: ToolBox,
+) -> None:
+    """The validation gate, for the single-unit path.
+
+    The document graph reaches it at VALIDATE_FACTS; the unit pipeline does
+    not run the graph, so both single-unit callers -- the CLI
+    ``--use-unit-pipeline`` batch path and the ``/process_unit`` route -- call
+    this after aggregation. Without it they would ship facts with no
+    functional-violation, coreference or SHACL check at all.
+    """
+    await asyncio.to_thread(validate_unit_pipeline_facts, state, ontology_graph, tools)
+
+
 def _merge_workflow_state_into_agent_state(
     state: AgentState,
     workflow_state: AgentState | dict,
 ) -> AgentState:
-    """Copy dump-relevant fields from an astream values chunk onto ``state``."""
+    """Carry an astream values chunk onto ``state``, every field of it.
+
+    The dumps and the run manifest read the merged state, so a field the graph
+    set must reach it whatever its name: each key that is an ``AgentState``
+    field is assigned through the model's own validation, which also builds a
+    nested model a chunk carries as a plain dict.
+    """
     if isinstance(workflow_state, AgentState):
         return workflow_state
     if not isinstance(workflow_state, dict):
         return state
-    # The map nodes set FAILED when *every* unit failed (_map_stage_status),
-    # and merge_facts preserves it. Off this copy list the batch path could not
-    # see it, which is how a document that produced nothing still exited 0.
-    status = workflow_state.get("status")
-    if status is not None:
-        state.status = status
-    facts = workflow_state.get("aggregated_facts")
-    if facts is not None:
-        state.aggregated_facts = facts
-    meta = workflow_state.get("document_metadata")
-    if meta:
-        state.document_metadata = dict(meta)
-    doc_hid = workflow_state.get("doc_hid")
-    if doc_hid:
-        state.doc_hid = doc_hid
-    current_domain = workflow_state.get("current_domain")
-    if current_domain:
-        state.current_domain = current_domain
-    reduced = workflow_state.get("reduced_ontology_artifacts")
-    if reduced is not None:
-        state.reduced_ontology_artifacts = list(reduced)
-    artifacts = workflow_state.get("ontology_artifacts")
-    if artifacts is not None:
-        state.ontology_artifacts = list(artifacts)
-    # Without these the post-aggregation validation gate is log-only on the
-    # batch path: its findings and counters never reach the dumped state.
-    findings = workflow_state.get("facts_validation_findings")
-    if findings is not None:
-        state.facts_validation_findings = list(findings)
-    gate_repairs = workflow_state.get("facts_gate_repairs")
-    if gate_repairs is not None:
-        state.facts_gate_repairs = list(gate_repairs)
-    conformance = workflow_state.get("facts_conformance")
-    if conformance:
-        state.facts_conformance = dict(conformance)
-    metrics = workflow_state.get("retrieval_metrics")
-    if metrics:
-        state.retrieval_metrics = dict(metrics)
-    # The chunk node is the only writer of the routing counters; without this
-    # the manifest's selection block reports every run as having skipped
-    # nothing.
-    for counter in (
-        "bibliography_units_skipped",
-        "undersized_units_skipped",
-        "non_content_units_skipped",
-        "allowlist_excluded_chars",
-        "allowlist_excluded_unlabeled_chars",
-    ):
-        value = workflow_state.get(counter)
-        if value:
-            setattr(state, counter, int(value))
-    route_histogram = workflow_state.get("route_histogram")
-    if route_histogram:
-        state.route_histogram = dict(route_histogram)
-    outline_labels = workflow_state.get("outline_labels")
-    if outline_labels is not None:
-        state.outline_labels = OutlineLabelReport.model_validate(outline_labels)
-    # The manifest's critic blocks read these; without this copy the manifest
-    # would report no critic calls while retrieval_metrics recorded them.
-    facts_telemetry = workflow_state.get("facts_loop_telemetry")
-    if facts_telemetry:
-        state.facts_loop_telemetry = dict(facts_telemetry)
-    ontology_telemetry = workflow_state.get("ontology_loop_telemetry")
-    if ontology_telemetry:
-        state.ontology_loop_telemetry = dict(ontology_telemetry)
-    reduce_metrics = workflow_state.get("ontology_reduce_metrics")
-    if reduce_metrics:
-        state.ontology_reduce_metrics = dict(reduce_metrics)
-    # The manifest's selection census reads content_units and the validation
-    # dump reads the per-unit repairs and failures. Off this copy list, the
-    # census was always empty on the batch path (labeled_units absent, so a
-    # section filter that never acted was unrecordable) and the repairs were
-    # logged and dropped -- while the HTTP path returned both.
-    content_units = workflow_state.get("content_units")
-    if content_units is not None:
-        state.content_units = list(content_units)
-    context_sources = workflow_state.get("unit_context_sources")
-    if context_sources:
-        state.unit_context_sources = {
-            lane: dict(sources) for lane, sources in context_sources.items()
-        }
-    unit_failures = workflow_state.get("unit_failures")
-    if unit_failures is not None:
-        state.unit_failures = list(unit_failures)
-    unit_repairs = workflow_state.get("facts_repairs_applied")
-    if unit_repairs:
-        state.facts_repairs_applied = {
-            unit_index: list(records) for unit_index, records in unit_repairs.items()
-        }
-    clusters = workflow_state.get("aggregation_clusters")
-    if clusters:
-        state.aggregation_clusters = {
-            final_iri: list(members) for final_iri, members in clusters.items()
-        }
-    key_clusters = workflow_state.get("aggregation_key_clusters")
-    if key_clusters is not None:
-        state.aggregation_key_clusters = list(key_clusters)
+    fields = AgentState.model_fields
+    validator = AgentState.__pydantic_validator__
+    for name, value in workflow_state.items():
+        if name in fields:
+            validator.validate_assignment(state, name, value)
     return state
 
 
@@ -1057,6 +1050,7 @@ async def process_files_input(
                     file_path,
                     line_number=line_number,
                     output_dir=ontology_dir,
+                    ontology_manager=tools.ontology_manager,
                 )
                 if dump_catalog:
                     await dump_catalog_nquads(

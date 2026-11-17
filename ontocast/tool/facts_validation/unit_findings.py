@@ -18,14 +18,26 @@ from ontocast.onto.model import (
     FactsUnitFinding,
     FactsUnitFindingKind,
 )
+from ontocast.onto.property_sides import sides_by_property
 from ontocast.onto.rdfgraph import (
     RDFGraph,
     RejectedLiteralTriple,
 )
+from ontocast.onto.scaffolding import scaffolding_nodes
+from ontocast.onto.well_known import (
+    is_listed_unit,
+    well_known_terms,
+    well_known_vocabulary,
+)
 from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
+from ontocast.tool.facts_validation.connectivity import (
+    isolated_instances,
+    states_a_value,
+)
 from ontocast.tool.facts_validation.terms import (
     _FORBIDDEN_NAMESPACES,
     _STANDARD_NAMESPACES,
+    SubjectContract,
     ValidationPolicy,
     _alias_candidates,
     _catalog_term_roles,
@@ -35,11 +47,12 @@ from ontocast.tool.facts_validation.terms import (
     _name_tokens,
     _namespace_of,
     _resolve_type_literal,
-    _superclass_closure,
     _vocabulary_role_subset,
     collect_catalog_terms,
     collect_declared_namespaces,
     expand_vocabulary_terms,
+    fact_instances,
+    types_compatible,
     untyped_instances,
 )
 from ontocast.util.measurement_lexicon import unit_adjacent_numbers
@@ -98,17 +111,11 @@ def unit_numeric_inventory(
         graph,
         ontology_graph,
     )
-    numeric_value_properties = expand_vocabulary_terms(
-        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "numeric_value"),
-        graph,
-        ontology_graph,
-    )
     return missing_numeric_inventory(
         extraction_text,
         graph,
         unit_surfaces=unit_surfaces_in_ontology(ontology_graph, unit_properties),
         ontology_graph=ontology_graph,
-        numeric_value_properties=numeric_value_properties,
         unit_properties=unit_properties,
         ignore_identifier_fragments=policy.numeric_identifier_guard,
         limit=limit,
@@ -119,26 +126,23 @@ def domain_violation_findings(
     graph: RDFGraph,
     ontology_graph: RDFGraph | None,
 ) -> list[FactsUnitFinding]:
-    """Report subjects whose asserted type contradicts a predicate's domain.
+    """Report subjects whose asserted type contradicts a predicate's ``rdfs:domain``.
 
-    Asserting a triple whose predicate declares an ``rdfs:domain`` *entails*
-    that the subject belongs to that domain, so an untyped subject is never a
-    violation -- the parse-time repair materialises the domain, and a subject
-    still untyped is ``UNTYPED_INSTANCE``'s to report. It becomes one when the
-    subject carries an asserted type that is unrelated to the declared domain:
-    inference then adds the domain class on top of an incompatible one, and
-    the contradiction surfaces later as a confusing failure somewhere else
-    (SHACL reporting a missing property on a class the graph never meant to
-    assert) rather than at the triple that caused it.
+    Only ``rdfs:domain`` entails, so only it can be contradicted: classes a
+    ``schema:domainIncludes`` lists are expected ones, which later uses may
+    widen. An untyped subject is never a violation -- the parse-time repair
+    types it from the domain, and a subject still untyped is
+    ``UNTYPED_INSTANCE``'s to report. It becomes one when the subject carries
+    an asserted type unrelated to every domain class: inference would add the
+    domain class on top of an incompatible one.
 
-    Conservative by construction, since a false accusation costs a render pass.
+    Conservative by construction, since a false accusation costs a repair.
     A subject is reported only when it has at least one asserted type and every
-    asserted type is *unrelated* to every declared domain -- neither a subtype
-    nor a supertype of it, following ``rdfs:subClassOf`` and
+    asserted type is *unrelated* to every declared domain class -- neither a
+    subtype nor a supertype of it, following ``rdfs:subClassOf`` and
     ``owl:equivalentClass`` intersections in both directions. Typing a subject
     with a supertype of the domain (``sosa:Observation`` where the domain is
-    ``obs:QuantitativeObservation``) is consistent: inference specializes it,
-    it contradicts nothing, and flagging it would bury the real violations.
+    ``ex:Measurement``) is consistent and not reported.
 
     Args:
         graph: Rendered facts graph for one unit.
@@ -150,7 +154,7 @@ def domain_violation_findings(
     """
     if ontology_graph is None or not len(ontology_graph):
         return []
-    domains = _declared_domains(ontology_graph)
+    domains = _declared_domains(ontology_graph, source="rdfs")
     if not domains:
         return []
     described = _described_classes(ontology_graph)
@@ -163,31 +167,19 @@ def domain_violation_findings(
         declared = domains.get(predicate)
         if declared is None or not isinstance(subject, URIRef):
             continue
-        # Only domains the context places in a hierarchy can be argued about.
-        declared = {value for value in declared if value in described}
-        if not declared:
-            continue
         asserted = {
             value
             for value in graph.objects(subject, RDF.type)
             if isinstance(value, URIRef)
         }
-        if not asserted or not asserted <= described:
+        # Only types and domains the context places in a hierarchy can be
+        # argued about: an undecidable pair is not reported.
+        fits = types_compatible(
+            asserted, declared, ontology_graph, described=described, closures=closures
+        )
+        if fits is not False:
             continue
-
-        def closure(class_iri: URIRef) -> set[URIRef]:
-            if class_iri not in closures:
-                closures[class_iri] = _superclass_closure(class_iri, ontology_graph)
-            return closures[class_iri]
-
-        # Compatible in either direction: the asserted type specializes a
-        # declared domain, or a declared domain specializes the asserted type.
-        domain_closure = set().union(*(closure(value) for value in declared))
-        if any(
-            closure(asserted_type) & declared or asserted_type in domain_closure
-            for asserted_type in asserted
-        ):
-            continue
+        declared = {value for value in declared if value in described}
         key = (str(subject), str(predicate))
         if key in reported:
             continue
@@ -200,8 +192,8 @@ def domain_violation_findings(
                 message=(
                     f"<{subject}> is typed {actual} but carries <{predicate}>, "
                     f"whose rdfs:domain is {expected}. Either type the subject "
-                    "as the declared domain, or use the property that fits the "
-                    "type it has."
+                    "as a class of the domain, or use the property that fits "
+                    "the type it has."
                 ),
                 subject=str(subject),
                 predicate=str(predicate),
@@ -249,8 +241,8 @@ def untyped_instance_findings(
     (:func:`fact_instances`); it is typed when one of its ``rdf:type`` objects
     is a class outside the fact namespaces that is neither a schema metaclass
     nor vacuous (:func:`concrete_types`). Suggested classes are the declared
-    ``rdfs:domain`` of every predicate the instance carries and the declared
-    ``rdfs:range`` of every predicate it is the object of, then catalog
+    domain of every predicate the instance carries and the declared range of
+    every predicate it is the object of (``rdfs`` or ``schema:*Includes``), then catalog
     classes whose name shares a token with the instance's label or local
     name.
 
@@ -270,9 +262,7 @@ def untyped_instance_findings(
     known_classes: set[str] = set()
     if ontology_graph is not None and len(ontology_graph):
         domains = _declared_domains(ontology_graph)
-        for predicate, _, range_iri in ontology_graph.triples((None, RDFS.range, None)):
-            if isinstance(predicate, URIRef) and isinstance(range_iri, URIRef):
-                ranges.setdefault(predicate, set()).add(range_iri)
+        ranges = sides_by_property(ontology_graph, "range")
         _, known_classes = _catalog_term_roles(ontology_graph)
     findings: list[FactsUnitFinding] = []
     for instance in untyped:
@@ -315,6 +305,93 @@ def untyped_instance_findings(
             )
         )
     return findings
+
+
+def statement_without_subject_findings(
+    graph: RDFGraph,
+    fact_namespaces: Sequence[str],
+    contract: SubjectContract | None,
+    *,
+    max_candidates: int = 12,
+) -> list[FactsUnitFinding]:
+    """Report every statement or value in the unit that names no subject.
+
+    An instance of a statement class (an observation) that states a value
+    (:func:`~ontocast.tool.facts_validation.connectivity.states_a_value`)
+    names its subject only through a subject property: a ``forward`` one from
+    it, or an ``inverse`` one to it. A link to its observed property or its
+    procedure is not that. An instance of a value class names its subject by
+    being linked to any other instance, in either direction. An instance of
+    another class stating its own values is a fact about itself and is not
+    reported.
+
+    Args:
+        graph: Rendered facts graph for one unit.
+        fact_namespaces: Namespaces holding minted instances.
+        contract: The catalog's statement and value classes and subject
+            properties; ``None`` reports nothing.
+        max_candidates: Most candidate subjects suggested per finding.
+
+    Returns:
+        list: One mandatory finding per such instance, ordered by IRI; its
+        suggestions are the unit's instances that could be the subject.
+    """
+    if contract is None:
+        return []
+    statements = {URIRef(iri) for iri in contract.statement_classes}
+    values = {URIRef(iri) for iri in contract.value_classes}
+    forward = [URIRef(iri) for iri in contract.forward]
+    inverse = [URIRef(iri) for iri in contract.inverse]
+    scaffolding = scaffolding_nodes(graph)
+    isolated = isolated_instances(graph, fact_namespaces)
+    instances = sorted(
+        (
+            node
+            for node in fact_instances(graph, fact_namespaces)
+            if isinstance(node, URIRef)
+        ),
+        key=str,
+    )
+
+    def names_subject(node: URIRef) -> bool:
+        return any((node, prop, None) in graph for prop in forward) or any(
+            (None, prop, node) in graph for prop in inverse
+        )
+
+    lapsed: list[URIRef] = []
+    for node in instances:
+        types = set(graph.objects(node, RDF.type))
+        if not types & (statements | values):
+            continue
+        if not states_a_value(graph, node, scaffolding):
+            continue
+        if types & statements:
+            if not names_subject(node):
+                lapsed.append(node)
+        elif node in isolated:
+            lapsed.append(node)
+    if not lapsed:
+        return []
+    candidates = [
+        str(node)
+        for node in instances
+        if not set(graph.objects(node, RDF.type)) & (statements | values)
+    ][:max_candidates]
+    return [
+        FactsUnitFinding(
+            kind=FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT,
+            message=(
+                f"<{node}> states a value but names nothing it is about. Link "
+                "it to the instance the text says was measured or described "
+                "(its feature of interest, or the property the ontology gives "
+                "for it), in the direction the property runs; mint that "
+                "instance if the text names it and it is missing."
+            ),
+            subject=str(node),
+            suggestions=candidates,
+        )
+        for node in lapsed
+    ]
 
 
 def _closed_range_suggestions(
@@ -415,6 +492,52 @@ def _label_only_number_findings(
 _LABEL_NUMBER_PATTERN = re.compile(
     r"(?<![\w.])(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?![\w])"
 )
+
+
+def _unit_outside_context_findings(
+    graph: RDFGraph,
+    ontology_graph: RDFGraph | None,
+    context_terms: set[str],
+    policy: ValidationPolicy,
+) -> list[FactsUnitFinding]:
+    """Flag a unit IRI that is neither in the ontology context nor a QUDT unit.
+
+    A unit written from memory is often a name no vocabulary has. Real units
+    are the context's unit individuals and the shipped QUDT unit list; any
+    other is kept as text on the value node instead. Mandatory, so a patch
+    that adds one is rolled back.
+    """
+    if not context_terms:
+        return []
+    unit_properties = expand_vocabulary_terms(
+        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "unit"),
+        graph,
+        ontology_graph,
+    )
+    outside = sorted(
+        {
+            str(unit)
+            for prop in unit_properties
+            for unit in graph.objects(None, URIRef(prop))
+            if isinstance(unit, URIRef)
+            and str(unit) not in context_terms
+            and not is_listed_unit(str(unit))
+        }
+    )
+    return [
+        FactsUnitFinding(
+            kind=FactsUnitFindingKind.UNKNOWN_TERM,
+            message=(
+                f"<{unit}> is neither a unit of the ontology context nor a "
+                "QUDT unit; use a unit individual the context lists, else a "
+                "QUDT unit (`unit:`) whose exact name exists, or, when neither "
+                "fits, keep the unit's token as text on the value node "
+                "(rdfs:comment) and drop the unit link."
+            ),
+            predicate=unit,
+        )
+        for unit in outside
+    ]
 
 
 def _unit_symbol_case_findings(
@@ -737,6 +860,7 @@ def collect_unit_findings(
     policy: ValidationPolicy | None = None,
     is_citation_metadata: bool = False,
     is_non_content: bool = False,
+    subject_contract: SubjectContract | None = None,
     full_catalog_terms: set[str] | None = None,
 ) -> list[FactsUnitFinding]:
     """Assemble all deterministic findings for one rendered unit graph.
@@ -744,7 +868,8 @@ def collect_unit_findings(
     Mandatory: quarantined literals (with closed-range individual
     suggestions), forbidden-namespace terms (``example.org``), doc-namespace
     predicates, unresolved catalog near-misses, predicates asserted on a
-    subject whose type contradicts their ``rdfs:domain``, instances with no
+    subject whose type contradicts their ``rdfs:domain``, statements and
+    values that name no subject (``subject_contract``), instances with no
     concrete type, and value nodes whose only numeric content sits in a
     label. Advisory by default: numeric
     mentions of the source text absent from the graph, as two findings --
@@ -773,6 +898,14 @@ def collect_unit_findings(
     known_terms = set(full_catalog_terms or ())
     findings: list[FactsUnitFinding] = []
     standard_namespaces = policy.standard_namespaces()
+    # The vocabularies the catalog builds on: a namespace it declares terms
+    # in, or borrows a term from (a superclass, a restricted property). A
+    # strict vocabulary closes everything outside them; what the catalog
+    # borrows it is no authority on, so a borrowed namespace stays open.
+    catalog_namespaces = {
+        _namespace_of(term)
+        for term in (*known_terms, *collect_catalog_terms(ontology_graph))
+    }
     fallback_terms = policy.exempt_terms(graph, ontology_graph)
     quantity_fallback_vocabulary = policy.quantity_fallback_vocabulary
 
@@ -890,24 +1023,23 @@ def collect_unit_findings(
                 )
                 continue
             namespace = _namespace_of(text)
-            if (
-                catalog_terms
-                and namespace in declared_namespaces
-                and text not in catalog_terms
-                and text not in known_terms
-                and text not in fallback_terms
-                and not namespace.startswith(standard_namespaces)
-            ):
+            if text in catalog_terms or text in known_terms or text in fallback_terms:
+                continue
+            vocabulary = well_known_vocabulary(text)
+            if vocabulary is not None and not vocabulary.has_term(_local_name(text)):
+                # Written from memory: the prompt names the vocabulary, not
+                # its terms, so a plausible term it does not have is caught
+                # here, with near-misses from the vocabulary itself.
                 flagged_terms.add(text)
                 findings.append(
                     FactsUnitFinding(
                         kind=FactsUnitFindingKind.UNKNOWN_TERM,
                         message=(
-                            f"<{text}> does not exist in its ontology; rewrite "
-                            "the term IN PLACE to the closest correct term from "
-                            "the ontology chapter (or a suggested candidate), "
-                            "keeping the statement and its value. Do NOT delete "
-                            "the statement."
+                            f"<{text}> is not a term of {vocabulary.title}; "
+                            "rewrite the statement IN PLACE with a term that "
+                            "exists in it (or a suggested candidate), or with a "
+                            "term from the ontology chapter, keeping the "
+                            "statement and its value."
                         ),
                         predicate=text,
                         suggestions=_containment_qualified(
@@ -915,14 +1047,61 @@ def collect_unit_findings(
                             _alias_candidates(
                                 term,
                                 graph,
-                                catalog_terms,
-                                ontology_graph=ontology_graph,
+                                well_known_terms(namespace),
                                 position=position,
                             ),
                         ),
                     )
                 )
+                continue
+            if not catalog_terms or namespace.startswith(standard_namespaces):
+                continue
+            if namespace in declared_namespaces:
+                # A member of a closed namespace: a near-miss of a real term.
+                message = (
+                    f"<{text}> does not exist in its ontology; rewrite "
+                    "the term IN PLACE to the closest correct term from "
+                    "the ontology chapter (or a suggested candidate), "
+                    "keeping the statement and its value. Do NOT delete "
+                    "the statement."
+                )
+            elif policy.vocabulary == "strict" and namespace not in catalog_namespaces:
+                # A vocabulary that is neither the catalog's, one it borrows
+                # from, nor well-known. The strict vocabulary admits nothing
+                # else, so the statement is re-expressed or left out.
+                message = (
+                    f"<{text}> is not a term of the ontology nor of a "
+                    "well-known vocabulary, and the vocabulary is strict: "
+                    "rewrite the statement with a term from the ontology "
+                    "chapter or a well-known vocabulary, or leave the "
+                    "statement out if none can express it."
+                )
+            else:
+                continue
+            flagged_terms.add(text)
+            findings.append(
+                FactsUnitFinding(
+                    kind=FactsUnitFindingKind.UNKNOWN_TERM,
+                    message=message,
+                    predicate=text,
+                    suggestions=_containment_qualified(
+                        term,
+                        _alias_candidates(
+                            term,
+                            graph,
+                            catalog_terms,
+                            ontology_graph=ontology_graph,
+                            position=position,
+                        ),
+                    ),
+                )
+            )
 
+    findings.extend(
+        _unit_outside_context_findings(
+            graph, ontology_graph, catalog_terms | known_terms, policy
+        )
+    )
     findings.extend(
         _scalar_as_bounds_findings(graph, ontology_graph, normalized_fact_namespaces)
     )
@@ -940,6 +1119,11 @@ def collect_unit_findings(
         untyped_instance_findings(graph, ontology_graph, normalized_fact_namespaces)
     )
     if not is_citation_metadata and not is_non_content:
+        findings.extend(
+            statement_without_subject_findings(
+                graph, normalized_fact_namespaces, subject_contract
+            )
+        )
         findings.extend(
             _domain_adherence_findings(
                 graph,

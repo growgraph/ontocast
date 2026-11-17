@@ -26,6 +26,7 @@ from ontocast.onto.enum import (
     Status,
 )
 from ontocast.onto.ontology_condense import TextCaps
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph import context_resolver, node_factories
@@ -80,6 +81,7 @@ def _tools(*, scope: OntologyContextScope, warmup: int = 0) -> ToolBox:
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             config=SimpleNamespace(
                 server=SimpleNamespace(
                     parallel_workers=4,
@@ -93,6 +95,8 @@ def _tools(*, scope: OntologyContextScope, warmup: int = 0) -> ToolBox:
                 get_tool_config=lambda: tool_config,
             ),
             shapes_prompt_contract=lambda: ("", (), False),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
+            ontology_manager=SimpleNamespace(get_head_by_iri=lambda iri: None),
         ),
     )
 
@@ -108,6 +112,7 @@ def _install_per_unit_resolver(monkeypatch) -> None:
                 _unit_graph(f"Term{unit.index}"),
                 source_iris=[f"https://example.org/onto/{unit.index}"],
                 assembly_mode=OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE,
+                partial=True,
             ),
             writable_iris=[f"https://example.org/onto/{unit.index}"],
             confidence=1.0,
@@ -136,6 +141,22 @@ async def test_union_contains_every_unit_context(monkeypatch) -> None:
     for index in range(4):
         assert f"https://example.org/onto#Term{index}" in terms
     assert context.budget_tracker.counters[UNION_CALLS] == 1
+
+
+async def test_a_union_of_retrieved_subsets_is_partial(monkeypatch) -> None:
+    """The union is assembled as a merge, but each part was a retrieved
+    subset, so units must still be told their context is partial."""
+    _install_per_unit_resolver(monkeypatch)
+    state = _state(2)
+
+    unioned = await build_unioned_document_ontology_context(
+        UnitLoopContext.from_agent_state(state),
+        _tools(scope=OntologyContextScope.DOCUMENT),
+        state.content_units,
+    )
+
+    assert unioned is not None
+    assert unioned.snapshot.partial
 
 
 async def test_union_is_stable_across_calls(monkeypatch) -> None:
@@ -338,3 +359,50 @@ async def test_a_failing_unit_after_the_warmup_is_named_by_its_own_index(
         record.message for record in caplog.records
     ]
     assert len(state.facts_units) == 4
+
+
+async def test_the_warm_up_completes_the_first_units_before_the_rest_start() -> None:
+    order: list[tuple[int, str]] = []
+
+    async def process_unit(index: int) -> int:
+        order.append((index, "start"))
+        await asyncio.sleep(0)
+        order.append((index, "end"))
+        return index
+
+    results, failures = await node_factories._gather_units_with_warmup(
+        node_factories.WorkflowNode.RENDER_ONTOLOGY_UPDATE,
+        _state(4),
+        process_unit,
+        warmup=1,
+    )
+
+    assert (sorted(results), failures) == ([0, 1, 2, 3], 0)
+    assert order[:2] == [(0, "start"), (0, "end")]
+    assert {index for index, event in order[2:] if event == "start"} == {1, 2, 3}
+
+
+class _StopAfterFanOut(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    "make_node",
+    [node_factories.make_render_ontology_node, node_factories.make_render_facts_node],
+    ids=["ontology", "facts"],
+)
+async def test_both_fan_outs_take_the_warm_up_setting(monkeypatch, make_node) -> None:
+    """The ontology renders of a document share their chapter's prefix as well."""
+    seen: list[int] = []
+
+    async def spy(node, state, process_unit, *, warmup):
+        seen.append(warmup)
+        raise _StopAfterFanOut
+
+    monkeypatch.setattr(node_factories, "_gather_units_with_warmup", spy)
+    _install_per_unit_resolver(monkeypatch)
+    tools = _tools(scope=OntologyContextScope.UNIT, warmup=1)
+
+    with pytest.raises(_StopAfterFanOut):
+        await make_node(tools)(_state(4))
+    assert seen == [1]

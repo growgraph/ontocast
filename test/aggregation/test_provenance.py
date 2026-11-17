@@ -2,7 +2,7 @@ import pytest
 from rdflib import RDF, Literal, URIRef
 from rdflib.namespace import DCTERMS, FOAF, RDFS, XSD
 
-from ontocast.onto.constants import DEFAULT_IRI, ONTOCAST, PROV, RDF_REIFIES, SCHEMA
+from ontocast.onto.constants import DEFAULT_IRI, ONTOCAST, PROV, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.enum import LabelStrength, SectionLabelSource
 from ontocast.onto.iri_policy import join_namespace_local, normalize_namespace_iri
@@ -159,10 +159,12 @@ def test_merge_graphs_with_provenance_reifies_mapped_triple(
         [unit],
         {old_subject: new_subject, old_predicate: new_predicate},
     )
-    stmt_nodes = list(merged.subjects(RDF_REIFIES, None))
+    stmt_nodes = list(merged.reifications.reifiers())
     assert len(stmt_nodes) == 1
 
-    reified = list(merged.objects(stmt_nodes[0], RDF_REIFIES))
+    reified = list(
+        (triple for node, triple in merged.reifications if node == stmt_nodes[0])
+    )
     assert len(reified) == 1
     quoted = reified[0]
     assert isinstance(quoted, tuple)
@@ -200,7 +202,7 @@ def test_shared_triple_accumulates_multiple_provenance_sources(
     )
 
     merged = graph_rewriter.merge_graphs_with_provenance([unit_a, unit_b], mapping={})
-    statements = list(merged.subjects(RDF_REIFIES, None))
+    statements = list(merged.reifications.reifiers())
     assert len(statements) == 1
 
     sources = {str(src) for src in merged.objects(statements[0], PROV.wasDerivedFrom)}

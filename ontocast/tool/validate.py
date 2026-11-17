@@ -8,8 +8,13 @@ import logging
 from collections import defaultdict, deque
 
 from pydantic import BaseModel, ConfigDict, Field
-from rdflib import OWL, RDF, RDFS, XSD, Graph, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, XSD, BNode, Graph, Literal, URIRef
 
+from ontocast.onto.property_sides import (
+    DOMAIN_PREDICATES,
+    RANGE_PREDICATES,
+    side_classes,
+)
 from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 
 logger = logging.getLogger(__name__)
@@ -24,7 +29,8 @@ def _predicate_expects_iri_object(
     """Decide from the schema whether *predicate* requires an IRI object.
 
     True when the predicate is declared ``owl:ObjectProperty``, or its
-    ``rdfs:range`` is a class IRI (not XSD, not ``rdfs:Literal``/``Resource``,
+    ``rdfs:range`` is a class IRI (a ``schema:rangeIncludes`` list may name
+    text types beside classes, so it decides nothing) (not XSD, not ``rdfs:Literal``/``Resource``,
     not a declared ``rdfs:Datatype``). Predicates also declared datatype or
     annotation properties, or absent from the schema, never expect an IRI —
     unknown predicates must not be over-quarantined.
@@ -44,6 +50,9 @@ def _predicate_expects_iri_object(
         None,
     )
     if OWL.ObjectProperty in types:
+        if declared_range is None:
+            listed = sorted(side_classes(predicate, [ontology_graph], "range"), key=str)
+            declared_range = listed[0] if listed else None
         return True, str(declared_range) if declared_range else None
     if declared_range is None:
         return False, None
@@ -100,6 +109,7 @@ def partition_object_property_literal_triples(
                             "context, got a string literal"
                         ),
                         expected_range=declared_range,
+                        subject_is_blank=isinstance(subject, BNode),
                     )
                 )
                 continue
@@ -265,14 +275,18 @@ class RDFGraphConnectivityValidator:
                     if p == RDFS.label:
                         has_label = True
                         result.predicate_stats.with_labels += 1
-                    elif p == RDFS.domain:
-                        has_domain = True
-                        domain = o
+                    elif p in DOMAIN_PREDICATES:
                         result.predicate_stats.with_domains += 1
-                    elif p == RDFS.range:
-                        has_range = True
-                        range_ = o
+                        # Only an rdfs side requires its class; a listed
+                        # (``schema:domainIncludes``) one is one of several.
+                        if p == RDFS.domain:
+                            has_domain = True
+                            domain = o
+                    elif p in RANGE_PREDICATES:
                         result.predicate_stats.with_ranges += 1
+                        if p == RDFS.range:
+                            has_range = True
+                            range_ = o
 
             # Check required properties
             if not has_label:

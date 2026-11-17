@@ -289,3 +289,33 @@ def test_diff_versions_reports_added_and_removed_ntriples() -> None:
     assert diff.removed_count == 1
     assert any("Extra" in line for line in diff.added)
     assert any("Part" in line for line in diff.removed)
+
+
+STRIP_TTL = """
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix tmi: <https://example.org/tmi#> .
+
+<https://example.org/tmi> a owl:Ontology ;
+    sh:declare [ sh:prefix "tmi" ; sh:namespace "https://example.org/tmi#" ] .
+
+tmi:Kept a owl:Class ;
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty tmi:hasPart ; owl:someValuesFrom tmi:Part ] .
+"""
+
+
+def test_header_strip_takes_the_prefix_declarations_with_it() -> None:
+    graph = RDFGraph()
+    graph.parse(data=STRIP_TTL, format="turtle")
+
+    Ontology.strip_ontology_header_triples(graph)
+
+    sh = "http://www.w3.org/ns/shacl#"
+    assert not list(graph.triples((None, URIRef(sh + "prefix"), None)))
+    assert not list(graph.triples((None, URIRef(sh + "namespace"), None)))
+    assert not list(graph.triples((None, RDF.type, OWL.Ontology)))
+    # A term's own blank structure is not the header's and stays whole.
+    assert len(list(graph.triples((None, OWL.onProperty, None)))) == 1
+    assert len(list(graph.triples((None, RDFS.subClassOf, None)))) == 1

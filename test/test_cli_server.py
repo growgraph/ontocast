@@ -31,6 +31,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.docling_helpers import plain_text_to_docling_doc
 from ontocast.onto.enum import OntologyContextMode
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     OntologyContextConfigError,
@@ -180,6 +181,7 @@ def _tools(vector_store: object | None, patch_retriever: object | None) -> ToolB
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             vector_store=vector_store,
             patch_retriever=patch_retriever,
             vector_store_last_error=None,
@@ -334,10 +336,13 @@ def test_persist_unit_pipeline_outputs_uses_facts_snapshot_for_aggregation(
     tools = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             aggregator=_Aggregator(),
             shapes_catalog=SimpleNamespace(graph=lambda: None),
             shapes_prompt_contract=lambda: ("", (), False),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
             ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
             config=Config(),
         ),
     )
@@ -841,7 +846,7 @@ def test_dump_run_manifest_records_cost_and_configuration(tmp_path) -> None:
     assert payload["prompting"] == {
         "llm_graph_format": "turtle",
         "llm_output_layout": "compact",
-        "ontology_chapter_format": "inherit",
+        "ontology_chapter_format": "term_sheet",
         "ontology_context_scope": "unit",
         "fanout_warmup_units": 0,
         "parallel_workers": 16,
@@ -1128,10 +1133,13 @@ def test_process_unit_route_runs_the_validation_gate(
     tools = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             aggregator=_Aggregator(),
             shapes_catalog=SimpleNamespace(graph=lambda: stored_shapes),
             shapes_prompt_contract=lambda: ("", (), False),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
             ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
                     facts_validation=FactsValidationConfig.model_construct()
@@ -1190,7 +1198,10 @@ def test_process_unit_route_runs_each_uploaded_file_separately(
     )
     tools = cast(
         ToolBox,
-        SimpleNamespace(ontology_manager=SimpleNamespace(catalog_terms=lambda: set())),
+        SimpleNamespace(
+            ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
+        ),
     )
     app = create_app(
         tools=tools,
@@ -1566,3 +1577,151 @@ def test_process_cli_offers_the_validation_dumps() -> None:
 
     assert "--dump-catalog" in result.output
     assert "--keep-provenance" in result.output
+
+
+def test_curate_passes_its_options_and_prints_the_decisions(
+    monkeypatch, tmp_path
+) -> None:
+    import json as _json
+
+    from click.testing import CliRunner
+
+    from ontocast.cli import server as server_module
+    from ontocast.tool import curation as curation_module
+    from ontocast.tool.curation import CurationReport
+
+    seen: dict[str, object] = {}
+
+    async def fake_bootstrap(**kwargs):
+        seen["bootstrap"] = kwargs
+        return SimpleNamespace(tools="tools")
+
+    async def fake_curate(tools, **kwargs):
+        seen["curate"] = (tools, kwargs)
+        return [
+            CurationReport(
+                ontology_iri="https://example.org/cat",
+                actions={"https://example.org/cat#TinFilm": "drop"},
+                triples_deleted=3,
+                predicted_version="1.0.2",
+            )
+        ]
+
+    monkeypatch.setattr(server_module, "_abootstrap_tools", fake_bootstrap)
+    monkeypatch.setattr(curation_module, "curate_catalog", fake_curate)
+    out = tmp_path / "report.json"
+
+    result = CliRunner().invoke(
+        server_module.cli,
+        [
+            "curate",
+            "--ontology",
+            "cat",
+            "--batch-size",
+            "5",
+            "--no-facts-usage",
+            "--json",
+            str(out),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["curate"] == (
+        "tools",
+        {"ontology": "cat", "apply": False, "batch_size": 5, "use_facts": False},
+    )
+    assert "drop" in result.output and "(dry run)" in result.output
+    assert _json.loads(out.read_text())[0]["predicted_version"] == "1.0.2"
+
+
+def test_curate_bootstraps_and_works_on_one_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider clients opened at start-up are bound to its loop."""
+    from click.testing import CliRunner
+
+    from ontocast.cli import server as server_module
+    from ontocast.tool import curation as curation_module
+
+    loops: dict[str, asyncio.AbstractEventLoop] = {}
+
+    async def fake_bootstrap(**kwargs):
+        del kwargs
+        loops["bootstrap"] = asyncio.get_running_loop()
+        return SimpleNamespace(tools="tools")
+
+    async def fake_curate(tools, **kwargs):
+        del tools, kwargs
+        loops["work"] = asyncio.get_running_loop()
+        return []
+
+    monkeypatch.setattr(server_module, "_abootstrap_tools", fake_bootstrap)
+    monkeypatch.setattr(curation_module, "curate_catalog", fake_curate)
+
+    result = CliRunner().invoke(server_module.cli, ["curate"])
+
+    assert result.exit_code == 0, result.output
+    assert loops["bootstrap"] is loops["work"]
+
+
+def test_serve_bootstraps_and_serves_on_one_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from click.testing import CliRunner
+
+    from ontocast.cli import server as server_module
+
+    loops: dict[str, asyncio.AbstractEventLoop] = {}
+    config = Config()
+
+    async def fake_bootstrap(**kwargs):
+        del kwargs
+        loops["bootstrap"] = asyncio.get_running_loop()
+        return SimpleNamespace(tools="tools", config=config, tenant="t", project="p")
+
+    class FakeServer:
+        def __init__(self, server_config) -> None:
+            del server_config
+
+        async def serve(self) -> None:
+            loops["serve"] = asyncio.get_running_loop()
+
+    monkeypatch.setattr(server_module, "_abootstrap_tools", fake_bootstrap)
+    monkeypatch.setattr(server_module, "create_app", lambda **kwargs: object())
+    monkeypatch.setattr(server_module.uvicorn, "Server", FakeServer)
+
+    result = CliRunner().invoke(server_module.cli, ["serve"])
+
+    assert result.exit_code == 0, result.output
+    assert loops["bootstrap"] is loops["serve"]
+
+
+def test_ontologies_sharing_an_id_are_dumped_to_distinct_files(tmp_path) -> None:
+    from ontocast.api.process_helpers import _distinct_filename_ids
+    from test.ontology_helpers import stamped_ontology
+
+    shared = [
+        stamped_ontology(
+            f"""
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            <https://{host}/ontology> a owl:Ontology .
+            <https://{host}/ontology#Thing> a owl:Class .
+            """,
+            ontology_id="ontology",
+        )
+        for host in ("a.org", "b.org")
+    ]
+    other = stamped_ontology(
+        """
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        <https://c.org/finance> a owl:Ontology .
+        <https://c.org/finance#Account> a owl:Class .
+        """,
+        ontology_id="finance",
+    )
+
+    names = _distinct_filename_ids([*shared, other])
+
+    assert names[other.iri] == "finance"
+    assert len({names[o.iri] for o in shared}) == 2
+    assert all((names[o.iri] or "").startswith("ontology-") for o in shared)

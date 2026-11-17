@@ -1,4 +1,5 @@
 from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.prompt.ontology_terms import INSTANCE_CRITERION
 
 template_prompt = """
 {preamble}
@@ -6,6 +7,8 @@ template_prompt = """
 {intro_instruction}
 
 {ontology_instruction}
+
+{plan_instruction}
 
 {user_instruction}
 
@@ -27,12 +30,14 @@ template_prompt = """
 home_ontology_instruction = """
 Decide which ontology this document's new vocabulary belongs to.
 
-The document is an example of its domain: name and scope the ontology at least one level of abstraction above the document itself.
+The document is one example of a field. Name and scope the ontology for that field: wide enough that documents about other subjects of the same kind, and about neighbouring kinds, belong to it. When the subject's category is one of several sibling categories in a family, the field is the family, not the category. Name it after the field, never after the document's own subject or that subject's immediate category.
 
 {catalog_clause}
 
+Prefer a catalog ontology whenever the document falls within the scope it describes, or within a modest widening of that scope. Propose a new ontology only when none does. A catalog ontology for a sibling of the document's category shows the grain is too fine: propose the family the two share, never another sibling.
+
 Return:
-- `ontology_id`: the short lowercase handle (2-32 characters: letters, digits, `_` or `-`, starting with a letter), for example `abc` for a hypothetical A... B... of C... Ontology. Return an EXISTING id from the catalog above when one covers the document's domain; otherwise a new one.
+- `ontology_id`: the short lowercase handle (2-32 characters: letters, digits, `_` or `-`, starting with a letter), for example `abc` for a hypothetical A... B... of C... Ontology. Return the handle of a catalog ontology above when one covers the document's domain; otherwise a new id.
 - `title`: a short noun phrase.
 - `description`: 3-4 sentences on domain, purpose, scope and applicability.
 
@@ -41,7 +46,7 @@ Do not return an IRI: it is derived from the id.
 
 home_ontology_catalog_clause_empty = "The catalog holds no ontology yet."
 
-home_ontology_catalog_clause = """The catalog holds these ontologies (id: title):
+home_ontology_catalog_clause = """The catalog holds these ontologies (handle: title <IRI>: what it covers):
 {catalog_list}
 """
 
@@ -51,21 +56,26 @@ Develop the domain ontology `{ontology_id}` ({title}) from the provided document
 
 {description}
 
-Every new class and property lives under the namespace <{namespace}>, bound to the prefix `{ontology_id}:`. Do NOT write an `owl:Ontology` header, version, title or description triples: identity and versioning are added by the system.
+Every new class and property lives under the namespace <{namespace}>, bound to the prefix `{prefix}:`. Do NOT write an `owl:Ontology` header, version, title or description triples: identity and versioning are added by the system.
 """
 
 
 intro_instruction_update_single = """
-Complement the domain ontology {ontology_iri} provided below with abstract entities and relations that can be inferred from the document or known to hold in the domain the document pertains to.
+Complement the domain ontology {ontology_iri} provided below with reusable domain classes and relations that can be inferred from the document or known to hold in the domain the document pertains to.
 
 {ontology_desc}
 
-Emit ONLY new abstract entities/relations as GraphUpdate inserts. Do NOT restate triples already present in the provided ontology graph. Do not change the ontology IRI, prefix, or ontology_id.
+Emit ONLY new classes/relations as GraphUpdate inserts. Do NOT restate triples already present in the provided ontology graph. Do not change the ontology IRI, prefix, or ontology_id.
+"""
+
+
+home_namespace_clause = """
+Every new class and property of this document lives under the namespace <{namespace}>, bound to the prefix `{prefix}:`. Terms under any other namespace are used by their IRIs only: never declare a new term in another namespace, and never add an axiom whose subject is a term of another namespace.
 """
 
 
 intro_instruction_update_multi = """
-Complement the provided multi-source ontology context with abstract entities and relations inferred from the document.
+Complement the provided multi-source ontology context with reusable domain classes and relations inferred from the document.
 
 {ontology_desc}
 
@@ -74,7 +84,7 @@ The context may combine patches from multiple catalog ontologies:
 
 Rules:
 - Propose ONLY *new* schema (classes/properties/axioms). Do NOT restate triples already in the provided graph.
-- Place each new entity under the matching existing domain prefix from the domain-ontologies clause below.
+- Place each new entity under the document's home namespace when one is named below; otherwise under the matching existing domain prefix from the domain-ontologies clause below.
 - Never invent a new domain ontology id/IRI; never collapse distinct source namespaces.
 - Cross-links to other listed ontologies via existing IRIs are fine; do not mint terms under foreign namespaces you do not own.
 """
@@ -105,11 +115,12 @@ prefix_instruction = """Use {domain_ontologies_clause} for entities/properties p
 general_ontology_instruction = f"""
 ### GENERAL
 
-1. **Only model abstract concepts — no instances or facts from the document** (e.g., no specific case names, dates, or people).
+1. **Model the domain, not the document.** {INSTANCE_CRITERION} Mint a term at the level a second document in the same domain would reuse.
 
-2. **All abstract entities (classes/properties) must connect to:**
-   - **Standard vocabularies (RDFS, OWL, schema.org, SKOS) via rdfs:subClassOf, rdf:type, rdfs:subPropertyOf, etc.**
-   - **OR other entities within this ontology**
+2. **All new classes and properties must connect to the rest of the vocabulary:**
+   - **A class: rdfs:subClassOf a class of this ontology or of a standard vocabulary (RDFS, OWL, schema.org, SKOS).**
+   - **A property: through its domain and range, chosen by rule 1 (as the plan gives them) and written `schema:domainIncludes` / `schema:rangeIncludes` (a datatype range: `rdfs:range` with an XSD datatype); rdfs:subPropertyOf only a more general property.**
+   - **A parent is of the same kind as its child. `schema:Property` and `rdf:Property` are classes: never a property's parent.**
    - **Example: `legal:CourtDecision rdfs:subClassOf schema:Event .`**
 
 3. **Every new entity must have:**
@@ -123,6 +134,10 @@ general_ontology_instruction = f"""
    - **Language: Use same language for labels/comments as existing ontology**
    - **Naming: Follow existing PascalCase/camelCase patterns**
    - **Structure: Respect existing hierarchy depth and property usage patterns**
+
+5a. **Subclass or property value?** A distinction between members (rule 1) is a property with values, never a family of sibling subclasses. Example: `ex:Vehicle` with `ex:hasFuelType schema:rangeIncludes ex:FuelType`, `ex:FuelType rdfs:subClassOf skos:Concept`, and `ex:Diesel a skos:Concept, ex:FuelType`, `ex:Petrol a skos:Concept, ex:FuelType`, not `ex:DieselVehicle` and `ex:PetrolVehicle`. The values' own class is the property's range; each value is also typed `skos:Concept`. A SKOS concept is the only individual an ontology update may declare: a named person, place, organisation or event belongs in the facts graph. A subclass is justified only when it carries properties or restrictions of its own.
+
+5b. **Reuse before minting, and stay shallow.** When a term in the ontology context or a well-known vocabulary (schema.org, SKOS, SOSA/SSN, QUDT, PROV-O) names the concept, use it. Attach a new class at most two levels below an existing class, and do not build chains of single-child intermediate classes.
 
 6. {prefix_instruction}
 
@@ -146,6 +161,24 @@ general_ontology_instruction = f"""
 {{search_guidelines}}
 """
 
+
+#: The document plan, shown to every unit: the terms it may mint and the
+#: existing terms it must use instead of minting.
+plan_instruction_template = """
+### DOCUMENT PLAN
+
+The terms of this document were planned with the whole document in view. Mint new classes and properties ONLY from this list, with the local names, labels, parents, domains and ranges given:
+
+{minted_lines}
+{reuse_block}
+Any other class or property you mint is held back and is written only if a later review keeps it. When a concept fits a planned or existing term, use that term.
+"""
+
+plan_reuse_block = """
+Use these existing terms instead of minting:
+
+{reuse_lines}
+"""
 
 improvement_instruction_template = """\n\n
 # IMPROVEMENT INSTRUCTION

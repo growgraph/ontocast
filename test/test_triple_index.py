@@ -88,6 +88,46 @@ def test_blank_node_statements_are_citable() -> None:
     assert any(triple[0] == bnode for triple in index.by_id.values())
 
 
+def _two_values() -> RDFGraph:
+    """Two quantity values, each a fresh blank node with a random rdflib label."""
+    graph = _graph([])
+    for sample, value in ((CD.sample_1, "1.5"), (CD.sample_2, "2.5")):
+        node = BNode()
+        graph.add((sample, MS.hasEdgeLength, node))
+        graph.add((node, MS.numericValue, Literal(value, datatype=XSD.decimal)))
+    return graph
+
+
+@pytest.mark.parametrize("fmt", [LLMGraphFormat.TURTLE, LLMGraphFormat.JSONLD])
+def test_the_same_graph_with_fresh_blank_nodes_is_the_same_chapter(
+    fmt: LLMGraphFormat,
+) -> None:
+    """A chapter is a cache key: random blank-node labels would make it a new
+    prompt on every run."""
+    profile = GraphFormatProfile(format=fmt)
+    first = profile.format_facts_chapter_indexed(_two_values())
+    second = profile.format_facts_chapter_indexed(_two_values())
+    assert first.text == second.text
+    assert "_:b0" in first.text
+
+
+def test_ids_resolve_to_the_graphs_own_blank_nodes() -> None:
+    graph = _two_values()
+    index = build_triple_index(graph)
+    assert all(triple in graph for triple in index.by_id.values())
+    assert index.matches(graph)
+
+
+def test_the_table_names_blank_nodes_as_the_jsonld_body_does() -> None:
+    chapter = GraphFormatProfile(
+        format=LLMGraphFormat.JSONLD
+    ).format_facts_chapter_indexed(_two_values())
+    body, table = chapter.text.split("TRIPLE INDEX (id")
+    for label in ("_:b0", "_:b1"):
+        assert label in body
+        assert label in table
+
+
 def test_the_listing_does_not_round_floating_point_literals() -> None:
     """rdflib's Turtle writer renders doubles through %e and loses digits.
 

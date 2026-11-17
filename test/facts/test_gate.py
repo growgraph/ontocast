@@ -19,6 +19,7 @@ from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import vetoes_from_findings
@@ -443,10 +444,15 @@ def _fake_tools(
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             aggregator=aggregator,
             shapes_catalog=SimpleNamespace(graph=lambda: shapes),
             shapes_prompt_contract=lambda: ("", (), False),
-            ontology_manager=SimpleNamespace(catalog_terms=lambda: set()),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
+            ontology_manager=SimpleNamespace(
+                catalog_terms=lambda: set(), get_head_by_iri=lambda iri: None
+            ),
+            get_atomic_tools=lambda: SimpleNamespace(value_classes=lambda: frozenset()),
             config=SimpleNamespace(
                 get_tool_config=lambda: SimpleNamespace(
                     facts_validation=facts_validation
@@ -693,6 +699,11 @@ def test_single_unit_multi_value_is_only_a_warning() -> None:
     assert not report.error_findings
 
 
+def test_only_cross_unit_multi_values_are_errors_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT", raising=False)
+    assert FactsValidationConfig().suspect_multi_value_require_cross_unit is True
+
+
 def test_cross_unit_multi_value_stays_an_error() -> None:
     """Objects from different units could have been brought together."""
     graph, subject, predicate = _joint_agents_graph()
@@ -773,3 +784,33 @@ def test_build_cross_unit_object_pairs_ignores_literals() -> None:
         f'<{CD}s> <https://schema.org/name> "a" , "b" .',
     )
     assert build_cross_unit_object_pairs([unit], {}) == []
+
+
+def test_the_gate_lists_an_isolated_statement_it_keeps(monkeypatch) -> None:
+    """An instance holding a structured value but linked to nothing is kept and listed."""
+    tools = _fake_tools(_normal_form_aggregator(monkeypatch))
+    state = AgentState()
+    state.current_domain = "https://x.org"
+    state.doc_hid = "1"
+    state.facts_units = [
+        _fact_unit(
+            0,
+            f"""
+@prefix cd: <{CD}> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix q: <{Q}> .
+cd:cup a q:Tournament ; rdfs:label "Spring Cup" ; q:heldAt cd:hall .
+cd:hall a q:Venue ; rdfs:label "Harbour Hall" .
+cd:limit a q:Rule ; rdfs:label "age limit" ; q:amount [ q:value 23 ] .
+""",
+        )
+    ]
+
+    make_merge_facts_node(tools)(state)
+    make_validate_facts_node(tools)(state)
+
+    isolated = state.facts_isolated_report
+    assert [(item.iri.rsplit("/", 1)[-1], item.kind) for item in isolated] == [
+        ("limit", "holds_value")
+    ]
+    assert len(isolated) == state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED]

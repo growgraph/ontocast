@@ -100,17 +100,9 @@ super-property is a property, and one with a superclass is a class.
 ### How `auto` resolves
 
 `auto` is resolved once, when `ServerConfig` is validated
-(`ontocast/config/settings.py`): `term_sheet` when `RENDER_MODE=facts`,
-`inherit` otherwise. The prompt profile, the run manifest and the LLM cache key
-see only the resolved value. An explicit `term_sheet` with any other render
-mode is a configuration error, because the ontology loop answers with a patch
-against the statements in its chapter, and a listing has no statements to
-patch.
-
-A per-request `render_mode` does not re-resolve it. A request that switches an
-`ontology_and_facts` deployment to `facts` gets a graph chapter rather than a
-term sheet: more tokens, same result. The converse cannot fail, because the
-chapter format reaches only the facts loop. The ontology loop always renders
+(`ontocast/config/settings.py`): to `term_sheet`, in every render mode. The
+prompt profile, the run manifest and the LLM cache key see only the resolved
+value. The chapter format reaches only the facts loop. The ontology loop always renders
 its chapter in `LLM_GRAPH_FORMAT`, and the ontology critic reads an indexed
 version of it in which each statement carries an id it can cite.
 
@@ -131,7 +123,8 @@ in three passes, stopping as soon as it fits:
    `skos:altLabel`.
 
 `rdfs:label`, `skos:prefLabel`, `rdf:type`, `rdfs:subClassOf`,
-`owl:equivalentClass`, `rdfs:domain`, `rdfs:range` and `rdfs:subPropertyOf`
+`owl:equivalentClass`, a domain or range (`rdfs:domain`, `rdfs:range`,
+`schema:domainIncludes`, `schema:rangeIncludes`) and `rdfs:subPropertyOf`
 are never dropped, and neither is any predicate the passes do not name. The
 budget is therefore best-effort: a graph still over it after the third pass is
 used as is, with a warning that names the remedy (a smaller catalog, or
@@ -192,9 +185,17 @@ on the render mode and
 [`ONTOLOGY_CONTEXT_SCOPE`](../reference/configuration/pipeline.md#ontology_context_scope)
 (`ontocast/stategraph/node_factories.py`, `ontocast/stategraph/context_resolver.py`):
 
-- **After an ontology stage** (`ontology_and_facts`), the reduced ontology
-  artifacts are merged once per document and every unit reads that merge. The
-  counter `ctx/merge_document_ontology.calls` is `1` per document.
+- **After an ontology stage** (`ontology_and_facts`), one context is built per
+  document and every unit reads it. It holds the document's home ontologies as
+  the ontology stage left them, plus, read-only, the catalog ontologies they
+  rest on: every ontology the document's ontology units were rendered against,
+  and every one a home imports or extends, followed through the catalog's own
+  imports. A home that extends an external catalog, or a home minted for the
+  document, holds only the terms documents added; the catalog beside it is
+  what keeps the facts render on the catalog's vocabulary. The same context is
+  built when the ontology stage wrote nothing. The counter
+  `ctx/merge_document_ontology.calls` is `1` per document, and
+  `ctx/facts_catalog_ontologies` counts the catalog ontologies added.
 - **Facts only, `unit` scope** (default): each unit resolves its own context,
   so chapters match only where two units resolve the same context.
 - **Facts only, `document` scope**: every unit's context is resolved first
@@ -206,8 +207,8 @@ on the render mode and
 
 [`FANOUT_WARMUP_UNITS`](../reference/configuration/pipeline.md#fanout_warmup_units)
 then runs that many units to completion before starting the rest, so the rest
-can read the prefix the first ones wrote. Both settings act only in the
-document fan-out. The single-unit path (`/process_unit`, and `ontocast
+can read the prefix the first ones wrote. It acts in both the ontology and the
+facts fan-outs. Both settings act only in the document fan-out. The single-unit path (`/process_unit`, and `ontocast
 process --use-unit-pipeline`) ignores them, and a run manifest from that path
 leaves them out.
 

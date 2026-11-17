@@ -7,8 +7,10 @@ predicates, doc-namespace predicates, and string epistemic qualifiers
 against a closed individual range.
 """
 
+import logging
+
 import pytest
-from rdflib import RDF, Literal, URIRef
+from rdflib import RDF, RDFS, Literal, URIRef
 from rdflib.namespace import XSD
 
 from ontocast.onto.model import (
@@ -20,9 +22,11 @@ from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.tool.facts_validation import (
     collect_unit_findings,
     normalize_literals_against_schema,
+    partition_literals_outside_temporal_ranges,
     repair_literal_type_objects,
     repair_property_aliases,
 )
+from ontocast.tool.facts_validation.terms import collect_catalog_terms
 
 pytestmark = pytest.mark.unit
 
@@ -85,9 +89,63 @@ def test_normalize_literals_retypes_untyped_numeric() -> None:
     assert {value for value, _ in values} == {"230", "96"}
 
 
-def test_repair_property_aliases_rewrites_qudt_value() -> None:
-    # qudt:numericValue is dominant in the graph itself; qudt:value is the
-    # near-miss: a few qudt:value against many qudt:numericValue.
+def test_a_date_range_probe_is_silent_and_keeps_text_that_is_no_date(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ontology = RDFGraph()
+    started = URIRef("https://ex.org/events#startedAt")
+    ontology.add((started, RDFS.range, XSD.dateTime))
+    graph = RDFGraph()
+    subject = URIRef(f"{FACTS}review")
+    graph.add((subject, started, Literal("every 5 years")))
+    graph.add((subject, started, Literal("2021-06-29T00:00:00")))
+    with caplog.at_level(logging.WARNING):
+        retyped = normalize_literals_against_schema(graph, ontology)
+    assert retyped == 1
+    assert Literal("every 5 years") in set(graph.objects(subject, started))
+    assert not [r for r in caplog.records if r.name == "rdflib.term"]
+
+
+def test_text_that_is_no_date_on_a_date_range_is_set_aside_for_the_critic() -> None:
+    ev = "https://ex.org/events#"
+    started, note, count = (URIRef(ev + n) for n in ("startedAt", "note", "count"))
+    ontology = RDFGraph()
+    ontology.add((started, RDFS.range, XSD.dateTime))
+    ontology.add((note, RDFS.range, XSD.string))
+    ontology.add((count, RDFS.range, XSD.decimal))
+    subject = URIRef(f"{FACTS}review")
+    graph = RDFGraph()
+    graph.add((subject, started, Literal("every 5 years or more often")))
+    graph.add((subject, started, Literal("every year", lang="en")))
+    graph.add((subject, started, Literal("2021-06-29T00:00:00")))
+    graph.add((subject, note, Literal("every 5 years")))
+    graph.add((subject, count, Literal("about five")))
+    normalize_literals_against_schema(graph, ontology)
+
+    clean, rejected = partition_literals_outside_temporal_ranges(graph, ontology)
+
+    assert {item.object_lexical for item in rejected} == {
+        "every 5 years or more often",
+        "every year",
+    }
+    assert all(item.expected_datatype == str(XSD.dateTime) for item in rejected)
+    assert set(clean.objects(subject, started)) == {
+        Literal("2021-06-29T00:00:00", datatype=XSD.dateTime)
+    }
+    assert (subject, note, Literal("every 5 years")) in clean
+    assert (subject, count, Literal("about five")) in clean
+
+
+def test_no_ontology_sets_nothing_aside() -> None:
+    graph = RDFGraph()
+    graph.add((URIRef(f"{FACTS}a"), URIRef("https://ex.org/events#at"), Literal("x")))
+    clean, rejected = partition_literals_outside_temporal_ranges(graph, None)
+    assert clean is graph and rejected == []
+
+
+def test_a_real_well_known_term_is_never_an_alias() -> None:
+    # ``qudt:value`` is a published QUDT term, however dominant
+    # ``qudt:numericValue`` is in the graph: a real term is never rewritten.
     graph = _facts(
         """
         cd:a qudt:numericValue "1"^^xsd:decimal .
@@ -96,13 +154,9 @@ def test_repair_property_aliases_rewrites_qudt_value() -> None:
         """
     )
     rewritten, findings, _applied = repair_property_aliases(graph, _ontology())
-    assert rewritten == 1
+    assert rewritten == 0
     assert not findings
-    assert (
-        URIRef(f"{FACTS}c"),
-        URIRef(f"{QUDT}numericValue"),
-        None,
-    ) in graph
+    assert (URIRef(f"{FACTS}c"), URIRef(f"{QUDT}value"), None) in graph
 
 
 def test_repair_property_aliases_rewrites_qqval_bound() -> None:
@@ -743,3 +797,192 @@ def test_normalize_literals_rejects_a_malformed_gregorian_lexical_form() -> None
     """gYear has no rdflib value parser, so its lexical space is checked here."""
     graph = _facts('cd:doc ex:publishedYear "19" .')
     assert normalize_literals_against_schema(graph, _dated_ontology()) == 0
+
+
+OTHER = "https://example.com/other#"
+
+
+def test_alias_repair_moves_an_exact_name_to_its_catalog_namespace() -> None:
+    """A catalog name under the wrong catalog prefix is that catalog term."""
+    graph = _facts(
+        f"""
+        @prefix dom: <{DOM}> .
+        cd:effect dom:affectsProperty cd:wavelength .
+        """
+    )
+    ontology = _domain_ontology("hasBSiteComponent")
+    ontology.parse(
+        data=f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix other: <{OTHER}> .
+        other:affectsProperty a owl:ObjectProperty .
+        """,
+        format="turtle",
+    )
+
+    rewritten, findings, applied = repair_property_aliases(graph, ontology)
+
+    assert rewritten == 1
+    assert _alias_findings(findings) == {}
+    assert [(r.source, r.target) for r in applied] == [
+        (f"{DOM}affectsProperty", f"{OTHER}affectsProperty")
+    ]
+    assert (
+        URIRef(f"{FACTS}effect"),
+        URIRef(f"{OTHER}affectsProperty"),
+        URIRef(f"{FACTS}wavelength"),
+    ) in graph
+
+
+def test_alias_repair_leaves_an_exact_name_two_namespaces_declare() -> None:
+    graph = _facts(
+        f"""
+        @prefix dom: <{DOM}> .
+        cd:effect dom:affectsProperty cd:wavelength .
+        """
+    )
+    ontology = _domain_ontology("hasBSiteComponent")
+
+    rewritten, findings, _applied = repair_property_aliases(
+        graph,
+        ontology,
+        full_catalog_terms={
+            f"{OTHER}affectsProperty",
+            "https://example.com/third#affectsProperty",
+        },
+    )
+
+    assert rewritten == 0
+    assert f"{DOM}affectsProperty" in _alias_findings(findings)
+
+
+_LEDGER = "https://example.com/ledger#"
+
+
+def _ledger_catalog() -> RDFGraph:
+    """A catalog that declares one Dublin Core term, so that namespace is its own."""
+    graph = RDFGraph()
+    graph.parse(
+        data=f"""
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix dcterms: <http://purl.org/dc/terms/> .
+        @prefix led: <{_LEDGER}> .
+        led:identifier a owl:DatatypeProperty .
+        led:hasPrincipal a owl:ObjectProperty .
+        led:Entry a owl:Class .
+        dcterms:title a owl:AnnotationProperty .
+        """,
+        format="turtle",
+    )
+    return graph
+
+
+def test_a_real_term_of_a_vocabulary_the_catalog_uses_is_kept() -> None:
+    graph = _facts(
+        """
+        @prefix dcterms: <http://purl.org/dc/terms/> .
+        cd:loan dcterms:identifier "L-17" .
+        """
+    )
+    catalog = _ledger_catalog()
+
+    rewritten, _findings, applied = repair_property_aliases(
+        graph, catalog, full_catalog_terms=collect_catalog_terms(catalog)
+    )
+
+    assert rewritten == 0
+    assert applied == []
+
+
+def test_a_name_slipped_into_a_well_known_namespace_is_repaired() -> None:
+    graph = _facts(
+        """
+        @prefix schema: <https://schema.org/> .
+        cd:loan schema:hasPrincipal cd:amount .
+        """
+    )
+
+    rewritten, _findings, applied = repair_property_aliases(graph, _ledger_catalog())
+
+    assert rewritten == 1
+    assert [(r.source, r.target) for r in applied] == [
+        ("https://schema.org/hasPrincipal", f"{_LEDGER}hasPrincipal")
+    ]
+
+
+def test_a_class_never_replaces_a_predicate() -> None:
+    graph = _facts(
+        f"""
+        @prefix other: <{OTHER}> .
+        cd:x other:Entry cd:y .
+        """
+    )
+
+    rewritten, _findings, _applied = repair_property_aliases(graph, _ledger_catalog())
+
+    assert rewritten == 0
+
+
+def _slipped_types(body: str, catalog: RDFGraph) -> tuple[RDFGraph, list]:
+    graph = _facts(body)
+    _, _findings, applied = repair_property_aliases(
+        graph, catalog, full_catalog_terms=collect_catalog_terms(catalog)
+    )
+    return graph, [r for r in applied if r.kind == FactsUnitFindingKind.CLASS_ALIAS]
+
+
+def test_a_class_name_slipped_into_another_catalog_namespace_is_repaired() -> None:
+    catalog = _ledger_catalog()
+    catalog.parse(data=f"<{DOM}Holding> a <http://www.w3.org/2002/07/owl#Class> .")
+    graph, applied = _slipped_types(f"cd:loan a <{DOM}Entry> .", catalog)
+
+    assert (URIRef(f"{FACTS}loan"), RDF.type, URIRef(f"{_LEDGER}Entry")) in graph
+    assert [(r.source, r.target, r.triple_count) for r in applied] == [
+        (f"{DOM}Entry", f"{_LEDGER}Entry", 1)
+    ]
+
+
+def test_a_class_name_two_catalog_namespaces_hold_is_left_alone() -> None:
+    catalog = _ledger_catalog()
+    catalog.parse(
+        data=f"<{OTHER}Entry> a <http://www.w3.org/2002/07/owl#Class> ."
+        f"<{DOM}Holding> a <http://www.w3.org/2002/07/owl#Class> ."
+    )
+    graph, applied = _slipped_types(f"cd:loan a <{DOM}Entry> .", catalog)
+
+    assert applied == []
+    assert (URIRef(f"{FACTS}loan"), RDF.type, URIRef(f"{DOM}Entry")) in graph
+
+
+def test_a_property_never_replaces_a_class() -> None:
+    catalog = _ledger_catalog()
+    catalog.parse(data=f"<{DOM}Holding> a <http://www.w3.org/2002/07/owl#Class> .")
+    _, applied = _slipped_types(f"cd:loan a <{DOM}hasPrincipal> .", catalog)
+    assert applied == []
+
+
+def test_a_real_well_known_class_is_kept() -> None:
+    catalog = _ledger_catalog()
+    catalog.parse(data=f"<{_LEDGER}Person> a <http://www.w3.org/2002/07/owl#Class> .")
+    graph, applied = _slipped_types(
+        "@prefix foaf: <http://xmlns.com/foaf/0.1/> . cd:p a foaf:Person .", catalog
+    )
+    assert applied == []
+
+
+def test_the_most_specific_of_same_named_classes_is_taken() -> None:
+    """A subclass of every other candidate entails them all, so nothing is lost."""
+    catalog = _ledger_catalog()
+    catalog.parse(
+        data=f"""@prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        <{OTHER}Entry> a owl:Class . <{DOM}Holding> a owl:Class .
+        <{_LEDGER}Entry> rdfs:subClassOf <{OTHER}Entry> .""",
+        format="turtle",
+    )
+    graph, applied = _slipped_types(f"cd:loan a <{DOM}Entry> .", catalog)
+
+    assert [(r.source, r.target) for r in applied] == [
+        (f"{DOM}Entry", f"{_LEDGER}Entry")
+    ]
+    assert (URIRef(f"{FACTS}loan"), RDF.type, URIRef(f"{_LEDGER}Entry")) in graph

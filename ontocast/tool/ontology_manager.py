@@ -8,24 +8,49 @@ lineage using hash-based identifiers.
 import asyncio
 import logging
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
+from rdflib import RDF, RDFS, SKOS, BNode, URIRef
 
-from ontocast.onto.ontology_header import DivergedOntologyError, heads_by_iri
+from ontocast.onto.ontology_header import (
+    AmbiguousOntologyRefError,
+    DivergedOntologyError,
+    heads_by_iri,
+)
+from ontocast.onto.property_sides import SIDE_PREDICATES
 
+from ..link.declarations import IdentityDeclarations
 from ..onto.null import NULL_ONTOLOGY
 from ..onto.ontology import Ontology
 from ..onto.ontology_header import OntologyHeader
+from ..onto.prefixes import PrefixTable, build_prefix_table
 from ..onto.rdfgraph import RDFGraph
 from ..onto.util import normalize_ontology_iri
-from .facts_validation.terms import collect_catalog_terms
+from .facts_validation.terms import CatalogRoles, collect_catalog_terms
 from .onto import Tool
+from .ontology_validation.shape import (
+    CatalogSurfaceIndex,
+    build_catalog_surface_index,
+)
 from .triple_manager.core import TripleStoreManager
 from .triple_manager.util import head_headers
 
 logger = logging.getLogger(__name__)
+
+#: What :meth:`OntologyManager.term_definitions` copies for a term.
+_DEFINITION_PREDICATES = (
+    RDF.type,
+    RDFS.label,
+    SKOS.prefLabel,
+    SKOS.definition,
+    SKOS.scopeNote,
+    RDFS.comment,
+    *sorted(SIDE_PREDICATES, key=str),
+    RDFS.subClassOf,
+    RDFS.subPropertyOf,
+)
 
 #: Distinct ontology selections whose merged graphs stay resident. Content units
 #: within a document overwhelmingly repeat the same selection, so a handful of
@@ -68,12 +93,14 @@ class OntologyManager(Tool):
         self._cached_ontologies: dict[str, str] = {}
         self._patch_retriever: OntologyPatchRetriever | None = None
         self._triple_store_manager: TripleStoreManager | None = None
-        # Canonical short handle per IRI (ontology_id); prefix may differ.
+        # The id each IRI was registered with; ids may repeat across IRIs.
         self._iri_to_ontology_id: dict[str, str] = {}
-        # Lowercased alias (ontology_id, author prefix, …) → IRI.
-        self._alias_to_iri: dict[str, str] = {}
-        # Preferred author prefix per namespace URI (for sanitize preference).
-        self._namespace_to_author_prefix: dict[str, str] = {}
+        # Lowercased alias (ontology_id, author prefix, the IRI) → the IRIs
+        # holding it. Only an IRI is unique; a short alias may name several.
+        self._alias_to_iri: dict[str, set[str]] = {}
+        # The catalog's prefix table, per set of extra graphs (the shapes);
+        # dropped whenever the catalog changes.
+        self._prefix_tables: dict[tuple[tuple[str, str], ...], PrefixTable] = {}
         # Content-addressed caches. An entry can never go stale on read: a
         # concurrent writer produces a *new* key, which is a miss, never an
         # incorrect hit. Both are bounded -- they hold whole rdflib graphs, and
@@ -95,6 +122,11 @@ class OntologyManager(Tool):
         # set so it is rebuilt exactly when the catalog changes. Read per unit
         # by the deterministic repairs; see :meth:`catalog_terms`.
         self._catalog_terms_memo: tuple[frozenset[str], set[str]] | None = None
+        self._surface_index_memo: tuple[frozenset[str], CatalogSurfaceIndex] | None = (
+            None
+        )
+        self._roles_memo: tuple[frozenset[str], CatalogRoles] | None = None
+        self._identity_memo: tuple[frozenset[str], IdentityDeclarations] | None = None
 
     @staticmethod
     def _primary_ontology_id(ontology: Ontology) -> str:
@@ -126,16 +158,13 @@ class OntologyManager(Tool):
         return aliases
 
     def validate_identity_uniqueness(self, ontology: Ontology) -> None:
-        """Validate catalog IRI and alias uniqueness across the manager.
+        """Refuse an ontology whose IRI is registered under another id.
 
-        Same IRI may not change its primary ``ontology_id``. The same
-        ``ontology_id`` alias may not point at two different IRIs. Author
-        ``prefix`` may differ from ``ontology_id`` (both register as aliases of
-        the same IRI); a *prefix* collision across IRIs does not block ingest —
-        the colliding prefix alias is simply skipped at registration and the
-        ontology stays addressable by IRI and ``ontology_id``.
+        The IRI is the identity. An id or an author prefix may repeat across
+        IRIs: a short reference that names several resolves to none
+        (:meth:`resolve_ontology_ref`).
         """
-        self._check_identity(ontology, self._iri_to_ontology_id, self._alias_to_iri)
+        self._check_identity(ontology, self._iri_to_ontology_id)
 
     def identity_conflicts(self, ontologies: list[Ontology]) -> dict[str, str]:
         """Why each of ``ontologies`` that cannot be registered cannot, by IRI.
@@ -145,25 +174,20 @@ class OntologyManager(Tool):
         those were registered. Registers nothing.
         """
         iri_to_id = dict(self._iri_to_ontology_id)
-        alias_to_iri = dict(self._alias_to_iri)
         conflicts: dict[str, str] = {}
         for ontology in ontologies:
             try:
-                self._check_identity(ontology, iri_to_id, alias_to_iri)
+                self._check_identity(ontology, iri_to_id)
             except ValueError as exc:
                 conflicts[ontology.iri] = str(exc)
                 continue
-            iri = ontology.iri.strip()
-            iri_to_id[iri] = self._primary_ontology_id(ontology)
-            for alias, _kind in self._collect_aliases(ontology):
-                alias_to_iri.setdefault(alias, iri)
+            iri_to_id[ontology.iri.strip()] = self._primary_ontology_id(ontology)
         return conflicts
 
     def _check_identity(
         self,
         ontology: Ontology,
         iri_to_id: dict[str, str],
-        alias_to_iri: dict[str, str],
     ) -> None:
         iri = (ontology.iri or "").strip()
         if not iri:
@@ -181,49 +205,25 @@ class OntologyManager(Tool):
                 f"received '{primary}'"
             )
 
-        for alias, kind in self._collect_aliases(ontology):
-            existing_iri = alias_to_iri.get(alias)
-            if existing_iri is None or existing_iri == iri:
-                continue
-            if kind == "prefix":
-                # Convenience alias only; degrades to IRI-only addressing.
-                continue
-            raise ValueError(
-                "Ontology identity conflict: identity "
-                f"'{alias}' is already bound to IRI '{existing_iri}', "
-                f"received '{iri}'"
-            )
-
     def _register_identity(self, ontology: Ontology) -> None:
         iri = ontology.iri.strip()
         primary = self._primary_ontology_id(ontology)
         self._iri_to_ontology_id[iri] = primary
-        for alias, _kind in self._collect_aliases(ontology):
-            existing_iri = self._alias_to_iri.get(alias)
-            if existing_iri is not None and existing_iri != iri:
-                # validate_identity_uniqueness raises on ontology_id conflicts,
-                # so only author-prefix aliases can reach this branch.
-                logger.warning(
-                    "Author prefix alias '%s' is already bound to IRI %s; "
-                    "skipping alias registration for %s (addressable by IRI "
-                    "and ontology_id only).",
-                    alias,
-                    existing_iri,
-                    iri,
-                )
-                continue
-            self._alias_to_iri[alias] = iri
-        # Also allow looking up by the raw IRI string and its normalized form.
-        self._alias_to_iri[iri.lower()] = iri
-        normalized = normalize_ontology_iri(iri).lower()
-        if normalized:
-            self._alias_to_iri[normalized] = iri
-        prefix = ontology.prefix
-        if prefix and ontology.namespace:
-            self._namespace_to_author_prefix[str(ontology.namespace)] = prefix
+        aliases = [alias for alias, _kind in self._collect_aliases(ontology)]
+        # The raw IRI and its normalized form resolve as well.
+        aliases += [iri.lower(), normalize_ontology_iri(iri).lower()]
+        for alias in aliases:
+            if alias:
+                self._alias_to_iri.setdefault(alias, set()).add(iri)
+        self._prefix_tables.clear()
 
     def resolve_ontology_ref(self, ref: str) -> str | None:
-        """Resolve an absolute IRI or registered alias to a catalog ontology IRI."""
+        """The catalog IRI ``ref`` names: an IRI, or an id or prefix one IRI holds.
+
+        Raises:
+            AmbiguousOntologyRefError: ``ref`` is an id or a prefix that
+                several catalog ontologies hold.
+        """
         if not ref or not str(ref).strip():
             return None
         cleaned = str(ref).strip()
@@ -233,26 +233,35 @@ class OntologyManager(Tool):
         if normalized in self.ontology_versions:
             return normalized
         for key in (cleaned.lower(), normalized.lower()):
-            iri = self._alias_to_iri.get(key)
-            if iri is not None:
-                return iri
+            iris = self._alias_to_iri.get(key)
+            if not iris:
+                continue
+            if len(iris) > 1:
+                raise AmbiguousOntologyRefError(cleaned, sorted(iris))
+            return next(iter(iris))
         return None
 
-    def author_prefix_for_namespace(self, namespace: str) -> str | None:
-        """Return the catalog-registered author prefix for a namespace, if any."""
-        direct = self._namespace_to_author_prefix.get(namespace)
-        if direct is not None:
-            return direct
-        stripped = namespace.rstrip("/#")
-        for key, value in self._namespace_to_author_prefix.items():
-            if key.rstrip("/#") == stripped:
-                return value
-        return None
+    def prefix_table(self, others: Sequence[RDFGraph] = ()) -> PrefixTable:
+        """The catalog's prefix table: one shown prefix per namespace.
 
-    @property
-    def preferred_namespace_prefixes(self) -> dict[str, str]:
-        """Namespace URI → author prefix for sanitize preference."""
-        return dict(self._namespace_to_author_prefix)
+        Args:
+            others: Further graphs whose bindings name namespaces, such as the
+                shapes graph, whose prose the prompt shows.
+        """
+        # The table reads only the other graphs' bindings, so they are the key.
+        key = tuple(
+            sorted(
+                (prefix, str(namespace))
+                for graph in others
+                for prefix, namespace in graph.namespaces()
+                if prefix
+            )
+        )
+        table = self._prefix_tables.get(key)
+        if table is None:
+            table = build_prefix_table(self.ontologies, others)
+            self._prefix_tables[key] = table
+        return table
 
     def __contains__(self, item: object) -> bool:
         """Check if an item (IRI or alias) is in the ontology manager.
@@ -261,9 +270,16 @@ class OntologyManager(Tool):
             item: The IRI, ontology_id, or author prefix to check.
 
         Returns:
-            bool: True if the item resolves to a tracked ontology IRI.
+            bool: True if the item names at least one tracked ontology.
         """
-        return self.resolve_ontology_ref(str(item)) is not None
+        ref = str(item).strip()
+        normalized = normalize_ontology_iri(ref)
+        return (
+            ref in self.ontology_versions
+            or normalized in self.ontology_versions
+            or bool(self._alias_to_iri.get(ref.lower()))
+            or bool(self._alias_to_iri.get(normalized.lower()))
+        )
 
     def _prepare_ontology_for_catalog(self, ontology: Ontology) -> bool:
         """Validate and register a stamped version; True if it is new here.
@@ -294,6 +310,7 @@ class OntologyManager(Tool):
             return False
         versions.append(ontology)
         self._cached_ontologies.pop(ontology.iri, None)
+        self._prefix_tables.clear()
         logger.debug("Registered version %s", ontology.version_iri)
         return True
 
@@ -390,19 +407,13 @@ class OntologyManager(Tool):
         self.ontology_versions.pop(iri, None)
         self._cached_ontologies.pop(iri, None)
         self._iri_to_ontology_id.pop(iri, None)
-        # Drop all aliases pointing at this IRI.
-        stale = [alias for alias, bound in self._alias_to_iri.items() if bound == iri]
-        for alias in stale:
-            del self._alias_to_iri[alias]
-        # Drop author-prefix entries whose IRI matches (by scanning versions was already removed).
-        # Namespace map is best-effort; rebuild from remaining ontologies.
-        self._namespace_to_author_prefix = {}
-        for versions in self.ontology_versions.values():
-            if not versions:
-                continue
-            onto = versions[-1]
-            if onto.prefix and onto.namespace:
-                self._namespace_to_author_prefix[str(onto.namespace)] = onto.prefix
+        # Drop this IRI from every alias; an alias no IRI holds goes.
+        for alias in list(self._alias_to_iri):
+            held = self._alias_to_iri[alias]
+            held.discard(iri)
+            if not held:
+                del self._alias_to_iri[alias]
+        self._prefix_tables.clear()
 
     def register_vector_store(self, retriever: "OntologyPatchRetriever") -> None:
         """Register a patch retriever for vector context lookups."""
@@ -424,10 +435,15 @@ class OntologyManager(Tool):
         self._cached_ontologies.clear()
         self._iri_to_ontology_id.clear()
         self._alias_to_iri.clear()
-        self._namespace_to_author_prefix.clear()
+        self._prefix_tables.clear()
         self._graph_cache.clear()
         self._graph_uris_by_iri.clear()
         self._merged_cache.clear()
+
+    @property
+    def has_triple_store(self) -> bool:
+        """Whether a triple store is registered, so heads are read from its headers."""
+        return self._triple_store_manager is not None
 
     def _require_triple_store(self) -> TripleStoreManager:
         if self._triple_store_manager is None:
@@ -549,12 +565,7 @@ class OntologyManager(Tool):
         Returns:
             set[str]: Shared across units -- treat as read-only.
         """
-        held: dict[str, Ontology] = {
-            ontology.version_iri or ontology.iri: ontology
-            for ontology in self.get_heads_by_iri(None)
-        }
-        for graph_uri, ontology in self._graph_cache.items():
-            held.setdefault(graph_uri, ontology)
+        held = self._held_ontologies()
         key = frozenset(held)
         memo = self._catalog_terms_memo
         if memo is not None and memo[0] == key:
@@ -564,6 +575,112 @@ class OntologyManager(Tool):
             terms |= collect_catalog_terms(ontology.graph)
         self._catalog_terms_memo = (key, terms)
         return terms
+
+    def _held_ontologies(self) -> dict[str, Ontology]:
+        """Every held ontology, by version IRI: the heads and the graph cache."""
+        held: dict[str, Ontology] = {
+            ontology.version_iri or ontology.iri: ontology
+            for ontology in self.get_heads_by_iri(None)
+        }
+        for graph_uri, ontology in self._graph_cache.items():
+            held.setdefault(graph_uri, ontology)
+        return held
+
+    def catalog_roles(self) -> CatalogRoles:
+        """What every held ontology says each term is, and the class hierarchy.
+
+        Built over the same set as :meth:`catalog_terms` and memoised the same
+        way. The repairs read it to tell a property from a class, and the facts
+        gate to tell a value class, over the whole catalog rather than a unit's
+        snapshot.
+
+        Returns:
+            CatalogRoles: Shared across units -- treat as read-only.
+        """
+        held = self._held_ontologies()
+        key = frozenset(held)
+        memo = self._roles_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
+        roles = CatalogRoles.of(o.graph for o in held.values())
+        self._roles_memo = (key, roles)
+        return roles
+
+    def identity_declarations(self) -> IdentityDeclarations:
+        """What the catalog heads declare about identity across documents.
+
+        Read from the heads only, not the graph cache, so the result depends on
+        the catalog state alone and not on which graphs this process happened
+        to read. Memoised on the heads' version IRIs.
+
+        Returns:
+            IdentityDeclarations: Shared -- treat as read-only.
+        """
+        heads = self.get_heads_by_iri(None)
+        key = frozenset(o.version_iri or o.iri for o in heads)
+        memo = self._identity_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
+        declarations = IdentityDeclarations.of(o.graph for o in heads)
+        self._identity_memo = (key, declarations)
+        return declarations
+
+    def catalog_surface_index(self) -> CatalogSurfaceIndex:
+        """Labels, notations and local names of every held term, case-insensitive.
+
+        Built over the same set as :meth:`catalog_terms` and memoised the same
+        way. Read by the duplicate checks, which must see the whole catalog:
+        under vector retrieval a re-minted term duplicates one the unit's
+        snapshot did not contain.
+
+        Returns:
+            CatalogSurfaceIndex: Shared across units -- treat as read-only.
+        """
+        held = self._held_ontologies()
+        key = frozenset(held)
+        memo = self._surface_index_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
+        index = build_catalog_surface_index(o.graph for o in held.values())
+        self._surface_index_memo = (key, index)
+        return index
+
+    def term_definitions(self, terms: Iterable[str]) -> RDFGraph:
+        """The statements that define ``terms`` in the held catalog.
+
+        For each term, its type, labels, notes, domain, range and parents, taken
+        from the first held ontology that states any of them -- the heads come
+        before the graph cache, so the current version wins. Objects that are
+        blank nodes are left out: a partial structure would mislead more than
+        its absence. The prefix each source binds for a term's namespace is
+        bound in the result. A term no held ontology defines contributes nothing.
+
+        Args:
+            terms: Term IRIs to look up.
+
+        Returns:
+            RDFGraph: A new graph; empty when nothing is defined.
+        """
+        out = RDFGraph()
+        held = list(self._held_ontologies().values())
+        for term_iri in terms:
+            term = URIRef(term_iri)
+            for ontology in held:
+                triples = [
+                    (term, predicate, obj)
+                    for predicate in _DEFINITION_PREDICATES
+                    for obj in ontology.graph.objects(term, predicate)
+                    if not isinstance(obj, BNode)
+                ]
+                if not triples:
+                    continue
+                for triple in triples:
+                    out.add(triple)
+                for prefix, namespace in ontology.graph.namespaces():
+                    if prefix and term_iri.startswith(str(namespace)):
+                        out.bind(prefix, namespace, override=False)
+                break
+        return out
 
     def _cache_graph(self, ontology: Ontology, graph_uri: str | None = None) -> None:
         """Register a store-read ``ontology`` under the graph URI it was read from.
@@ -879,6 +996,10 @@ class OntologyManager(Tool):
         Without ``version_iri`` the head is returned (the newest head of a
         diverged ontology). IRI is preferred over ``ontology_id``.
 
+        Raises:
+            AmbiguousOntologyRefError: only ``ontology_id`` is given and
+                several catalog ontologies hold it.
+
         Returns:
             Ontology: The matching ontology, NULL_ONTOLOGY when none.
         """
@@ -902,17 +1023,6 @@ class OntologyManager(Tool):
                     return heads[0]
                 if versions:
                     return versions[0]
-
-            if (
-                ontology_iri
-                and ontology_id
-                and self.resolve_ontology_ref(ontology_id) not in (None, resolved_iri)
-            ):
-                logger.warning(
-                    "Ontology id '%s' resolves differently from IRI '%s'",
-                    ontology_id,
-                    ontology_iri,
-                )
 
         return NULL_ONTOLOGY
 

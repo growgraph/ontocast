@@ -46,6 +46,7 @@ qq:QualifiedValue a owl:Class ;
 qq:numericLowerBound a owl:DatatypeProperty ; rdfs:range xsd:decimal .
 qq:numericUpperBound a owl:DatatypeProperty ; rdfs:range xsd:decimal .
 qq:lowerBoundInclusive a owl:DatatypeProperty ; rdfs:range xsd:boolean .
+qq:eV a qudt:Unit ; rdfs:label "eV" .
 """
 
 FACTS = f"""
@@ -58,7 +59,7 @@ FACTS = f"""
 cd:v1 a qq:QualifiedValue ;
     rdfs:label "PL peak: 2.25 eV"@en ;
     qudt:numericValue "2.25"^^xsd:decimal ;
-    qudt:unit cd:ev .
+    qudt:unit qq:eV .
 """
 
 VOCAB = {
@@ -173,9 +174,20 @@ class TestShaclCatalogContradictions:
     """
 
     def test_contradiction_reported_when_namespace_closed(self) -> None:
+        shapes = _graph(
+            self.SHAPES.replace(
+                "qq:numericLowerBound ; sh:minCount 0", "qq:centre ; sh:minCount 1"
+            )
+        )
+        contradictions = shacl_catalog_contradictions(shapes, _graph(ONTOLOGY))
+        assert contradictions == [f"{QQ}centre"]
+
+    def test_a_catalog_redeclaring_well_known_terms_does_not_close_them(self) -> None:
+        """A well-known namespace is closed by its own term list, not by the
+        part of it a catalog redeclares: ``qudt:numericValue`` is a QUDT term."""
         ontology = _graph(ONTOLOGY + "\nqudt:ucumCode a owl:DatatypeProperty .")
         contradictions = shacl_catalog_contradictions(_graph(self.SHAPES), ontology)
-        assert contradictions == [f"{QUDT}numericValue"]
+        assert contradictions == []
 
     def test_fallback_vocabulary_clears_the_contradiction(self) -> None:
         ontology = _graph(ONTOLOGY + "\nqudt:ucumCode a owl:DatatypeProperty .")
@@ -351,6 +363,23 @@ class TestGraphShapeMetrics:
         assert metrics.isolated_nodes == 2
         assert metrics.components == 4
         assert metrics.edges == 1
+
+    def test_the_document_node_is_not_an_entity(self) -> None:
+        graph = _graph(
+            f"""
+            @prefix dcterms: <http://purl.org/dc/terms/> .
+            @prefix cd:   <{CD}> .
+            @prefix ex:   <https://x.org/schema#> .
+            <{CD}doc> dcterms:title "source.txt" .
+            cd:a ex:linksTo cd:b .
+            cd:c ex:mentionedIn <{CD}doc> .
+            """
+        )
+        metrics = facts_graph_shape_metrics(graph, [CD], document=URIRef(CD + "doc"))
+        assert metrics.nodes == 3
+        # c links only to the document node: linked, but a component of its own.
+        assert metrics.isolated_nodes == 0
+        assert metrics.components == 2
 
 
 class TestUnitSymbolCaseMismatch:

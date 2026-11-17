@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ontocast.onto.model import LoopAttempt
+from ontocast.onto.model import FactsIsolatedInstance, LoopAttempt
 from ontocast.onto.section_models import OutlineLabelReport
 from ontocast.onto.state import BudgetTracker
 from ontocast.util.graph_metrics import GraphShapeMetrics
@@ -60,6 +60,21 @@ class RunManifestLLM(BaseModel):
         ),
     )
     max_retries: int | None = None
+    model_by_phase: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Phases served by another model than model_name (LLM_MODEL_BY_PHASE); "
+            "their usage is in budget.tokens_by_phase under the same keys."
+        ),
+    )
+    reasoning_effort_by_phase: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Phases sent with another reasoning effort than reasoning_effort "
+            "(LLM_REASONING_EFFORT_BY_PHASE); their usage is in "
+            "budget.tokens_by_phase under the same keys."
+        ),
+    )
     prompt_cache_key: str | None = Field(
         default=None,
         description=(
@@ -217,6 +232,14 @@ class RunManifestValidationConfig(BaseModel):
             "blocked acceptance. Older manifests carry the boolean this used "
             "to be."
         ),
+    )
+    ontology_plan_enabled: bool | None = Field(
+        default=None,
+        description="Whether units rendered against a document ontology plan.",
+    )
+    ontology_consolidation: str | None = Field(
+        default=None,
+        description="'on' | 'off': whether minted terms were decided by a model call.",
     )
     facts_user_instruction_chars: int | None = Field(
         default=None,
@@ -548,6 +571,18 @@ class RunManifestPrompting(BaseModel):
     )
 
 
+class RunManifestHome(BaseModel):
+    """Where the document minted new vocabulary: its home ontology."""
+
+    iri: str
+    ontology_id: str
+    namespace: str = Field(description="Every term the document minted is under it.")
+    extends: str | None = Field(
+        default=None,
+        description="The external ontology an extension home adds terms to.",
+    )
+
+
 class RunManifest(BaseModel):
     """What produced one document's dump, and what it cost."""
 
@@ -589,7 +624,8 @@ class RunManifest(BaseModel):
             "``AgentState.ontology_reduce_metrics``: apply/partition counters "
             "plus the reduce policies' evidence -- minted_duplicates and "
             "their pairs, deletes_dropped_unredeclared, apply_deletes_no_match, "
-            "fresh_ontologies_merged."
+            "fresh_ontologies_merged, minted_classes, and (when both lanes ran) "
+            "unused_minted_classes with their IRIs."
         ),
     )
     selection: RunManifestSelection | None = None
@@ -634,6 +670,18 @@ class RunManifest(BaseModel):
         description=(
             "Ontology versions the run wrote (role 'created' or 'updated') and "
             "read without changing (role 'read'), each with iri and version_iri."
+        ),
+    )
+    home_ontology: RunManifestHome | None = Field(
+        default=None,
+        description="The document's home ontology; None when the ontology lane did not run.",
+    )
+    facts_isolated: list[FactsIsolatedInstance] = Field(
+        default_factory=list,
+        description=(
+            "Instances the served facts link to nothing, after the link pass: "
+            "kept, not deleted, and listed here for review (capped at 200; "
+            "the count is the facts_isolated retrieval metric)."
         ),
     )
     retrieval_metrics: dict[str, Any] = Field(

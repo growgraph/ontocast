@@ -8,7 +8,7 @@ graph format while what they mean does not.
 from __future__ import annotations
 
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.triple_index import RDF_TYPE, TripleIndex, format_term
+from ontocast.onto.triple_index import RDF_TYPE, TripleIndex
 
 
 def render_indexed_turtle(graph: RDFGraph, index: TripleIndex) -> str:
@@ -24,16 +24,16 @@ def render_indexed_turtle(graph: RDFGraph, index: TripleIndex) -> str:
     nsmgr = graph.namespace_manager
     lines: list[str] = []
     for subject, block in index.order:
-        lines.append(format_term(subject, nsmgr))
+        lines.append(index.render(subject, nsmgr))
         for position, entry in enumerate(block):
             _, predicate, obj = entry.triple
             predicate_text = (
-                "a" if predicate == RDF_TYPE else format_term(predicate, nsmgr)
+                "a" if predicate == RDF_TYPE else index.render(predicate, nsmgr)
             )
             terminator = " ." if position == len(block) - 1 else " ;"
             marker = "-" if entry.triple_id is None else str(entry.triple_id)
             lines.append(
-                f"  [{marker}] {predicate_text} {format_term(obj, nsmgr)}{terminator}"
+                f"  [{marker}] {predicate_text} {index.render(obj, nsmgr)}{terminator}"
             )
     return "\n".join(lines)
 
@@ -49,7 +49,7 @@ def render_index_table(graph: RDFGraph, index: TripleIndex) -> str:
     for triple_id in sorted(index.by_id):
         subject, predicate, obj = index.by_id[triple_id]
         lines.append(
-            f"  {triple_id} | {format_term(subject, nsmgr)} | "
-            f"{format_term(predicate, nsmgr)} | {format_term(obj, nsmgr)}"
+            f"  {triple_id} | {index.render(subject, nsmgr)} | "
+            f"{index.render(predicate, nsmgr)} | {index.render(obj, nsmgr)}"
         )
     return "\n".join(lines)

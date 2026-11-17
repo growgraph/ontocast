@@ -1,10 +1,12 @@
 """What a first-time user sees for a missing key or an unsupported file."""
 
+import asyncio
+
 import click
 import pytest
 
 from ontocast.agent.convert_document import convert_document
-from ontocast.cli.server import _bootstrap_tools
+from ontocast.cli.server import _abootstrap_tools
 from ontocast.onto.enum import Status
 from ontocast.onto.state import AgentState, InputDocument
 from ontocast.tool.converter import ConverterTool
@@ -20,7 +22,9 @@ def test_a_missing_api_key_is_a_cli_error_not_a_traceback(
     monkeypatch.delenv("LLM_API_KEY", raising=False)
 
     with pytest.raises(click.ClickException, match="LLM_API_KEY"):
-        _bootstrap_tools(tenant=None, project=None, wipe_vector_store=None)
+        asyncio.run(
+            _abootstrap_tools(tenant=None, project=None, wipe_vector_store=None)
+        )
 
 
 def test_an_unsupported_file_names_what_is_accepted() -> None:

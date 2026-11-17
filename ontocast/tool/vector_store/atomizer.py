@@ -19,6 +19,11 @@ from ontocast.onto.embedding_policy import (
 from ontocast.onto.facts import Facts
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_namespace import described_namespaces
+from ontocast.onto.property_sides import (
+    SIDE_PREDICATES,
+    properties_with_side,
+    side_classes,
+)
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.onto import Tool
 from ontocast.tool.representation_text import (
@@ -156,8 +161,7 @@ _STRUCTURAL_PREDICATES: frozenset[URIRef] = frozenset(
         RDF.type,
         RDFS.subClassOf,
         RDFS.subPropertyOf,
-        RDFS.domain,
-        RDFS.range,
+        *SIDE_PREDICATES,
         OWL.inverseOf,
         OWL.equivalentClass,
         OWL.equivalentProperty,
@@ -519,11 +523,7 @@ class GraphAtomizer(Tool):
     ) -> list[str]:
         labels: list[str] = []
         seen: set[str] = set()
-        for _, _, o in sorted(
-            graph.triples((entity, RDFS.domain, None)), key=lambda t: str(t[2])
-        ):
-            if not isinstance(o, URIRef):
-                continue
+        for o in sorted(side_classes(entity, [graph], "domain"), key=str):
             text = self._normalize_uri(o)
             if text not in seen:
                 seen.add(text)
@@ -537,11 +537,7 @@ class GraphAtomizer(Tool):
     ) -> list[str]:
         labels: list[str] = []
         seen: set[str] = set()
-        for _, _, o in sorted(
-            graph.triples((entity, RDFS.range, None)), key=lambda t: str(t[2])
-        ):
-            if not isinstance(o, URIRef):
-                continue
+        for o in sorted(side_classes(entity, [graph], "range"), key=str):
             text = self._normalize_uri(o)
             if text not in seen:
                 seen.add(text)
@@ -573,11 +569,7 @@ class GraphAtomizer(Tool):
         endpoint_label_cap: int,
     ) -> None:
         props_with_domain = sorted(
-            {
-                p
-                for p, _, _ in graph.triples((None, RDFS.domain, entity))
-                if isinstance(p, URIRef)
-            },
+            properties_with_side(graph, entity, "domain"),
             key=str,
         )[:max_properties]
         for prop in props_with_domain:
@@ -590,11 +582,7 @@ class GraphAtomizer(Tool):
             self._append_inverse_of_clues_for_property(prop, graph, clues)
 
         props_with_range = sorted(
-            {
-                p
-                for p, _, _ in graph.triples((None, RDFS.range, entity))
-                if isinstance(p, URIRef)
-            },
+            properties_with_side(graph, entity, "range"),
             key=str,
         )[:max_properties]
         for prop in props_with_range:

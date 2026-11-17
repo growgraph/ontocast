@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, TypeAlias, cast
+from typing import Any, TypeAlias, TypeVar, cast
 
+import httpx
 from pydantic import Field, PrivateAttr, model_validator
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from ontocast.config import EmbeddingConfig, QdrantConfig, VectorStoreConfig
 from ontocast.onto.enum import VectorDistance
@@ -30,6 +34,7 @@ from ontocast.tool.vector_store.core import (
     OntologySearchHit,
     OntologySearchHitsByChannel,
     VectorStoreManager,
+    top_hits,
 )
 from ontocast.tool.vector_store.embedding import FastembedBm25SparseTool
 from ontocast.tool.vector_store.lexical_trigger import LexicalTriggerIndex
@@ -58,6 +63,54 @@ from ontocast.tool.vector_store.util import (
 logger = logging.getLogger(__name__)
 
 ChannelVector: TypeAlias = list[float] | qdrant_models.SparseVector
+
+_T = TypeVar("_T")
+
+TRANSPORT_RETRY_ATTEMPTS = 3
+"""Attempts per retrieval read before a transport error propagates."""
+
+TRANSPORT_RETRY_BACKOFF_SECONDS = 0.2
+"""Base delay between attempts; attempt ``n`` waits ``n`` times this."""
+
+
+def is_transport_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is a transient HTTP transport fault, not a server answer.
+
+    The Qdrant HTTP client wraps whatever its send raises in
+    :class:`ResponseHandlingException`, so the wrapped ``source`` is checked too.
+    A status-code error (:class:`UnexpectedResponse`) is an answer and is never
+    transient here.
+    """
+    if isinstance(exc, ResponseHandlingException):
+        return isinstance(exc.source, httpx.TransportError)
+    return isinstance(exc, httpx.TransportError)
+
+
+def call_with_transport_retry(operation: str, call: Callable[[], _T]) -> _T:
+    """Run a read against Qdrant, retrying a transport error a bounded number of times.
+
+    Every retry is logged and counted as ``vector/transport_retry`` on the
+    running task's budget tracker. After the last attempt the error propagates,
+    so the caller fails visibly rather than continuing without retrieval.
+    """
+    for attempt in range(1, TRANSPORT_RETRY_ATTEMPTS + 1):
+        try:
+            return call()
+        except Exception as exc:
+            if attempt == TRANSPORT_RETRY_ATTEMPTS or not is_transport_error(exc):
+                raise
+            from ontocast.tool.llm import record_active_count
+
+            record_active_count("vector/transport_retry")
+            logger.warning(
+                "Qdrant %s failed with a transport error (attempt %d of %d): %r",
+                operation,
+                attempt,
+                TRANSPORT_RETRY_ATTEMPTS,
+                exc,
+            )
+            time.sleep(TRANSPORT_RETRY_BACKOFF_SECONDS * attempt)
+    raise AssertionError("unreachable")
 
 
 def _to_qdrant_sparse(vector: SparseVector) -> qdrant_models.SparseVector:
@@ -634,11 +687,15 @@ class QdrantVectorStoreManager(VectorStoreManager):
         if not atom_ids:
             return {}
         point_id_to_atom_id = {point_id(atom_id): atom_id for atom_id in atom_ids}
-        points = self.client.retrieve(
-            collection_name=self._ontology_collection_name(),
-            ids=list(point_id_to_atom_id.keys()),
-            with_vectors=True,
-            with_payload=False,
+        collection_name = self._ontology_collection_name()
+        points = call_with_transport_retry(
+            "retrieve",
+            lambda: self.client.retrieve(
+                collection_name=collection_name,
+                ids=list(point_id_to_atom_id.keys()),
+                with_vectors=True,
+                with_payload=False,
+            ),
         )
         out: dict[str, tuple[list[float], list[float]]] = {}
         for point in points:
@@ -765,31 +822,43 @@ class QdrantVectorStoreManager(VectorStoreManager):
             filter_version=filter_version,
             filter_hash=filter_hash,
         )
-        core_hits = self._query_named_vector(
-            vector_name=CORE_VECTOR_NAME,
-            vector=core_vector,
-            limit=eff_top_k,
-            search_filter=search_filter,
+        core_typed_hits = top_hits(
+            lambda limit: self._points_to_hits(
+                self._query_named_vector(
+                    vector_name=CORE_VECTOR_NAME,
+                    vector=core_vector,
+                    limit=limit,
+                    search_filter=search_filter,
+                )
+            ),
+            eff_top_k,
         )
-        neighborhood_hits = self._query_named_vector(
-            vector_name=NEIGHBORHOOD_VECTOR_NAME,
-            vector=neighborhood_vector,
-            limit=eff_top_k,
-            search_filter=search_filter,
+        neighborhood_typed_hits = top_hits(
+            lambda limit: self._points_to_hits(
+                self._query_named_vector(
+                    vector_name=NEIGHBORHOOD_VECTOR_NAME,
+                    vector=neighborhood_vector,
+                    limit=limit,
+                    search_filter=search_filter,
+                ),
+                apply_neighborhood_empty_penalty=True,
+            ),
+            eff_top_k,
         )
-        bm25_hits_raw: list[Any] = []
+        bm25_typed_hits: list[OntologySearchHit] = []
         if bm25_query_vector is not None:
-            bm25_hits_raw = self._query_named_vector(
-                vector_name=BM25_VECTOR_NAME,
-                vector=bm25_query_vector,
-                limit=effective_bm25_top_k(self.store_config, top_k),
-                search_filter=search_filter,
+            sparse = bm25_query_vector
+            bm25_typed_hits = top_hits(
+                lambda limit: self._points_to_hits(
+                    self._query_named_vector(
+                        vector_name=BM25_VECTOR_NAME,
+                        vector=sparse,
+                        limit=limit,
+                        search_filter=search_filter,
+                    )
+                ),
+                effective_bm25_top_k(self.store_config, top_k),
             )
-        core_typed_hits = self._points_to_hits(core_hits)
-        neighborhood_typed_hits = self._points_to_hits(
-            neighborhood_hits, apply_neighborhood_empty_penalty=True
-        )
-        bm25_typed_hits = self._points_to_hits(bm25_hits_raw)
         if self.store_config.dedup_query_hits_by_iri:
             core_typed_hits = dedupe_hits_by_identity(
                 core_typed_hits, store_config=self.store_config
@@ -975,13 +1044,17 @@ class QdrantVectorStoreManager(VectorStoreManager):
         limit: int,
         search_filter: qdrant_models.Filter | None,
     ) -> list[Any]:
-        response = self.client.query_points(
-            collection_name=self._ontology_collection_name(),
-            query=vector,
-            using=vector_name,
-            query_filter=search_filter,
-            with_payload=True,
-            limit=limit,
+        collection_name = self._ontology_collection_name()
+        response = call_with_transport_retry(
+            "query_points",
+            lambda: self.client.query_points(
+                collection_name=collection_name,
+                query=vector,
+                using=vector_name,
+                query_filter=search_filter,
+                with_payload=True,
+                limit=limit,
+            ),
         )
         return response.points
 

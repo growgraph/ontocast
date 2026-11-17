@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal, overload
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
-from rdflib.namespace import OWL, RDF
+from rdflib.namespace import DCTERMS, OWL, RDF, SKOS
 
 from ontocast.config import Config
 from ontocast.onto.constants import ONTOLOGY_NULL_IRI
@@ -15,7 +15,9 @@ from ontocast.onto.identity import OntologyVersionRecord, VersionRef
 from ontocast.onto.ontology import Ontology, OntologyProperties
 from ontocast.onto.ontology_access import document_ontology_access
 from ontocast.onto.ontology_header import SeedOntologyLoadError
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.sparql_models import GraphUpdate
 from ontocast.onto.state import AgentState, BudgetTracker
 from ontocast.onto.tenancy import TenancyScope
 from ontocast.runtime import ToolBoxRuntime
@@ -766,7 +768,20 @@ class ToolBox:
         lives on the catalog -- so a tool replaced on the shared instance is
         seen by the next unit.
         """
-        return self.atomic_tools.scoped_to_catalog(self.ontology_manager)
+        return self.atomic_tools.scoped_to_catalog(
+            self.ontology_manager, self.prefix_table
+        )
+
+    def prefix_table(self) -> PrefixTable:
+        """The catalog's prefix table, the shapes' bindings included.
+
+        Every prompt shows a namespace under the prefix this table gives it,
+        and every answer is parsed with it.
+        """
+        shapes = self.shapes_catalog.graph()
+        return self.ontology_manager.prefix_table(
+            (shapes,) if shapes is not None else ()
+        )
 
     def shapes_prompt_contract(self) -> tuple[str, tuple[str, ...], bool]:
         """Conformance chapter, term exemptions, and the selection flag.
@@ -783,27 +798,53 @@ class ToolBox:
         are catalog IRIs either way.
         """
         cfg = self.config.tool_config.facts_validation
-        mode = cfg.shapes_prompt_contract
-        if mode == "off":
+        if cfg.shapes_prompt_contract == "off":
             return "", (), False
         max_lines = cfg.shapes_prompt_max_lines
         terms = self.shapes_catalog.prompt_contract_terms(max_lines=max_lines)
-        select = mode == "context" or (
-            mode == "auto" and self.shapes_catalog.needs_selection(max_lines=max_lines)
-        )
-        if select:
+        if self._shapes_select_per_unit():
             return "", terms, True
         return (
-            self.shapes_catalog.conformance_chapter(max_lines=max_lines),
+            self.shapes_catalog.conformance_chapter(
+                max_lines=max_lines, table=self.prefix_table()
+            ),
             terms,
             False,
+        )
+
+    def shapes_chapter_terms(self, context_terms: set[str]) -> frozenset[str]:
+        """The IRIs named by the conformance chapter a unit with this context sees.
+
+        Follows :meth:`shapes_prompt_contract`: nothing when the contract is
+        off, the selected shapes' terms under per-unit selection, every shape's
+        terms when the whole chapter is printed.
+        """
+        cfg = self.config.tool_config.facts_validation
+        if cfg.shapes_prompt_contract == "off":
+            return frozenset()
+        return self.shapes_catalog.named_terms(
+            context_terms if self._shapes_select_per_unit() else None,
+            max_lines=cfg.shapes_prompt_max_lines,
+        )
+
+    def _shapes_select_per_unit(self) -> bool:
+        """Whether each unit gets a chapter selected on its context."""
+        cfg = self.config.tool_config.facts_validation
+        mode = cfg.shapes_prompt_contract
+        return mode == "context" or (
+            mode == "auto"
+            and self.shapes_catalog.needs_selection(
+                max_lines=cfg.shapes_prompt_max_lines
+            )
         )
 
     def shapes_chapter_for_context(self, context_terms: set[str]) -> str:
         """Per-unit conformance chapter, joined on the unit's context IRIs."""
         cfg = self.config.tool_config.facts_validation
         return self.shapes_catalog.selected_chapter(
-            context_terms, max_lines=cfg.shapes_prompt_max_lines
+            context_terms,
+            max_lines=cfg.shapes_prompt_max_lines,
+            table=self.prefix_table(),
         )
 
     def serialize(self, state: AgentState) -> None:
@@ -901,6 +942,31 @@ class ToolBox:
                 state.aggregated_facts,
                 graph_uri=state.graph_uri,
             )
+            if self.config.tool_config.link.enabled:
+                await self._awrite_identity_links(state)
+
+    async def _awrite_identity_links(self, state: AgentState) -> None:
+        """Write the document's identity links graph beside its facts.
+
+        The same pure function :func:`ontocast.link.build` applies to stored
+        documents, so writing here is an update of the resolution graph.
+        """
+        from ontocast.link import links_for, write_document_links
+
+        assert self.triple_store_manager is not None
+        links = links_for(
+            state.aggregated_facts,
+            self.ontology_manager.identity_declarations(),
+            domain=state.current_domain,
+            value_classes=self.get_atomic_tools().value_classes(),
+        )
+        await write_document_links(
+            self.triple_store_manager, str(state.graph_uri), links
+        )
+        state.budget_tracker.incr(
+            "serialize/identity_links",
+            sum(1 for _ in links.triples((None, SKOS.closeMatch, None))),
+        )
 
     def should_initialize_vector_store(
         self, ontology_context_mode: OntologyContextMode | None
@@ -1648,6 +1714,48 @@ class ToolBox:
         self.ontology_manager.add_ontology(stamped, skip_vector_index=True)
         return stamped
 
+    async def acommit_ontology_update(
+        self, iri: str, update: GraphUpdate, *, source: str
+    ) -> Ontology | None:
+        """Write ``update`` onto the head of ``iri`` as its next version.
+
+        The version records ``source`` as what it was derived from. It is
+        written to the store, then registered and indexed, as a document's
+        versions are.
+
+        Returns:
+            The new version, or None when the update changes nothing.
+
+        Raises:
+            ValueError: no head is held for ``iri``, or the version's identity
+                collides with the catalog.
+            DivergedOntologyError: the ontology has several heads.
+        """
+        from ontocast.onto.ontology_header import stamp_version
+
+        head = self.ontology_manager.get_head_by_iri(iri)
+        if head is None or head.is_null():
+            raise ValueError(f"no head is held for {iri}")
+        graph = head.graph.copy()
+        for operation in update.triple_operations:
+            for triple in operation.graph:
+                if operation.type == "delete":
+                    graph.remove(triple)
+                else:
+                    graph.add(triple)
+        version = stamp_version(
+            head.derive_updated_version(graph), updates=[update], source_doc=source
+        )
+        if version is None:
+            return None
+        conflicts = self.ontology_manager.identity_conflicts([version])
+        if conflicts:
+            raise ValueError(f"version of {iri} not written: {conflicts[iri]}")
+        if self.triple_store_manager is not None:
+            await self.triple_store_manager.aserialize(version)
+        await self.ontology_manager.aadd_ontology(version)
+        return version
+
     async def aget_version_graph(self, version_iri: str) -> RDFGraph | None:
         """The named graph of one version, or None when it is not stored."""
         if self.triple_store_manager is None:
@@ -1869,11 +1977,17 @@ def sample_ontology_graph(graph: RDFGraph, max_triples: int = 100) -> RDFGraph:
         graph: The full ontology graph
         max_triples: Maximum number of sections to include in the sample
 
+    The header's ``dcterms:created`` and ``dcterms:modified`` are left out:
+    they are stamped when the ontology is stored, so they differ on every
+    load, and the sample is a prompt whose cached answer must stay reusable.
+
     Returns:
         RDFGraph: A sampled version of the ontology with representative triples
     """
-    # Serialize to turtle
-    turtle_str = graph.serialize_canonical_turtle()
+    stable = graph.copy()
+    for predicate in (DCTERMS.created, DCTERMS.modified):
+        stable.remove((None, predicate, None))
+    turtle_str = stable.serialize_canonical_turtle()
 
     # Split on blank lines (typical turtle format uses \n\n to separate blocks)
     sections = turtle_str.split("\n\n")

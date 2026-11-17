@@ -104,3 +104,16 @@ def test_offsets_bracket_the_number_and_its_unit() -> None:
     text = "the shift was 96 meV overall"
     (mention,) = unit_adjacent_numbers(text)
     assert text[mention.start : mention.end] == "96 meV"
+
+
+@pytest.mark.parametrize("text", ["reached in the 2040s.", "since the 1990s", "1850s"])
+def test_a_decade_is_not_a_duration(text: str) -> None:
+    assert unit_adjacent_numbers(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "value"),
+    [("held for 2040 s", "2040"), ("a 30s pulse", "30"), ("after 2045s", "2045")],
+)
+def test_seconds_that_are_no_decade_stay_mentions(text: str, value: str) -> None:
+    assert [(m.value, m.unit) for m in unit_adjacent_numbers(text)] == [(value, "s")]

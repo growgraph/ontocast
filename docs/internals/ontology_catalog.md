@@ -70,8 +70,8 @@ because SHACL evaluates one shapes graph and shapes documents are independent.
 ## Tenancy
 
 Everything `OntologyManager` and `ShapesCatalog` hold belongs to one
-partition: the ontologies, the graph caches, and the alias ledger that
-`validate_identity_uniqueness` enforces. A ToolBox is therefore bound to one
+partition: the ontologies, the graph caches, and the aliases each IRI
+registers. A ToolBox is therefore bound to one
 tenant and project, and serving several means several ToolBoxes.
 
 - `ToolBox.for_scope(tenant, project)` returns the ToolBox for a partition:
@@ -110,7 +110,9 @@ point.
 headers = await tools.ontology_manager.aget_catalog_headers()  # metadata, no graphs
 ontologies = await tools.ontology_manager.aget_ontologies_by_iri(iris)
 merged, prefix_map = await tools.ontology_manager.aget_merged_graph(ontologies)
-iri = tools.ontology_manager.resolve_ontology_ref("obs")  # IRI, ontology_id or prefix
+iri = tools.ontology_manager.resolve_ontology_ref(
+    "obs"
+)  # IRI, or a short name one IRI holds
 head = tools.ontology_manager.get_head(
     "obs"
 )  # raises DivergedOntologyError on several heads
@@ -121,7 +123,13 @@ Returned `Ontology` objects are shared, read-only references: catalog
 selection uses the live objects, and the cache depends on nobody mutating them.
 
 `resolve_ontology_ref` accepts the ontology IRI, the short `ontology_id`, or
-the author's Turtle prefix. Prompt assembly works on `OntologySnapshot` views,
+the author's Turtle prefix. Only the IRI is unique: an id or a prefix may be
+held by several ontologies, and resolving one that is raises
+`AmbiguousOntologyRefError` with their IRIs. Registration refuses only an IRI
+already registered under another id. `OntologyManager.prefix_table` (through
+`ToolBox.prefix_table`, which adds the shapes' bindings) gives each namespace
+the one prefix prompts, parsing and exports use; it is rebuilt when the catalog
+changes. Prompt assembly works on `OntologySnapshot` views,
 which have no catalog id; writeback applies insert complements onto the head
 of each ontology by namespace ownership, and snapshots are never registered as
 catalog entries. See [Choosing ontology context](../guides/ontology_context.md).

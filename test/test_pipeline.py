@@ -10,10 +10,10 @@ from rdflib import OWL, RDF, BNode, Literal, URIRef
 from ontocast.agent.normalize_ontology import normalize_ontology_units
 from ontocast.config import (
     Config,
+    LinkConfig,
     LLMConfig,
     LLMProvider,
     OllamaModel,
-    OntologyValidationConfig,
     PathConfig,
     ToolConfig,
     WebSearchConfig,
@@ -22,7 +22,6 @@ from ontocast.onto.constants import PROV, RDF_REIFIES, SCHEMA
 from ontocast.onto.content_unit import ContentUnit, OutputType, SourceUnit
 from ontocast.onto.enum import (
     LLMGraphFormat,
-    LLMOutputLayout,
     OntologyContextMode,
     RenderMode,
     Status,
@@ -37,6 +36,7 @@ from ontocast.onto.model import (
 )
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_apply import OntologyDelta
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState, InputDocument
@@ -45,7 +45,6 @@ from ontocast.stategraph import create_agent_graph
 from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.helpers import merge_unit_deltas
 from ontocast.stategraph.node_factories import (
-    make_consolidate_ontology_node,
     make_normalize_ontology_node,
 )
 from ontocast.stategraph.routing import (
@@ -55,9 +54,10 @@ from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.tool.atomic import AtomicToolBox, SearchHit
 from ontocast.tool.facts_validation import CriticPatchPolicy
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from ontocast.tool.ontology_manager import OntologyManager
+from ontocast.tool.ontology_validation import CatalogSurfaceIndex
 from ontocast.toolbox import ToolBox
-from test.ontology_helpers import stamped_ontology
 from test.snapshot_helpers import empty_snapshot, snapshot_from_ontology
 
 pytestmark = pytest.mark.unit
@@ -137,11 +137,14 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
                     facts_critic_passes=1,
                     ontology_critic_passes=1,
+                    ontology_max_class_depth=6,
+                    catalog_surface_index=CatalogSurfaceIndex,
                     facts_patch_policy=CriticPatchPolicy(),
                     quantity_fallback_vocabulary=None,
                     ontology_patch_policy=CriticPatchPolicy(),
@@ -154,9 +157,12 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
                     facts_critic_min_triples=0,
                     facts_completion_passes=0,
                     catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
+                    subject_contract=lambda: None,
                 ),
             ),
             ontology_manager=OntologyManager(),
+            shapes_chapter_terms=lambda context_terms: frozenset(),
         ),
     )
     document_state = AgentState(render_mode=RenderMode.FACTS)
@@ -204,11 +210,17 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
                     validation_policy=None,
                     ontology_critic_passes=1,
+                    catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
+                    subject_contract=lambda: None,
+                    ontology_max_class_depth=6,
+                    catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
                     ontology_acceptance_policy=None,
                 ),
@@ -300,10 +312,12 @@ def test_reduce_ontology_units_strips_provenance_and_stores_artifact() -> None:
     reifier = BNode()
     source_chunk = URIRef(f"{doc_iri}/chunk-1")
 
-    graph = RDFGraph(store="oxigraph")
+    graph = RDFGraph()
     graph.add((appeal_court, RDF.type, court))
     graph.add((appeal_court, OWL.sameAs, court))
+    # Typed as the rewriter types a chunk: prov:Entity and schema:Text.
     graph.add((source_chunk, RDF.type, PROV.Entity))
+    graph.add((source_chunk, RDF.type, SCHEMA.Text))
     graph.add((source_chunk, SCHEMA.identifier, Literal("chunk-1")))
     graph.add((reifier, RDF_REIFIES, Literal("quoted-triple")))
     graph.add((reifier, PROV.wasDerivedFrom, source_chunk))
@@ -457,6 +471,7 @@ async def test_render_ontology_update_adds_external_evidence_when_enabled(
     tools = cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_llm_tool=fake_get_llm_tool,
             web_grounding_enabled_for_node=lambda _node: True,
         ),
@@ -502,6 +517,7 @@ async def test_criticise_ontology_skips_external_evidence_when_disabled(
     tools = cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_llm_tool=fake_get_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
         ),
@@ -540,6 +556,7 @@ async def test_criticise_ontology_prompt_includes_graph_format_instruction(
     tools = cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_llm_tool=fake_get_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
         ),
@@ -718,11 +735,17 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
                     validation_policy=None,
                     ontology_critic_passes=1,
+                    catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
+                    subject_contract=lambda: None,
+                    ontology_max_class_depth=6,
+                    catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
                     ontology_acceptance_policy=None,
                 ),
@@ -805,11 +828,17 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
     toolbox = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
                     validation_policy=None,
-                    ontology_critic_passes=1,
+                    ontology_critic_passes=2,  # the critic as judge: runs on a clean unit
+                    catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
+                    subject_contract=lambda: None,
+                    ontology_max_class_depth=6,
+                    catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
                     ontology_acceptance_policy=None,
                 ),
@@ -903,9 +932,9 @@ def test_agent_graph_topology_is_pinned() -> None:
         str(WorkflowNode.CONVERT_TO_TEXT),
         str(WorkflowNode.CHUNK),
         str(WorkflowNode.RESOLVE_HOME_ONTOLOGY),
+        str(WorkflowNode.ONTOLOGY_PLAN),
         str(WorkflowNode.RENDER_ONTOLOGY_UPDATE),
         str(WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES),
-        str(WorkflowNode.CONSOLIDATE_ONTOLOGY),
         str(WorkflowNode.STRUCTURAL_CHECK),
         str(WorkflowNode.CONSISTENCY_CRITIC),
         str(WorkflowNode.RENDER_FACTS),
@@ -927,6 +956,11 @@ def test_agent_graph_topology_is_pinned() -> None:
         (str(WorkflowNode.CHUNK), str(WorkflowNode.RENDER_FACTS), True),
         (
             str(WorkflowNode.RESOLVE_HOME_ONTOLOGY),
+            str(WorkflowNode.ONTOLOGY_PLAN),
+            False,
+        ),
+        (
+            str(WorkflowNode.ONTOLOGY_PLAN),
             str(WorkflowNode.RENDER_ONTOLOGY_UPDATE),
             False,
         ),
@@ -937,11 +971,6 @@ def test_agent_graph_topology_is_pinned() -> None:
         ),
         (
             str(WorkflowNode.NORMALIZE_ONTOLOGY_UPDATES),
-            str(WorkflowNode.CONSOLIDATE_ONTOLOGY),
-            False,
-        ),
-        (
-            str(WorkflowNode.CONSOLIDATE_ONTOLOGY),
             str(WorkflowNode.STRUCTURAL_CHECK),
             False,
         ),
@@ -995,8 +1024,10 @@ def test_toolbox_serialize_skips_facts_in_ontology_only_mode() -> None:
     state.ontology_artifacts = list(state.reduced_ontology_artifacts)
     store = RecordingStore()
     toolbox = SimpleNamespace(
+        prefix_table=lambda: PrefixTable({}, {}),
         ontology_manager=RecordingOntologyManager(),
         triple_store_manager=store,
+        config=SimpleNamespace(tool_config=SimpleNamespace(link=LinkConfig())),
     )
 
     asyncio.run(ToolBox.aserialize(cast(ToolBox, toolbox), state))
@@ -1028,8 +1059,10 @@ def test_toolbox_serialize_includes_facts_when_render_facts_enabled() -> None:
     state.ontology_artifacts = list(state.reduced_ontology_artifacts)
     store = RecordingStore()
     toolbox = SimpleNamespace(
+        prefix_table=lambda: PrefixTable({}, {}),
         ontology_manager=RecordingOntologyManager(),
         triple_store_manager=store,
+        config=SimpleNamespace(tool_config=SimpleNamespace(link=LinkConfig())),
     )
 
     asyncio.run(ToolBox.aserialize(cast(ToolBox, toolbox), state))
@@ -1069,6 +1102,7 @@ def test_toolbox_serialize_persists_all_ontology_artifacts() -> None:
     store = RecordingStore()
     manager = RecordingOntologyManager()
     toolbox = SimpleNamespace(
+        prefix_table=lambda: PrefixTable({}, {}),
         ontology_manager=manager,
         triple_store_manager=store,
     )
@@ -1267,91 +1301,6 @@ def test_merge_unit_deltas_insert_wins_over_parallel_delete() -> None:
     assert (contested, RDF.type, owl_class) in merged.inserts
     assert (contested, RDF.type, owl_class) not in merged.deletes
     assert (removed, RDF.type, owl_class) in merged.deletes
-
-
-@pytest.mark.anyio
-async def test_consolidate_ontology_node_applies_delta_on_map_stage_artifact(
-    monkeypatch,
-) -> None:
-    """Consolidation must build on the map-stage artifact, not the pre-run terminal.
-
-    The consolidation delta is a complement of the map-stage artifact; applying
-    it onto the stale catalog terminal silently dropped map-stage additions.
-    """
-    iri = "https://example.com/onto"
-    ns = f"{iri}#"
-    owl_class = URIRef("http://www.w3.org/2002/07/owl#Class")
-    map_stage_class = URIRef(f"{ns}MapStage")
-    consolidated_class = URIRef(f"{ns}Consolidated")
-
-    manager = OntologyManager()
-    terminal_graph = RDFGraph()
-    terminal_graph.bind("ex", ns)
-    terminal_graph.add((URIRef(iri), RDF.type, OWL.Ontology))
-    terminal_graph.add((URIRef(f"{ns}Thing"), RDF.type, owl_class))
-    terminal = stamped_ontology(terminal_graph, ontology_id="onto")
-    manager.add_ontology(terminal, skip_vector_index=True)
-
-    primary_graph = terminal_graph.copy()
-    primary_graph.add((map_stage_class, RDF.type, owl_class))
-    primary = terminal.derive_updated_version(primary_graph)
-
-    class DummyServerConfig:
-        enable_ontology_consolidation = True
-        ontology_max_triples = None
-        ontology_context_max_triples = 4000
-        llm_output_layout = LLMOutputLayout.COMPACT
-
-    class DummyConfig:
-        server = DummyServerConfig()
-
-        def get_tool_config(self):
-            return SimpleNamespace(ontology_validation=OntologyValidationConfig())
-
-    class DummyTools:
-        config = DummyConfig()
-        ontology_manager = manager
-
-        def get_atomic_tools(self):
-            return None
-
-    async def fake_render(unit_state: UnitOntologyState, atomic_tools):
-        insert_graph = RDFGraph()
-        insert_graph.bind("ex", ns)
-        insert_graph.add((consolidated_class, RDF.type, owl_class))
-        unit_state.ontology_updates = [
-            GraphUpdate(triple_operations=[TripleOp(type="insert", graph=insert_graph)])
-        ]
-        unit_state.update_ontology()
-        unit_state.status = Status.SUCCESS
-        return unit_state
-
-    monkeypatch.setattr(
-        "ontocast.stategraph.node_factories.render_ontology_update", fake_render
-    )
-
-    node = make_consolidate_ontology_node(cast(ToolBox, DummyTools()))
-    state = AgentState(render_mode=RenderMode.ONTOLOGY)
-    state.reduced_ontology_artifacts = [primary]
-    state.ontology_artifacts = [primary]
-    state.content_units = [
-        ContentUnit(
-            text="Perovskite samples were consolidated.",
-            index=0,
-            doc_iri=URIRef("https://example.com/doc/d1"),
-            graph=RDFGraph(),
-        )
-    ]
-
-    updated = await node(state)
-
-    assert updated.status == Status.SUCCESS
-    assert len(updated.ontology_artifacts) == 1
-    result_graph = updated.ontology_artifacts[0].graph
-    assert (consolidated_class, RDF.type, owl_class) in result_graph
-    # The regression: map-stage additions used to be dropped here.
-    assert (map_stage_class, RDF.type, owl_class) in result_graph
-    assert updated.ontology_updates_by_iri[iri]
 
 
 def test_a_rejected_request_stops_the_document_graph(monkeypatch) -> None:

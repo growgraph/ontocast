@@ -16,6 +16,7 @@ from ontocast.onto.enum import (
     RetrievalMetric,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.retrieval_capabilities import (
     EmptyOntologyContextError,
@@ -54,7 +55,7 @@ def _build_unit() -> ContentUnit:
 
 def _stub_ontology_manager(**kwargs: object) -> SimpleNamespace:
     kwargs.setdefault("has_ontologies", True)
-    return SimpleNamespace(preferred_namespace_prefixes={}, **kwargs)
+    return SimpleNamespace(**kwargs)
 
 
 def _build_tools(
@@ -69,6 +70,7 @@ def _build_tools(
     return cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             patch_retriever=patch_retriever,
             vector_store=vector_store,
             is_vector_store_ready=lambda: (
@@ -324,6 +326,7 @@ def test_resolver_vector_retrieval_prefers_ensemble() -> None:
     assert result.primary_writable_iri == ontology_iri
     assert len(result.snapshot.graph) > 0
     assert result.assembly_mode == OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
+    assert result.snapshot.partial
 
 
 def test_resolver_vector_retrieval_raises_when_vector_stack_missing() -> None:
@@ -404,7 +407,7 @@ def test_build_merged_document_ontology_context_merges_sorted_artifacts() -> Non
     state.reduced_ontology_artifacts = [first, second]
 
     context = build_merged_document_ontology_context(
-        UnitLoopContext.from_agent_state(state)
+        UnitLoopContext.from_agent_state(state), _no_catalog
     )
 
     assert context is not None
@@ -415,6 +418,10 @@ def test_build_merged_document_ontology_context_merges_sorted_artifacts() -> Non
     assert context.primary_writable_iri == "https://example.org/onto/a"
     assert len(context.snapshot.graph) >= 2
     assert context.assembly_mode == OntologyAssemblyMode.DOCUMENT_MERGED_REDUCED
+
+
+def _no_catalog(_iri: str) -> Ontology | None:
+    return None
 
 
 def test_merged_document_context_is_independent_of_any_unit() -> None:
@@ -438,10 +445,10 @@ def test_merged_document_context_is_independent_of_any_unit() -> None:
     state.reduced_ontology_artifacts = [merged]
 
     first = cr.build_merged_document_ontology_context(
-        UnitLoopContext.from_agent_state(state)
+        UnitLoopContext.from_agent_state(state), _no_catalog
     )
     second = cr.build_merged_document_ontology_context(
-        UnitLoopContext.from_agent_state(state)
+        UnitLoopContext.from_agent_state(state), _no_catalog
     )
 
     assert first is not None and second is not None
@@ -463,8 +470,6 @@ def test_resolver_fixed_single_ontology_resolves_from_manager() -> None:
     )
 
     class _StubOntologyManager:
-        preferred_namespace_prefixes: dict[str, str] = {}
-
         def get_head(self, ontology_id: str | None = None) -> Ontology | None:
             if ontology_id == "finance":
                 return finance_ontology
@@ -486,3 +491,97 @@ def test_resolver_fixed_single_ontology_resolves_from_manager() -> None:
     )
     assert result.assembly_mode == OntologyAssemblyMode.FIXED_SINGLE_ONTOLOGY
     assert result.primary_writable_iri == finance_iri
+
+
+_DBO = "https://catalog.example/dbo"
+_BASE = "https://catalog.example/base"
+_EXT = "https://deployment.example/ontology-ext"
+_FRESH = "https://deployment.example/sports"
+
+
+def _ttl(iri: str, body: str) -> Ontology:
+    return Ontology(
+        iri=iri,
+        graph=RDFGraph._from_turtle_str(
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n"
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n" + body
+        ),
+    )
+
+
+_CATALOG = {
+    _DBO: _ttl(
+        _DBO,
+        f"<{_DBO}> a owl:Ontology ; owl:imports <{_BASE}> , <http://www.w3.org/ns/prov#> .\n"
+        f"<{_DBO}/School> a owl:Class ; rdfs:label 'school' .\n",
+    ),
+    _BASE: _ttl(_BASE, f"<{_BASE}/Agent> a owl:Class ; rdfs:label 'agent' .\n"),
+}
+
+
+def _facts_context(
+    artifacts: list[Ontology], *, sources: list[str], extends: str | None = None
+):
+    from ontocast.onto.identity import OntologyIdentity
+
+    state = AgentState(
+        ontology_context_mode=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY
+    )
+    state.reduced_ontology_artifacts = artifacts
+    state.unit_context_sources = {"ontology": {0: sources}}
+    if artifacts:
+        state.home_ontology = OntologyIdentity(
+            iri=artifacts[0].iri,
+            ontology_id=artifacts[0].iri.rsplit("/", 1)[-1],
+            namespace=artifacts[0].iri + "#",
+            title="home",
+            extends=extends,
+        )
+    return build_merged_document_ontology_context(
+        UnitLoopContext.from_agent_state(state), _CATALOG.get
+    )
+
+
+def test_an_extension_home_brings_the_catalog_it_imports_into_the_facts_context() -> (
+    None
+):
+    extension = _ttl(
+        _EXT,
+        f"<{_EXT}> a owl:Ontology ; owl:imports <{_DBO}> .\n"
+        f"<{_EXT}#principal> a owl:ObjectProperty ; rdfs:domain <{_DBO}/School> .\n",
+    )
+    written = set(extension.graph)
+
+    context = _facts_context([extension], sources=[], extends=_DBO)
+
+    assert context is not None
+    subjects = set(context.snapshot.graph.subjects())
+    # The home, the catalog it imports, and what that imports in turn.
+    assert {URIRef(f"{_EXT}#principal"), URIRef(f"{_DBO}/School")} <= subjects
+    assert URIRef(f"{_BASE}/Agent") in subjects
+    assert context.patch_sources == [_EXT, _BASE, _DBO]
+    # The catalog is read, never written.
+    assert context.writable_iris == [_EXT]
+    assert set(extension.graph) == written
+
+
+def test_a_fresh_home_gets_the_catalog_its_ontology_units_read() -> None:
+    fresh = _ttl(_FRESH, f"<{_FRESH}#Tournament> a owl:Class .\n")
+
+    context = _facts_context([fresh], sources=[_FRESH, _DBO])
+
+    assert context is not None
+    assert URIRef(f"{_DBO}/School") in set(context.snapshot.graph.subjects())
+    assert context.writable_iris == [_FRESH]
+
+
+def test_an_ontology_lane_that_wrote_nothing_still_gives_one_catalog_context() -> None:
+    context = _facts_context([], sources=[_DBO])
+
+    assert context is not None
+    assert URIRef(f"{_DBO}/School") in set(context.snapshot.graph.subjects())
+    assert context.writable_iris == []
+
+
+def test_no_ontology_stage_means_no_merged_context() -> None:
+    assert _facts_context([], sources=[]) is None

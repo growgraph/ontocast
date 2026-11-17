@@ -28,7 +28,13 @@ from __future__ import annotations
 
 from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 
+from ontocast.onto.prefixes import NOTE_PREDICATES
+from ontocast.onto.property_sides import SIDE_PREDICATES, side_predicates
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.well_known import (
+    well_known_statement_classes,
+    well_known_statement_properties,
+)
 
 #: Rendered in this order, each under its own heading. Individuals come last:
 #: they are the longest section on a unit-bearing catalog and the least
@@ -61,7 +67,7 @@ def qname_for(graph: RDFGraph, term: URIRef) -> str:
         term: The IRI to shorten.
 
     Returns:
-        A prefixed name such as ``ex:PowderSample``, or the IRI itself
+        A prefixed name such as ``ex:ResearchProject``, or the IRI itself
         when no bound prefix covers it.
     """
     try:
@@ -121,26 +127,29 @@ def _first_text(graph: RDFGraph, subject: URIRef, *predicates: URIRef) -> str:
     return ""
 
 
-def _iris(graph: RDFGraph, subject: URIRef, predicate: URIRef) -> list[str]:
-    """Sorted qnames of the IRI objects of ``predicate`` on ``subject``.
+def _iris(graph: RDFGraph, subject: URIRef, *predicates: URIRef) -> list[str]:
+    """Sorted, distinct qnames of the IRI objects of ``predicates`` on ``subject``.
 
     Blank-node objects are skipped: an ``owl:Restriction`` has no name to print,
     and the term sheet has no syntax for an anonymous class expression. The
     class it restricts is already named by the term's own line.
     """
     return sorted(
-        qname_for(graph, obj)
-        for obj in graph.objects(subject, predicate)
-        if isinstance(obj, URIRef)
+        {
+            qname_for(graph, obj)
+            for predicate in predicates
+            for obj in graph.objects(subject, predicate)
+            if isinstance(obj, URIRef)
+        }
     )
 
 
-def _partition(graph: RDFGraph) -> tuple[list[URIRef], list[URIRef], list[URIRef]]:
+def partition_terms(graph: RDFGraph) -> tuple[list[URIRef], list[URIRef], list[URIRef]]:
     """Split named subjects into classes, properties and individuals.
 
     Classification is by declared ``rdf:type``, with two structural fallbacks so
     a catalog that under-declares still lands its terms in the right section: a
-    subject carrying ``rdfs:domain``/``rdfs:range``/``rdfs:subPropertyOf`` is a
+    subject carrying a domain, a range or ``rdfs:subPropertyOf`` is a
     property, and one carrying ``rdfs:subClassOf`` is a class.
     """
     classes: list[URIRef] = []
@@ -151,8 +160,7 @@ def _partition(graph: RDFGraph) -> tuple[list[URIRef], list[URIRef], list[URIRef
     ):
         types = {t for t in graph.objects(subject, RDF.type) if isinstance(t, URIRef)}
         if types & _PROPERTY_TYPES or any(
-            (subject, p, None) in graph
-            for p in (RDFS.domain, RDFS.range, RDFS.subPropertyOf)
+            (subject, p, None) in graph for p in (*SIDE_PREDICATES, RDFS.subPropertyOf)
         ):
             properties.append(subject)
         elif types & _CLASS_TYPES or (subject, RDFS.subClassOf, None) in graph:
@@ -162,7 +170,7 @@ def _partition(graph: RDFGraph) -> tuple[list[URIRef], list[URIRef], list[URIRef
     return classes, properties, individuals
 
 
-def _term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
+def term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
     """The one-or-two lines describing ``subject``.
 
     Args:
@@ -187,8 +195,8 @@ def _term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
         if parents:
             parts.append(f"< {', '.join(sorted(set(parents)))}")
     elif kind == "property":
-        domain = _iris(graph, subject, RDFS.domain)
-        codomain = _iris(graph, subject, RDFS.range)
+        domain = _iris(graph, subject, *side_predicates("domain"))
+        codomain = _iris(graph, subject, *side_predicates("range"))
         parts.append(f"{'/'.join(domain) or '?'} -> {'/'.join(codomain) or '?'}")
         super_properties = _iris(graph, subject, RDFS.subPropertyOf)
         if super_properties:
@@ -223,7 +231,7 @@ def _term_line(graph: RDFGraph, subject: URIRef, *, kind: str) -> list[str]:
     # before the snapshot reaches any chapter format, and clips by content --
     # opening sentence plus any clause saying when the term applies. Bounding
     # it here instead would bound only this one format.
-    note = _first_text(graph, subject, SKOS.scopeNote, SKOS.definition, RDFS.comment)
+    note = _first_text(graph, subject, *NOTE_PREDICATES)
     if note:
         lines.append(f"      note: {note}")
     return lines
@@ -252,7 +260,7 @@ def build_ontology_term_sheet(graph: RDFGraph) -> str:
     Returns:
         The chapter body, or ``""`` when the snapshot names no term.
     """
-    classes, properties, individuals = _partition(graph)
+    classes, properties, individuals = partition_terms(graph)
     sections = [
         ("Classes", classes, "class"),
         ("Properties  (domain -> range)", properties, "property"),
@@ -267,5 +275,34 @@ def build_ontology_term_sheet(graph: RDFGraph) -> str:
             continue
         lines.append(f"\n## {heading}")
         for term in terms:
-            lines.extend(_term_line(graph, term, kind=kind))
+            lines.extend(term_line(graph, term, kind=kind))
+    if _has_statement_class(graph, classes):
+        lines.append("\n## Properties every statement above takes  (well-known)")
+        for iri, label in sorted(well_known_statement_properties().items()):
+            lines.append(f'  {qname_for(graph, URIRef(iri))}  "{label}"')
     return "\n".join(lines)
+
+
+def _has_statement_class(graph: RDFGraph, classes: list[URIRef]) -> bool:
+    """Whether a class of the sheet is, or is under, a well-known statement class.
+
+    A statement (an observation) is a fact only with its subject, and the
+    properties naming it come from a well-known vocabulary the catalog may
+    not restate; the sheet lists them so they are terms it shows.
+    """
+    anchors = {URIRef(iri) for iri in well_known_statement_classes()}
+    seen: set[URIRef] = set()
+    frontier = [cls for cls in classes]
+    while frontier:
+        cls = frontier.pop()
+        if cls in anchors:
+            return True
+        if cls in seen:
+            continue
+        seen.add(cls)
+        frontier.extend(
+            parent
+            for parent in graph.objects(cls, RDFS.subClassOf)
+            if isinstance(parent, URIRef)
+        )
+    return False

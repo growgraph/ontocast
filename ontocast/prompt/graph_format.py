@@ -480,6 +480,8 @@ class GraphFormatProfile:
         domain_ontologies_clause: str,
         quantity_fallback_vocabulary: dict[str, str] | None = None,
         search_guidelines: str = "",
+        vocabulary: str = "strict",
+        additional_namespaces: tuple[str, ...] | list[str] = (),
     ) -> str:
         return format_facts_operational_guidelines(
             facts_namespace=facts_namespace,
@@ -487,6 +489,8 @@ class GraphFormatProfile:
             jsonld=self.format == LLMGraphFormat.JSONLD,
             quantity_fallback_vocabulary=quantity_fallback_vocabulary,
             search_guidelines=search_guidelines,
+            vocabulary=vocabulary,
+            additional_namespaces=additional_namespaces,
         )
 
     def format_instructions(

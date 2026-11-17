@@ -176,3 +176,118 @@ def test_every_direct_llm_call_sits_in_a_phase() -> None:
         if path.name == "common.py":  # call_llm_with_retry itself
             continue
         assert "use_llm_phase(" in source, path.relative_to(PACKAGE)
+
+
+def test_model_by_phase_refuses_an_unknown_phase() -> None:
+    from pydantic import ValidationError
+
+    from ontocast.config import LLMConfig
+
+    assert LLMConfig(model_by_phase={"ontology_plan": " m "}).model_by_phase == {
+        "ontology_plan": "m"
+    }
+    with pytest.raises(ValidationError, match="unknown phase"):
+        LLMConfig(model_by_phase={"ontology_planning": "m"})
+
+
+@pytest.mark.anyio
+async def test_a_phase_with_its_own_model_is_served_by_that_model(
+    monkeypatch,
+) -> None:
+    """``LLM_MODEL_BY_PHASE``: the bound phase picks the tool, nothing else."""
+    from langchain_core.messages import AIMessage
+
+    from ontocast.config import LLMConfig
+    from ontocast.tool.llm import LLMTool
+
+    answered: list[str] = []
+
+    class _Model:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def ainvoke(self, *_args, **_kwargs) -> AIMessage:
+            answered.append(self.name)
+            return AIMessage(content="ok")
+
+    async def install_model(self: LLMTool) -> None:
+        self._llm = _Model(str(self.config.model_name))
+
+    monkeypatch.setattr(LLMTool, "setup", install_model)
+    tool = await LLMTool.acreate(
+        config=LLMConfig(
+            api_key="sk-not-used",
+            cache_enabled=False,
+            model_by_phase={"ontology_plan": "planner-model"},
+        )
+    )
+
+    override = tool.phase_override(LLMPhase.ONTOLOGY_PLAN)
+    assert override is not None
+    assert override.config.model_name == "planner-model"
+    assert override.config.model_by_phase == {}
+    assert tool.phase_override(LLMPhase.ONTOLOGY_RENDER) is None
+
+    with use_llm_phase(LLMPhase.ONTOLOGY_PLAN):
+        await tool._invoke_cached("prompt")
+    with use_llm_phase(LLMPhase.ONTOLOGY_RENDER):
+        await tool._invoke_cached("prompt")
+    await tool._invoke_cached("prompt")
+
+    base = str(tool.config.model_name)
+    assert answered == ["planner-model", base, base]
+
+
+def test_reasoning_effort_by_phase_refuses_an_unknown_phase_and_level() -> None:
+    from pydantic import ValidationError
+
+    from ontocast.config import LLMConfig
+
+    config = LLMConfig(reasoning_effort_by_phase={"facts_coreference": "low"})
+    assert config.reasoning_effort_by_phase == {"facts_coreference": "low"}
+    with pytest.raises(ValidationError, match="unknown phase"):
+        LLMConfig(reasoning_effort_by_phase={"coreference": "low"})
+    with pytest.raises(ValidationError):
+        LLMConfig(
+            reasoning_effort_by_phase={"facts_coreference": "lowest"}  # ty: ignore[invalid-argument-type]
+        )
+
+
+@pytest.mark.anyio
+async def test_a_phase_with_its_own_effort_gets_an_override(monkeypatch) -> None:
+    """Effort alone builds an override; a phase in both settings gets one tool."""
+    from ontocast.config import LLMConfig
+    from ontocast.tool.llm import LLMTool
+
+    async def no_setup(self: LLMTool) -> None:
+        return None
+
+    monkeypatch.setattr(LLMTool, "setup", no_setup)
+    tool = await LLMTool.acreate(
+        config=LLMConfig(
+            api_key="sk-not-used",
+            cache_enabled=False,
+            reasoning_effort="medium",
+            model_by_phase={"ontology_plan": "planner-model"},
+            reasoning_effort_by_phase={
+                "ontology_plan": "high",
+                "facts_coreference": "low",
+                # The run's own level: nothing to override.
+                "facts_render": "medium",
+            },
+        )
+    )
+
+    coreference = tool.phase_override(LLMPhase.FACTS_COREFERENCE)
+    assert coreference is not None
+    assert coreference.config.reasoning_effort == "low"
+    assert coreference.config.model_name == tool.config.model_name
+    assert coreference.config.reasoning_effort_by_phase == {}
+
+    plan = tool.phase_override(LLMPhase.ONTOLOGY_PLAN)
+    assert plan is not None
+    assert (plan.config.model_name, plan.config.reasoning_effort) == (
+        "planner-model",
+        "high",
+    )
+    assert tool.phase_override(LLMPhase.FACTS_RENDER) is None

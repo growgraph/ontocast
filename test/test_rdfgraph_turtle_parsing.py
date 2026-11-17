@@ -1,7 +1,7 @@
 from copy import deepcopy
 
 import pytest
-from rdflib import Graph, Literal, URIRef
+from rdflib import RDF, Graph, Literal, URIRef
 
 from ontocast.onto.enum import LLMGraphFormat
 from ontocast.onto.rdfgraph import (
@@ -435,39 +435,31 @@ def test_model_validate_uses_explicit_llm_graph_format_context() -> None:
     assert len(report.insert_graph) >= 1
 
 
-def test_serialize_canonical_turtle_handles_oxigraph_triple_terms() -> None:
-    """Oxigraph-backed graphs may hold RDF 1.2 triple terms.
+def test_serialize_canonical_turtle_writes_reifications() -> None:
+    """Provenance is written as RDF 1.2 triple terms beside the triples."""
+    from rdflib import BNode
 
-    oxrdflib surfaces those as plain Python tuples, which rdflib's Turtle
-    writer cannot serialize, so the canonical writer must delegate to
-    pyoxigraph for oxigraph stores regardless of the Turtle flavour requested.
-    """
-    from typing import cast
-
-    import pyoxigraph as ox
-    from oxrdflib._converter import to_ox
-
-    from ontocast.onto.rdfgraph import _oxigraph_inner_store
-
-    graph = RDFGraph(store="oxigraph")
-    inner = cast(ox.Store, _oxigraph_inner_store(graph.store))
-    context = to_ox(graph.identifier)
-    assert isinstance(context, (ox.NamedNode, ox.BlankNode, ox.DefaultGraph))
-    inner.load(
-        b"""
-        @prefix cd: <https://growgraph.dev/facts/> .
-        cd:a cd:p cd:b .
-        cd:s cd:annotates <<( cd:a cd:p cd:b )>> .
-        """,
-        format=ox.RdfFormat.TURTLE,
-        to_graph=context,
-    )
-    graph.bind("cd", "https://growgraph.dev/facts/")
+    cd = "https://growgraph.dev/facts/"
+    statement = (URIRef(f"{cd}a"), URIRef(f"{cd}p"), URIRef(f"{cd}b"))
+    graph = RDFGraph()
+    graph.bind("cd", cd)
+    graph.add(statement)
+    graph.reifications.add(BNode(), statement)
 
     turtle = graph.serialize_canonical_turtle()
 
     assert "cd:a cd:p cd:b" in turtle
-    assert "cd:s cd:annotates <<( cd:a cd:p cd:b )>>" in turtle
+    assert "<<( cd:a cd:p cd:b )>>" in turtle
+
+
+def test_a_triple_term_outside_rdf_reifies_is_refused() -> None:
+    with pytest.raises(ValueError, match="rdf:reifies"):
+        RDFGraph._from_turtle_str(
+            """
+            @prefix cd: <https://growgraph.dev/facts/> .
+            cd:s cd:annotates <<( cd:a cd:p cd:b )>> .
+            """
+        )
 
 
 def test_serialize_canonical_turtle_keeps_double_precision() -> None:
@@ -483,3 +475,182 @@ def test_serialize_canonical_turtle_keeps_double_precision() -> None:
 
     assert "1.602177e-22" not in turtle
     assert "1.602176634e-22" in turtle
+
+
+@pytest.mark.parametrize(
+    ("written", "subject"),
+    [
+        ("cd: june_2021_heat_wave a prov:Entity ;", "june_2021_heat_wave"),
+        ('cd:a prov:value "x" . cd:lytt on a prov:Entity ;', "lytton"),
+        ('cd:t prov:value "35 °C" . cd: june a prov:Entity ;', "june"),
+    ],
+)
+def test_a_space_inside_a_prefixed_name_is_closed(written: str, subject: str) -> None:
+    ttl = (
+        "@prefix cd: <https://example.com/facts/> . "
+        "@prefix prov: <http://www.w3.org/ns/prov#> . "
+        f'{written} prov:value "y" .'
+    )
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert (
+        URIRef(f"https://example.com/facts/{subject}"),
+        URIRef("http://www.w3.org/ns/prov#value"),
+        Literal("y"),
+    ) in graph
+
+
+def test_a_bare_word_that_does_not_close_into_a_name_still_fails() -> None:
+    # Joining the predicate onto the subject parses nothing, so the error stands.
+    ttl = '@prefix cd: <https://example.com/facts/> . cd:obs hasValue cd:v ; cd:p "x" .'
+
+    with pytest.raises(Exception):
+        RDFGraph._from_turtle_str(ttl)
+
+
+def test_every_occurrence_of_one_split_name_is_closed() -> None:
+    ttl = (
+        "@prefix cd: <https://example.com/facts/> . "
+        "@prefix prov: <http://www.w3.org/ns/prov#> . "
+        'cd:lytt on a prov:Entity ; prov:value "y" . '
+        "cd:lytt on_record prov:wasDerivedFrom cd:lytt on . "
+        "cd:x prov:wasDerivedFrom cd:lytt on ; prov:atLocation cd:lytt on ."
+    )
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    lytton = URIRef("https://example.com/facts/lytton")
+    derived = URIRef("http://www.w3.org/ns/prov#wasDerivedFrom")
+    assert (URIRef("https://example.com/facts/lytton_record"), derived, lytton) in graph
+    assert (URIRef("https://example.com/facts/x"), derived, lytton) in graph
+
+
+def test_a_split_name_before_a_comma_is_closed() -> None:
+    ttl = (
+        "@prefix cd: <https://example.com/facts/> . "
+        "@prefix prov: <http://www.w3.org/ns/prov#> . "
+        "cd:firm prov:wasAttributedTo cd:adol f_kraus, cd:levy_mayer ."
+    )
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    assert (
+        URIRef("https://example.com/facts/firm"),
+        URIRef("http://www.w3.org/ns/prov#wasAttributedTo"),
+        URIRef("https://example.com/facts/adolf_kraus"),
+    ) in graph
+
+
+_RESTATED_PREFIXES = (
+    "@prefix cd: <https://example.com/facts/> . "
+    "@prefix prov: <http://www.w3.org/ns/prov#> . "
+    "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> . "
+)
+_FACT = "https://example.com/facts/"
+_PROV = "http://www.w3.org/ns/prov#"
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        'cd:iww a prov:Agent ; rdfs:label "IWW. A union; founded" ; '
+        "cd:iww prov:wasDerivedFrom cd:hagerty .",
+        "<https://example.com/facts/iww> a prov:Agent ; "
+        "<https://example.com/facts/iww> prov:wasDerivedFrom cd:hagerty .",
+        "cd:iww a prov:Agent ; cd:iww prov:wasDerivedFrom cd:hagerty ; "
+        "prov:atLocation cd:chicago . cd:x a prov:Entity ; cd:x prov:value 'q' .",
+    ],
+)
+def test_a_subject_restated_after_a_semicolon_on_one_line_ends_the_statement(
+    written: str,
+) -> None:
+    graph = RDFGraph._from_turtle_str(_RESTATED_PREFIXES + written)
+
+    assert (
+        URIRef(f"{_FACT}iww"),
+        URIRef(f"{_PROV}wasDerivedFrom"),
+        URIRef(f"{_FACT}hagerty"),
+    ) in graph
+    assert (URIRef(f"{_FACT}iww"), RDF.type, URIRef(f"{_PROV}Agent")) in graph
+
+
+def test_another_subject_after_a_semicolon_is_not_taken_for_a_restated_one() -> None:
+    # Two objects without a comma: ending the statement would make the
+    # predicate a subject.
+    ttl = _RESTATED_PREFIXES + "cd:a a prov:Agent ; prov:wasDerivedFrom cd:t cd:u ."
+
+    with pytest.raises(Exception):
+        RDFGraph._from_turtle_str(ttl)
+
+
+def test_statements_run_together_after_text_with_non_ascii_characters_are_split() -> (
+    None
+):
+    # Each restated node opens a statement of its own elsewhere; the stops sit
+    # after text whose characters take several bytes.
+    ttl = _RESTATED_PREFIXES + (
+        'cd:lucy a prov:Agent ; rdfs:label "Lucy Béhag — 35 °C" . '
+        'cd:sue a prov:Agent ; rdfs:label "Süe" . '
+        "cd:julie prov:wasDerivedFrom cd:julie_awards ; "
+        "cd:lucy prov:wasDerivedFrom cd:lucy_awards ; "
+        "cd:sue prov:wasDerivedFrom cd:sue_awards ."
+    )
+
+    graph = RDFGraph._from_turtle_str(ttl)
+
+    derived = URIRef(f"{_PROV}wasDerivedFrom")
+    for name in ("julie", "lucy", "sue"):
+        assert (
+            URIRef(f"{_FACT}{name}"),
+            derived,
+            URIRef(f"{_FACT}{name}_awards"),
+        ) in graph
+
+
+_EXT = "https://example.com/ontology-ext/"
+_DOTTED = "https://example.com/a.b#"
+
+
+def test_an_undeclared_hyphenated_prefix_is_declared() -> None:
+    ttl = "@prefix ex: <https://example.com/ns#> . ex:firm ontology-ext:splitFrom ex:parent ."
+    previous = RDFGraph.get_known_prefixes()
+    RDFGraph.set_known_prefixes({"ontology-ext": _EXT})
+    try:
+        graph = RDFGraph._from_turtle_str(ttl)
+    finally:
+        RDFGraph.set_known_prefixes(previous)
+
+    assert list(graph.predicates()) == [URIRef(f"{_EXT}splitFrom")]
+
+
+def test_a_dotted_prefix_name_is_one_name() -> None:
+    from ontocast.onto.rdfgraph import PREFIX_DECLARATION_PATTERN, PREFIX_USAGE_PATTERN
+
+    ttl = f"@prefix a.b: <{_DOTTED}> . ex:s a.b:partOf ex:o ."
+
+    assert [m.group(1) for m in PREFIX_DECLARATION_PATTERN.finditer(ttl)] == ["a.b"]
+    assert "a.b" in {m.group(1) for m in PREFIX_USAGE_PATTERN.finditer(ttl)}
+
+
+def test_a_declared_hyphenated_prefix_is_not_declared_twice() -> None:
+    ttl = (
+        f"@prefix ontology-ext: <{_EXT}> . "
+        "@prefix ex: <https://example.com/ns#> . "
+        "ex:firm ontology-ext:splitFrom ex:parent ."
+    )
+
+    assert RDFGraph._ensure_prefixes(ttl) == ttl
+
+
+def test_a_name_inside_an_iri_or_a_local_part_is_not_read_as_a_prefix() -> None:
+    previous = RDFGraph.get_known_prefixes()
+    RDFGraph.set_known_prefixes({"ext": _EXT, "a": _DOTTED})
+    try:
+        ttl = (
+            "@prefix ex: <https://example.com/ns#> . "
+            "ex:firm ex:a:b <https://example.com/foo-ext:bar> ."
+        )
+        assert RDFGraph._ensure_prefixes(ttl) == ttl
+    finally:
+        RDFGraph.set_known_prefixes(previous)

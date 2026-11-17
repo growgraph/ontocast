@@ -37,6 +37,11 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_LLM_REPAIR_RENDERS_FAILED": "facts_llm_repair_renders_failed",
     "FACTS_REPAIR_DELETE_ONLY": "facts_repair_delete_only",
     "FACTS_MANDATORY_RESIDUAL": "facts_mandatory_residual",
+    "FACTS_MANDATORY_RESIDUAL_BY_KIND": "facts_mandatory_residual_by_kind",
+    "FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED": (
+        "facts_statements_without_subject_rendered"
+    ),
+    "FACTS_STATEMENTS_WITHOUT_SUBJECT": "facts_statements_without_subject",
     "FACTS_CRITIC_CALLS": "facts_critic_calls",
     "FACTS_CRITIC_ACCEPTED": "facts_critic_accepted",
     "FACTS_CRITIC_FIXES_APPLIED": "facts_critic_fixes_applied",
@@ -47,6 +52,7 @@ EXPECTED_WIRE_NAMES = {
     "ONTOLOGY_CRITIC_FIXES_RESIDUAL": "ontology_critic_fixes_residual",
     "ONTOLOGY_CRITIC_FIXES_NOOP": "ontology_critic_fixes_noop",
     "ONTOLOGY_CRITIC_PATCHES_ROLLED_BACK": "ontology_critic_patches_rolled_back",
+    "ONTOLOGY_CRITIC_UNITS_SKIPPED": "ontology_critic_units_skipped",
     "FACTS_CRITIC_UNITS_UNREVIEWED": "facts_critic_units_unreviewed",
     "FACTS_CRITIC_UNITS_SKIPPED": "facts_critic_units_skipped",
     "FACTS_CRITIC_FIXES_ROLLED_BACK": "facts_critic_fixes_rolled_back",
@@ -57,8 +63,13 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_COMPLETION_MEASUREMENTS_RECOVERED": (
         "facts_completion_measurements_recovered"
     ),
+    "FACTS_COMPLETION_DETACHED_LINKED": "facts_completion_detached_linked",
+    "FACTS_DOMAIN_REPAIR_CALLS": "facts_domain_repair_calls",
+    "FACTS_DOMAIN_REPAIR_FIXED": "facts_domain_repair_fixed",
+    "FACTS_DOMAIN_VIOLATIONS_DROPPED": "facts_domain_violations_dropped",
     "FACTS_FINDINGS_RESIDUAL": "facts_findings_residual",
     "FACTS_REJECTED_MERGES": "facts_rejected_merges",
+    "FACTS_MERGE_REJECTIONS_BY_REASON": "facts_merge_rejections_by_reason",
     "FACTS_MERGE_REPAIR_PASSES": "facts_merge_repair_passes",
     "FACTS_MERGE_VETOES": "facts_merge_vetoes",
     "FACTS_MERGE_REPAIRS_REJECTED": "facts_merge_repairs_rejected",
@@ -74,10 +85,14 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_SHACL_AUTOFIX_PASSES": "facts_shacl_autofix_passes",
     "FACTS_SHACL_AUTOFIX_REVERTED": "facts_shacl_autofix_reverted",
     "FACTS_UNTYPED_DROPPED": "facts_untyped_dropped",
+    "FACTS_UNLINKED_DROPPED": "facts_unlinked_dropped",
+    "FACTS_SELF_LOOPS_DROPPED": "facts_self_loops_dropped",
+    "FACTS_DATE_VALUES_ADDED": "facts_date_values_added",
     "FACTS_UNTYPED_INFERRED": "facts_untyped_inferred",
     "FACTS_LINKS_REMOVED": "facts_links_removed",
     "FACTS_COMPONENTS": "facts_components",
     "FACTS_ISOLATED": "facts_isolated",
+    "FACTS_TWIN_LABELS": "facts_twin_labels",
     "STRUCTURAL_ONTOLOGY_COMPONENTS_MAX": "structural_ontology_components_max",
     "CONSISTENCY_CONFLICTS": "consistency_conflicts",
 }

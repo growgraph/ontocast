@@ -176,8 +176,8 @@ class TripleStoreManager(Tool):
         """Return a graph without the provenance the pipeline writes.
 
         Removed: every triple touching a chunk node or reifier
-        (:mod:`ontocast.onto.scaffolding`), and the ``prov:wasDerivedFrom``
-        lineage on an ontology header. Domain triples stay whatever their
+        (:mod:`ontocast.onto.scaffolding`), the graph's RDF 1.2 reifications,
+        and the ``prov:wasDerivedFrom`` lineage on an ontology header. Domain triples stay whatever their
         vocabulary, PROV-O included.
         """
         clean = RDFGraph()
@@ -247,7 +247,7 @@ class TripleStoreManager(Tool):
         return False
 
     async def aselect(
-        self, query: str, *, store: StoreKind = "ontologies"
+        self, query: str, *, store: StoreKind = "ontologies", union: bool = False
     ) -> list[dict[str, str]]:
         """Run a SPARQL SELECT against the active partition.
 
@@ -263,6 +263,8 @@ class TripleStoreManager(Tool):
             query: A SPARQL SELECT query.
             store: Which partition to query -- ``"ontologies"``, ``"facts"`` or
                 ``"shapes"``.
+            union: Read the partition's default graph as the union of all its
+                named graphs, so one pattern matches across documents.
 
         Returns:
             list[dict[str, str]]: One dict per solution.
@@ -282,7 +284,7 @@ class TripleStoreManager(Tool):
         return False
 
     async def aconstruct(
-        self, query: str, *, store: StoreKind = "ontologies"
+        self, query: str, *, store: StoreKind = "ontologies", union: bool = False
     ) -> RDFGraph:
         """Run a SPARQL CONSTRUCT against the active partition.
 
@@ -298,6 +300,7 @@ class TripleStoreManager(Tool):
             query: A SPARQL CONSTRUCT (or DESCRIBE) query.
             store: Which partition to query -- ``"ontologies"``, ``"facts"`` or
                 ``"shapes"``.
+            union: As for :meth:`aselect`.
 
         Returns:
             RDFGraph: The constructed triples, without prefix bindings.

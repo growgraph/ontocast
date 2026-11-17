@@ -18,10 +18,10 @@ other entry path.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from itertools import combinations
 
-from rdflib import BNode, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, BNode, Literal, URIRef
 from rdflib.term import Node
 
 from ontocast.onto.constants import DEFAULT_IRI
@@ -29,6 +29,8 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import RetrievalMetric
 from ontocast.onto.model import (
     FactsGateRepairKind,
+    FactsUnitFinding,
+    FactsUnitFindingKind,
     FactsValidationFinding,
     FactsValidationFindingKind,
     GraphRepairRecord,
@@ -41,6 +43,7 @@ from ontocast.tool.agg.signatures import (
     normalize_string_value,
     string_values_compatible,
 )
+from ontocast.tool.agg.value_names import carrierless_values, name_values
 from ontocast.tool.facts_validation import (
     FactsValidationReport,
     ShaclRepairResult,
@@ -51,20 +54,28 @@ from ontocast.tool.facts_validation import (
     dedupe_literal_variants,
     facts_connectivity,
     instance_links,
+    isolated_instances,
+    isolated_report,
     links_lost,
     materialize_entailed_types,
     record_facts_gate_metrics,
     shacl_catalog_contradictions,
+    silent_instances,
     summarize_conformance,
+    twin_labels,
     untyped_instances,
     validate_aggregated_facts,
 )
+from ontocast.tool.facts_validation.date_values import add_date_values
+from ontocast.tool.facts_validation.terms import is_value_node
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
 
 #: How many dropped instance IRIs the state keeps; the metric holds the count.
 _UNTYPED_DROPPED_STATE_CAP = 200
+#: Isolated instances listed in the manifest; the count is ``facts_isolated``.
+_ISOLATED_STATE_CAP = 200
 
 #: Finding kinds the un-merge repair can actually act on. Scoring the loop on
 #: *all* errors let SHACL findings -- which un-merging cannot fix -- decide
@@ -245,7 +256,7 @@ def _remove_orphaned_blank_nodes(
 
 def drop_untyped_instances(
     graph: RDFGraph, fact_namespaces: Sequence[str]
-) -> tuple[RDFGraph, list[str]]:
+) -> list[GraphRepairRecord]:
     """Remove every instance that has no concrete type, with its triples.
 
     Runs on the aggregated graph so a type asserted in any unit counts. An
@@ -261,29 +272,319 @@ def drop_untyped_instances(
         fact_namespaces: Namespaces holding minted instances.
 
     Returns:
-        Tuple of (the same graph, dropped instance IRIs ordered by IRI).
+        One ``untyped_dropped`` record per instance, ordered by IRI.
     """
-    untyped = untyped_instances(graph, fact_namespaces)
-    if not untyped:
-        return graph, []
+    records = _drop_recorded(
+        graph,
+        untyped_instances(graph, fact_namespaces),
+        FactsGateRepairKind.UNTYPED_DROPPED,
+    )
+    if records:
+        logger.info(
+            "Dropped %d untyped instance(s) from the aggregated facts", len(records)
+        )
+    return records
+
+
+#: Predicates whose statement may join a node to itself by definition.
+_REFLEXIVE_BY_DEFINITION = frozenset({OWL.sameAs, RDF.type})
+
+
+def drop_self_loops(
+    graph: RDFGraph, ontology_graph: RDFGraph | None
+) -> list[GraphRepairRecord]:
+    """Remove every statement ``x p x`` whose ``p`` is not declared reflexive.
+
+    A text never relates a thing to itself through an ordinary property: such
+    a statement is a slip (the subject written twice) or two nodes a merge
+    joined. It states nothing, so it goes; ``owl:sameAs``, ``rdf:type`` and an
+    ``owl:ReflexiveProperty`` the context declares are kept. A reifier goes
+    with its statement.
+
+    Returns:
+        One ``self_loop_dropped`` record per statement.
+    """
+    context = ontology_graph if ontology_graph is not None else RDFGraph()
+    loops = sorted(
+        (
+            (subject, predicate, obj)
+            for subject, predicate, obj in graph
+            if subject == obj
+            and isinstance(predicate, URIRef)
+            and predicate not in _REFLEXIVE_BY_DEFINITION
+            and (predicate, RDF.type, OWL.ReflexiveProperty) not in context
+        ),
+        key=lambda triple: tuple(str(term) for term in triple),
+    )
+    records: list[GraphRepairRecord] = []
+    for triple in loops:
+        graph.remove(triple)
+        records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.SELF_LOOP_DROPPED,
+                source=f"{triple[0]} {triple[1]}",
+                target=str(triple[2]),
+            )
+        )
+    if records:
+        if graph.has_reifications:
+            reifiers = {r for t in loops for r in graph.reifications.reifiers_of(t)}
+            graph.reifications.remove_reifiers(reifiers)
+            for reifier in reifiers:
+                for arc in list(graph.triples((reifier, None, None))):
+                    graph.remove(arc)
+        logger.info("Dropped %d self-loop statement(s)", len(records))
+    return records
+
+
+def drop_unlinked_instances(
+    graph: RDFGraph, fact_namespaces: Sequence[str], document: URIRef | None
+) -> list[GraphRepairRecord]:
+    """Remove every instance that states nothing, and every value no statement carries.
+
+    Served facts are statements: an instance linked to no other instance nor
+    to ``document``, holding no value of its own
+    (:func:`~ontocast.tool.facts_validation.connectivity.silent_instances`),
+    is a type and a name, a mention rather than a fact; a blank-node value
+    nothing points to has lost its statement. Runs on the aggregated graph,
+    so a mention another unit links has merged first.
+
+    Args:
+        graph: Aggregated facts graph, mutated in place.
+        fact_namespaces: Namespaces holding minted instances.
+        document: The document node; a link to it counts.
+
+    Returns:
+        One ``unlinked_dropped`` record per instance, then per carrierless
+        value (its source the blank node).
+    """
+    records = _drop_recorded(
+        graph,
+        silent_instances(graph, fact_namespaces, document),
+        FactsGateRepairKind.UNLINKED_DROPPED,
+    )
+    silent = len(records)
+    for value in sorted(carrierless_values(graph), key=str):
+        if (value, None, None) not in graph:
+            continue
+        label = graph.value(value, RDFS.label)
+        orphaned, triple_count = _remove_orphaned_blank_nodes(graph, {value})
+        drop_reifiers_mentioning(graph, orphaned)
+        records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.UNLINKED_DROPPED,
+                source=str(value),
+                target=str(label) if label is not None else "",
+                triple_count=triple_count,
+            )
+        )
+    if records:
+        logger.info(
+            "Dropped %d instance(s) stating nothing and %d value(s) with no "
+            "carrier from the aggregated facts",
+            silent,
+            len(records) - silent,
+        )
+    return records
+
+
+def _drop_recorded(
+    graph: RDFGraph, instances: Iterable[URIRef], kind: FactsGateRepairKind
+) -> list[GraphRepairRecord]:
+    """Remove ``instances`` one by one, each with a record: label and triples."""
+    records: list[GraphRepairRecord] = []
+    for instance in sorted(instances, key=str):
+        label = graph.value(instance, RDFS.label)
+        records.append(
+            GraphRepairRecord(
+                kind=kind,
+                source=str(instance),
+                target=str(label) if label is not None else "",
+                triple_count=_remove_instances(graph, [instance]),
+            )
+        )
+    return records
+
+
+def drop_detached_values(
+    graph: RDFGraph,
+    isolated: Sequence[str],
+    value_classes: frozenset[str],
+    fact_namespaces: Sequence[str],
+) -> list[GraphRepairRecord]:
+    """Remove every isolated instance typed as a value, with the parts it owns.
+
+    A value belongs to the statement that carries it; its type is one of
+    ``value_classes`` (see
+    :meth:`~ontocast.tool.facts_validation.terms.CatalogRoles.value_classes`).
+    One linked to no instance nor the document has lost its statement,
+    whatever numbers it holds, so it is not a fact. A value linked to
+    anything, in either direction, is kept.
+
+    ``isolated`` is computed before values are named, so a value's parts are
+    still blank nodes under it. Its parts go with it: the instances and blank
+    nodes it reaches that nothing else points at.
+
+    Args:
+        graph: Served facts graph, mutated in place.
+        isolated: IRIs of the instances linked to nothing.
+        value_classes: The classes whose instances are values.
+        fact_namespaces: Namespaces holding minted instances.
+
+    Returns:
+        One ``unlinked_dropped`` record per dropped value, ordered by IRI: its
+        label as target, and the triples removed with it.
+    """
+    detached = sorted(
+        (
+            URIRef(iri)
+            for iri in isolated
+            if is_value_node(graph, URIRef(iri), value_classes)
+        ),
+        key=str,
+    )
+    records: list[GraphRepairRecord] = []
+    for value in detached:
+        parts = _owned_parts(graph, [value], fact_namespaces)
+        label = graph.value(value, RDFS.label)
+        records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.UNLINKED_DROPPED,
+                source=str(value),
+                target=str(label) if label is not None else "",
+                triple_count=_remove_instances(graph, [value, *sorted(parts, key=str)]),
+            )
+        )
+    if records:
+        logger.info(
+            "Dropped %d value(s) linked to nothing from the served facts",
+            len(records),
+        )
+    return records
+
+
+def _owned_parts(
+    graph: RDFGraph, roots: Sequence[URIRef], fact_namespaces: Sequence[str]
+) -> set[URIRef]:
+    """Instances reachable from ``roots`` that only the roots and they point at."""
+    roots_set: set[Node] = set(roots)
+
+    def is_part(node: Node) -> bool:
+        return isinstance(node, BNode) or (
+            isinstance(node, URIRef)
+            and any(ns and str(node).startswith(ns) for ns in fact_namespaces)
+        )
+
+    reached: set[Node] = set()
+    frontier: list[Node] = list(roots)
+    while frontier:
+        node = frontier.pop()
+        for predicate, obj in graph.predicate_objects(node):
+            if predicate == RDF.type or obj in roots_set or obj in reached:
+                continue
+            if is_part(obj):
+                reached.add(obj)
+                frontier.append(obj)
+    owned = set(reached)
+    changed = True
+    while changed:
+        changed = False
+        for node in list(owned):
+            if any(
+                subject not in roots_set and subject not in owned
+                for subject in graph.subjects(None, node)
+            ):
+                owned.discard(node)
+                changed = True
+    return {node for node in owned if isinstance(node, URIRef)}
+
+
+def _remove_instances(graph: RDFGraph, instances: Sequence[URIRef]) -> int:
+    """Remove every triple naming ``instances``, the blank nodes only those
+    triples reached, and the reifiers quoting any removed statement.
+
+    Returns:
+        The number of triples removed, reifiers excluded.
+    """
+    if not instances:
+        return 0
+    removed = 0
     orphan_candidates: set[BNode] = set()
-    removed_nodes: set[Node] = set(untyped)
-    for instance in untyped:
+    removed_nodes: set[Node] = set(instances)
+    for instance in instances:
         for triple in [
             *graph.triples((instance, None, None)),
             *graph.triples((None, None, instance)),
         ]:
+            if triple not in graph:
+                continue
             graph.remove(triple)
+            removed += 1
             for term in (triple[0], triple[2]):
                 if isinstance(term, BNode):
                     orphan_candidates.add(term)
-    orphaned, _ = _remove_orphaned_blank_nodes(graph, orphan_candidates)
+    orphaned, orphan_triples = _remove_orphaned_blank_nodes(graph, orphan_candidates)
     removed_nodes |= orphaned
     drop_reifiers_mentioning(graph, removed_nodes)
-    logger.info(
-        "Dropped %d untyped instance(s) from the aggregated facts", len(untyped)
+    return removed + orphan_triples
+
+
+def drop_domain_violations(
+    graph: RDFGraph, findings: Sequence[FactsUnitFinding]
+) -> list[GraphRepairRecord]:
+    """Remove every statement a mandatory ``domain_violation`` finding names.
+
+    The finding names a subject and a property whose declared domain the
+    subject's types contradict; every statement of that pair goes, with the
+    blank nodes only it reached and the reifiers quoting it.
+
+    Args:
+        graph: A unit's facts graph, mutated in place.
+        findings: The unit's findings; other kinds are ignored.
+
+    Returns:
+        One ``domain_violation_dropped`` record per (subject, property) pair:
+        the subject as source, the property as target.
+    """
+    records: list[GraphRepairRecord] = []
+    pairs = sorted(
+        {
+            (finding.subject, finding.predicate)
+            for finding in findings
+            if finding.kind == FactsUnitFindingKind.DOMAIN_VIOLATION
+            and finding.mandatory
+            and finding.subject
+            and finding.predicate
+        }
     )
-    return graph, [str(instance) for instance in untyped]
+    for subject, predicate in pairs:
+        triples = list(graph.triples((URIRef(subject), URIRef(predicate), None)))
+        if not triples:
+            continue
+        orphan_candidates: set[BNode] = set()
+        for triple in triples:
+            graph.remove(triple)
+            if isinstance(triple[2], BNode):
+                orphan_candidates.add(triple[2])
+            if graph.has_reifications:
+                reifiers = graph.reifications.reifiers_of(triple)
+                graph.reifications.remove_reifiers(reifiers)
+                for reifier in reifiers:
+                    for arc in list(graph.triples((reifier, None, None))):
+                        graph.remove(arc)
+        orphaned, orphan_triples = _remove_orphaned_blank_nodes(
+            graph, orphan_candidates
+        )
+        drop_reifiers_mentioning(graph, orphaned)
+        records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.DOMAIN_VIOLATION_DROPPED,
+                source=subject,
+                target=predicate,
+                triple_count=len(triples) + orphan_triples,
+            )
+        )
+    return records
 
 
 def run_facts_gate(
@@ -308,10 +609,13 @@ def run_facts_gate(
     still untyped take the types their links' domains and ranges entail in the
     whole ontology context (``facts_untyped_inferred``), and those still
     untyped are dropped (:func:`drop_untyped_instances`;
-    ``facts_untyped_dropped``). The links these repairs removed
-    (``facts_links_removed``) and how the served instances hang together
-    (``facts_components``, ``facts_isolated``) are recorded. Residual findings
-    stay on the state as telemetry.
+    ``facts_untyped_dropped``), and so are instances that state nothing
+    (:func:`drop_unlinked_instances`; ``facts_unlinked_dropped``). The links
+    these repairs removed
+    (``facts_links_removed``), how the served instances hang together
+    (``facts_components``, ``facts_isolated``) and the labels several of them
+    share (``facts_twin_labels``) are recorded. Residual findings stay on the
+    state as telemetry.
 
     Args:
         state: Document state carrying ``aggregated_facts`` and the facts units.
@@ -336,6 +640,7 @@ def run_facts_gate(
     # union of retrieved snapshots (a term a snapshot omitted is still a
     # term), and the shapes-contract exemptions the unit loop applies.
     _, contract_terms, _ = tools.shapes_prompt_contract()
+    catalog_terms = tools.ontology_manager.catalog_terms()
     contradictions = shacl_catalog_contradictions(
         shapes_graph,
         ontology_graph,
@@ -346,8 +651,9 @@ def run_facts_gate(
             quantity_fallback_vocabulary=facts_validation.quantity_fallback_vocabulary,
             code_predicates=tuple(facts_validation.code_predicates),
             contract_exempt_terms=contract_terms,
+            vocabulary=facts_validation.vocabulary,
         ),
-        catalog_terms=tools.ontology_manager.catalog_terms(),
+        catalog_terms=catalog_terms,
     )
     if contradictions:
         # Data cannot satisfy both sides: the shapes demand these properties
@@ -388,6 +694,13 @@ def run_facts_gate(
                 if facts_validation.suspect_multi_value_require_cross_unit
                 else None
             ),
+            non_catalog_severity=(
+                "error" if facts_validation.vocabulary == "strict" else "warning"
+            ),
+            additional_standard_namespaces=tuple(
+                facts_validation.additional_standard_namespaces
+            ),
+            catalog_terms=catalog_terms,
         )
 
     def merge_signature_errors(report: FactsValidationReport) -> int:
@@ -503,6 +816,19 @@ def run_facts_gate(
         if repair_result.records:
             state.aggregated_facts = repair_result.graph
 
+    # A node standing for a date says which date it is with a typed value.
+    date_records = add_date_values(
+        state.aggregated_facts, ontology_graph, fact_namespaces
+    )
+    state.retrieval_metrics[RetrievalMetric.FACTS_DATE_VALUES_ADDED] = len(date_records)
+
+    # A statement joining a node to itself states nothing; dropped before the
+    # instances that then state nothing are.
+    loop_records = drop_self_loops(state.aggregated_facts, ontology_graph)
+    state.retrieval_metrics[RetrievalMetric.FACTS_SELF_LOOPS_DROPPED] = len(
+        loop_records
+    )
+
     # Every instance the served graph holds is typed. An instance still
     # untyped once all units have contributed their types takes the class its
     # links entail; whatever stays untyped is removed, with its links.
@@ -517,17 +843,36 @@ def run_facts_gate(
     state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_INFERRED] = len(
         untyped_before - set(untyped_instances(state.aggregated_facts, fact_namespaces))
     )
-    _, untyped_dropped = drop_untyped_instances(state.aggregated_facts, fact_namespaces)
-    untyped_records = [
-        GraphRepairRecord(
-            kind=FactsGateRepairKind.UNTYPED_DROPPED, source=iri, target=""
-        )
-        for iri in untyped_dropped
+    untyped_records = drop_untyped_instances(state.aggregated_facts, fact_namespaces)
+    state.facts_untyped_dropped = [record.source for record in untyped_records][
+        :_UNTYPED_DROPPED_STATE_CAP
     ]
-    state.facts_untyped_dropped = untyped_dropped[:_UNTYPED_DROPPED_STATE_CAP]
     state.retrieval_metrics[RetrievalMetric.FACTS_UNTYPED_DROPPED] = len(
-        untyped_dropped
+        untyped_records
     )
+    unlinked_records = drop_unlinked_instances(
+        state.aggregated_facts, fact_namespaces, state.doc_iri
+    )
+    # A value is part of the statement that carries it: one isolated with no
+    # carrier is not a fact, whatever numbers it holds. Values are still
+    # blank nodes under their carriers here, so a carried value is linked.
+    unlinked_records.extend(
+        drop_detached_values(
+            state.aggregated_facts,
+            sorted(
+                str(node)
+                for node in isolated_instances(
+                    state.aggregated_facts, fact_namespaces, state.doc_iri
+                )
+            ),
+            tools.get_atomic_tools().value_classes(),
+            fact_namespaces,
+        )
+    )
+    state.retrieval_metrics[RetrievalMetric.FACTS_UNLINKED_DROPPED] = len(
+        unlinked_records
+    )
+    untyped_records.extend(unlinked_records)
 
     state.retrieval_metrics[RetrievalMetric.FACTS_LINKS_REMOVED] = links_lost(
         links_before, state.aggregated_facts
@@ -537,14 +882,39 @@ def run_facts_gate(
     )
     state.retrieval_metrics[RetrievalMetric.FACTS_COMPONENTS] = connectivity.components
     state.retrieval_metrics[RetrievalMetric.FACTS_ISOLATED] = connectivity.isolated
+    # Kept in the served facts and listed: what is still linked to nothing.
+    state.facts_isolated_report = isolated_report(
+        state.aggregated_facts,
+        isolated_instances(state.aggregated_facts, fact_namespaces, state.doc_iri),
+    )[:_ISOLATED_STATE_CAP]
+    state.retrieval_metrics[RetrievalMetric.FACTS_TWIN_LABELS] = len(
+        twin_labels(state.aggregated_facts, fact_namespaces, state.doc_iri)
+    )
+    # Values are blank nodes under their carriers until here, so the counts
+    # above see them as parts of statements; the served graph names them.
+    name_values(state.aggregated_facts)
+    # The served graph shows each namespace under the prefix the prompts did.
+    tools.prefix_table().bind(state.aggregated_facts)
 
-    if repair_result.records or untyped_dropped or inferred_records:
+    if (
+        repair_result.records
+        or untyped_records
+        or inferred_records
+        or date_records
+        or loop_records
+    ):
         report = run_validation()
 
-    if dedupe_records or repair_result.records or untyped_records or inferred_records:
-        state.facts_gate_repairs = (
-            dedupe_records + repair_result.records + inferred_records + untyped_records
-        )
+    gate_repairs = (
+        dedupe_records
+        + repair_result.records
+        + date_records
+        + loop_records
+        + inferred_records
+        + untyped_records
+    )
+    if gate_repairs:
+        state.facts_gate_repairs = gate_repairs
 
     state.facts_validation_findings = report.findings
     state.facts_conformance = summarize_conformance(

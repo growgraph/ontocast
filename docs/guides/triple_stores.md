@@ -96,6 +96,16 @@ Shapes are kept unless you pass `include_shapes=true`. For batch runs,
 `CLEAN=true` makes `ontocast process` flush the startup partition before it
 loads the seed ontologies.
 
+## Querying across documents
+
+Each document's facts are one named graph, and neither store merges named
+graphs into the default graph. A query that joins documents either names its
+graphs (`GRAPH ?g`) or reads the union: library callers pass `union=True` to
+`aselect` / `aconstruct`, which the in-memory store answers over all its
+graphs and Fuseki over `urn:x-arq:UnionGraph`. The union includes the
+`/identity-links` and `/ontology-provenance` graphs written beside each
+document; see [Cross-document identity](../concepts/cross_document_identity.md).
+
 ## Integer subtypes in the in-memory store
 
 The in-memory store normalizes literals when it stores them: a value typed

@@ -59,8 +59,8 @@ policies.
     4. compiles the critique into one patch per fix, screens it, and applies
        the fixes one at a time (no call);
     5. re-derives acceptance from the patched graph.
-4. **Completion passes** (facts only), when enabled and measurements are still
-   missing.
+4. **Gap passes** (facts only), when the unit still misses a measurement or
+   holds a statement that names nothing it is about.
 
 A pass ends the loop early when it kept no fix and either rolled one back or
 left no mandatory finding: the next pass would see the same graph and the same
@@ -70,8 +70,9 @@ the unit leaves the loop marked failed at the critique stage.
 
 ### Budgets
 
-- **`FACTS_CRITIC_PASSES`** defaults to 1, so a facts unit costs two calls: one
-  render, one review. `0` leaves the findings to layers 1 and 3. In the default
+- **`FACTS_CRITIC_PASSES`** defaults to 0: a facts unit costs one render call,
+  and its findings go to the LLM-free repairs, the gap pass and layer 3. `1`
+  adds one review call per unit. In the default
   `selected_single_ontology` context mode each unit also makes one ontology
   selection call, counted as `llm/ontology_selection` in `budget.counters`.
 - **`FACTS_CRITIC_MIN_TRIPLES`** skips the critic for a render with fewer
@@ -80,7 +81,8 @@ the unit leaves the loop marked failed at the critique stage.
   skip is recorded as `critic_skipped` and bills no call.
 - **`ONTOLOGY_CRITIC_PASSES`** defaults to 0. The ontology loop then costs one
   call per unit, and its findings are collected once at the end for telemetry.
-- **`FACTS_COMPLETION_PASSES`** defaults to 0 ([below](#completion-passes)).
+- **`FACTS_COMPLETION_PASSES`** defaults to 1 ([below](#gap-passes)); a unit
+  with no gap makes no call.
 
 All four are documented in the [facts-validation](../reference/configuration/facts-validation.md)
 and [ontology-validation](../reference/configuration/ontology-validation.md)
@@ -89,7 +91,7 @@ references.
 ### The ontology loop
 
 <figure class="oc-figure oc-figure--tall" markdown>
-![The ontology unit loop: the same render, findings, critic and patch steps as the facts loop, bounded by ONTOLOGY_CRITIC_PASSES, without the skip rule or completion passes](../assets/ontology_loop.svg)
+![The ontology unit loop: the same render, findings, critic and patch steps as the facts loop, bounded by ONTOLOGY_CRITIC_PASSES, with a skip gate in front of the critic and without completion passes](../assets/ontology_loop.svg)
 <figcaption>The ontology loop for one content unit.</figcaption>
 </figure>
 
@@ -98,7 +100,16 @@ The ontology loop is the same loop with these differences:
 - It renders against a copy of the unit's ontology snapshot and validates the
   unit's net insert/delete **delta**, never snapshot plus delta: that would
   attribute every existing catalog defect to the unit.
-- It has no skip rule and no completion pass.
+- At `ONTOLOGY_CRITIC_PASSES=1` the critic pass is spent only on a
+  unit with a mandatory finding; a clean unit records a `critic_skipped`
+  attempt with reason `no_mandatory_findings`. With 2 or more passes every pass
+  runs. There is no completion pass.
+- After the render and after each critic patch, a minted class or property
+  without a label gets an `rdfs:label` derived from its local name
+  (`ResearchProject` gives "Research project"), recorded as a `missing_label`
+  repair and counted in `ontology/labels_derived`. An opaque local name
+  (`Q42`, a hash) is left to the `missing_label` finding. A term of the catalog
+  or of a well-known vocabulary is never labelled: an axiom on it is a reuse.
 - Patches go through the unit's update channel, so the delta built at reduce
   time includes them; an update the channel refuses leaves the graph unchanged.
 - The critic sees the retrieved catalog for judging term choices, but only the
@@ -106,9 +117,11 @@ The ontology loop is the same loop with these differences:
 - A rename is never allowed, and the delete limits are stricter
   (`ONTOLOGY_CRITIC_MAX_DELETE_SHARE`, `ONTOLOGY_CRITIC_MIN_DELETES`), because an
   ontology delete propagates to every document that uses the term.
-- Under `selected_vector_search_ontology`, the render and critic prompts carry
-  a partial-context notice: a term absent from the prompt may simply not have
-  been retrieved.
+- When a unit's context is a retrieved subset of the catalog (vector
+  retrieval, per unit or as one document-scope union), the render and critic
+  prompts carry a partial-context notice: a term absent from the prompt may
+  simply not have been retrieved. A unit shown each ontology whole gets no
+  notice.
 
 ## Layer 1: parse-time repairs
 
@@ -117,20 +130,45 @@ machine can decide without the model:
 
 | Repair | What it does |
 |---|---|
-| Numeric retyping | An untyped number on a property with a numeric range gets that datatype |
+| Datatype retyping | An untyped number on a property with a numeric range gets that datatype. Text on a property whose range is a date, time or duration datatype gets it when the text is a value of it as XSD writes it, or a calendar text naming exactly one such value (`"29 June 2021"` on an `xsd:date` range); an ISO date with no zone on an `xsd:dateTime` range is that day at midnight, as parsing a typed literal makes it. A range is read from the unit's context, the whole catalog and the published ranges of PROV-O, SOSA and OWL-Time; a property declared with two datatypes is not retyped |
 | `rdf:type` literal coercion | A type written as a string becomes the class IRI when it resolves unambiguously |
 | Compact-IRI literal coercion | A plain string such as `"unit:NanoM"` on another predicate becomes the IRI, when its prefix is bound and either the schema says the predicate takes an IRI or the IRI is a catalog or fallback-vocabulary term. Critic and completion patches get the same repair before they are judged |
-| Near-miss predicate rewrite | A predicate not in the catalog is rewritten to the one catalog term whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
+| Near-miss predicate rewrite | A class written as a type that exists nowhere is rewritten to the catalog class with exactly its local name in another namespace: the only one, or among several the one that is a subclass of every other (`class_alias`). A predicate that exists nowhere (not a catalog term, not a real term of a well-known vocabulary) is rewritten to the one catalog property, across the whole catalog, in another namespace with exactly its local name (a slipped prefix, also into a well-known namespace); otherwise, in a namespace the catalog declares terms in, to the one catalog term of its own namespace whose name tokens contain, are contained in, or equal its own. `FACTS_PROPERTY_ALIAS_MIN_RATIO` only breaks ties among such candidates; string similarity alone never triggers a rewrite. A predicate the full catalog declares is never rewritten, even when the unit's snapshot lacks it |
 | Code resolution | A node carrying a code from `FACTS_CODE_PREDICATES` (such as `qudt:ucumCode "d"`) but no link to the coded individual gains that link, when exactly one catalog individual declares the code. The linking property comes from the schema's domain and range, or else from how the graph already links such nodes |
-| Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. Critic and completion patches get the same repair |
+| Paired object properties | A node (IRI or blank) written on a well-known datatype property that its vocabulary pairs with an object property for the same relation moves to that property: `sosa:hasSimpleResult` becomes `sosa:hasResult`. Records are kind `paired_object_property`. Critic and completion patches get the same repair |
+| Reversed triples | `x p y` becomes `y p x` when `p` has a domain and a class range (`rdfs` or listed with `schema:domainIncludes` / `rangeIncludes`), both ends are typed IRIs, `x` is outside the domain and `y` outside the range as written, and swapped both fit. A listed class contradicts nothing alone; evidence at all four positions is a direction. One end fitting, an untyped end, a type the context does not place, or a symmetric property leaves the triple as written. Records are kind `triple_reversed`. Critic and completion patches get the same repair |
+| Entailed types | A subject of a predicate with an `rdfs:domain`, or an IRI object of one with a class `rdfs:range`, gains that class as `rdf:type` when it has no type or the class specialises one it has. A type that would contradict the asserted ones is not added; that is the domain-violation finding's. An IRI still untyped takes the class a link lists through `schema:domainIncludes` or `schema:rangeIncludes`, when the property lists exactly one class, declares no `rdfs` counterpart, and all of the node's links agree. Critic and completion patches get the same repair |
 | Degenerate bounds | Equal lower and upper bounds become one value, when the quantity fallback vocabulary names `numeric_value`, `lower_bound` and `upper_bound` |
 
-Two kinds of triple are then **quarantined**, removed from the graph and shown
-to the critic for repair: typed literals whose lexical form is invalid for the
-datatype, and string literals on a property whose range is a class
-(`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`).
+The reversed-triple and entailed-type repairs read domains, ranges, listed
+classes, the class hierarchy and the types of catalog terms from the whole
+catalog as well as the unit's context, since retrieval may keep a property's
+domain and drop its range. A catalog term is never typed.
 
-Type and compact-IRI coercions, predicate rewrites, code resolutions and entailed types are recorded as
+A rendered triple naming an IRI that no `<...>` can hold (a space, a quote, a
+brace) is dropped before anything else, in facts and ontology renders alike
+(repair kind `malformed_iri_dropped`, one record per IRI). Such a name is
+garbled, not a term: it could be written into neither a SPARQL update nor
+Turtle. A critic or gap-pass fix naming one is refused as unparseable.
+
+Three kinds of triple are then **quarantined**, removed from the graph and
+shown to the critic for repair: typed literals whose lexical form is invalid
+for the datatype (dates, times and durations by their XSD lexical spaces);
+string literals on a property whose range is a class
+(`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`); and text on a property whose range is
+a date, time or duration datatype that is not a value of it, such as a
+recurrence where a date belongs. Critic and completion patches get the same
+retyping and the same date check, so a patch that writes such text again adds a
+mandatory finding and is rolled back.
+
+A quarantined triple stops counting as a finding once the unit's graph makes it
+good: its subject states the property with a value of the kind it lacked, or
+states its text under any property. Date text still quarantined when the unit
+leaves its loop, as it always is with `FACTS_CRITIC_PASSES=0`, is put back on
+its subject verbatim as `rdfs:comment` (repair kind `quarantine_as_comment`),
+so no text is lost and no false date is stated.
+
+Type and compact-IRI coercions, predicate rewrites, code resolutions, entailed types and malformed-IRI drops are recorded as
 `GraphRepairRecord`s and returned per unit as `facts_repairs`, so a consumer can
 tell a machine rewrite from what the model asserted. Ambiguity is never
 resolved by guessing: two catalog terms claiming one code means no repair.
@@ -145,15 +183,16 @@ fix. Every kind is mandatory except numeric coverage:
 | Finding | What it catches |
 |---|---|
 | `quarantined_literal` | A quarantined triple, with the catalog individuals of the property's range as suggestions |
-| `unknown_term` | A term under `example.org`, a predicate or class minted in the facts namespace, or a term missing from a closed catalog namespace |
+| `unknown_term` | A term under `example.org`, a predicate or class minted in the facts namespace, a term missing from a closed catalog namespace, or a unit (the object of the unit property of `FACTS_QUANTITY_FALLBACK_VOCABULARY`) that the ontology context does not hold |
 | `literal_type_object` | An `rdf:type` written as a string that layer 1 could not resolve |
-| `domain_violation` | A predicate asserted on a subject whose stated type contradicts the predicate's `rdfs:domain` |
+| `domain_violation` | A predicate asserted on a subject whose stated type contradicts the predicate's `rdfs:domain`. A class `schema:domainIncludes` lists is an expected one and is never contradicted |
+| `statement_without_subject` | An instance that states a value but names nothing it is about. For a statement class (`sosa:Observation`, `sosa:Actuation`, `sosa:Sampling`, or a catalog class under one): no subject property from it (`sosa:hasFeatureOfInterest`) nor to it (`sosa:isFeatureOfInterestOf`), counting the catalog's sub-properties and inverses of either; a link to its observed property is not a subject. For a value class: linked to no other instance of the unit. An instance of another class stating its own values is a fact about itself and is not reported. Suggestions are the unit's other instances. Not raised on citation or non-content units; counted per document as `facts_statements_without_subject_rendered` (on the renders) and `facts_statements_without_subject` (after the passes) |
 | `untyped_instance` | A facts-namespace IRI in subject or IRI-object position with no `rdf:type` naming a concrete class: one outside the facts namespaces that is neither a metaclass (`owl:Class`, `rdf:Property`, `owl:NamedIndividual`, …) nor vacuous (`owl:Thing`, `rdfs:Resource`, `schema:Thing`). Blank nodes and the chunk and document nodes are not instances. Suggestions are the domain and range classes of the predicates the instance carries, then catalog classes sharing a name token with its label |
 | `domain_adherence` | Too few of the render's schema terms come from the ontology context (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, judged from `FACTS_DOMAIN_ADHERENCE_MIN_TERMS` terms up); not judged on citation or non-content units |
 | `scalar_as_bounds` | One value written into two single-valued numeric properties of one node |
 | `label_only_number` | A value node with a unit but no numeric literal, whose number sits only in its label |
 | `unit_symbol_case_mismatch` | A unit whose symbol matches the text only after case folding, while another catalog unit matches it exactly |
-| `numeric_coverage` | Numbers in the source text missing from the graph, split into measurements (number with unit) and bare numbers. Advisory unless `FACTS_NUMERIC_COVERAGE_MANDATORY` says otherwise; `FACTS_NUMERIC_IDENTIFIER_GUARD` keeps digit groups of identifiers out |
+| `numeric_coverage` | Numbers in the source text missing from the graph, split into measurements (number with unit) and bare numbers. A measurement is present when one node, blank or named, states the number outside an annotation (as a value or a bound) together with its unit, as a unit IRI or as the unit's token kept in a literal on that node. Advisory unless `FACTS_NUMERIC_COVERAGE_MANDATORY` says otherwise; `FACTS_NUMERIC_IDENTIFIER_GUARD` keeps digit groups of identifiers out |
 
 The critic is told to resolve every mandatory finding by rewriting the
 statement in place, never by deleting it.
@@ -162,17 +201,36 @@ statement in place, never by deleting it.
 
 A namespace is **closed**, so that a member the catalog does not list is
 reported, only when the ontology context *declares* terms in it (uses them as
-subjects). A namespace the catalog only references, such as `qudt:` in an
+subjects). A well-known namespace is the exception: its own term list closes
+it, whatever part of it the catalog redeclares. A namespace the catalog only references, such as `qudt:` in an
 `rdfs:subClassOf` or `owl:onProperty`, is a borrowed vocabulary and stays open.
 Membership is checked against the whole catalog, not the unit's snapshot: a
 term retrieval did not bring into the unit is still a term.
 
 Never reported as unknown: the built-in meta-vocabularies (RDF, RDFS, OWL, XSD,
-SKOS, Dublin Core, PROV), `FACTS_ADDITIONAL_STANDARD_NAMESPACES`, the terms of
+SKOS, Dublin Core, PROV), the other well-known vocabularies
+(`ontocast.onto.well_known`: SOSA/SSN, OWL-Time, CSVW, DCAT, ORG, vCard, FOAF,
+schema.org, QUDT), `FACTS_ADDITIONAL_STANDARD_NAMESPACES`, the terms of
 `FACTS_QUANTITY_FALLBACK_VOCABULARY` (the prompt recommends them),
 `FACTS_CODE_PREDICATES`, and every term the SHACL shapes require. Replacement
 candidates are offered only by token containment and filtered by role, so a
 property is never offered as a class or the reverse.
+
+A well-known term must exist in its vocabulary, checked against rdflib's
+bundled term lists, and the QUDT schema, QUDT unit and vCard lists that ship
+with OntoCast (QUDT quantity kinds are admitted by namespace). A unit linked
+through the unit property must be a unit individual of the ontology context or
+a unit of the QUDT list; otherwise the render keeps the unit's token as text.
+One it does not have is `unknown_term` in both modes, with the vocabulary's
+near-misses as suggestions; an ontology render that mints one gets
+`foreign_namespace`.
+
+Under `FACTS_VOCABULARY=strict` (the default) a term of any other vocabulary
+the catalog neither declares nor borrows from is unknown as well: the facts are
+a projection onto the catalog, the vocabularies it builds on, the well-known
+vocabularies and the declared ones, and a statement they cannot express is
+rewritten in their terms or left out. Under `open` only a member of a closed
+namespace is unknown, and a term of another vocabulary passes.
 
 At the gate, the shapes are cross-checked against these rules: a property the
 shapes require that the term validator would flag is logged as an error once
@@ -181,11 +239,11 @@ per document, because no data can satisfy both.
 ### Ontology findings
 
 `collect_ontology_unit_findings` runs on the delta. Every kind is mandatory
-except `label_collision`:
+except `label_collision` and `specific_label_leaf`:
 
 | Finding | What it catches |
 |---|---|
-| `foreign_namespace` | A term minted under a namespace no context ontology declares terms in; the reduce would drop it as unattributable. Also `example.org` terms and ontology terms minted in a facts namespace |
+| `foreign_namespace` | A term minted under a namespace no context ontology declares terms in; the reduce would drop it as unattributable. With a home ontology, its namespace is always accepted (a new home has no terms yet), and a new term under any other namespace is flagged, since the reduce drops it. Also `example.org` terms and ontology terms minted in a facts namespace |
 | `foreign_delete` | A delete of catalog content whose subject the unit does not redeclare |
 | `subclass_cycle` | An inserted `rdfs:subClassOf` that closes a cycle through snapshot and delta |
 | `role_confusion` | A catalog class used as a property, or a catalog property used as a class |
@@ -193,6 +251,10 @@ except `label_collision`:
 | `cardinality_contradiction` | A functional or max-1 declaration contradicted by a minimum cardinality of 2 or more |
 | `missing_label` | A new class or property without `rdfs:label` or `skos:prefLabel` |
 | `label_collision` (advisory) | A new term whose label equals an existing term's in the snapshot |
+| `hierarchy_too_deep` | A minted class more than `ONTOLOGY_MAX_CLASS_DEPTH` named-superclass steps below its root. A root is `owl:Thing`, a well-known vocabulary term, or a class with no named superclass; restrictions are not steps |
+| `value_set_siblings` | Three or more minted subclasses of one parent whose labels differ in one word and that carry no subclass, property domain, restriction or definition of their own: a value set modelled as subclasses. The suggestions list the siblings |
+| `specific_label_leaf` (advisory) | A minted leaf no property uses whose label carries a number or four or more words |
+| `catalog_duplicate` | A minted term whose label, preferred label, notation or local name equals, case-insensitively, that of exactly one catalog term of compatible role, anywhere in the catalog. The suggestion is the catalog IRI. An exact label match in the snapshot is left to `label_collision` |
 
 `unknown_term` has no ontology counterpart, since minting terms is the ontology
 render's job, and connectivity is left to `STRUCTURAL_CHECK`.
@@ -223,7 +285,8 @@ Screening then withholds what a pass may not destroy:
 | `FACTS_CRITIC_MAX_DELETE_SHARE`, with a `FACTS_CRITIC_MIN_DELETES` floor | Past the share a critique is rewriting, not correcting; over it, every fix that deletes goes back whole and only pure additions are kept. The floor keeps short units correctable |
 | A `REMOVE` may not empty a subject | Removing the last statement about a node deletes the node |
 | A `REPLACE` may not write about a different subject than it deletes | That is a rename: it orphans the old node and leaves the new one bare. `FACTS_CRITIC_ALLOW_SUBJECT_RENAME` opts in (facts only) |
-| A blank node is deleted whole or not at all | A partial delete leaves a stub |
+| A blank-node structure is deleted whole or not at all, at any depth | A partial delete leaves a stub; a structure another subject still points at stays |
+| A value is addressed through its carrier | A structured value is a blank node, so a fix names the statement that carries it, never the value as a subject |
 
 The surviving fixes are applied **one at a time**, each judged against the graph
 the previous kept fix left. A fix is rolled back on its own when it:
@@ -244,7 +307,7 @@ Acceptance is `material_defects()` over evidence that can be pointed at:
 | Signal | Blocks? |
 |---|---|
 | Mandatory deterministic finding (facts) | Always |
-| Ontology finding in `ONTOLOGY_ACCEPT_BLOCKING_FINDING_KINDS` | Yes; the default set is `foreign_delete`, `foreign_namespace`, `subclass_cycle`, `role_confusion` |
+| Ontology finding in `ONTOLOGY_ACCEPT_BLOCKING_FINDING_KINDS` | Yes; the default set is `foreign_delete`, `foreign_namespace`, `subclass_cycle`, `role_confusion`, `hierarchy_too_deep` |
 | Critic fix at or above `FACTS_ACCEPT_BLOCKING_SEVERITY` (default `critical`; applies to both phases) | Yes |
 | Critic fix with action `REMOVE` | Never: a deletion is never worth holding a unit back for |
 | Advisory findings | No |
@@ -259,22 +322,63 @@ unit's output. `facts_critic_accepted` counts the critic calls that accepted.
 The ontology critic also records, as `incumbent_accepted` on each attempt, what
 a score rule (`success`, or a score above 90) would have decided.
 
-### Completion passes
+### Gap passes
 
 The critic judges whether what was rendered is right, not whether something is
-missing. `FACTS_COMPLETION_PASSES` adds insert-only passes after the critic
-loop, run only while the numeric inventory still lists a measurement (a number
-with its unit) absent from the graph. Each pass:
+missing. `FACTS_COMPLETION_PASSES` (default 1) adds insert-only passes after the
+critic loop, run only while the unit has a gap: a `statement_without_subject`
+finding holds; with `FACTS_COMPLETION_DETACHED=true` (the default), at
+least two instances are linked to no other instance (a pass called for
+another gap lists a lone one too); or, with
+`FACTS_COMPLETION_MEASUREMENTS=true` (off by default), the numeric inventory
+still lists a measurement (a number with its unit) absent from the graph. A
+unit with no gap makes no call.
+Each pass:
 
-- shows the model a term sheet (the unit's quantity, observation and condition
-  classes and unit individuals) instead of the full ontology chapter, plus the
-  unit's existing catalog-typed subjects, so a recovered measurement attaches
-  to a node that is already there;
+- shows the model a term sheet instead of the full ontology chapter: the
+  unit's quantity, observation and condition classes and unit individuals, the
+  terms of the quantity fallback vocabulary, the properties a statement takes
+  when the sheet lists a statement class, and the properties that link a
+  statement to its subject (`sosa:hasFeatureOfInterest`, its inverse, and the
+  context's sub-properties and inverses of either);
+- shows the unit's existing catalog-typed subjects, so a recovered measurement
+  attaches to a node that is already there;
+- lists the missing measurements, and the statements that name nothing with
+  the unit's candidate subjects;
+- lists the instances linked to nothing, each with the context's object
+  properties whose domain or class range fits it and the direction it would
+  take, and asks for the one link the text states to an existing instance;
+- asks for each recovered measurement as a statement about a subject, never a
+  value on its own, with a unit the term sheet does not list taken from QUDT
+  when the model is certain of its name, else kept as text on the value node;
 - keeps only `ADD` fixes, whatever else the model returns;
 - applies them through the same one-at-a-time regression check as critic
   fixes.
 
-The passes stop as soon as nothing is missing.
+The passes stop as soon as no gap is left. Each records the measurements it
+recovered, the statements it gave a subject and the detached instances it
+linked on its loop attempt.
+
+### Domain repair
+
+A `domain_violation` is a statement whose property declares an `rdfs:domain`
+that the subject's asserted types contradict; served, it would entail a type
+the subject does not have. With `FACTS_COMPLETION_PASSES` above 0, a unit that
+still holds one after the critic loop gets one call before the gap passes:
+
+- each such statement is listed under a citable id, with its subject's and
+  object's types and labels, the classes its property applies to, and the
+  context properties whose domain fits the subject and whose range does not
+  contradict the object;
+- the model may answer only with `REPLACE` fixes citing those ids;
+- a fix is applied only if it swaps the property and nothing else (same
+  subject, same object, no other statement) for one whose declared domain the
+  subject fits, then goes through the same regression check as critic fixes.
+
+Whatever is still in violation when the unit leaves its loop is removed, with
+the blank nodes only it reached, as a `domain_violation_dropped` repair record
+(subject as source, property as target). This drop runs whatever the pass
+budget.
 
 ## Layer 3: the post-merge gate
 
@@ -293,14 +397,14 @@ The passes stop as soon as nothing is missing.
     | `suspect_multi_value`: two numeric values on one property; irreconcilable short strings on a property that is single-valued for most subjects; or two IRIs on such a property | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | un-merge when an error |
     | `degenerate_coreference`: one IRI object shared by two single-valued properties of a subject | error | un-merge |
     | `shacl` | from the shape | autofix |
-    | `non_catalog_vocabulary` | warning | reported (a retrieval miss) |
+    | `non_catalog_vocabulary`: a term neither the ontology context nor the catalog has | a term of an existing well-known, declared or fallback vocabulary: warning; any other term, or a well-known term that does not exist: error under `FACTS_VOCABULARY=strict`, warning under `open` | reported (a retrieval miss, or outside the projection) |
     | `dangling_reference` | warning | reported |
     | `mixed_object_kinds`: a property used with both IRI and literal objects | warning | reported |
 
     String values on a cluster confirmed by a natural key are reported as
-    warnings. With `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT`, two IRI
-    objects asserted by a single unit are a warning: only objects from
-    different units can come from a bad merge.
+    warnings. With `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` (on by
+    default), two IRI objects asserted by a single unit are a warning: only
+    objects from different units can come from a bad merge.
 3. **Un-merge repair** (document path only). The first three kinds are merge
    signatures: two things that are not the same got one IRI. A finding
    implicates a cluster: the subject's for `functional_violation` and
@@ -335,14 +439,44 @@ The passes stop as soon as nothing is missing.
    object of, the blank nodes reachable only through those triples, and the
    reifiers quoting them. Each drop is a `facts_gate_repairs` record of kind
    `untyped_dropped`; the IRIs are on `facts_untyped_dropped` (capped at 200)
-   and the count is the `facts_untyped_dropped` metric.
+   and the count is the `facts_untyped_dropped` metric. Then every instance
+   that states nothing (`drop_unlinked_instances`: linked to no other
+   instance nor the document, with no value of its own, only a type and
+   names) is removed the same way, and so is every blank-node value no
+   statement carries; then every instance of a value class linked to nothing
+   (`drop_detached_values`: a value written as an entity of its own that no
+   statement carries) with the parts only it points at. The value classes are
+   the well-known ones (`qudt:QuantityValue`; schema.org's `StructuredValue`,
+   `QuantitativeValue`, `PropertyValue`, `MonetaryAmount`), the configured
+   `FACTS_QUANTITY_FALLBACK_VOCABULARY` `value_class`, and every class the
+   whole catalog places under one of them. Records are kind
+   `unlinked_dropped`, each with the dropped node's label and the triples
+   removed, as are the `untyped_dropped` ones; the `facts_unlinked_dropped`
+   metric counts all three. Before them, every statement joining a node to
+   itself (`x p x`) is removed, with its reifier, unless `p` is `owl:sameAs`,
+   `rdf:type` or a property the context declares `owl:ReflexiveProperty`:
+   records are kind `self_loop_dropped`, counted by
+   `facts_self_loops_dropped`. Before these drops, a node
+   standing for a date that holds only a label (the object of a temporal
+   property, a node typed with an OWL-Time class, or one labelled with a whole
+   date or month) gets the typed ISO 8601 value its label names: through the
+   one context property whose domain fits the node and whose range is the
+   value's datatype, else `time:inXSDDate`/`inXSDgYearMonth`/`inXSDgYear` on a
+   `time:Instant`, else `rdf:value`. Month names are read in English. A label that names no single date (`summer 2021`) is left as
+   it is. Records are kind `date_value_added`; the metric is
+   `facts_date_values_added`.
 6. **Connectivity**: `facts_links_removed` counts the links between instances
    that steps 4 and 5 removed; `facts_components` and `facts_isolated` count the
    connected groups of instances in the served graph and the instances linked
    to no other instance (links run through blank nodes; the document node joins
    what it links but is not an instance; typing, `owl:sameAs` and the
    pipeline's provenance link nothing, while a domain property links in any
-   vocabulary, PROV-O included).
+   vocabulary, PROV-O included). An isolated instance left holds a value of its
+   own and is kept; the run manifest lists each (`facts_isolated`: IRI, label,
+   and `holds_value` or `other`). `facts_twin_labels` counts the labels two or
+   more instances share.
+   Then each blank-node value is named under its carrier
+   (`<carrier>.<property>`), with the reifiers of its statements repointed.
 7. **Summary**: `facts_conformance`, `facts_validation_findings` and
    `facts_gate_repairs`, plus the gate counters in `retrieval_metrics`.
 
@@ -355,21 +489,149 @@ gate without step 3, since one unit has nothing to un-merge.
 
 The per-unit snapshot under `selected_vector_search_ontology` is a retrieved
 subset of the catalog, so judgments that need the whole catalog run at the
-reduce step, where the catalog heads are loaded:
+reduce step, where the catalog heads are loaded. The clean-up rules (external
+subjects through `Thing`) run first, before reconciliation and the term
+decisions see the delta:
 
 | Policy | Behavior | Counter |
 |---|---|---|
-| Minted-term reconciliation (`ONTOLOGY_RECONCILE_MINTED_TERMS`, default `detect`) | A new term whose label, preferred label or notation exactly matches a catalog term of compatible role is a re-mint of a term retrieval did not surface. `detect` logs the pairs, `rewrite` substitutes the catalog IRI in the merged update, `off` skips the check | `minted_duplicates`, `minted_duplicate_pairs`, `minted_duplicates_rewritten` |
-| Delete policy (vector mode only) | A merged delete whose subject the merged inserts do not redeclare is dropped: it was judged on partial evidence and would change shared catalog terms | `deletes_dropped_unredeclared` |
+| Minted-term reconciliation (`ONTOLOGY_RECONCILE_MINTED_TERMS`, default `detect`) | A new term whose label, preferred label or notation, or else local name, equals case-insensitively that of exactly one catalog term of compatible role, in any catalog ontology, is a re-mint of a term retrieval did not surface. `detect` logs the pairs, `rewrite` substitutes the catalog IRI in the merged update, `off` skips the check | `minted_duplicates`, `minted_duplicate_pairs`, `minted_duplicates_rewritten` |
+| Delete policy | A unit can delete only what its context showed it: its deletes are the context statements its updates removed. A delete from a unit whose context was a retrieved subset is dropped unless the document's merged inserts redeclare its subject: it was judged on partial evidence and would change shared catalog terms. Deletes from units shown their ontologies whole are kept | `deletes_dropped_unredeclared` |
 | Fresh-ontology reconciliation | Units that rendered fresh each produced terms under the document's one home ontology; their graphs are unioned into one root. A fresh unit under any other IRI is a fault and stops the run | `fresh_ontologies_merged` |
+| External subjects | A triple whose subject lies in the namespace of an external ontology (one not under `CURRENT_DOMAIN`), or under a path of it, is removed: external terms are used, never changed | `external_subject_refused` |
+| Example namespaces | A triple naming an IRI under `example.org`, `example.com` or `example.net` outside `CURRENT_DOMAIN` is removed: the model took a placeholder namespace from a prompt example | `example_namespace_dropped` |
+| Minted outside home | A term the delta newly declares (not in the catalog) under any namespace other than the home ontology's is removed: every new term of a document lives under its home namespace. Under the deployment's own domain every triple naming the term goes; in another vocabulary only the statements about it go, and a home axiom pointing at it stays as a reuse. A term counts as declared when it is typed as a class, a property or a SKOS concept, or carries a subclass, subproperty, domain, range, equivalence, inverse or disjointness axiom; a term of a well-known vocabulary is never newly declared | `minted_outside_home_dropped` |
+| Non-term subjects | A subject in the facts namespace, an individual (typed, but neither as a class, a property nor a SKOS concept), or an untyped subject that neither the catalog nor a subclass, domain or range axiom declares is removed: an ontology update declares terms and value sets, and the rest belongs in the facts graph | `non_term_subjects_dropped` |
+| Datatype ranges | A property with several datatype ranges keeps one: `rdfs:Literal` goes beside a concrete datatype, and of several concrete ones the first of `rdf:langString`, `xsd:string`, then numbers from wide to narrow, then time, stays. Several ranges mean their intersection, empty for two datatypes | `datatype_ranges_normalized` |
+| Owned sides | A class domain or range of a property of the home namespace, or one the delta mints, is written as an expected class: `rdfs:domain C` becomes `schema:domainIncludes C`, `rdfs:range C` becomes `schema:rangeIncludes C`. A side written from one document would be a claim about every later use; a listed class adds to the others. A datatype range stays `rdfs:range`; a catalog's or well-known vocabulary's property is never rewritten | `owned_sides_listed` |
+| `Thing` | `owl:Thing` or `schema:Thing` as a range or domain (stated or listed), or as a parent beside another parent, is removed: it constrains nothing | `vacuous_upper_terms_dropped` |
+| Parent kind | A property's `rdfs:subPropertyOf` naming a class or a datatype (`schema:Property` and `rdf:Property` are classes), and a class's `rdfs:subClassOf` naming a property or a datatype, are removed. A parent's kind comes from the delta's own declarations, then the catalog, then the well-known vocabulary's naming: classes capitalised, properties not, XSD terms datatypes. A parent of unknown kind stays | `role_crossing_parents_dropped` |
+| Undeclared own terms | A domain, range or parent naming an IRI under `CURRENT_DOMAIN` that neither the catalog nor the delta declares was made up: it is rewritten to the one declared term with the same local name, else removed. The deployment knows every term of its own namespaces; an IRI of another vocabulary is left alone | `undeclared_owned_references_rewritten`, `undeclared_owned_references_dropped` |
+| Home target | The home ontology is always a write target. When it is not stored yet and no unit rendered it fresh, an empty root under its identity receives its terms; under vector retrieval units render updates against catalog patches even for a new home | — |
+| Blank nodes | A blank node and every blank node connected to it are one blank-node structure (a restriction, a list, an anonymous axiom), with the named subjects that point at it as its anchors. Every rule above removes a structure whole: when one of its statements goes, or when every statement pointing at it goes, the structure goes with those statements. No restriction is left half-written or orphaned | — |
+| Fresh renders | A fresh ontology is filed like an update: its header and the statements its home owns stay, a statement whose subject another writable ontology owns joins the delta for that ontology, and one no writable ontology owns is removed | `fresh_triples_refiled`, `fresh_triples_unattributed` |
+| Attribution | A triple goes to the writable ontology that owns its subject's namespace: an ontology owns the namespace of its IRI, and a namespace it only binds as a prefix only when no writable ontology owns that one outright. A named subject no writable ontology owns is dropped, never filed by its predicate or object. A blank-node structure goes whole to the owner of its anchors, or, with no anchor, to the owner of its `owl:annotatedSource`, else to the single owner of the named terms it uses; with several owners or none it is dropped, with the statements pointing at it. An external ontology owns its namespace but receives nothing: what it would own is dropped | `unattributed_insert_triples` |
+
+## The ontology plan and term decisions
+
+Before the units render, the document plan's proposals are checked against the
+whole catalog, without a model:
+
+- a proposal whose `reuse` names a catalog or well-known term of compatible
+  role (a class never reuses a property; a well-known term's role is read
+  from its vocabulary's naming, so a property never reuses `schema:Property`)
+  is a reuse of that term;
+- a proposal whose label or local name names exactly one catalog term of
+  compatible role becomes a reuse of it;
+- a second proposal with the same local name or label is refused, and so is
+  every proposal past `ONTOLOGY_PLAN_MAX_TERMS`;
+- a parent must be a catalog term, a well-known term or another accepted
+  proposal, of the term's own role; any other parent is dropped and the term
+  kept;
+- a property's domain and range must be a catalog or well-known class or a
+  class the plan mints (an XSD datatype for a datatype property's range); an
+  unknown one is dropped and the term kept. A generic upper class
+  (`owl:Thing`, `skos:Concept`, an Agent class) is kept and counted, since it
+  is sometimes the right level. The render sees the sides beside the
+  property, and at reduce the plan's parent and sides replace the ones a
+  render wrote for that term (`plan_parents_written`, `plan_sides_written`);
+  a parent or side naming a planned term the document never declared is not
+  written. Sides are written as `schema:domainIncludes` /
+  `schema:rangeIncludes`, a datatype range as `rdfs:range`;
+- a plan with no term counts as no plan, so units render without one.
+
+Counters: `plan_proposed`, `plan_minted`, `plan_reused`,
+`plan_resolved_to_catalog`, `plan_rejected`, `plan_generic_sides`, `plan_sides_written`,
+`plan_parents_written`,
+and `plan_failed` / `plan_empty` when no plan reached the units.
+
+A reused term is never minted, so the facts lane would not see it. Before the
+facts units render, every reused term the facts ontology context does not
+define is added to it: a catalog term with its catalog definition, a
+well-known term declared from the plan entry (its kind, label and the plan's
+definition). This holds for every facts context: the merged document
+context, and a unit's own when the document wrote no ontology (a plan that
+only reuses terms). Counter: `ctx/admitted_planned_terms`.
+
+At reduce, after the merge and the reconciliation above, every minted term
+(a class or property neither the catalog nor a well-known vocabulary holds)
+gets one action. A minted term is planned when its IRI, its local name
+(case-insensitive) or one of its labels matches a plan entry; any other is a
+candidate.
+
+The model is asked only about terms that need a decision: candidates, and
+minted terms that carry a term-level finding (`specific_label_leaf`,
+`value_set_siblings`, `catalog_duplicate`, `label_collision`,
+`hierarchy_too_deep`), name an existing catalog term, share their local name
+(case-insensitive, same role) with a term of a well-known vocabulary
+(`well_known_duplicate`: a minted `Observation` beside `sosa:Observation`), sit
+in a value-set family, or vary another term's name by one modifier
+(`hasOpticalCavity` and `hasOpticalMicrocavity`). Each of those gets a full
+entry, whose `near:` line names the terms its flags point at (the variant's
+partner, the catalog or well-known term of the same name) before the plan's
+nearest catalog terms; the document's other
+minted terms are listed one line each, as possible merge targets. When no term
+needs a decision, no call is made and the defaults apply. The actions are
+validated before they are compiled:
+
+| Action | Valid when | Effect on the document's update |
+|---|---|---|
+| `keep` | always; the default for a planned term | none |
+| `merge_into T` | `T` is a minted or catalog term of the same role, or a term a well-known vocabulary has under that role, and the merge chain ends at a term that survives | the term's own triples go; every other triple naming it names `T` |
+| `generalise_to T` | as for a merge | its named parents are replaced by `T` |
+| `demote_to_property_value` | the term is a class | its class typing and named superclasses go; it becomes an `owl:NamedIndividual` and `skos:Concept` with its former parents as `skos:broader`; subclasses and domain/range uses move to its former parent |
+| `drop` | always; the default for a candidate | every triple naming it goes |
+
+An action on a term the document did not mint or the model was not asked
+about, a second action on one term, or an invalid target is ignored and the
+default applies, so a catalog term's own
+axioms are never edited. Counters: `minted_terms_before_decisions`,
+`plan_candidates` (and `plan_candidate_iris`), `plan_candidates_dropped`,
+`consolidation_flagged`, `consolidation_skipped`,
+`consolidation_keep` / `_merge_into` / `_generalise_to` /
+`_demote_to_property_value` / `_drop`, `consolidation_actions_ignored`,
+`consolidation_changed_triples` and `consolidation_calls_failed`.
+`generic_property_sides` and `missing_property_sides` count, over the minted
+properties that survive the decisions, the sides that are only a generic
+upper class (`owl:Thing`, `schema:Thing`, `rdfs:Resource`, `skos:Concept`,
+`prov:Agent`, `foaf:Agent` or any class named `Agent`; a datatype property's
+range is never generic) and the sides that are missing. `generic_parents`
+counts the surviving minted terms whose every parent is the top of a
+hierarchy (`owl:Thing`, `schema:Thing`, `rdfs:Resource`,
+`owl:topObjectProperty`, `owl:topDataProperty`) or a catch-all relation
+(`skos:related`, `skos:semanticRelation`, `dcterms:relation`, `dc:relation`);
+`skos:Concept` is not one, since a class of fixed-list values belongs under
+it.
+
+The plan, the render, consolidation and the ontology critic judge a new term
+by one criterion, stated once in `ontocast/prompt/ontology_terms.py`: a class
+is a kind whose instances are things of the domain, named in the text or
+not; one particular thing is an individual, a distinction between members is
+a property value, a property's domain and range list the classes of
+everything the property can apply to in the domain, usually broader than one
+document's subject, and a parent is the nearest kind the term's instances
+belong to. The plan reuses a general property rather than minting a
+narrower copy of it for one kind of subject.
+
+## Applying the merged update
 
 Applying the merged delta also counts where the unit's view and the catalog
 diverged: `apply_deletes_no_match` (delete triples absent from the catalog at
 apply time, typically a stale vector index),
 `unattributed_insert_triples` / `unattributed_delete_triples` (triples no
 writable ontology claims, the loss `foreign_namespace` predicts) and
-`apply_header_triples_dropped` (triples on the ontology IRI itself, dropped
-because the version header is written by code, never by a render).
+`apply_header_triples_dropped` (statements on the ontology IRI itself, and the
+blank-node structures only they point at, dropped because the version header is
+written by code, never by a render). Deletes keep the catalog's blank-node
+structures whole: a delete of every statement pointing at a structure removes
+the structure too (`apply_structure_deletes_expanded`), and a delete of part of
+a structure that something still points at is dropped
+(`apply_structure_deletes_dropped`).
+
+`minted_classes` counts the classes the document minted. When the run renders
+both lanes, the facts gate adds `unused_minted_classes` and
+`unused_minted_class_iris`: minted classes that no fact of the same document
+instantiates.
 
 These counters are kept in `AgentState.ontology_reduce_metrics` and written to
 the run manifest of `ontocast process` under `ontology_reduce_metrics`. The

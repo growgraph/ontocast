@@ -3,9 +3,15 @@ from collections.abc import Sequence
 from enum import StrEnum
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
-from ontocast.onto.identity import MintedOntologyId
+from ontocast.onto.identity import validate_minted_ontology_id
 from ontocast.onto.llm_graph_payload import LLMGraphWire
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
@@ -154,24 +160,6 @@ class FactsRenderReport(BaseModel):
             "Encoding is defined by deployment llm_graph_format and OUTPUT INSTRUCTION."
         ),
     )
-    ontology_relevance_score: float | None = Field(
-        default=None,
-        ge=0,
-        le=100,
-        description=(
-            "Score between 0 and 100 of how well "
-            "the ontology represents the domain of the document."
-        ),
-    )
-    triples_generation_score: float | None = Field(
-        default=None,
-        ge=0,
-        le=100,
-        description=(
-            "Score 0-100 for how well the semantic triples "
-            "represent the document. 0 is the worst, 100 is the best."
-        ),
-    )
     external_evidence_request: ExternalEvidenceRequest = Field(
         default_factory=ExternalEvidenceRequest,
         description="Optional request to run web search before retrying.",
@@ -192,21 +180,13 @@ class FactsRenderReport(BaseModel):
 
 
 class GraphUpdateRenderReport(BaseModel):
-    """Graph update rendering output with optional search decision.
+    """Ontology render output: the triples to insert and the triples to delete."""
 
-    The wire shape is deliberately flat, and deliberately the same shape as
-    :class:`FactsRenderReport`: two sibling graph fields, no wrapper object and
-    no list. The previous shape nested the graph inside
-    ``graph_update.triple_operations[]``, and a *singleton* list holding one
-    long JSON-LD document is a shape models close wrongly -- measured at 20/24
-    malformed above ~4k characters on gpt-5-mini, versus 0/22 whenever the list
-    happened to hold two or more operations and the ``},{`` boundary reinforced
-    the array frame. Nothing here may reintroduce a list-of-one around a large
-    payload.
-
-    The internal :class:`GraphUpdate` keeps its ordered ``TripleOp`` list; this
-    is a wire encoding, not the patch model. See :meth:`to_graph_update`.
-    """
+    # The docstring above is sent to the model as the schema description, so
+    # the contract lives in this comment. The wire is flat, two sibling graph
+    # fields like FactsRenderReport, with no wrapper and no list: models close a
+    # single-element list around one long graph with mismatched brackets. The
+    # ordered TripleOp patch is internal (see to_graph_update).
 
     insert_graph: LLMGraphWire = Field(
         default_factory=RDFGraph,
@@ -362,21 +342,24 @@ class TripleFix(BaseModel):
     )
 
     explanation: str = Field(
+        default="",
         description=(
             "Why this fix is needed. Examples:\n"
             "- 'Missing xsd:date datatype for temporal literal'\n"
             "- 'Namespace prefix fca: not declared'\n"
             "- 'Property onto:decidedBy is canonical, not cd:judgedBy'"
-        )
+        ),
     )
 
     @field_validator("text_fragment", "explanation", mode="before")
     @classmethod
     def coerce_free_text(cls, v: object) -> str:
-        """Coerce the two required free-text fields.
+        """Coerce the two free-text fields.
 
-        Both are required with no default, so a provider answering either with a
-        bulleted list raised and discarded the whole critique report. Deliberately
+        A provider answering either with a bulleted list would otherwise raise
+        and discard the whole critique report. ``explanation`` defaults to empty:
+        a fix is actionable without it, and a report missing it is not worth a
+        second call. Deliberately
         not applied to ``incorrect_value``/``correct_value``: those carry graph
         syntax, where joining a list would corrupt the payload rather than
         recover it.
@@ -529,6 +512,25 @@ class FactsCritiqueReport(BaseModel):
     )
 
 
+class FactsDomainRepairReport(BaseModel):
+    """Output of the facts domain-repair call.
+
+    Each fix replaces one listed statement by the same subject and object
+    linked through a property whose domain fits the subject; anything else is
+    dropped before it is applied.
+    """
+
+    proposed_fixes: list[TripleFix] = Field(
+        default_factory=list,
+        description=(
+            "One REPLACE per statement repaired, citing its id in `triple_ids`; "
+            "`correct_value` is that statement with the same subject and "
+            "object and the fitting property. A statement no property fits is "
+            "left out."
+        ),
+    )
+
+
 class FactsCompletionReport(BaseModel):
     """Output of the insert-only facts completion pass.
 
@@ -660,19 +662,34 @@ class CoreferenceReport(BaseModel):
     verdicts: list[CoreferenceVerdict] = Field(default_factory=list)
 
 
+class FactsIsolatedInstance(BaseModel):
+    """An instance the served facts link to nothing, kept and listed.
+
+    ``kind`` is read from structure, not vocabulary: ``holds_value`` when it
+    carries a value or a non-annotation literal (a statement with no subject,
+    such as an observation of nothing), ``other`` when it carries neither.
+    """
+
+    iri: str
+    label: str = ""
+    kind: Literal["holds_value", "other"]
+
+
 class OntologyIdentityProposal(BaseModel):
     """What the model proposes for a document's home ontology.
 
-    The IRI is never proposed: code mints it from ``ontology_id``. An
-    ``ontology_id`` already in the catalog means the document extends that
-    ontology; any other id names a new one.
+    The IRI is never proposed: code mints it from ``ontology_id``. A handle
+    the catalog list shows means the document extends that ontology; any other
+    value names a new one and must be a mintable id. Validated with the
+    context key ``catalog_handles`` (the shown handles); without it, only a
+    mintable id passes.
     """
 
-    ontology_id: MintedOntologyId = Field(
+    ontology_id: str = Field(
         description=(
-            "Short lowercase handle (2-32 chars, letters, digits, '_' or '-', "
-            "starting with a letter), e.g. 'abc' for a hypothetical A... B... C... "
-            "Ontology. Return an existing id to extend that ontology."
+            "The handle of a catalog ontology to extend it, or a new short "
+            "lowercase id (2-32 chars, letters, digits, '_' or '-', starting "
+            "with a letter), e.g. 'abc' for a hypothetical A... B... C... Ontology."
         )
     )
     title: str = Field(
@@ -685,6 +702,255 @@ class OntologyIdentityProposal(BaseModel):
         max_length=1200,
         description="3-4 sentences: domain, purpose, scope, applicability.",
     )
+
+    @field_validator("ontology_id")
+    @classmethod
+    def _catalog_handle_or_mintable(cls, value: str, info: ValidationInfo) -> str:
+        cleaned = value.strip()
+        handles = (info.context or {}).get("catalog_handles", ())
+        if cleaned in handles:
+            return cleaned
+        return validate_minted_ontology_id(cleaned)
+
+
+TermKind = Literal["class", "object_property", "datatype_property"]
+
+_TERM_KIND_ALIASES: dict[str, str] = {
+    "class": "class",
+    "owl_class": "class",
+    "object_property": "object_property",
+    "objectproperty": "object_property",
+    "owl_objectproperty": "object_property",
+    "property": "object_property",
+    "relation": "object_property",
+    "datatype_property": "datatype_property",
+    "datatypeproperty": "datatype_property",
+    "owl_datatypeproperty": "datatype_property",
+    "data_property": "datatype_property",
+    "attribute": "datatype_property",
+}
+
+_LOCAL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+def _coerce_term_kind(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    key = re.sub(r"[\s\-:]+", "_", value.strip().casefold())
+    return _TERM_KIND_ALIASES.get(key, key)
+
+
+def _coerce_local_name(value: object) -> object:
+    """CamelCase a local name the model wrote with spaces or punctuation."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if _LOCAL_NAME_RE.match(text):
+        return text
+    parts = [part for part in re.split(r"[^A-Za-z0-9]+", text) if part]
+    if not parts:
+        return text
+    joined = parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
+    return joined.lstrip("0123456789") or joined
+
+
+def _blank_to_none(value: object) -> object:
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
+class OntologyTermProposal(BaseModel):
+    """One term the model proposes a document adds to its domain."""
+
+    kind: TermKind = Field(
+        description="'class', 'object_property' or 'datatype_property'."
+    )
+    label: str = Field(min_length=1, max_length=120, description="rdfs:label.")
+    local_name: str = Field(
+        description=(
+            "Local name in the home namespace: PascalCase for a class, "
+            "camelCase for a property, letters and digits only."
+        )
+    )
+    parent: str | None = Field(
+        default=None,
+        description=(
+            "Superclass (class) or superproperty (property): a term listed in "
+            "the catalog, a well-known vocabulary term, or another proposal's "
+            "local name. Empty for none."
+        ),
+    )
+    domain: str | None = Field(
+        default=None,
+        description=(
+            "Property only: the most specific class every subject of the "
+            "property belongs to (a catalog term, a well-known term or another "
+            "proposal's local name). Thing, Concept or an Agent class only "
+            "when nothing more specific fits. Empty for a class."
+        ),
+    )
+    range: str | None = Field(
+        default=None,
+        description=(
+            "Property only: the most specific class every value belongs to, "
+            "or an XSD datatype for a datatype property. For values from a "
+            "fixed list, a proposed class of those values under skos:Concept. "
+            "Thing, Concept or an Agent class only when nothing more specific "
+            "fits. Empty for a class."
+        ),
+    )
+    definition: str = Field(
+        default="",
+        max_length=600,
+        description="One sentence: what any instance of the term is, domain-wide.",
+    )
+    reuse: str | None = Field(
+        default=None,
+        description=(
+            "A listed catalog term or well-known term that already names this "
+            "concept. Set it instead of minting; leave empty for a new term."
+        ),
+    )
+    justification: str = Field(
+        default="",
+        max_length=400,
+        description=(
+            "Why a second document in the domain would use this term: not "
+            "why this document mentions it."
+        ),
+    )
+
+    _kind = field_validator("kind", mode="before")(_coerce_term_kind)
+    _local = field_validator("local_name", mode="before")(_coerce_local_name)
+    _parent = field_validator("parent", "reuse", "domain", "range", mode="before")(
+        _blank_to_none
+    )
+    _free = field_validator("definition", "justification", mode="before")(
+        _coerce_free_text
+    )
+
+    @field_validator("local_name")
+    @classmethod
+    def _valid_local_name(cls, value: str) -> str:
+        if not _LOCAL_NAME_RE.match(value):
+            raise ValueError(f"local_name {value!r} is not a letter-led identifier")
+        return value
+
+
+class OntologyPlanReport(BaseModel):
+    """The model's proposal list for one document: the plan's wire form."""
+
+    proposals: list[OntologyTermProposal] = Field(default_factory=list)
+
+
+class OntologyPlanTerm(BaseModel):
+    """One accepted plan entry, after the model-free catalog check."""
+
+    kind: TermKind
+    label: str
+    local_name: str
+    #: The term's IRI: the home namespace plus the local name for a minted
+    #: term, the catalog or well-known IRI for a reused one.
+    iri: str
+    decision: Literal["mint", "reuse"]
+    parent_iri: str | None = None
+    #: A minted property's planned ``rdfs:domain`` / ``rdfs:range``: a known
+    #: class or another plan entry.
+    domain_iri: str | None = None
+    range_iri: str | None = None
+    definition: str = ""
+    #: Catalog terms near this one by the vector index, ``(iri, label)``; shown
+    #: to the renderer and to consolidation as reuse candidates.
+    nearest: list[tuple[str, str]] = Field(default_factory=list)
+
+
+class OntologyPlan(BaseModel):
+    """A document's accepted plan: the terms its units may mint or must reuse."""
+
+    terms: list[OntologyPlanTerm] = Field(default_factory=list)
+    #: Proposals refused by the check, with the reason, for telemetry.
+    rejected: list[tuple[str, str]] = Field(default_factory=list)
+    #: Proposals turned into a reuse because their name matched a catalog term.
+    resolved_to_catalog: int = 0
+    #: Planned domains and ranges that name only a generic upper class; kept.
+    generic_sides: int = 0
+    #: The CURIE prefixes the plan was made under, prefix to namespace; the
+    #: prompts that show the plan use them.
+    prefixes: dict[str, str] = Field(default_factory=dict)
+
+    def minted(self) -> list[OntologyPlanTerm]:
+        """Terms the document may mint."""
+        return [term for term in self.terms if term.decision == "mint"]
+
+    def reused(self) -> list[OntologyPlanTerm]:
+        """Terms the document must reuse instead of minting."""
+        return [term for term in self.terms if term.decision == "reuse"]
+
+
+TermActionKind = Literal[
+    "keep", "merge_into", "generalise_to", "demote_to_property_value", "drop"
+]
+
+_TERM_ACTION_ALIASES: dict[str, str] = {
+    "keep": "keep",
+    "merge": "merge_into",
+    "merge_into": "merge_into",
+    "reuse": "merge_into",
+    "generalise": "generalise_to",
+    "generalize": "generalise_to",
+    "generalise_to": "generalise_to",
+    "generalize_to": "generalise_to",
+    "demote": "demote_to_property_value",
+    "demote_to_value": "demote_to_property_value",
+    "demote_to_property_value": "demote_to_property_value",
+    "drop": "drop",
+    "remove": "drop",
+    "delete": "drop",
+}
+
+
+def _coerce_term_action(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    key = re.sub(r"[\s\-]+", "_", value.strip().casefold())
+    return _TERM_ACTION_ALIASES.get(key, key)
+
+
+class OntologyTermAction(BaseModel):
+    """One decision about a minted term.
+
+    ``keep`` leaves it; ``merge_into`` replaces it by ``target`` everywhere;
+    ``generalise_to`` makes ``target`` its only parent; ``demote_to_property_value``
+    turns a class into a SKOS concept (a value of some property); ``drop``
+    removes it and every triple naming it.
+    """
+
+    term: str = Field(description="The term's IRI or CURIE, as listed.")
+    action: TermActionKind = Field(
+        description=(
+            "'keep', 'merge_into', 'generalise_to', "
+            "'demote_to_property_value' or 'drop'."
+        )
+    )
+    target: str | None = Field(
+        default=None,
+        description=(
+            "For merge_into and generalise_to: a listed term, catalog term or "
+            "well-known term. Empty otherwise."
+        ),
+    )
+    rationale: str = Field(default="", max_length=300)
+
+    _action = field_validator("action", mode="before")(_coerce_term_action)
+    _target = field_validator("target", mode="before")(_blank_to_none)
+    _rationale = field_validator("rationale", mode="before")(_coerce_free_text)
+
+
+class OntologyConsolidationReport(BaseModel):
+    """Term actions for one batch of minted terms."""
+
+    actions: list[OntologyTermAction] = Field(default_factory=list)
 
 
 class FreshOntologyRenderReport(BaseModel):
@@ -718,6 +984,18 @@ class FactsUnitFindingKind(StrEnum):
     #: ``rdfs:domain`` or ``rdfs:range``, materialised on the node.
     #: Repair-only: never raised as a finding.
     ENTAILED_TYPE = "entailed_type"
+    #: A triple both of whose ends contradict its predicate's domain and
+    #: range as written and fit them swapped, turned around.
+    #: Repair-only: never raised as a finding.
+    TRIPLE_REVERSED = "triple_reversed"
+    #: A class that exists nowhere, written as an ``rdf:type`` object,
+    #: rewritten to the one catalog class with exactly its local name.
+    #: Repair-only: never raised as a finding.
+    CLASS_ALIAS = "class_alias"
+    #: A node written on a well-known datatype property, moved to the object
+    #: property its vocabulary pairs with it (``sosa:hasSimpleResult`` ->
+    #: ``sosa:hasResult``). Repair-only: never raised as a finding.
+    PAIRED_OBJECT_PROPERTY = "paired_object_property"
     NUMERIC_COVERAGE = "numeric_coverage"
     LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"
@@ -726,6 +1004,10 @@ class FactsUnitFindingKind(StrEnum):
     #: A fact-namespace instance with no ``rdf:type`` naming a concrete class
     #: outside the fact namespaces (a metaclass or ``owl:Thing`` is no type).
     UNTYPED_INSTANCE = "untyped_instance"
+    #: An instance of a statement or value class (an observation, a quantity
+    #: value) that states a value but is linked to no other instance: a
+    #: value of nothing until it names what it is about.
+    STATEMENT_WITHOUT_SUBJECT = "statement_without_subject"
     #: The render used no term from the ontology it was given. Not a
     #: property of any single triple, so no other kind can express it.
     DOMAIN_ADHERENCE = "domain_adherence"
@@ -805,6 +1087,20 @@ class OntologyUnitFindingKind(StrEnum):
     #: ontology deletes propagate onto shared, versioned catalog terminals
     #: cross-document, so an unowned delete is destructive beyond this unit.
     FOREIGN_DELETE = "foreign_delete"
+    #: A minted class sits more named-superclass steps below its root than
+    #: ``ONTOLOGY_MAX_CLASS_DEPTH`` allows.
+    HIERARCHY_TOO_DEEP = "hierarchy_too_deep"
+    #: Three or more minted sibling classes whose labels differ in one word
+    #: and that carry no structure of their own: a value set modelled as
+    #: subclasses.
+    VALUE_SET_SIBLINGS = "value_set_siblings"
+    #: A minted leaf class, used by no property, whose label carries a
+    #: number or four or more words: likely one
+    #: document's case rather than a reusable kind. Advisory.
+    SPECIFIC_LABEL_LEAF = "specific_label_leaf"
+    #: A minted term whose label or local name names a term elsewhere in the
+    #: catalog -- one the unit's context did not show.
+    CATALOG_DUPLICATE = "catalog_duplicate"
 
 
 class OntologyUnitFinding(UnitFinding[OntologyUnitFindingKind]):
@@ -865,19 +1161,40 @@ class FactsGateRepairKind(StrEnum):
     #: A fact-namespace instance still untyped after aggregation, removed
     #: with every triple that mentions it.
     UNTYPED_DROPPED = "untyped_dropped"
+    #: A fact-namespace instance that states nothing (no link, no value),
+    #: removed with its names.
+    UNLINKED_DROPPED = "unlinked_dropped"
+    #: A node standing for a date, given the typed ISO 8601 value its label
+    #: names.
+    DATE_VALUE_ADDED = "date_value_added"
+    #: A text set aside for not being a date, time or duration value, put
+    #: back on its subject as ``rdfs:comment`` when the unit left its loop.
+    QUARANTINE_AS_COMMENT = "quarantine_as_comment"
+    #: A rendered triple naming an IRI no SPARQL ``IRIREF`` can hold (a
+    #: space, a quote, a brace), dropped at parse time; one record per IRI.
+    MALFORMED_IRI_DROPPED = "malformed_iri_dropped"
+    #: A statement whose subject's type contradicts its property's declared
+    #: domain after the unit's domain repair, removed when the unit left its
+    #: loop.
+    DOMAIN_VIOLATION_DROPPED = "domain_violation_dropped"
+    #: A statement linking a node to itself through a property not declared
+    #: reflexive, removed after aggregation.
+    SELF_LOOP_DROPPED = "self_loop_dropped"
 
 
 class GraphRepairRecord(BaseModel):
-    """One machine-applied deterministic rewrite on a facts graph.
+    """One machine-applied deterministic rewrite on a rendered graph.
 
     LLM-free by construction: every repair either rewrites a term the catalog
-    already declares or removes a node that asserts nothing. Records what the
-    repair passes changed (near-miss predicate rewrites, literal ``rdf:type``
-    coercions, shape-driven retyping/pruning) so downstream consumers can
-    distinguish machine-altered triples from what the LLM asserted.
+    already declares, removes a node that asserts nothing, or states what a
+    term's own name already says (a label derived from its local name).
+    Records what the repair passes changed (near-miss predicate rewrites,
+    literal ``rdf:type`` coercions, shape-driven retyping/pruning, derived
+    labels) so downstream consumers can distinguish machine-altered triples
+    from what the LLM asserted. ``kind`` is the finding the repair resolves.
     """
 
-    kind: FactsUnitFindingKind | FactsGateRepairKind
+    kind: FactsUnitFindingKind | FactsGateRepairKind | OntologyUnitFindingKind
     source: str
     target: str
     triple_count: int = 1
@@ -939,13 +1256,21 @@ class LoopAttempt(BaseModel):
         (``empty_render``, ``citation_metadata``). A ``critic`` record whose
         ``accept_reason`` is ``critic_unavailable`` is a call made that
         produced no critique; the unit leaves the loop unreviewed.
-        ``kind="completion"`` is the insert-only completion pass.
+        ``kind="completion"`` is the insert-only completion pass;
+        ``kind="domain_repair"`` the call that gives a statement violating a
+        declared domain a property that fits its subject.
     """
 
     render_attempt: int = 0
     critic_attempt: int = 0
     kind: Literal[
-        "render", "critic", "critic_patch", "critic_skipped", "completion", "llm_repair"
+        "render",
+        "critic",
+        "critic_patch",
+        "critic_skipped",
+        "completion",
+        "domain_repair",
+        "llm_repair",
     ] = "render"
     score: float | None = None
     success: bool | None = None
@@ -1014,6 +1339,20 @@ class LoopAttempt(BaseModel):
         description=(
             "Completion pass only: missed measurements the numeric inventory "
             "no longer lists after the inserts that stayed."
+        ),
+    )
+    n_subjects_linked: int = Field(
+        default=0,
+        description=(
+            "Completion pass only: statement_without_subject findings that no "
+            "longer hold after the inserts that stayed."
+        ),
+    )
+    n_detached_linked: int = Field(
+        default=0,
+        description=(
+            "Completion pass only: instances linked to nothing before the "
+            "pass that are linked after the inserts that stayed."
         ),
     )
     patch_delete_capped: bool = Field(

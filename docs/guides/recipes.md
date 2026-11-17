@@ -64,11 +64,12 @@ directory.
 
 ```bash
 RENDER_MODE=ontology          # build ontologies only; no facts are extracted
-ONTOLOGY_CRITIC_PASSES=1      # one review call per part; the ontology is the deliverable
+ONTOLOGY_CRITIC_PASSES=2      # review every part, faulted or not; the ontology is the deliverable
 ```
 
-The ontology critic is off by default. Here it earns its call: a wrong term
-carries into every fact extracted with it later. Each pass applies its fixes as
+By default the ontology critic is off, and at one pass it reviews only the
+parts whose checks found a mandatory defect. Here a review of every part earns
+its call: a wrong term carries into every fact extracted with it later. Each pass applies its fixes as
 a patch, and only to the part's own changes, so it cannot delete terms that
 came from your catalog.
 
@@ -115,8 +116,8 @@ OntoCast logs a warning and extracts in generic vocabulary; with this setting
 `ontocast process` refuses to start on an empty catalog, and a part with no
 ontology context stops the run.
 
-On a facts-only run the prompt shows the ontology as a term sheet, one line per
-term, which is the shortest form; see [Performance tuning](performance.md).
+The facts prompts show the ontology as a term sheet, one line per term, which
+is the shortest form; see [Performance tuning](performance.md).
 
 **What to check.** In the run manifest, `validation_config.context_from_units`
 should be `true`, and `retrieval_metrics.ontology_snapshot_triples` should be

@@ -13,6 +13,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
 from ontocast.agent.common import call_llm_with_retry
+from ontocast.agent.update_common import drop_malformed_iris
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, LLMPhase, Status, WorkflowNode
 from ontocast.onto.model import (
@@ -49,10 +50,13 @@ from ontocast.tool.facts_validation import (
     expand_vocabulary_terms,
     materialize_entailed_types,
     normalize_literals_against_schema,
+    partition_literals_outside_temporal_ranges,
     promote_degenerate_bounds_from_vocabulary,
     repair_compact_iri_literals,
     repair_literal_type_objects,
+    repair_paired_object_properties,
     repair_property_aliases,
+    repair_reversed_triples,
     resolve_code_literals,
 )
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
@@ -95,7 +99,9 @@ def _normalize_and_repair_graph(
         Tuple of (repaired graph, applied-repair records for provenance).
     """
     started = time.perf_counter()
-    retyped = normalize_literals_against_schema(graph, ontology_context_graph)
+    retyped = normalize_literals_against_schema(
+        graph, ontology_context_graph, tools.catalog_roles()
+    )
     type_repaired, _type_findings, type_records = repair_literal_type_objects(graph)
     vocabulary_terms = expand_vocabulary_terms(
         tools.quantity_fallback_vocabulary, graph, ontology_context_graph
@@ -110,13 +116,15 @@ def _normalize_and_repair_graph(
         min_ratio=tools.property_alias_min_ratio,
         exempt_terms=vocabulary_terms,
         full_catalog_terms=catalog_terms,
+        catalog_roles=tools.catalog_roles(),
     )
     resolved, code_records = resolve_code_literals(
         graph, ontology_context_graph, tools.code_predicates
     )
-    entailed, entailed_records = materialize_entailed_types(
-        graph, ontology_context_graph
-    )
+    paired, paired_records = repair_paired_object_properties(graph)
+    axioms = tools.catalog_roles().with_axioms(ontology_context_graph)
+    reversed_count, reversed_records = repair_reversed_triples(graph, axioms)
+    entailed, entailed_records = materialize_entailed_types(graph, axioms)
     promote_degenerate_bounds_from_vocabulary(
         graph, ontology_context_graph, tools.quantity_fallback_vocabulary
     )
@@ -124,17 +132,29 @@ def _normalize_and_repair_graph(
         budget_tracker.add_duration(
             "repair/deterministic", time.perf_counter() - started
         )
-    if retyped or rewritten or type_repaired or iri_repaired or resolved or entailed:
+    if (
+        retyped
+        or rewritten
+        or type_repaired
+        or iri_repaired
+        or resolved
+        or paired
+        or reversed_count
+        or entailed
+    ):
         logger.info(
             "Deterministic graph repair: retyped %d literal(s), coerced %d "
             "rdf:type literal(s), coerced %d compact-IRI literal(s), rewrote %d "
-            "alias triple(s), resolved %d code(s), materialised %d entailed "
+            "alias triple(s), resolved %d code(s), moved %d node(s) to a paired "
+            "object property, turned %d triple(s), materialised %d entailed "
             "type(s)",
             retyped,
             type_repaired,
             iri_repaired,
             rewritten,
             resolved,
+            paired,
+            reversed_count,
             entailed,
         )
     return graph, [
@@ -142,6 +162,8 @@ def _normalize_and_repair_graph(
         *iri_records,
         *alias_records,
         *code_records,
+        *paired_records,
+        *reversed_records,
         *entailed_records,
     ]
 
@@ -217,6 +239,8 @@ def _prepare_prompt_data(
     citation_vocabulary: dict[str, str] | None = None,
     quantity_fallback_vocabulary: dict[str, str] | None = None,
     search_guidelines: str = "",
+    vocabulary: str = "strict",
+    additional_namespaces: tuple[str, ...] = (),
 ) -> dict[str, str]:
     """Prepare common prompt data for both fresh and update rendering.
 
@@ -276,6 +300,8 @@ def _prepare_prompt_data(
         domain_ontologies_clause=format_ontologies_clause(domain_pairs),
         quantity_fallback_vocabulary=quantity_fallback_vocabulary,
         search_guidelines=search_guidelines,
+        vocabulary=vocabulary,
+        additional_namespaces=additional_namespaces,
     )
 
     text_chapter = text_template.format(text=state.content_unit.extraction_text)
@@ -371,6 +397,7 @@ async def render_facts_fresh(
     known_prefixes = build_llm_prefix_map(
         access.ontology_for_prefixes(),
         supplemental_ontologies or (),
+        tools.prefix_table(),
     )
 
     web_search_enabled = tools.web_grounding_enabled_for_node(
@@ -385,6 +412,8 @@ async def render_facts_fresh(
         search_guidelines=search_guidelines_for(
             WorkflowNode.TEXT_TO_FACTS, web_search_enabled
         ),
+        vocabulary=tools.facts_vocabulary,
+        additional_namespaces=tools.additional_standard_namespaces,
     )
     prompt_data_fresh = {
         "preamble": preamble,
@@ -420,6 +449,7 @@ async def render_facts_fresh(
             web_search_enabled,
         )
         render_report.semantic_graph.sanitize_prefixes_namespaces()
+        state.applied_repairs.extend(drop_malformed_iris(render_report.semantic_graph))
         clean_graph, rejected = finalize_llm_graph(render_report.semantic_graph)
         ontology_context_graph = access.effective_ontology_for_prompt().graph
         clean_graph, repair_records = _normalize_and_repair_graph(
@@ -434,6 +464,10 @@ async def render_facts_fresh(
                 clean_graph, ontology_context_graph
             )
             rejected = rejected + op_rejected
+        clean_graph, temporal_rejected = partition_literals_outside_temporal_ranges(
+            clean_graph, ontology_context_graph, tools.catalog_roles()
+        )
+        rejected = rejected + temporal_rejected
         state.content_unit.graph = clean_graph
         state.quarantined_literal_triples = rejected
         if rejected:

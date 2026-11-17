@@ -21,6 +21,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.enum import OntologyAssemblyMode, RenderMode, Status
 from ontocast.onto.model import FactsUnitFinding, FactsUnitFindingKind, TripleFix
 from ontocast.onto.ontology_snapshot import OntologySnapshot
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
@@ -36,6 +37,8 @@ from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy, ValidationPolicy
+from ontocast.tool.facts_validation.terms import CatalogRoles
+from ontocast.tool.ontology_validation import CatalogSurfaceIndex
 from ontocast.toolbox import ToolBox
 from test.snapshot_helpers import empty_snapshot
 
@@ -91,7 +94,10 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
     return cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             facts_completion_passes=completion_passes,
+            facts_completion_measurements=True,
+            facts_completion_detached=False,
             facts_patch_policy=CriticPatchPolicy(),
             quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY),
             additional_standard_namespaces=(),
@@ -102,6 +108,8 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
             numeric_coverage_limit=30,
             numeric_coverage_mandatory="off",
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
+            subject_contract=lambda: None,
         ),
     )
 
@@ -151,7 +159,9 @@ def _poison_sensitive_findings(state, _atomic) -> list[FactsUnitFinding]:
 async def test_a_pass_produces_only_additions(monkeypatch) -> None:
     state = _unit_state()
 
-    async def fake_complete(_state, _atomic, _inventory):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -180,7 +190,9 @@ async def test_a_regressing_insert_is_rolled_back(monkeypatch) -> None:
     state = _unit_state()
     poison = f'<{_SUBJECT}> <{_POISON}> "bad" .'
 
-    async def fake_complete(_state, _atomic, _inventory):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         return [_fix(poison)]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -207,7 +219,9 @@ async def test_only_add_fixes_are_kept(monkeypatch) -> None:
     """
     state = _unit_state()
 
-    async def fake_complete(_state, _atomic, _inventory):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         return [
             _fix(_mev_insert()),
             TripleFix(
@@ -235,7 +249,9 @@ async def test_n_measurements_recovered_counts_precisely(monkeypatch) -> None:
     """One of two missing measurements is addressed; the count reflects that."""
     state = _unit_state(text="a shift of 96 meV and a gap of 12 nm")
 
-    async def fake_complete(_state, _atomic, _inventory):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -254,7 +270,9 @@ async def test_it_stops_early_once_measurements_are_covered(monkeypatch) -> None
     state = _unit_state()
     calls = {"n": 0}
 
-    async def fake_complete(_state, _atomic, _inventory):
+    async def fake_complete(
+        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
+    ):
         calls["n"] += 1
         return [_fix(_mev_insert())]
 
@@ -276,6 +294,7 @@ def _facts_tools(*, completion_passes: int) -> object:
     atomic = cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             facts_critic_passes=0,
             facts_patch_policy=CriticPatchPolicy(),
             quantity_fallback_vocabulary=None,
@@ -286,7 +305,11 @@ def _facts_tools(*, completion_passes: int) -> object:
             numeric_coverage_mandatory="off",
             facts_critic_min_triples=0,
             facts_completion_passes=completion_passes,
+            facts_completion_measurements=True,
+            facts_completion_detached=False,
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
+            subject_contract=lambda: None,
         ),
     )
     return SimpleNamespace(get_atomic_tools=lambda: atomic)
@@ -352,10 +375,16 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
     tools = cast(
         ToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_atomic_tools=lambda: cast(
                 AtomicToolBox,
                 SimpleNamespace(
                     ontology_critic_passes=0,
+                    catalog_terms=lambda: set(),
+                    catalog_roles=lambda: CatalogRoles(),
+                    subject_contract=lambda: None,
+                    ontology_max_class_depth=6,
+                    catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
                     additional_standard_namespaces=(),
                     validation_policy=None,
@@ -364,7 +393,7 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
                     # ontology phase must never read it (`phase.name == "facts"`
                     # short-circuits first), so its absence proves the guard.
                 ),
-            )
+            ),
         ),
     )
 
@@ -372,3 +401,117 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
 
     assert result.status != Status.FAILED
     assert not [a for a in result.attempt_log if a.kind == "completion"]
+
+
+def test_the_existing_subjects_chapter_does_not_depend_on_triple_order() -> None:
+    """A subject with two catalog types and two labels renders the same text
+    whichever order the graph yields them in, so a replay hits the cache."""
+    from ontocast.prompt.complete_facts import build_catalog_subjects_chapter
+
+    ex = "https://ex.org/onto#"
+    city = URIRef("https://ex.org/facts/city")
+    terms = {ex + "Location", ex + "Feature"}
+
+    def chapter(type_order: list[str], label_order: list[str]) -> str:
+        graph = RDFGraph()
+        graph.bind("ex", ex)
+        for cls in type_order:
+            graph.add((city, RDF.type, URIRef(ex + cls)))
+        for label in label_order:
+            graph.add((city, RDFS.label, Literal(label)))
+        return build_catalog_subjects_chapter(graph, terms)
+
+    first = chapter(["Location", "Feature"], ["Lytton", "Lytton, BC"])
+    assert first == chapter(["Feature", "Location"], ["Lytton, BC", "Lytton"])
+    assert "a ex:Feature, ex:Location" in first
+
+
+# -- the prompt: a recovered value is a fact -------------------------------------
+
+
+def _gap_term_sheet(*, vocabulary: dict[str, str], contract) -> str:
+    from ontocast.prompt.complete_facts import build_term_sheet
+
+    return build_term_sheet(
+        _quantity_ontology(), (), value_terms=vocabulary, contract=contract
+    )
+
+
+def test_the_guidelines_take_a_qudt_unit_else_keep_it_as_text_and_ask_for_a_subject() -> (
+    None
+):
+    from ontocast.prompt.complete_facts import completion_instruction
+
+    text = " ".join(completion_instruction.split())
+    assert "use the QUDT unit (`unit:`) for exactly that unit" in text
+    assert "keep the unit token as text on the value node" in text
+    assert "never an invented or approximate unit IRI" in text
+    assert "A value node nothing points to is not a fact" in text
+
+
+def test_the_term_sheet_lists_the_configured_value_terms_and_subject_links() -> None:
+    from ontocast.tool.facts_validation.terms import SubjectContract
+
+    contract = SubjectContract(
+        forward=frozenset({"https://ex.org/v#about"}),
+        inverse=frozenset({"https://ex.org/v#hasReading"}),
+    )
+    sheet = _gap_term_sheet(
+        vocabulary={
+            "value_class": "https://ex.org/v#Amount",
+            "numeric_value": "https://ex.org/v#number",
+        },
+        contract=contract,
+    )
+    assert "value_class: https://ex.org/v#Amount" in sheet
+    assert "numeric_value: https://ex.org/v#number" in sheet
+    assert "  unit:" not in sheet
+    forward, inverse = sheet.split("from the subject to the statement")
+    assert "<https://ex.org/v#about>" in forward
+    assert "<https://ex.org/v#hasReading>" in inverse
+
+
+@pytest.mark.parametrize("fmt", ["turtle", "jsonld"])
+def test_the_output_example_is_a_statement_that_names_its_subject(fmt) -> None:
+    """The example is the form the unit validator keeps: no free-standing value."""
+    import json
+
+    from rdflib import BNode
+
+    from ontocast.onto.enum import LLMGraphFormat
+    from ontocast.prompt.complete_facts import output_instruction_for
+
+    instruction = output_instruction_for(LLMGraphFormat(fmt))
+    example = instruction.split("Example: ", 1)[1].strip()
+    payload = json.loads(example)
+    graph = RDFGraph()
+    if fmt == "turtle":
+        graph.parse(
+            data="@prefix cd: <https://ex.org/f/> . @prefix onto: <https://ex.org/o#> ."
+            "@prefix qudt: <http://qudt.org/schema/qudt/> ."
+            "@prefix unit: <http://qudt.org/vocab/unit/> ."
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> ."
+            "@prefix xsd: <http://www.w3.org/2001/XMLSchema#> ." + payload,
+            format="turtle",
+        )
+    else:
+        node = json.loads(payload)
+        node["@context"] = {
+            **node.get("@context", {}),
+            "cd": "https://ex.org/f/",
+            "onto": "https://ex.org/o#",
+            "unit": "http://qudt.org/vocab/unit/",
+            "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+            "xsd": "http://www.w3.org/2001/XMLSchema#",
+        }
+        graph.parse(data=json.dumps(node), format="json-ld")
+
+    values = {s for s in graph.subjects() if isinstance(s, BNode)}
+    assert values, "the value is a blank node"
+    assert all((None, None, value) in graph for value in values)
+    named = {s for s in graph.subjects() if isinstance(s, URIRef)}
+    assert any(
+        isinstance(o, URIRef) and str(o).startswith("https://ex.org/f/")
+        for s in named
+        for o in graph.objects(s)
+    ), "the statement links to a cd: subject"

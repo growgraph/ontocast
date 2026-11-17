@@ -43,14 +43,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from rdflib import RDF, RDFS, SKOS, BNode, Graph, URIRef
-from rdflib.namespace import DCTERMS
+from rdflib import RDF, BNode, Graph, Literal, URIRef
 from rdflib.term import Node
 
+from ontocast.onto.annotation import is_annotation
+from ontocast.onto.blank_structures import structure_closure
+from ontocast.onto.iri_policy import is_iriref_text
 from ontocast.onto.model import TripleFix
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.triple_index import Triple, TripleIndex
+from ontocast.tool.facts_validation.terms import _local_name
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +205,7 @@ def _drop_conflicting_prefix_declarations(body: str, graph: Graph) -> str:
     The Turtle counterpart of the JSON-LD ``@context`` reconciliation in
     :func:`_with_unit_bindings`, and it exists for the same reason: the header
     from :func:`_prefix_header` is *prepended*, and in Turtle a later
-    declaration wins, so a payload that re-declares ``qqval:`` to a namespace
+    declaration wins, so a payload that re-declares ``ex:`` to a namespace
     it half-remembered silently takes every term under that prefix out of the
     catalog. Dropping the line leaves the header's binding in force.
     """
@@ -451,6 +454,20 @@ def _has_unexpanded_terms(parsed: Graph) -> bool:
     return False
 
 
+def _has_malformed_iri(parsed: Graph) -> bool:
+    """Whether any IRI, datatypes included, is one no ``IRIREF`` can hold.
+
+    rdflib reads ``<a b>`` with only a warning; the update that would carry it
+    into the unit graph cannot be written, so the payload is unparseable.
+    """
+    for triple in parsed:
+        for term in triple:
+            iri = term.datatype if isinstance(term, Literal) else term
+            if isinstance(iri, URIRef) and not is_iriref_text(str(iri)):
+                return True
+    return False
+
+
 @dataclass(frozen=True)
 class _ParsedPayload:
     """A payload's triples, or the reason there are none."""
@@ -490,7 +507,8 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
 
     Returns:
         The parsed triples, or why there are none: an empty result for an
-        unparseable or statement-less payload, ``unresolved_prefix`` for one
+        unparseable or statement-less payload (an IRI no ``IRIREF`` can hold
+        counts as unparseable), ``unresolved_prefix`` for one
         whose terms could not be expanded to IRIs, ``quarantined_literal``
         for one typing a literal its lexical form cannot hold.
     """
@@ -508,7 +526,7 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
             return _ParsedPayload()
         # A JSON body that yields no statement -- a bare literal, or a node
         # reference with no predicates -- is not a patch, whatever it meant.
-        if not len(parsed):
+        if not len(parsed) or _has_malformed_iri(parsed):
             return _ParsedPayload()
         if _has_unexpanded_terms(parsed):
             return _ParsedPayload(unresolved_prefix=True)
@@ -528,6 +546,8 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
         except Exception:
             continue
         if len(parsed):
+            if _has_malformed_iri(parsed):
+                return _ParsedPayload()
             if _has_unexpanded_terms(parsed):
                 return _ParsedPayload(unresolved_prefix=True)
             if _has_quarantined_literal(parsed):
@@ -575,22 +595,6 @@ def _deletes_by_id(
 _JUNK_LOCAL_NAME = re.compile(
     r"(ignored|typograph|artifact|placeholder|_token\b|token_)", re.IGNORECASE
 )
-_ANNOTATION_PREDICATES = frozenset({RDFS.label, RDFS.comment, DCTERMS.description})
-_SKOS_NAMESPACE = str(SKOS)
-
-
-def _local_name(iri: str) -> str:
-    for separator in ("#", "/"):
-        head, sep, local = iri.rpartition(separator)
-        if sep and local:
-            return local
-    return iri
-
-
-def _is_annotation(predicate: Node) -> bool:
-    return predicate in _ANNOTATION_PREDICATES or str(predicate).startswith(
-        _SKOS_NAMESPACE
-    )
 
 
 def _junk_reason(inserts: list[Triple], graph: Graph) -> str | None:
@@ -613,7 +617,7 @@ def _junk_reason(inserts: list[Triple], graph: Graph) -> str | None:
         predicates = {predicate for s, predicate, _ in inserts if s == subject}
         if RDF.type in predicates:
             continue
-        if predicates and all(_is_annotation(p) for p in predicates):
+        if predicates and all(is_annotation(p) for p in predicates):
             return "annotation_only"
     return None
 
@@ -628,32 +632,17 @@ class _Candidate:
 
 
 def _bnode_closure(deletes: list[Triple], graph: RDFGraph) -> list[Triple]:
-    """Every statement about a blank node the fix touches.
+    """The fix's deletes plus every blank-node structure they would break.
 
     Deleting part of a blank node leaves the stub the ontology validator flags
     as a degenerate restriction: an ``owl:Restriction`` that constrains nothing,
-    still hanging off its ``subClassOf`` edge. A blank node is one object, so it
-    goes whole or not at all.
+    still hanging off its ``subClassOf`` edge. A structure (a restriction, a
+    list, nested to any depth) goes whole or not at all; see
+    :func:`~ontocast.onto.blank_structures.structure_closure`.
     """
-    closure = list(deletes)
-    seen = {triple for triple in deletes}
-    for _, _, obj in list(deletes):
-        if not isinstance(obj, BNode):
-            continue
-        for triple in graph.triples((obj, None, None)):
-            if triple not in seen:
-                seen.add(triple)
-                closure.append(triple)
-    for subject in {s for s, _, _ in deletes if isinstance(s, BNode)}:
-        for triple in graph.triples((subject, None, None)):
-            if triple not in seen:
-                seen.add(triple)
-                closure.append(triple)
-        for triple in graph.triples((None, None, subject)):
-            if triple not in seen:
-                seen.add(triple)
-                closure.append(triple)
-    return closure
+    closure = structure_closure(graph, deletes)
+    extra = sorted(closure.difference(deletes), key=lambda t: tuple(map(str, t)))
+    return [*deletes, *extra]
 
 
 def _subject_survives(

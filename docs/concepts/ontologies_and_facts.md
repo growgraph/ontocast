@@ -17,33 +17,104 @@ statement: an absolute `http(s)` IRI with no fragment, since its versions are
 named `<iri>#<key>`. An empty fragment (`http://www.w3.org/ns/prov#`) is
 dropped. Its **namespace**, where its terms live, is separate: `<iri>#` for an
 ontology OntoCast creates, and read from the file for one you load. Two
-shorter names point to the same entry: its `ontology_id` and the prefix its
+shorter names are labels of the entry: its `ontology_id` and the prefix its
 author bound in Turtle. They can differ (an ontology with id
-`observation` may use the prefix `obs:`), and wherever OntoCast asks for an
-ontology, such as
+`observation` may use the prefix `obs:`), and they need not be unique: two
+files whose IRIs end in `/ontology` both load with the id `ontology`. Wherever
+OntoCast asks for an ontology, such as
 [`ONTOLOGY_CONTEXT_FIXED_ONTOLOGY_ID`](../reference/configuration/pipeline.md#ontology_context_fixed_ontology_id),
-any of the three works.
+the IRI always works, and a short name works when one ontology alone holds it;
+a short name several hold is refused with their IRIs.
 
-An `ontology_id` is a lowercase handle matching `^[a-z][a-z0-9_-]{1,31}$`. It
-is also the prefix the ontology's terms are shown under. The names OntoCast uses
-itself (`cd`, `doc`, `facts`, `oc`, `ontocast`) are refused. A standard prefix
-(`sosa`, `prov`, `skos`, `schema`, ...) names only the ontology whose namespace
-is that prefix's standard one: the W3C SOSA file loads as `sosa` and PROV-O as
-`prov`, while any other ontology, and every ontology OntoCast creates, needs
-another id.
+A loaded file's id is, in order: the id given with it, its
+`vann:preferredNamespacePrefix`, the prefix the file binds to its own namespace
+(a DBpedia file binding `dbo:` loads as `dbo`), else the last segment of its
+IRI.
+
+An `ontology_id` is a lowercase handle matching `^[a-z][a-z0-9_-]{1,31}$`. The
+names OntoCast uses itself (`cd`, `doc`, `facts`, `oc`, `ontocast`) are refused.
+A standard prefix (`sosa`, `prov`, `skos`, `schema`, ...) names only the
+ontology whose namespace is that prefix's standard one: the W3C SOSA file loads
+as `sosa` and PROV-O as `prov`, while any other ontology, and every ontology
+OntoCast creates, needs another id.
+
+### Prefixes
+
+Every prompt, every parse of a model's answer and every export shows a
+namespace under one prefix, chosen in this order:
+
+1. a well-known namespace keeps its standard prefix (`unit:`, `sosa:`, `time:`),
+   also when a catalog file's terms live in it;
+2. an ontology's own namespace takes the prefix its author bound in Turtle;
+3. else its `ontology_id`, also when the author's prefix is a library name or
+   the standard prefix of another namespace;
+4. a namespace no catalog ontology owns takes the prefix the catalog binds to it
+   most often.
+
+The author's prefix is stored with each version, so it survives the triple
+store. Any other prefix bound to a namespace, the `ontology_id` among them, is
+an alias: an answer that writes it still parses, and a CURIE in a term's note or
+a shape's `sh:message` written with it is shown under the chosen prefix.
 
 ### The home ontology
 
 Identity is minted by code, never written by the model. A run that can create
 vocabulary (`RENDER_MODE` `ontology` or `ontology_and_facts`) resolves one
 **home ontology** per document before its units are extracted, in one LLM
-call: the model proposes an `ontology_id`, a title and a description. An id
-already in the catalog means the document extends that ontology; any other id
-names a new one, whose IRI is
+call. The catalog is listed under each ontology's shown prefix (below), which
+unlike an id is unique, with its title and the start of its description: the
+description is how the model tells that an ontology covers a document, so
+give a seed ontology one. The model proposes an `ontology_id`, a title and a
+description, scoped to the document's field rather than its subject, and is
+asked to prefer a catalog ontology whose described scope the document falls
+within. A shown prefix means the document extends that ontology; any
+other id names a new one, whose IRI is
 [`CURRENT_DOMAIN`](../reference/configuration/pipeline.md#current_domain)`/<ontology_id>`.
+A new id is overridden when the document's text names at least five terms of
+one catalog ontology (by label or local name, plurals included): the document
+then extends that ontology, so documents of one domain share a home
+(`home_new_overridden`).
 Every unit of the document mints its new terms under that one ontology. The
 model never writes an `owl:Ontology` header; one it writes anyway is dropped
 and counted (`ontology/model_header_triples_dropped`).
+
+#### Owned and external ontologies
+
+An ontology whose IRI lies under `CURRENT_DOMAIN` is **owned** and is extended
+in place. Any other, such as a published vocabulary loaded as a seed, is
+**external**: OntoCast never writes to it. When a document's home would be an
+external ontology, its terms go to the **extension ontology**
+`CURRENT_DOMAIN/<id>-ext-<hash>`, created on first use, which `owl:imports`
+the external one. `<hash>` is the first 10 hex digits of the SHA-256 of the
+external IRI (without a trailing `/` or `#`), so every document and every run
+that extends one external ontology shares its extension, and two externals
+with the same id never do (`home_extension`). A triple whose subject is a term of an external
+ontology is refused at the end of the document and counted
+(`external_subject_refused`): the external terms are used by IRI, never
+redeclared or given new axioms. To extend a seed ontology in place, serve it
+under `CURRENT_DOMAIN`.
+
+Every new term of a document lives under its home namespace; the render and
+critic prompts name it, and a term newly declared anywhere else is dropped
+(`minted_outside_home_dropped`). An ontology update declares classes,
+properties and SKOS concepts (value sets) only: a person, place, organisation
+or event named in the text is a fact, and is dropped from the update
+(`non_term_subjects_dropped`). A value set has a class of its own under
+`skos:Concept`, which is the range of the property that takes those values,
+and each value is typed both `skos:Concept` and that class. Each statement is written to the ontology that
+owns its subject; a restriction or a list travels whole with the term that
+uses it, so a restriction on an external property is written beside the home
+class, never into the external ontology.
+
+A unit mints a class only at the level a second document in the same domain
+would reuse. A case the document reports, such as a named case or one
+measured value, is an individual or a property value in the facts. A distinction
+that varies from one instance to the next is a property with values, not a
+family of sibling subclasses, and an existing or well-known term is reused
+before a new one is minted. The per-unit checks enforce the parts of this a
+machine can see: hierarchy depth, value-set siblings, case-specific leaves and
+duplicates of catalog terms (see
+[Validation layers](../internals/validation_layers.md#ontology-findings)).
 
 An ontology you load from a file or upload to `/ontologies` keeps its own IRI.
 The file declares exactly one named `owl:Ontology` that describes itself; a
@@ -70,7 +141,7 @@ ontology IRI carries the version header:
 | `owl:versionIRI` | The named graph, `<iri>#<key>` |
 | `owl:priorVersion` | The version(s) this one was made from: none on a root, one for an update, several for a merge |
 | `owl:versionInfo` | A semantic version label: `1.0.0` on a root, then bumped per ontology from the updates applied to it. Major when more than five triples are deleted and the updates declare or remove more than two classes or more than three properties; minor for any other deletion, or for five or more new classes or properties; patch otherwise |
-| `vann:preferredNamespacePrefix`, `vann:preferredNamespaceUri` | The `ontology_id` and the namespace |
+| `vann:preferredNamespacePrefix`, `vann:preferredNamespaceUri` | The `ontology_id` and the namespace; the author's prefix is kept as an `sh:declare` |
 | `dcterms:title`, `rdfs:label` | The title |
 | `dcterms:description` | The description, when there is one |
 | `dcterms:created` | When the root of the lineage was created, carried forward |
@@ -136,11 +207,103 @@ The model is instructed to:
 - treat a matching class as a type, not as an identity: two mentions of a
   sample are new `cd:` entities typed with the ontology's `Sample` class, not
   the class itself;
-- never type a `cd:` entity as a class or a property.
+- never type a `cd:` entity as a class or a property;
+- extract statements: mint an entity only when a statement is about it (it is
+  linked to another entity or holds a value), never for a bare mention;
+- write a structured value (a quantity, a range, a bound) as a blank node, the
+  object of the property that carries it, never as an entity of its own;
+- name what every observation is about: an observation (of `sosa:Observation`,
+  `sosa:Actuation`, `sosa:Sampling` or a class of your catalog under one) is
+  linked to its subject, `sosa:hasFeatureOfInterest` or your catalog's property
+  for the same link, even when the sentence leaves the subject to its context.
+  Declare your catalog's property as a sub-property of
+  `sosa:hasFeatureOfInterest` (or of its inverse `sosa:isFeatureOfInterestOf`,
+  or as an inverse of either) for it to count.
+
+An observation or a value that names no subject is a `statement_without_subject`
+finding in its part; the gap pass asks the model for the link
+(`FACTS_COMPLETION_PASSES`), and `facts_statements_without_subject` counts what
+is left.
+
+The served graph holds statements only. After merging, a statement joining a
+node to itself through a property not declared reflexive is dropped
+(`facts_self_loops_dropped`), an entity linked to nothing and holding no value
+is dropped, and so is a value no statement
+carries (`facts_unlinked_dropped`). A value written as an entity of its own,
+typed with a value class, and linked to nothing is dropped too. Any other
+instance still linked to nothing is kept and listed in the run manifest
+(`facts_isolated`).
+
+A **value class** is one whose instances are values, never facts on their own:
+`qudt:QuantityValue`, schema.org's `StructuredValue`, `QuantitativeValue`,
+`PropertyValue` and `MonetaryAmount`, the `value_class` you set in
+`FACTS_QUANTITY_FALLBACK_VOCABULARY`, and every class of your catalog that
+subclasses one of them. To have your own value classes treated as values,
+declare them as subclasses of one of these, or name one as `value_class`. Values are never merged with each other;
+each is named under its carrier, `<carrier>.<property>` (then a number when a
+carrier holds several values on one property), so it has a stable IRI.
 
 You can add your own guidance on top of these rules with
 `facts_user_instruction`; see [Writing user
 instructions](../guides/user_instructions.md).
+
+## Two vocabulary modes
+
+`FACTS_VOCABULARY` says what the facts may be written in. Both modes use your
+catalog first, for every class and property it has. Where it has none, the
+model uses a well-known vocabulary, and then the namespaces you list in
+`FACTS_ADDITIONAL_STANDARD_NAMESPACES`. The prompt names them all, with their
+namespace IRIs:
+
+| Prefix | Vocabulary | Terms checked |
+|---|---|---|
+| `rdf`, `rdfs`, `owl`, `xsd` | RDF, RDF Schema, OWL, XML Schema datatypes | yes |
+| `skos` | SKOS | yes |
+| `dcterms`, `dc` | DCMI Metadata Terms, Dublin Core elements | yes |
+| `prov` | PROV-O | yes |
+| `sosa`, `ssn` | SOSA, SSN | yes |
+| `time` | OWL-Time | yes |
+| `csvw` | CSVW | yes |
+| `dcat` | DCAT | yes |
+| `org` | the Organization Ontology | yes |
+| `vcard` | vCard | yes |
+| `foaf` | FOAF | yes |
+| `schema` | schema.org (`https://` and `http://`) | yes |
+| `qudt` | QUDT schema | yes |
+| `unit` | QUDT units | yes |
+| `quantitykind` | QUDT quantity kinds | no |
+
+The model writes well-known terms from memory, so a term must exist in its
+vocabulary: one it does not have, such as `schema:vulnerableTo`, is an
+`unknown_term` finding with the vocabulary's near-misses as suggestions. A
+vocabulary marked "no" is admitted by namespace, as are your own namespaces.
+The QUDT schema list covers every term its 2.1 and 3.x releases publish; the
+QUDT unit list covers every unit of its 3.1.4 release. A unit comes from the
+ontology context first, then from QUDT; a unit neither has is kept as text on
+the value node.
+
+**`strict`** (the default) stops there. A thing that neither your catalog nor
+these vocabularies can type or relate is not extracted. A stated quantity always
+is: where no property carries it, it is written as an observation whose result
+is the value and whose feature of interest is the thing measured. A class or property from any other
+vocabulary is an `unknown_term` finding the renderer must rewrite or remove,
+and at the gate `non_catalog_vocabulary` is an error for it. Both checks count
+every term of your catalog, not only the unit's retrieved context. The model
+sees the retrieved context, plus the definition of any catalog term the
+conformance rules or a term's note name, so a property retrieval missed is
+otherwise a statement made in a well-known vocabulary or not made at all: watch
+`non_catalog_vocabulary`, `facts_isolated` and `facts_unlinked_dropped`, and
+widen the context (`ONTOLOGY_CONTEXT_MODE`) when they grow.
+
+**`open`** also admits any other established vocabulary the model knows, as a
+last resort after the well-known ones. Such terms pass the unit validator and
+are listed per document as `non_catalog_vocabulary` warnings, so the gaps in
+your catalog are visible.
+
+In both modes the `carrier` role of `FACTS_QUANTITY_FALLBACK_VOCABULARY` names
+the property that carries a quantity when your catalog has none (unset, the
+observation form above), and an entity
+linked to nothing and holding no value is dropped at the gate.
 
 ## Provenance
 
@@ -185,6 +348,16 @@ leave provenance out of what you get back:
 A graph without provenance has no link back to the text, so nothing in it can
 be checked against the source.
 
+Provenance is written in the formats that carry RDF 1.2 triple terms: Turtle,
+N-Triples, N-Quads and TriG. JSON-LD and RDF/XML cannot carry them, so asking
+for either on a graph with provenance raises `ProvenanceFormatError`; strip the
+provenance first (`TripleStoreManager.strip_provenance`) to write those.
+
+In Python, an `RDFGraph` keeps its reifications beside its triples, in
+`graph.reifications`. Copying, merging (`+`, `+=`) and a pydantic dump and load
+carry them.
+`graph.hash()` covers the statements, not the provenance.
+
 ## Document identity
 
 Each document gets an IRI built from
@@ -222,8 +395,9 @@ becomes
 Keys match regardless of case and of `snake_case`, `camelCase` or `kebab-case`,
 so `DOI`, `doiId` and `doi_id` all mean `doi`. To give an entity another class,
 pass a dict with a `type`, such as `{"name": "...", "type": "schema:Project"}`.
-Entities are minted per document; OntoCast does not claim that the same author
-in two documents is one person.
+Entities are minted per document; OntoCast does not merge the same author in
+two documents into one. [Cross-document identity](cross_document_identity.md)
+links entities that carry the same `identifier` without changing either.
 
 Document metadata is always in the facts graph, even when the text never
 mentions it, and it stays there when provenance is stripped. Without
@@ -239,4 +413,5 @@ IRIs stay in the document namespace either way, so the runs can be compared.
 
 - [How OntoCast works](index.md): where each of these steps happens.
 - [Entity disambiguation](entity_disambiguation.md): how `cd:` entities from different units become one.
+- [Cross-document identity](cross_document_identity.md): how one entity in several documents is linked.
 - [Triple stores](../guides/triple_stores.md): where ontologies and facts are stored.

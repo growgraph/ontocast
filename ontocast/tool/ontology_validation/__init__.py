@@ -12,14 +12,20 @@ from ontocast.tool.ontology_validation.reconcile import (
     apply_minted_duplicate_rewrites,
     detect_minted_duplicates,
 )
+from ontocast.tool.ontology_validation.shape import (
+    CatalogSurfaceIndex,
+    build_catalog_surface_index,
+)
 from ontocast.tool.ontology_validation.unit_findings import (
     collect_ontology_unit_findings,
     count_fixes_targeting_snapshot,
 )
 
 __all__ = [
+    "CatalogSurfaceIndex",
     "MintedDuplicate",
     "apply_minted_duplicate_rewrites",
+    "build_catalog_surface_index",
     "collect_ontology_unit_findings",
     "count_fixes_targeting_snapshot",
     "detect_minted_duplicates",

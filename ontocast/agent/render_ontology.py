@@ -9,20 +9,20 @@ from collections.abc import Sequence
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
-from rdflib import OWL, RDF
+from rdflib import OWL, RDF, RDFS
 
 from ontocast.agent.common import call_llm_with_retry, render_suggestions_prompt
 from ontocast.agent.update_common import finalize_update_report, log_quarantine
 from ontocast.onto.enum import (
     FailureStage,
     LLMPhase,
-    OntologyAssemblyMode,
     Status,
     WorkflowNode,
 )
 from ontocast.onto.model import (
     FreshOntologyRenderReport,
     GraphUpdateRenderReport,
+    OntologyPlan,
     Suggestions,
 )
 from ontocast.onto.ontology import Ontology
@@ -32,7 +32,8 @@ from ontocast.onto.ontology_access import (
     ontology_access_for_unit_ontology,
 )
 from ontocast.onto.ontology_header import mint_ontology
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.property_sides import SIDE_PREDICATES
+from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.onto.unit_states import UnitOntologyState
 from ontocast.prompt.common import system_preamble_ontology as system_preamble
 from ontocast.prompt.common import text_template
@@ -40,17 +41,55 @@ from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.ontology_context import format_ontologies_clause
 from ontocast.prompt.render_ontology import (
     general_ontology_instruction,
+    home_namespace_clause,
     intro_instruction_fresh,
     intro_instruction_update_multi,
     intro_instruction_update_single,
     partial_context_notice,
+    plan_instruction_template,
+    plan_reuse_block,
     template_prompt,
 )
 from ontocast.prompt.web_grounding import persist_search_request, search_guidelines_for
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation.literal_repair import repair_compact_iri_literals
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
+from ontocast.tool.ontology_validation.plan import compact_iri
 
 logger = logging.getLogger(__name__)
+
+#: RDFS/OWL schema predicates whose object is an IRI by construction. Declared
+#: as object properties so the facts lane's compact-IRI repair recognises them.
+_SCHEMA_IRI_PREDICATES = (
+    RDFS.subClassOf,
+    RDFS.subPropertyOf,
+    *sorted(SIDE_PREDICATES, key=str),
+    OWL.equivalentClass,
+    OWL.equivalentProperty,
+    OWL.inverseOf,
+    OWL.disjointWith,
+    OWL.onProperty,
+    OWL.someValuesFrom,
+    OWL.allValuesFrom,
+    OWL.onClass,
+)
+_SCHEMA_IRI_PREDICATE_GRAPH = RDFGraph()
+for _predicate in _SCHEMA_IRI_PREDICATES:
+    _SCHEMA_IRI_PREDICATE_GRAPH.add((_predicate, RDF.type, OWL.ObjectProperty))
+
+
+def repair_schema_iri_literals(
+    graph: RDFGraph,
+) -> tuple[RDFGraph, list[RejectedLiteralTriple]]:
+    """Coerce compact IRIs written as strings on schema predicates into IRIs.
+
+    Under the JSON-LD wire a bare string (``"rdfs:subClassOf": "ex:Bar"``)
+    parses as a literal. On the predicates above an IRI is the only legal
+    object, so a plain compact-IRI literal with a bound prefix is rewritten;
+    anything else is left as it is. Usable as an ``insert_hook``.
+    """
+    repair_compact_iri_literals(graph, _SCHEMA_IRI_PREDICATE_GRAPH, set())
+    return graph, []
 
 
 def _create_ontology_render_prompt_template() -> PromptTemplate:
@@ -60,6 +99,7 @@ def _create_ontology_render_prompt_template() -> PromptTemplate:
             "preamble",
             "intro_instruction",
             "ontology_instruction",
+            "plan_instruction",
             "output_instruction",
             "user_instruction",
             "improvement_instruction",
@@ -69,6 +109,60 @@ def _create_ontology_render_prompt_template() -> PromptTemplate:
             "format_instructions",
         ],
     )
+
+
+def format_plan_instruction(plan: OntologyPlan | None) -> str:
+    """The plan block of a unit's render prompt; empty without a plan."""
+    if plan is None or not plan.terms:
+        return ""
+    prefixes = plan.prefixes
+
+    def curie(iri: str) -> str:
+        return compact_iri(iri, prefixes)
+
+    def side(iri: str | None) -> str:
+        return f"`{curie(iri)}`" if iri else "?"
+
+    minted_lines = []
+    for term in plan.minted():
+        parts = [f"- `{curie(term.iri)}` | {term.kind} | {term.label}"]
+        if term.parent_iri:
+            parts.append(f"parent `{curie(term.parent_iri)}`")
+        if term.domain_iri or term.range_iri:
+            parts.append(
+                f"domain {side(term.domain_iri)} → range {side(term.range_iri)}"
+            )
+        if term.definition:
+            parts.append(term.definition)
+        if term.nearest:
+            near = ", ".join(f"`{curie(iri)}`" for iri, _ in term.nearest)
+            parts.append(f"near existing {near}")
+        minted_lines.append(" | ".join(parts))
+    reuse_lines = [
+        f'- `{curie(term.iri)}` for "{term.label}"' for term in plan.reused()
+    ]
+    return plan_instruction_template.format(
+        minted_lines="\n".join(minted_lines) or "- (none: reuse only)",
+        reuse_block=(
+            plan_reuse_block.format(reuse_lines="\n".join(reuse_lines))
+            if reuse_lines
+            else ""
+        ),
+    )
+
+
+#: Budget counter: ontology update renders answered without a call because
+#: the document's plan mints nothing.
+RENDER_SKIPPED_REUSE_ONLY = "ontology/render_skipped_reuse_only"
+
+
+def plan_is_reuse_only(plan: OntologyPlan | None) -> bool:
+    """Whether a document's plan names terms and mints none of them.
+
+    A plan without terms (none proposed, or all refused) does not count: the
+    render then works without a plan block and may still mint.
+    """
+    return plan is not None and bool(plan.terms) and not plan.minted()
 
 
 def _handle_ontology_render_error(
@@ -96,29 +190,39 @@ def _prepare_ontology_common_prompt_layers(
     return general_ontology_instruction_str, text_chapter, external_evidence
 
 
-def _build_update_intro(state: UnitOntologyState, access: UnitOntologyAccess) -> str:
+def _build_update_intro(
+    state: UnitOntologyState, access: UnitOntologyAccess, home_prefix: str | None
+) -> str:
     writable = access.writable_iris()
     ontology_desc = access.prompt_ontology_description()
-    # Keyed on how the snapshot was ASSEMBLED, not on how many IRIs are
-    # writable: a vector-retrieval unit whose retrieval happened to hit one
-    # ontology used to get the single-ontology phrasing verbatim — presenting
-    # a retrieved subset as "the domain ontology provided below".
-    is_partial_view = (
-        state.ontology_snapshot.assembly_mode
-        == OntologyAssemblyMode.SELECTED_VECTOR_SEARCH_ENSEMBLE
+    # Keyed on the snapshot, not on how many IRIs are writable: a retrieval
+    # that happened to hit one ontology is still a subset of it.
+    notice = partial_context_notice if state.ontology_snapshot.partial else ""
+    home = state.home_ontology
+    home_clause = (
+        home_namespace_clause.format(namespace=home.namespace, prefix=home_prefix)
+        if home is not None and home_prefix is not None
+        else ""
     )
-    notice = partial_context_notice if is_partial_view else ""
     if len(writable) <= 1:
         ontology_iri = writable[0] if writable else "(unspecified)"
-        return notice + intro_instruction_update_single.format(
-            ontology_iri=ontology_iri,
-            ontology_desc=ontology_desc,
+        return (
+            notice
+            + intro_instruction_update_single.format(
+                ontology_iri=ontology_iri,
+                ontology_desc=ontology_desc,
+            )
+            + home_clause
         )
     sources = state.ontology_patch_sources or writable
     source_list = "\n".join(f"- <{iri}>" for iri in sources[:20])
-    return notice + intro_instruction_update_multi.format(
-        ontology_desc=ontology_desc,
-        source_list=source_list or "- (none listed)",
+    return (
+        notice
+        + intro_instruction_update_multi.format(
+            ontology_desc=ontology_desc,
+            source_list=source_list or "- (none listed)",
+        )
+        + home_clause
     )
 
 
@@ -171,6 +275,9 @@ async def render_ontology_fresh(
         title=identity.title,
         description=identity.description,
         namespace=identity.namespace,
+        prefix=tools.prefix_table().prefix_or_claim(
+            identity.namespace, identity.ontology_id
+        ),
     )
     output_instruction = profile.render_fresh_output_instruction(target="ontology")
     ontology_ttl = ""
@@ -195,6 +302,7 @@ async def render_ontology_fresh(
     known_prefixes = build_llm_prefix_map(
         access.ontology_graph_for_prefixes(),
         supplemental_ontologies or (),
+        tools.prefix_table(),
     )
     known_prefixes[identity.ontology_id] = identity.namespace
 
@@ -211,6 +319,7 @@ async def render_ontology_fresh(
                 "preamble": system_preamble,
                 "intro_instruction": intro_instruction,
                 "ontology_instruction": general_ontology_instruction_str,
+                "plan_instruction": format_plan_instruction(state.ontology_plan),
                 "output_instruction": output_instruction,
                 "ontology_ttl": ontology_ttl,
                 "user_instruction": state.ontology_user_instruction,
@@ -232,6 +341,7 @@ async def render_ontology_fresh(
         )
         graph = render_report.graph
         graph.sanitize_prefixes_namespaces()
+        graph, _ = repair_schema_iri_literals(graph)
         header_triples = sum(
             1
             for s, _, _ in graph.triples((None, RDF.type, OWL.Ontology))
@@ -285,7 +395,14 @@ async def render_ontology_update(
     )
     parser = PydanticOutputParser(pydantic_object=GraphUpdateRenderReport)
     access = ontology_access_for_unit_ontology(state)
-    intro_instruction = _build_update_intro(state, access)
+    home = state.home_ontology
+    intro_instruction = _build_update_intro(
+        state,
+        access,
+        tools.prefix_table().prefix_or_claim(home.namespace, home.ontology_id)
+        if home is not None
+        else None,
+    )
     ontology_chapter = profile.format_ontology_chapter(
         access.effective_graph_for_prompt(),
         max_triples=state.ontology_context_max_triples,
@@ -314,52 +431,71 @@ async def render_ontology_update(
     known_prefixes = build_llm_prefix_map(
         access.ontology_graph_for_prefixes(),
         supplemental_ontologies or (),
+        tools.prefix_table(),
     )
+    if state.home_ontology is not None:
+        # The plan block and the intro name home terms by this prefix; unbound,
+        # the model guesses a namespace for it.
+        home = state.home_ontology
+        prefix = tools.prefix_table().prefix_or_claim(home.namespace, home.ontology_id)
+        known_prefixes[prefix] = home.namespace
 
     previous_prefixes = RDFGraph.get_known_prefixes()
     try:
         llm_tool = await tools.get_llm_tool(state.budget_tracker)
         RDFGraph.set_known_prefixes(known_prefixes if known_prefixes else None)
 
-        render_report: GraphUpdateRenderReport = await call_llm_with_retry(
-            llm_tool=llm_tool,
-            phase=LLMPhase.ONTOLOGY_RENDER,
-            prompt=prompt,
-            parser=parser,
-            prompt_kwargs={
-                "preamble": system_preamble,
-                "intro_instruction": intro_instruction,
-                "ontology_instruction": general_ontology_instruction_str,
-                "output_instruction": output_instruction,
-                "improvement_instruction": improvement_instruction_str,
-                "ontology_ttl": ontology_chapter,
-                "user_instruction": state.ontology_user_instruction,
-                "text": text_chapter,
-                "external_evidence": external_evidence,
-                "format_instructions": profile.format_instructions(
-                    GraphUpdateRenderReport,
-                    web_search_enabled=web_search_enabled,
-                ),
-            },
-            llm_graph_format=state.llm_graph_format,
-        )
+        render_report: GraphUpdateRenderReport
+        if plan_is_reuse_only(state.ontology_plan):
+            # The plan mints nothing for this document, so the render may only
+            # restate terms that exist already: it is answered with the empty
+            # patch such a render returns, and no call is made.
+            render_report = GraphUpdateRenderReport()
+            state.budget_tracker.incr(RENDER_SKIPPED_REUSE_ONLY)
+        else:
+            render_report = await call_llm_with_retry(
+                llm_tool=llm_tool,
+                phase=LLMPhase.ONTOLOGY_RENDER,
+                prompt=prompt,
+                parser=parser,
+                prompt_kwargs={
+                    "preamble": system_preamble,
+                    "intro_instruction": intro_instruction,
+                    "ontology_instruction": general_ontology_instruction_str,
+                    "plan_instruction": format_plan_instruction(state.ontology_plan),
+                    "output_instruction": output_instruction,
+                    "improvement_instruction": improvement_instruction_str,
+                    "ontology_ttl": ontology_chapter,
+                    "user_instruction": state.ontology_user_instruction,
+                    "text": text_chapter,
+                    "external_evidence": external_evidence,
+                    "format_instructions": profile.format_instructions(
+                        GraphUpdateRenderReport,
+                        web_search_enabled=web_search_enabled,
+                    ),
+                },
+                llm_graph_format=state.llm_graph_format,
+            )
         persist_search_request(
             state,
             WorkflowNode.TEXT_TO_ONTOLOGY,
             render_report.external_evidence_request,
             web_search_enabled,
         )
-        # No insert_hook: the facts repairs are instance-level (literal retyping,
-        # unit-code resolution) and have no ontology counterpart. The ontology
-        # side's deterministic validator runs in the loop instead, against the
-        # net delta -- see stategraph/atomic.py::_collect_ontology_findings.
+        # The insert hook repairs only schema-predicate IRIs written as strings;
+        # the facts repairs are instance-level and have no ontology counterpart.
+        # The deterministic validator runs in the loop, against the net delta --
+        # see stategraph/atomic.py::_collect_ontology_findings.
         if tools.ontology_insert_only and len(render_report.delete_graph):
             state.budget_tracker.incr(
                 "ontology/deletes_dropped_insert_only",
                 len(render_report.delete_graph),
             )
             render_report.delete_graph = RDFGraph()
-        graph_update, rejected = finalize_update_report(render_report)
+        graph_update, rejected, dropped = finalize_update_report(
+            render_report, insert_hook=repair_schema_iri_literals
+        )
+        state.applied_repairs.extend(dropped)
         state.quarantined_literal_triples = rejected
         log_quarantine("Ontology", rejected)
         state.ontology_updates.append(graph_update)

@@ -13,9 +13,11 @@ from ontocast.onto.model import (
     TripleFix,
 )
 from ontocast.onto.ontology import Ontology
+from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from test.snapshot_helpers import snapshot_from_ontology
 
 pytestmark = pytest.mark.unit
@@ -61,6 +63,7 @@ def _build_tools() -> AtomicToolBox:
     return cast(
         AtomicToolBox,
         SimpleNamespace(
+            prefix_table=lambda: PrefixTable({}, {}),
             get_llm_tool=get_llm_tool,
             web_grounding_enabled_for_node=lambda _node: False,
             object_property_literal_check=True,
@@ -69,9 +72,13 @@ def _build_tools() -> AtomicToolBox:
             # instead of silently reverting the configured ratio.
             property_alias_min_ratio=0.85,
             catalog_terms=lambda: set(),
+            catalog_roles=lambda: CatalogRoles(),
+            subject_contract=lambda: None,
             code_predicates=(),
             citation_vocabulary={},
             quantity_fallback_vocabulary=None,
+            facts_vocabulary="strict",
+            additional_standard_namespaces=(),
             acceptance_policy=None,
         ),
     )
@@ -118,8 +125,6 @@ async def test_render_facts_fresh_sets_success_and_budget(monkeypatch) -> None:
         )
         return FactsRenderReport(
             semantic_graph=rendered_graph,
-            ontology_relevance_score=95,
-            triples_generation_score=94,
         )
 
     monkeypatch.setattr(
@@ -195,8 +200,6 @@ async def test_render_facts_fresh_coerces_invalid_typed_literal_at_ingest(
         )
         return FactsRenderReport(
             semantic_graph=rendered_graph,
-            ontology_relevance_score=95,
-            triples_generation_score=94,
         )
 
     monkeypatch.setattr(
@@ -216,6 +219,39 @@ async def test_render_facts_fresh_coerces_invalid_typed_literal_at_ingest(
     assert isinstance(obj, Literal)
     assert obj.datatype is None
     assert str(obj) == "10-15"
+
+
+@pytest.mark.anyio
+async def test_render_facts_fresh_drops_a_triple_naming_a_malformed_iri(
+    monkeypatch,
+) -> None:
+    async def fake_call_llm_with_retry(**kwargs):
+        rendered_graph = RDFGraph()
+        rendered_graph.parse(
+            data="""@prefix ex: <https://example.com/ns#> .
+            @prefix bad: <https://example.com/qual quantity/> .
+            ex:item a bad:Thing ; ex:note "kept" .""",
+            format="turtle",
+        )
+        return FactsRenderReport(
+            semantic_graph=rendered_graph,
+        )
+
+    monkeypatch.setattr(
+        render_facts_module, "call_llm_with_retry", fake_call_llm_with_retry
+    )
+
+    state = UnitFactsState(
+        content_unit=_build_content_unit(with_graph=False),
+        ontology_snapshot=snapshot_from_ontology(_build_ontology()),
+    )
+    result = await render_facts_module.render_facts_fresh(state, tools=_build_tools())
+
+    assert result.status == Status.SUCCESS
+    assert [str(p) for p in result.content_unit.graph.predicates()] == [
+        "https://example.com/ns#note"
+    ]
+    assert [r.kind for r in result.applied_repairs] == ["malformed_iri_dropped"]
 
 
 @pytest.mark.anyio

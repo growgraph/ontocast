@@ -17,8 +17,9 @@ from decimal import Decimal, InvalidOperation
 from weakref import WeakKeyDictionary
 
 from rdflib import RDF, RDFS, SKOS, Graph, Literal, URIRef
-from rdflib.namespace import DCTERMS
 
+from ontocast.onto.annotation import is_annotation
+from ontocast.onto.property_sides import side_classes
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.util.measurement_lexicon import (
     Mention,
@@ -122,18 +123,6 @@ def extract_numeric_tokens(
     return tokens
 
 
-#: Predicates whose literals describe a node rather than assert a value. A
-#: number inside one of these is prose, not data.
-_ANNOTATION_PREDICATES = frozenset({RDFS.label, RDFS.comment, DCTERMS.description})
-_SKOS_NAMESPACE = str(SKOS)
-
-
-def _is_annotation(predicate: object) -> bool:
-    return predicate in _ANNOTATION_PREDICATES or str(predicate).startswith(
-        _SKOS_NAMESPACE
-    )
-
-
 def numeric_literals_in_graph(
     graph: RDFGraph, *, include_annotations: bool = False
 ) -> set[str]:
@@ -154,7 +143,7 @@ def numeric_literals_in_graph(
     for _, predicate, obj in graph:
         if not isinstance(obj, Literal):
             continue
-        if not include_annotations and _is_annotation(predicate):
+        if not include_annotations and is_annotation(predicate):
             continue
         text = str(obj)
         canonical = canonical_number(text.strip())
@@ -246,36 +235,51 @@ def inventory_numeric_mentions(
     )
 
 
+#: Separators inside a unit kept as text (``"unit: °C; direction: east"``).
+_UNIT_TEXT_SPLIT = re.compile(r"[\s;,:()\[\]]+")
+
+
+def _unit_text_keys(text: str) -> set[str]:
+    """Lookup keys of every token of a unit kept as text on a value node."""
+    keys: set[str] = set()
+    for token in _UNIT_TEXT_SPLIT.split(text):
+        token = token.strip(".")
+        if token:
+            keys.update(_lookup_keys(token))
+    return keys
+
+
 def measurement_pairs_in_graph(
     graph: RDFGraph,
     ontology_graph: Graph | None = None,
     *,
-    numeric_value_properties: Collection[str] = (),
     unit_properties: Collection[str] = (),
 ) -> set[tuple[str, str]]:
     """``(canonical_number, unit_surface_key)`` pairs structured in ``graph``.
 
-    A subject contributes pairs only when it carries both a configured
-    numeric-value literal and a configured unit object IRI -- a bare number
-    elsewhere in the graph does not cover a unit-adjacent mention. Unit IRIs
-    map to surfaces through :func:`unit_surface_index`; each surface is
-    expanded with :func:`~ontocast.util.measurement_lexicon._lookup_keys` so
-    the same case and plural rules that recognise a mention also recognise
-    its extracted counterpart. When the ontology has no surface for an IRI,
-    the IRI's local name is tried as a last resort.
+    Any node, blank or named, contributes every number it states outside an
+    annotation (a value, a bound) paired with each unit it states: an object
+    of a configured unit property, or, where the context has no unit
+    individual to fit, the unit's token kept in a literal on the same node.
+    No value property is assumed, so a catalog's own value vocabulary counts
+    as the fallback vocabulary does, and so does a number the node holds that
+    its own text writes with a unit ("0.25°"). A number with no unit on its
+    node, or a number written only in text, does not cover a unit-adjacent
+    mention. Unit IRIs map to
+    surfaces through :func:`unit_surface_index`; each surface is expanded
+    with :func:`~ontocast.util.measurement_lexicon._lookup_keys` so the same
+    case and plural rules that recognise a mention also recognise its
+    extracted counterpart. When the ontology has no surface for an IRI, the
+    IRI's local name is tried as a last resort.
 
     Args:
         graph: The extracted facts graph.
         ontology_graph: The unit's ontology context (for unit surfaces).
-        numeric_value_properties: IRIs of the numeric-value role properties.
         unit_properties: IRIs of the unit-role properties.
 
     Returns:
         Pairs keyed for membership tests against mention lookup keys.
     """
-    if not numeric_value_properties or not unit_properties:
-        return set()
-    numeric_props = set(numeric_value_properties)
     unit_props = set(unit_properties)
     iri_to_surfaces: dict[str, set[str]] = {}
     for surface, iris in unit_surface_index(ontology_graph, unit_properties).items():
@@ -283,33 +287,34 @@ def measurement_pairs_in_graph(
             iri_to_surfaces.setdefault(iri, set()).add(surface)
 
     pairs: set[tuple[str, str]] = set()
-    subjects = {
-        subject
-        for subject, predicate, _ in graph
-        if isinstance(subject, URIRef) and str(predicate) in numeric_props
-    }
-    for subject in subjects:
+    for subject in set(graph.subjects()):
         numbers: set[str] = set()
-        unit_iris: set[str] = set()
+        unit_keys: set[str] = set()
+        texts: list[str] = []
         for _, predicate, obj in graph.triples((subject, None, None)):
             pred = str(predicate)
-            if pred in numeric_props and isinstance(obj, Literal):
-                if _is_annotation(predicate):
-                    continue
-                canonical = canonical_number(str(obj).strip())
-                if canonical is not None:
-                    numbers.add(canonical)
-            elif pred in unit_props and isinstance(obj, URIRef):
-                unit_iris.add(str(obj))
-        if not numbers or not unit_iris:
-            continue
-        for unit_iri in unit_iris:
-            surfaces = iri_to_surfaces.get(unit_iri) or {_local(unit_iri)}
-            for surface in surfaces:
-                keys = _lookup_keys(surface.strip().rstrip(".,;:"))
-                for number in numbers:
-                    for key in keys:
-                        pairs.add((number, key))
+            if pred in unit_props and isinstance(obj, URIRef):
+                for surface in iri_to_surfaces.get(str(obj)) or {_local(str(obj))}:
+                    unit_keys.update(_lookup_keys(surface.strip().rstrip(".,;:")))
+            elif not isinstance(obj, Literal):
+                continue
+            elif not is_annotation(predicate) and (
+                canonical := canonical_number(str(obj).strip())
+            ):
+                numbers.add(canonical)
+            else:
+                unit_keys.update(_unit_text_keys(str(obj)))
+                texts.append(str(obj))
+        for number in numbers:
+            for key in unit_keys:
+                pairs.add((number, key))
+        # A label such as "0.25°" states the unit glued to the number the node holds.
+        for text in texts:
+            for mention in unit_adjacent_numbers(text):
+                number = canonical_number(mention.value)
+                if number in numbers:
+                    token = mention.unit.strip().rstrip(".,;:")
+                    pairs.update((number, key) for key in _lookup_keys(token))
     return pairs
 
 
@@ -328,7 +333,6 @@ def missing_numeric_inventory(
     *,
     unit_surfaces: Collection[str] = frozenset(),
     ontology_graph: Graph | None = None,
-    numeric_value_properties: Collection[str] = (),
     unit_properties: Collection[str] = (),
     ignore_year_like: bool = True,
     ignore_identifier_fragments: bool = False,
@@ -348,7 +352,6 @@ def missing_numeric_inventory(
         graph: Graph extracted from that text.
         unit_surfaces: Extra unit surfaces beyond the built-in lexicon.
         ontology_graph: Ontology context used to map unit IRIs to surfaces.
-        numeric_value_properties: IRIs of the numeric-value role properties.
         unit_properties: IRIs of the unit-role properties.
         ignore_year_like: Drop bare integers in the publication-year span.
         ignore_identifier_fragments: Drop bare digit groups that are parts of
@@ -365,7 +368,6 @@ def missing_numeric_inventory(
     present_pairs = measurement_pairs_in_graph(
         graph,
         ontology_graph,
-        numeric_value_properties=numeric_value_properties,
         unit_properties=unit_properties,
     )
     inventory = inventory_numeric_mentions(
@@ -403,7 +405,6 @@ def missing_numeric_mentions(
     limit: int = 30,
     unit_surfaces: Collection[str] = frozenset(),
     ontology_graph: Graph | None = None,
-    numeric_value_properties: Collection[str] = (),
     unit_properties: Collection[str] = (),
 ) -> list[str]:
     """Return canonical numbers stated in text but absent from the graph.
@@ -420,7 +421,6 @@ def missing_numeric_mentions(
         limit: Maximum mentions returned.
         unit_surfaces: Extra unit surfaces beyond the built-in lexicon.
         ontology_graph: Ontology context used to map unit IRIs to surfaces.
-        numeric_value_properties: IRIs of the numeric-value role properties.
         unit_properties: IRIs of the unit-role properties.
 
     Returns:
@@ -431,7 +431,6 @@ def missing_numeric_mentions(
         graph,
         unit_surfaces=unit_surfaces,
         ontology_graph=ontology_graph,
-        numeric_value_properties=numeric_value_properties,
         unit_properties=unit_properties,
         ignore_year_like=ignore_year_like,
         ignore_identifier_fragments=ignore_identifier_fragments,
@@ -467,9 +466,7 @@ def _unit_classes(graph: Graph, unit_properties: Collection[str]) -> set[URIRef]
     classes, and everything below them."""
     seeds: set[URIRef] = set()
     for prop in unit_properties:
-        for rng in graph.objects(URIRef(prop), RDFS.range):
-            if isinstance(rng, URIRef):
-                seeds.add(rng)
+        seeds |= side_classes(URIRef(prop), [graph], "range")
     for cls in set(graph.objects(None, RDF.type)) | set(
         graph.subjects(RDFS.subClassOf)
     ):

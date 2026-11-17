@@ -5,6 +5,10 @@ from typing import Literal
 
 URIContext = Literal["ontology", "facts", "auto"]
 
+#: A Turtle prefix name (``PN_PREFIX``, ASCII-led): a letter, then name
+#: characters, ``-`` or ``.``, never ending in ``.``.
+PN_PREFIX = r"[A-Za-z](?:[\w.-]*[\w-])?"
+
 _ONTOLOGY_HINT_PATTERN = re.compile(
     r"(?:^|[/#:_-])(onto|ontology|owl|rdfs?|skos)(?:$|[/#:_-])",
     re.IGNORECASE,
@@ -19,8 +23,33 @@ def strip_iri_brackets(value: str) -> str:
     return text
 
 
+def is_opaque_local_name(local: str) -> bool:
+    """Return True when a local IRI name carries no human-readable semantics.
+
+    Heuristic: opaque if the local name is a Q/P-number (Wikidata style),
+    a pure numeric string, or a hex/hash string of length >= 8.
+    """
+    if not local:
+        return False
+    if local[0] in ("Q", "P") and local[1:].isdigit():
+        return True
+    if local.isdigit():
+        return True
+    hex_chars = set("0123456789abcdefABCDEF")
+    if len(local) >= 8 and all(c in hex_chars for c in local):
+        return True
+    return False
+
+
 # Codepoints the SPARQL ``IRIREF`` production forbids inside ``<...>``.
 _IRIREF_FORBIDDEN = frozenset('<>"{}|^`\\')
+
+
+def is_iriref_text(text: str) -> bool:
+    """Whether ``text``, exactly as given, can sit inside a SPARQL ``<...>``."""
+    return bool(text) and not any(
+        char in _IRIREF_FORBIDDEN or ord(char) <= 0x20 for char in text
+    )
 
 
 def as_sparql_iriref(value: str) -> str | None:
@@ -37,11 +66,7 @@ def as_sparql_iriref(value: str) -> str | None:
         is empty or contains a codepoint ``IRIREF`` forbids.
     """
     text = strip_iri_brackets(value).strip()
-    if not text:
-        return None
-    if any(char in _IRIREF_FORBIDDEN or ord(char) <= 0x20 for char in text):
-        return None
-    return f"<{text}>"
+    return f"<{text}>" if is_iriref_text(text) else None
 
 
 def _resolve_context(namespace: str, context: URIContext) -> URIContext:

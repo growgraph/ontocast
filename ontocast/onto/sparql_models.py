@@ -12,8 +12,9 @@ from pydantic import BaseModel, Field, field_validator
 from rdflib import BNode, Literal, Node, URIRef
 
 from ontocast.onto.constants import COMMON_PREFIXES
+from ontocast.onto.iri_policy import is_iriref_text
 from ontocast.onto.llm_graph_payload import LLMGraphWire
-from ontocast.onto.rdfgraph import RDFGraph, copy_triples, is_rdflib_triple
+from ontocast.onto.rdfgraph import RDFGraph, copy_triples
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,13 @@ class GraphUpdate(BaseModel):
                         prefixes[prefix] = str(uri)
 
                 prefixes.update(op.prefixes)
+                # A binding no IRIREF can hold breaks the whole query, and no
+                # term it could expand survives the render's parse-time drop.
+                prefixes = {
+                    prefix: uri
+                    for prefix, uri in prefixes.items()
+                    if is_iriref_text(uri)
+                }
 
                 if prefixes:
                     prefix_declarations = []
@@ -147,9 +155,7 @@ class GraphUpdate(BaseModel):
         result = RDFGraph()
         for op in self.triple_operations:
             if op.type == "insert" and len(op.graph) > 0:
-                copy_triples(
-                    op.graph, result, origin="GraphUpdate.extract_insert_graph"
-                )
+                copy_triples(op.graph, result)
                 for prefix, uri in op.graph.namespaces():
                     if prefix:
                         result.bind(prefix, uri)
@@ -205,26 +211,12 @@ class GraphUpdate(BaseModel):
 
     @staticmethod
     def _serializable_triples(graph: RDFGraph) -> list[tuple[Node, Node, Node]]:
-        """Return the triples of ``graph`` that SPARQL can express.
+        """Return the triples of ``graph`` for a SPARQL update.
 
-        Oxigraph-backed graphs yield RDF 1.2 triple terms as plain tuples, which
-        have no SPARQL syntax. Dropping them keeps the rest of the update valid;
-        emitting them produced a Python repr inside the query and a
-        ``ParseException`` at apply time.
+        The graph's reifications are not part of an update: rdflib's SPARQL
+        has no syntax for a triple term.
         """
-        triples: list[tuple[Node, Node, Node]] = []
-        dropped = 0
-        for triple in graph:
-            if not is_rdflib_triple(triple):
-                dropped += 1
-                continue
-            triples.append(triple)
-        if dropped:
-            logger.warning(
-                "Skipped %d RDF 1.2 triple-term triple(s): not expressible in SPARQL",
-                dropped,
-            )
-        return triples
+        return list(graph)
 
     def _generate_insert_query(
         self, graph: RDFGraph, prefix_block: str, prefixes: Set[str] = frozenset()
@@ -296,6 +288,17 @@ class GraphUpdate(BaseModel):
         # collision, not an abbreviation.
         return local != "" and not any(char in local for char in ":/#[]?@")
 
+    @staticmethod
+    def _iriref(iri: URIRef) -> str:
+        """``<iri>``, or a ``ValueError`` naming an IRI no ``IRIREF`` can hold.
+
+        Emitted as is, such an IRI fails the whole update at parse time with
+        an error that points at the operation rather than at the IRI.
+        """
+        if not is_iriref_text(str(iri)):
+            raise ValueError(f"Cannot write {str(iri)!r} as a SPARQL IRIREF")
+        return f"<{iri}>"
+
     def _serialize_rdf_term(self, term: Node, prefixes: Set[str] = frozenset()) -> str:
         """Serialize an RDF term to its SPARQL string representation.
 
@@ -305,6 +308,7 @@ class GraphUpdate(BaseModel):
                 only these are honoured as abbreviations.
 
         Raises:
+            ValueError: If ``term`` is an IRI no ``IRIREF`` can hold.
             TypeError: If ``term`` is not a term SPARQL can express. Callers
                 filter with :meth:`_serializable_triples` first; falling back to
                 ``str(term)`` here used to bury a Python repr inside the query,
@@ -313,7 +317,7 @@ class GraphUpdate(BaseModel):
         if isinstance(term, URIRef):
             if self._is_declared_prefixed_name(str(term), prefixes):
                 return str(term)
-            return f"<{term}>"
+            return self._iriref(term)
         elif isinstance(term, BNode):
             return f"_:{term}"
         elif isinstance(term, Literal):
@@ -330,7 +334,7 @@ class GraphUpdate(BaseModel):
             if term.language:
                 return f"{lexical}@{term.language}"
             if term.datatype:
-                return f"{lexical}^^<{term.datatype}>"
+                return f"{lexical}^^{self._iriref(term.datatype)}"
             return lexical
         else:
             raise TypeError(

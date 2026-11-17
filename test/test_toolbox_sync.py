@@ -327,7 +327,7 @@ def test_initialize_vector_store_failure_is_non_fatal_when_configured(
     assert st.vector_store_last_error is not None
 
 
-def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> None:
+def test_ingest_ontology_ttl_accepts_an_id_another_iri_holds() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         wd = Path(tmp)
         od = wd / "ontologies"
@@ -372,10 +372,14 @@ def test_ingest_ontology_ttl_rejects_identity_conflict_before_persisting() -> No
         """
         stub = Stub()
 
-        with pytest.raises(ValueError, match="already bound to IRI"):
-            asyncio.run(ToolBox.ingest_ontology_ttl(cast(ToolBox, stub), incoming_ttl))
+        added = asyncio.run(
+            ToolBox.ingest_ontology_ttl(cast(ToolBox, stub), incoming_ttl)
+        )
 
-        stub._materialize_ontology.assert_not_awaited()
+        assert added.ontology_id == "finance"
+        stub._materialize_ontology.assert_awaited_once()
+        assert ontology_manager.resolve_ontology_ref(added.iri) == added.iri
+        assert ontology_manager.resolve_ontology_ref(existing.iri) == existing.iri
 
 
 def test_initialize_materializes_with_bounded_concurrency(

@@ -25,6 +25,7 @@ from ontocast.onto.constants import COMMON_PREFIXES
 from ontocast.onto.iri_policy import as_sparql_iriref
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
+from ontocast.onto.property_sides import SIDE_PREDICATES
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.util import RDFLIB_DEFAULT_NAMESPACE_URIS
 from ontocast.tool.onto import Tool
@@ -58,7 +59,7 @@ from ontocast.tool.vector_store.util import (
 
 logger = logging.getLogger(__name__)
 
-_STRUCTURAL_REFERENCE_PREDICATES = frozenset({RDFS.subClassOf, RDFS.domain, RDFS.range})
+_STRUCTURAL_REFERENCE_PREDICATES = SIDE_PREDICATES | {RDFS.subClassOf}
 
 # Cap on terms per SPARQL ``VALUES`` clause. Seed counts are already bounded by
 # the retrieval config; this keeps a runaway list from becoming one huge query.
@@ -146,7 +147,7 @@ def _schema_closure_entities(
     ancestor_depth: int,
     seed_relevance: dict[str, float] | None = None,
 ) -> dict[str, str]:
-    """Terms reachable from the seeds by ``rdfs:domain`` / ``rdfs:range``.
+    """Terms reachable from the seeds by a domain or range (``rdfs`` or listed).
 
     Vector retrieval ranks terms by how a text chunk reads, which favours noun
     phrases: a class scores against prose far more readily than the property
@@ -183,7 +184,7 @@ def _schema_closure_entities(
     # One pass over the schema axioms; ontologies are small enough that
     # indexing them beats re-scanning per seed.
     domain_range: dict[URIRef, set[URIRef]] = defaultdict(set)
-    for predicate in (RDFS.domain, RDFS.range):
+    for predicate in SIDE_PREDICATES:
         for prop, target in graph.subject_objects(predicate):
             if isinstance(prop, URIRef) and isinstance(target, URIRef):
                 domain_range[prop].add(target)
@@ -1083,14 +1084,6 @@ class OntologyPatchRetriever(Tool):
         exclude=True,
     )
     _surface_index: CatalogSurfaceIndex | None = PrivateAttr(default=None)
-    # Whole-module graphs for the small-module closure, keyed by ontology IRI.
-    # The catalog is stable for the life of a run, and every content unit hits
-    # the same handful of modules — refetching per unit multiplies catalog
-    # reads by the unit count for no new information. ``None`` caches a miss.
-    _small_module_cache: dict[str, Ontology | None] = PrivateAttr(default_factory=dict)
-    # Tenancy the cache was filled under. The retriever outlives a tenancy
-    # switch, and serving one tenant's modules to another would be a leak.
-    _small_module_cache_scope: str = PrivateAttr(default="")
 
     @property
     def _last_retrieval_metrics(self) -> dict[str, Any]:
@@ -1154,7 +1147,7 @@ class OntologyPatchRetriever(Tool):
         merged_context: tuple[RDFGraph, dict[str, str]] | None,
         catalog: list[Ontology] | None,
     ) -> RDFGraph | None:
-        """Pick the graph to read ``rdfs:domain``/``rdfs:range`` axioms from.
+        """Pick the graph to read domain and range axioms from.
 
         Whichever of the two expansion paths materialized the ontologies wins;
         neither being available means the induced-subgraph call is fetching on
@@ -1244,59 +1237,41 @@ class OntologyPatchRetriever(Tool):
     async def _asmall_module_candidates(
         self, hit_ontology_iris: list[str]
     ) -> list[tuple[str, Ontology]]:
-        """Resolve hit ontologies to full graphs, manager first, store second.
+        """Resolve hit ontologies to their current heads.
 
-        The in-memory manager is empty in every deployment that keeps its
-        catalog in a triple store and fetches per query — which is the normal
-        server configuration, and where this closure silently did nothing.
+        Read on every call, never memoised by IRI: a home ontology gains a
+        version with each document, so a closure that kept the version it saw
+        first would add a stale copy of it whole. Through the catalog's triple
+        store, heads are chosen from fresh headers and only graph bytes are
+        cached, by version IRI.
         """
-        store_config = getattr(self.vector_store, "store_config", None)
-        scope = str(getattr(store_config, "ontology_table", "") or "")
-        if scope != self._small_module_cache_scope:
-            self._small_module_cache.clear()
-            self._small_module_cache_scope = scope
-
         wanted = sorted(set(hit_ontology_iris))
-        resolved: list[tuple[str, Ontology]] = []
-        missing: list[str] = []
+        if not wanted:
+            return []
         manager = self.ontology_manager
-        for onto_iri in wanted:
-            if onto_iri in self._small_module_cache:
-                cached = self._small_module_cache[onto_iri]
-                if cached is not None:
-                    resolved.append((onto_iri, cached))
-                continue
-            ontology = (
-                manager.get_head_by_iri(onto_iri) if manager is not None else None
-            )
-            if ontology is None or ontology.is_null():
-                missing.append(onto_iri)
-            else:
-                self._small_module_cache[onto_iri] = ontology
-                resolved.append((onto_iri, ontology))
-
         store = self.sparql_tool.triple_store_manager if self.sparql_tool else None
-        if missing and store is not None:
-            try:
-                fetched = await store.afetch_ontologies_by_iri(missing)
-            except Exception as exc:
-                # Do NOT cache on this path. A None entry is a permanent
-                # negative (see the miss-caching note above), so memoizing a
-                # transient store error would silently strip the small-module
-                # closure from every later unit in the process.
-                logger.warning(
-                    "Small-module closure catalog fetch failed (not cached, "
-                    "will retry on the next unit): %s",
-                    exc,
-                )
-                return sorted(resolved, key=lambda item: item[0])
-            by_iri = {o.iri: o for o in fetched if o.iri and not o.is_null()}
-            for onto_iri in missing:
-                found = by_iri.get(onto_iri)
-                self._small_module_cache[onto_iri] = found
-                if found is not None:
-                    resolved.append((onto_iri, found))
-        return sorted(resolved, key=lambda item: item[0])
+        try:
+            if manager is not None and manager.has_triple_store:
+                heads = await manager.aget_ontologies_by_iri(wanted)
+            elif manager is not None:
+                heads = [
+                    head
+                    for iri in wanted
+                    if (head := manager.get_head_by_iri(iri)) is not None
+                ]
+            elif store is not None:
+                heads = await store.afetch_ontologies_by_iri(wanted)
+            else:
+                heads = []
+        except Exception as exc:
+            # A closure is an addition to a snapshot that stands without it;
+            # a failed catalog read skips it for this unit only.
+            logger.warning("Small-module closure catalog read failed: %s", exc)
+            return []
+        return sorted(
+            ((head.iri, head) for head in heads if head.iri and not head.is_null()),
+            key=lambda item: item[0],
+        )
 
     async def _acandidate_context(
         self,
@@ -1344,9 +1319,10 @@ class OntologyPatchRetriever(Tool):
             candidate += partial
 
         prefix_map: dict[str, str] = {}
+        table = manager.prefix_table()
         for header in headers:
             namespace = str(header.namespace)
-            prefix = manager.author_prefix_for_namespace(namespace)
+            prefix = table.prefix_for(namespace)
             if prefix:
                 prefix_map[prefix] = namespace
         prefix_map = filter_overbroad_namespace_map(prefix_map)

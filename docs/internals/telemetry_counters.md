@@ -44,8 +44,8 @@ not what this run paid for.
 
 `node_durations` holds seconds. A plain pipeline node name is that node's wall
 clock, recorded by the `_timed` wrapper in `ontocast/stategraph/create.py`:
-`Convert to Text`, `Chunk Text`, `Resolve Home Ontology`, `Update Ontology`,
-`Normalize Ontology Updates`, `Consolidate Ontology`, `Structural Check`,
+`Convert to Text`, `Chunk Text`, `Resolve Home Ontology`, `Plan Ontology`,
+`Update Ontology`, `Normalize Ontology Updates`, `Structural Check`,
 `Consistency Critic`, `Render Facts`, `Merge Facts`, `Resolve Coreference`,
 `Validate Facts`, `Serialize`.
 
@@ -99,11 +99,14 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `llm/parse_retry` | `ontocast/agent/common.py` | Calls re-sent because the previous answer did not parse or validate |
 | `llm/json_bracket_repair` | `ontocast/agent/common.py` | Answers recovered by correcting mismatched closing brackets |
 | `llm/json_surplus_closer` | `ontocast/agent/common.py` | Answers recovered by dropping closing brackets after a complete object |
+| `llm/json_premature_closer` | `ontocast/agent/common.py` | Answers recovered by dropping a closing brace written after the first member, before the rest |
 | `llm/parse_abandoned` | `ontocast/agent/common.py` | Calls given up after the retries ran out or the same JSON error recurred |
 | `rdf/turtle_repair` | `ontocast/onto/rdfgraph.py` | Turtle payloads that parsed only after repair (truncated statement, unknown prefix, update-query wrapper) |
 | `rdf/jsonld_rdflib_fallback` | `ontocast/onto/rdfgraph.py` | JSON-LD payloads that failed URDNA2015 normalization and were parsed by rdflib instead |
-| `repair/compact_iri_literal` | `ontocast/tool/facts_validation/literal_repair.py` | Compact IRIs written as plain strings on an IRI-valued position and coerced back to IRIs, in renders and in critic and completion patches |
-| `repair/entailed_type` | `ontocast/tool/facts_validation/literal_repair.py` | `rdf:type` triples added from a predicate's `rdfs:domain` or `rdfs:range`, in renders and in critic and completion patches |
+| `repair/compact_iri_literal` | `ontocast/tool/facts_validation/literal_repair.py` | Compact IRIs written as plain strings on an IRI-valued position and coerced back to IRIs: in facts renders and their critic and completion patches, and on the schema predicates of ontology renders |
+| `repair/entailed_type` | `ontocast/tool/facts_validation/literal_repair.py` | `rdf:type` triples added from a predicate's `rdfs:domain` or `rdfs:range`, or on an untyped node from the one class its links list, in renders and in critic and completion patches |
+| `repair/paired_object_property` | `ontocast/tool/facts_validation/literal_repair.py` | Nodes moved off a well-known datatype property onto the object property its vocabulary pairs with it (`sosa:hasSimpleResult` to `sosa:hasResult`) |
+| `repair/triple_reversed` | `ontocast/tool/facts_validation/literal_repair.py` | Triples turned around in a facts render because both ends were outside the predicate's domain and range as written and fit them swapped |
 | `llm/ontology_selection` | `ontocast/agent/select_ontology_catalog.py` | Ontology selection calls, one per unit in `selected_single_ontology` mode |
 | `chapter/text_chars_before` | `ontocast/agent/render_facts.py` | Summed length of capped text literals before the text caps |
 | `chapter/text_chars_after` | `ontocast/agent/render_facts.py` | The same after the caps |
@@ -111,14 +114,20 @@ wall × effective workers ≈ llm/provider + llm/inflight_wait
 | `chapter/text_over_budget` | `ontocast/agent/render_facts.py` | Chapters still over `ONTOLOGY_TEXT_TOTAL_BUDGET` after every role was tightened |
 | `chapter/triples_over_budget` | `ontocast/agent/render_facts.py` | Facts chapters still over `ONTOLOGY_CONTEXT_MAX_TRIPLES` after condensing, passed through whole |
 | `ctx/merge_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Document ontology merges; `1` per document |
+| `ctx/facts_catalog_ontologies` | `ontocast/stategraph/context_resolver.py` | Catalog ontologies added, read-only, to the document's facts context beside its home ontologies: those the ontology units read, and those a home imports or extends |
 | `ctx/union_document_ontology.calls` | `ontocast/stategraph/context_resolver.py` | Union chapters built; `1` per facts-only document with a document scope |
+| `ctx/admitted_planned_terms` | `ontocast/stategraph/context_resolver.py` | Terms the ontology plan reuses that were added to the facts ontology context |
+| `ctx/admitted_named_terms` | `ontocast/stategraph/context_resolver.py` | Catalog terms the facts prompt names (conformance rules, notes) whose definitions were added to the ontology context |
+| `vector/transport_retry` | `ontocast/tool/vector_store/qdrant.py` | Qdrant reads retried after a transport error; the third failure fails the unit |
 | `<node>/unit_errors` | `ontocast/stategraph/node_factories.py` | Units of a fan-out node that raised |
+| `ontology/render_skipped_reuse_only` | `ontocast/agent/render_ontology.py` | Ontology update renders answered without a call because the document's plan mints nothing |
 | `ontology/update_rejected_over_budget` | `ontocast/agent/render_ontology.py` | Ontology updates discarded for exceeding `ONTOLOGY_MAX_TRIPLES` |
 | `ontology/deletes_dropped_insert_only` | `ontocast/agent/render_ontology.py`, `ontocast/stategraph/node_factories.py` | Ontology delete triples dropped under `ONTOLOGY_UPDATE_MODE=insert_only` |
 | `ontology/model_header_triples_dropped` | `ontocast/agent/render_ontology.py` | `owl:Ontology` header triples a fresh render wrote and that were dropped: identity and the version header are written by code |
+| `ontology/labels_derived` | `ontocast/stategraph/atomic.py` | `rdfs:label` triples derived from local names for minted terms left unlabelled |
 | `llm/ontology_identity` | `ontocast/agent/resolve_home_ontology.py` | Home-ontology calls, one per document that can create vocabulary |
 | `chunk/outline_windows_failed` | `ontocast/tool/chunk/section_llm.py` | Outline windows of the model section tier whose call raised; those regions got no model vote |
-| `serialize/ontology_identity_conflict` | `ontocast/toolbox.py` | Ontology versions not written because their identity collides with the catalog or another version of the document; the facts are still written |
+| `serialize/ontology_identity_conflict` | `ontocast/toolbox.py` | Ontology versions not written because their IRI is registered under another id; the facts are still written |
 
 `calls_count` equals `llm/calls_timed + llm/timeouts`: a call that raised for
 any other reason is not counted in `calls_count`. The
@@ -153,6 +162,7 @@ Ontology fan-out, written in `ontocast/stategraph/node_factories.py`:
 | `ontology_critic_calls`, `ontology_critic_accepted` | Ontology critic calls, and those whose verdict let the unit leave the loop |
 | `ontology_critic_fixes_applied`, `ontology_critic_fixes_noop` | Critic fixes that reached the graph, and fixes that removed exactly what they added |
 | `ontology_critic_patches_rolled_back` | Critic patch passes in which a fix was undone |
+| `ontology_critic_units_skipped` | Units not sent to the critic: at one pass, units with no mandatory finding |
 
 Facts fan-out, written in `ontocast/stategraph/node_factories.py`:
 
@@ -160,13 +170,17 @@ Facts fan-out, written in `ontocast/stategraph/node_factories.py`:
 |---|---|
 | `facts_anchor_count`, `facts_anchor_units` | Distinct anchor ontologies, and units assigned one |
 | `facts_findings_residual`, `facts_mandatory_residual` | Findings left on the facts units after their loops, all and mandatory |
+| `facts_mandatory_residual_by_kind` | The mandatory ones counted per finding kind |
+| `facts_statements_without_subject_rendered`, `facts_statements_without_subject` | `statement_without_subject` findings: on the units' renders, and left after the critic and gap passes |
 | `facts_critic_calls`, `facts_critic_accepted` | Facts critic calls, and those whose verdict let the unit leave the loop |
 | `facts_critic_fixes_applied`, `facts_critic_fixes_residual`, `facts_critic_fixes_noop` | Fixes that reached the graph, fixes left for judgement, and fixes that removed exactly what they added |
 | `facts_critic_fixes_rolled_back`, `facts_critic_patches_rolled_back` | Fixes undone for leaving the unit worse, and passes in which that happened |
 | `facts_critic_fixes_junk_refused` | Inserts refused for minting a placeholder node |
 | `facts_critic_fixes_unresolved_prefix` | Fixes naming a prefix nothing declares |
 | `facts_critic_units_unreviewed`, `facts_critic_units_skipped` | Units whose critic call failed, and units not sent to the critic |
-| `facts_completion_calls`, `facts_completion_triples_inserted`, `facts_completion_measurements_recovered` | The completion pass: calls, triples that stayed, and missed measurements found |
+| `facts_completion_calls`, `facts_completion_triples_inserted`, `facts_completion_measurements_recovered` | The gap pass: calls, triples that stayed, and missed measurements found. Each pass's loop attempt also records `n_subjects_linked` |
+| `facts_completion_detached_linked` | Instances linked to nothing before a gap pass and linked after it (`n_detached_linked` on the pass's loop attempt) |
+| `facts_domain_repair_calls`, `facts_domain_repair_fixed`, `facts_domain_violations_dropped` | The domain repair: calls (loop attempts of kind `domain_repair`), statements given a property that fits their subject, and statements removed because they were still in domain violation when the unit left its loop (`domain_violation_dropped` repair records) |
 
 Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 `ontocast/stategraph/facts_gate.py` and `ontocast/tool/facts_validation/gate.py`:
@@ -174,6 +188,7 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | Key | Meaning |
 |---|---|
 | `facts_rejected_merges` | Entity merges the aggregator's guards refused, for the graph returned |
+| `facts_merge_rejections_by_reason` | Those refusals by reason (`same_unit`, `sibling`, `literal_conflict`, `functional_iri_conflict`, `initials_conflict`, `role`, `type`, `lexical`, `cluster_veto`); a pair refused for several reasons counts under each |
 | `facts_merge_repair_passes`, `facts_merge_vetoes`, `facts_merge_repairs_rejected` | The un-merge repair: passes kept, merge pairs vetoed, passes reverted |
 | `facts_coreference_pairs`, `facts_coreference_same`, `facts_coreference_different` | Coreference resolution: pairs put to the model, and those it judged one entity or two |
 | `validated_without_ontology_context` | `true` when the facts were validated with an empty ontology context |
@@ -182,8 +197,12 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | `facts_shacl_repairs`, `facts_shacl_autofix_passes`, `facts_shacl_autofix_reverted` | Repairs applied, passes kept, and whether a pass was reverted. Present only when the repair ran |
 | `facts_untyped_inferred` | Instances untyped after aggregation that the gate typed from the domains and ranges of their links, against the whole ontology context |
 | `facts_untyped_dropped` | Instances dropped at the gate for carrying no concrete `rdf:type` after aggregation; their IRIs are `AgentState.facts_untyped_dropped` |
+| `facts_self_loops_dropped` | Statements joining a node to itself (`x p x`) dropped at the gate, unless `p` is `owl:sameAs`, `rdf:type` or declared `owl:ReflexiveProperty`; each is a `self_loop_dropped` record in `facts_gate_repairs` |
+| `facts_unlinked_dropped` | Instances dropped at the gate for stating nothing (linked to no other instance nor the document, no value of their own), plus values no statement carries, plus value-typed instances linked to nothing; each drop is a `facts_gate_repairs` record with its label and the triples removed |
+| `facts_date_values_added` | Nodes standing for a date (object of a temporal property, typed with an OWL-Time class, or labelled with a whole date) that held only a label, given the typed ISO 8601 value the label names |
 | `facts_links_removed` | Links between instances that the gate's SHACL prune and untyped drop removed |
-| `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance |
+| `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance (each holds a value of its own), in the served graph. The instances themselves are listed in the run manifest's `facts_isolated` (IRI, label, `holds_value` or `other`) |
+| `facts_twin_labels` | Labels that two or more served instances share: duplicates aggregation left, or distinct things with one name |
 | `structural_ontology_components_max` | The highest connected-component count among the ontologies the structural check examined |
 | `consistency_conflicts` | Conflicts the consistency critic reported |
 
@@ -227,11 +246,12 @@ left out.
 | `completion` | `calls`, `units`, `subjects_inserted`, `subjects_rolled_back`, `triples_inserted`, `measurements_recovered` |
 | `selection` | `target_sections`, `exclude_sections`, `summarize_sections`, `summary_max_sentences`, `bibliography_mode`, `non_content_mode`, `labeled_units`, `unlabeled_units`, `section_label_histogram`, `label_strength_chars` (characters of the kept units with a strong, weak or no label), the units skipped as bibliography, undersized or non-content, `route_histogram` (`<route>/<reason>` → units and characters, for every prepared unit), with `target_sections` the characters it removed (`allowlist_excluded_chars`) and how many of them were unlabeled (`allowlist_excluded_unlabeled_chars`), and with `CHUNK_SECTION_CLASSIFIER=llm` the model tier's `outline_labels` (`windows`, `windows_failed`, `errors` by error class) |
 | `validation_config` | `context_from_units`, `json_mode`, `shapes_prompt_contract`, `shapes_prompt_selection`, `shapes_triples`, `shacl_inference`, `numeric_coverage_mandatory`, and the length (not the text) of the facts user instruction |
-| `ontology_reduce_metrics` | Counts from reducing the units' ontology updates: duplicate minted terms and their pairs, deletes dropped, unattributed inserts and deletes, fresh graphs unioned, artifacts produced, and the apply step's own counts (`apply_deletes_no_match`, `apply_header_triples_dropped`) |
+| `ontology_reduce_metrics` | Counts from reducing the units' ontology updates: duplicate minted terms and their pairs, deletes dropped, unattributed inserts and deletes, fresh graphs unioned and their statements refiled or dropped, artifacts produced, and the apply step's own counts (`apply_deletes_no_match`, `apply_header_triples_dropped`, `apply_structure_deletes_dropped`, `apply_structure_deletes_expanded`), the planned sides and parents written over a render's (`plan_sides_written`, `plan_parents_written`), owned class sides restated as listed classes (`owned_sides_listed`), undeclared own IRIs in a side or parent rewritten or removed (`undeclared_owned_references_rewritten`, `undeclared_owned_references_dropped`), the minted properties' generic and missing domains and ranges after consolidation (`generic_property_sides`, `missing_property_sides`), and the minted terms whose every parent is generic (`generic_parents`) |
 | `graph_metrics` | The written facts graph: `nodes`, `edges`, `components`, `largest_component`, `isolated_nodes` |
 | `ontology_triples`, `facts_triples`, `facts_triples_serialized` | Ontology triples written; facts triples in memory, provenance included; facts triples in the `.facts.ttl` file |
 | `retrieval_metrics` | The same mapping `/process` returns |
 | `ontology_versions` | Ontology versions the run wrote (`role` `created` or `updated`) and read unchanged (`role` `read`), each with `iri` and `version_iri` |
+| `home_ontology` | The document's home ontology: `iri`, `ontology_id`, `namespace` (every term the document minted is under it) and, for an extension ontology, `extends`. Absent when the ontology lane did not run |
 | `unit_context_sources` | Ontology IRIs behind each unit's context, by lane (`ontology`, `facts`) and unit index |
 | `effective_config`, `chunking_mode` | Every setting keyed by environment variable, credentials redacted; the chunker's mode after any fallback |
 
