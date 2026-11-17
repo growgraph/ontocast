@@ -5,8 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
 ## [0.9.1]
 
 Facts are extracted as statements against a selectable vocabulary and repaired without model calls where the graph shows the fix; the ontology lane plans, consolidates and curates the terms a document adds; an ontology is identified by its IRI, and external ontologies are extended in their own namespace.
