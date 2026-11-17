@@ -772,6 +772,28 @@ class ToolBox:
             self.ontology_manager, self.prefix_table
         )
 
+    async def catalog_graphs(self) -> tuple[RDFGraph, RDFGraph | None]:
+        """Return the merged catalog graph and the SHACL shapes graph.
+
+        Call it after :meth:`initialize` (or after a tenancy switch), which
+        loads what it reads: the current tenancy's ontologies and shapes
+        partition. It runs no pipeline and no model call.
+
+        Returns:
+            tuple: ``(catalog, shapes)``. ``catalog`` is a private copy of the
+            merged ontology graph (empty when none is held). ``shapes`` is the
+            stored shapes plus, when the catalog declares any ``sh:NodeShape``
+            inline, the whole catalog graph; ``None`` when there are none.
+        """
+        from ontocast.tool.facts_validation.shacl import collect_shacl_shapes
+
+        merged, _ = await self.ontology_manager.aget_merged_graph(
+            self.ontology_manager.ontologies
+        )
+        # The merge is cached and shared; callers get their own copy.
+        catalog = merged.copy()
+        return catalog, collect_shacl_shapes(catalog, self.shapes_catalog.graph())
+
     def prefix_table(self) -> PrefixTable:
         """The catalog's prefix table, the shapes' bindings included.
 
@@ -1217,6 +1239,7 @@ class ToolBox:
         prune_orphan_iris: bool | None = None,
         require_populated_catalog: bool = False,
         require_all_seeds: bool = False,
+        summarize_ontologies: bool = True,
     ) -> None:
         """Initialize the toolbox with ontologies and their properties.
 
@@ -1243,6 +1266,9 @@ class ToolBox:
                 cannot be loaded, before anything is written or a model is
                 called. A batch run sets this; a server logs the file and loads
                 the rest.
+            summarize_ontologies: Ask the model for a description of every
+                ontology that has none. ``False`` makes initialization free of
+                model calls, for callers that only read the catalog.
 
         Raises:
             SeedOntologyLoadError: ``require_all_seeds`` and a seed file failed
@@ -1391,10 +1417,16 @@ class ToolBox:
                 )
 
         materialize_started = time.perf_counter()
-        await asyncio.gather(
-            asyncio.gather(*[_materialize_one(o) for o in synchronized_ontologies]),
-            update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm),
+        materialized = asyncio.gather(
+            *[_materialize_one(o) for o in synchronized_ontologies]
         )
+        if summarize_ontologies:
+            await asyncio.gather(
+                materialized,
+                update_ontology_manager(om=self.ontology_manager, llm_tool=self.llm),
+            )
+        else:
+            await materialized
         logger.info(
             "Ontology materialize + enrich finished for %d ontolog(ies) in %.2fs "
             "(reindex_concurrency=%d); initialize total %.2fs",

@@ -212,15 +212,15 @@ class ValidationPolicy(BaseModel):
 _PROPERTY_TYPES = (OWL.ObjectProperty, OWL.DatatypeProperty, OWL.AnnotationProperty)
 
 
-def _catalog_term_roles(
+def catalog_term_evidence(
     ontology_graph: RDFGraph | None,
 ) -> tuple[set[str], set[str]]:
-    """Split catalog terms into (known properties, known classes).
+    """Catalog terms with property evidence and with class evidence.
 
     Only what the catalog states is used: explicit property/class typing,
     a domain or a range (``rdfs`` or ``schema:*Includes``, property evidence), and
-    ``rdfs:subClassOf`` / ``rdf:type``-object position (class evidence). Terms
-    with no evidence land in neither set and pass every role filter.
+    ``rdfs:subClassOf`` / ``rdf:type``-object position (class evidence). A
+    term may land in both sets; :func:`_catalog_term_roles` drops those.
     """
     properties: set[str] = set()
     classes: set[str] = set()
@@ -248,6 +248,18 @@ def _catalog_term_roles(
     for obj in ontology_graph.objects(None, RDF.type):
         if isinstance(obj, URIRef):
             classes.add(str(obj))
+    return properties, classes
+
+
+def _catalog_term_roles(
+    ontology_graph: RDFGraph | None,
+) -> tuple[set[str], set[str]]:
+    """Split catalog terms into (known properties, known classes).
+
+    Evidence as :func:`catalog_term_evidence` collects it. Terms with no
+    evidence land in neither set and pass every role filter.
+    """
+    properties, classes = catalog_term_evidence(ontology_graph)
     # A term the catalog types both ways is contradictory evidence; trust
     # neither and let it through every filter.
     ambiguous = properties & classes
@@ -261,8 +273,12 @@ def _alias_candidates(
     *,
     ontology_graph: RDFGraph | None = None,
     position: str = "predicate",
+    roles: tuple[set[str], set[str]] | None = None,
 ) -> list[str]:
     """Rank replacement candidates for a near-miss predicate.
+
+    ``roles`` is ``_catalog_term_roles(ontology_graph)`` computed once by a
+    caller that ranks many aliases against one catalog.
 
     Candidate pool: catalog terms sharing the alias namespace, plus predicates
     of that namespace the graph itself uses on >= 2 subjects (the renderer's
@@ -281,7 +297,9 @@ def _alias_candidates(
     pool: set[str] = {
         term for term in catalog_terms if _namespace_of(term) == namespace
     }
-    known_properties, known_classes = _catalog_term_roles(ontology_graph)
+    known_properties, known_classes = (
+        roles if roles is not None else _catalog_term_roles(ontology_graph)
+    )
     if position == "predicate":
         pool -= known_classes
     elif position == "type":

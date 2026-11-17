@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping
 from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Union
 
 import pyoxigraph as ox
@@ -919,6 +920,56 @@ class RDFGraph(Graph):
         except (json.JSONDecodeError, ValueError):
             return False
 
+    #: rdflib format name by file suffix, as :meth:`from_file` guesses it.
+    SUFFIX_FORMATS: dict[str, str] = {
+        ".ttl": "turtle",
+        ".turtle": "turtle",
+        ".nt": "nt",
+        ".jsonld": "json-ld",
+        ".json": "json-ld",
+        ".rdf": "xml",
+        ".owl": "xml",
+        ".xml": "xml",
+    }
+
+    @classmethod
+    def from_file(cls, path: str | Path, format: str | None = None) -> "RDFGraph":
+        """Parse an RDF file, guessing the serialization from its suffix.
+
+        Turtle and N-Triples 1.2 (triple terms, reified-triple and annotation
+        syntax) are read with their reifications, so a graph written by
+        :meth:`_to_turtle_str` reads back whole.
+
+        Args:
+            path: File to read.
+            format: rdflib format name; overrides the suffix when given.
+
+        Returns:
+            RDFGraph: The parsed graph.
+
+        Raises:
+            ValueError: If ``format`` is omitted and the suffix is not a key of
+                :attr:`SUFFIX_FORMATS`.
+        """
+        file_path = Path(path)
+        fmt = format or cls.SUFFIX_FORMATS.get(file_path.suffix.lower())
+        if fmt is None:
+            raise ValueError(
+                f"Cannot infer RDF format from {file_path.name!r}; pass format=."
+            )
+        rdf12_format = _RDF12_FORMATS.get(fmt)
+        if rdf12_format is not None:
+            text = file_path.read_text(encoding="utf-8")
+            if _TRIPLE_TERM_SYNTAX.search(text):
+                try:
+                    return cls._from_rdf12_text(text, rdf12_format)
+                except SyntaxError:
+                    # Not RDF 1.2 after all (``<<`` inside a literal).
+                    pass
+        graph = cls()
+        graph.parse(str(file_path), format=fmt)
+        return graph
+
     @classmethod
     def _from_str(cls, data_str: str) -> "RDFGraph":
         """Create an RDFGraph instance from a string (Turtle or JSON-LD).
@@ -1254,6 +1305,19 @@ class RDFGraph(Graph):
                 for item in data
             ]
         return data
+
+    @staticmethod
+    def is_well_formed_literal(literal: Literal) -> bool:
+        """Return whether *literal* is a value of its own datatype.
+
+        Stricter than the quarantine test extraction applies: a value rdflib
+        cannot read as its XSD datatype (``Literal.ill_typed``, which covers
+        the derived integer types, booleans and their facets) fails too. A
+        plain, language-tagged or custom-typed literal passes.
+        """
+        return literal.ill_typed is not True and RDFGraph._is_valid_typed_literal(
+            literal
+        )
 
     @staticmethod
     def _is_valid_typed_literal(literal: Literal) -> bool:

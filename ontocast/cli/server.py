@@ -40,6 +40,7 @@ from ontocast.api.tenancy_resolution import (
     stores_use_tenancy_partitions,
 )
 from ontocast.cli.cache import cache as cache_cli
+from ontocast.cli.check import check as check_cli
 from ontocast.cli.config import config as config_cli
 from ontocast.cli.env_files import apply_env_files
 from ontocast.cli.inspect_sections import main as inspect_sections_cli
@@ -283,6 +284,7 @@ async def _abootstrap_tools(
     shapes_dir: str | None = None,
     flush_on_clean: bool = False,
     batch: bool = False,
+    summarize_ontologies: bool = True,
 ) -> BootstrappedRuntime:
     """Load config, construct ToolBox, apply tenancy, and initialize tools.
 
@@ -300,6 +302,8 @@ async def _abootstrap_tools(
             is fatal for the one render mode that cannot create vocabulary of
             its own. A server is filled through
             ``POST /ontologies``, so neither is.
+        summarize_ontologies: Passed to :meth:`ToolBox.initialize`; ``False``
+            starts without a model call.
     """
     config = Config()
     try:
@@ -360,6 +364,7 @@ async def _abootstrap_tools(
                 batch and config.server.render_mode == RenderMode.FACTS
             ),
             require_all_seeds=batch,
+            summarize_ontologies=summarize_ontologies,
         )
     except SeedOntologyLoadError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -459,6 +464,7 @@ def cli(env_files: tuple[pathlib.Path, ...]) -> None:
 
 
 cli.add_command(cache_cli)
+cli.add_command(check_cli)
 cli.add_command(config_cli)
 cli.add_command(inspect_sections_cli)
 cli.add_command(link_cli)

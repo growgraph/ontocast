@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-11-17
+
+### Added
+
+- `check_facts` checks a facts graph against the catalog and its SHACL shapes, without a model call, and never changes the graph.
+- `ontocast check FILE…` runs it from the command line; with `--tenant/--project` it never wipes the store or loads seed directories.
+- `ToolBox.catalog_graphs()` returns the merged catalog and its shapes.
+- `ToolBox.initialize(summarize_ontologies=False)` skips the model call that describes undescribed ontologies.
+- `RDFGraph.from_file` reads an RDF file by suffix, Turtle 1.2 included.
+- `RDFGraph.is_well_formed_literal`.
+
 ## [0.9.1]
 
 Facts are extracted as statements against a selectable vocabulary and repaired without a model call where the graph shows the fix. The ontology lane plans, consolidates and curates the terms a document adds; an ontology is identified by its IRI, and an external ontology is extended in its own namespace. Facts prompts and documents that add no ontology terms cost fewer tokens.

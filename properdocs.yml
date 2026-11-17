@@ -84,6 +84,7 @@ nav:
     -   Structured documents: concepts/structured_documents.md
     -   Entity disambiguation: concepts/entity_disambiguation.md
     -   Cross-document identity: concepts/cross_document_identity.md
+    -   Checking facts: concepts/checking_facts.md
 -   Guides:
     -   Overview: guides/index.md
     -   Configuring OntoCast: guides/configuration.md

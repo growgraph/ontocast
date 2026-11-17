@@ -27,15 +27,17 @@ from ontocast.onto.scaffolding import scaffolding_nodes
 from ontocast.onto.well_known import (
     is_listed_unit,
     well_known_terms,
-    well_known_vocabulary,
 )
 from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
 from ontocast.tool.facts_validation.connectivity import (
     isolated_instances,
     states_a_value,
 )
+from ontocast.tool.facts_validation.term_verdict import (
+    TermVerdictKind,
+    term_verdict,
+)
 from ontocast.tool.facts_validation.terms import (
-    _FORBIDDEN_NAMESPACES,
     _STANDARD_NAMESPACES,
     SubjectContract,
     ValidationPolicy,
@@ -964,7 +966,20 @@ def collect_unit_findings(
             text = str(term)
             if text in flagged_terms:
                 continue
-            if text.startswith(_FORBIDDEN_NAMESPACES):
+            verdict = term_verdict(
+                text,
+                catalog_terms=catalog_terms,
+                known_terms=known_terms,
+                fallback_terms=fallback_terms,
+                declared_namespaces=declared_namespaces,
+                catalog_namespaces=catalog_namespaces,
+                standard_namespaces=standard_namespaces,
+                vocabulary=policy.vocabulary,
+            )
+            if (
+                verdict is not None
+                and verdict.kind is TermVerdictKind.PLACEHOLDER_NAMESPACE
+            ):
                 flagged_terms.add(text)
                 findings.append(
                     FactsUnitFinding(
@@ -1022,11 +1037,10 @@ def collect_unit_findings(
                     )
                 )
                 continue
-            namespace = _namespace_of(text)
-            if text in catalog_terms or text in known_terms or text in fallback_terms:
+            if verdict is None:
                 continue
-            vocabulary = well_known_vocabulary(text)
-            if vocabulary is not None and not vocabulary.has_term(_local_name(text)):
+            namespace = _namespace_of(text)
+            if verdict.kind is TermVerdictKind.WELL_KNOWN_MISSING:
                 # Written from memory: the prompt names the vocabulary, not
                 # its terms, so a plausible term it does not have is caught
                 # here, with near-misses from the vocabulary itself.
@@ -1035,7 +1049,7 @@ def collect_unit_findings(
                     FactsUnitFinding(
                         kind=FactsUnitFindingKind.UNKNOWN_TERM,
                         message=(
-                            f"<{text}> is not a term of {vocabulary.title}; "
+                            f"<{text}> is not a term of {verdict.vocabulary_title}; "
                             "rewrite the statement IN PLACE with a term that "
                             "exists in it (or a suggested candidate), or with a "
                             "term from the ontology chapter, keeping the "
@@ -1054,9 +1068,7 @@ def collect_unit_findings(
                     )
                 )
                 continue
-            if not catalog_terms or namespace.startswith(standard_namespaces):
-                continue
-            if namespace in declared_namespaces:
+            if verdict.kind is TermVerdictKind.CLOSED_NAMESPACE_MISSING:
                 # A member of a closed namespace: a near-miss of a real term.
                 message = (
                     f"<{text}> does not exist in its ontology; rewrite "
@@ -1065,7 +1077,7 @@ def collect_unit_findings(
                     "keeping the statement and its value. Do NOT delete "
                     "the statement."
                 )
-            elif policy.vocabulary == "strict" and namespace not in catalog_namespaces:
+            else:
                 # A vocabulary that is neither the catalog's, one it borrows
                 # from, nor well-known. The strict vocabulary admits nothing
                 # else, so the statement is re-expressed or left out.
@@ -1076,8 +1088,6 @@ def collect_unit_findings(
                     "chapter or a well-known vocabulary, or leave the "
                     "statement out if none can express it."
                 )
-            else:
-                continue
             flagged_terms.add(text)
             findings.append(
                 FactsUnitFinding(
