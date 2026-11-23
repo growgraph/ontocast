@@ -25,11 +25,12 @@ from ontocast.prompt.repair_facts_domain import build_violations_chapter
 from ontocast.stategraph import atomic as atomic_module
 from ontocast.stategraph.atomic import (
     FACTS_PHASE,
-    _drop_domain_violations,
+    _exit_unit,
     _run_domain_repair,
 )
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy, ValidationPolicy
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.facts_validation.terms import CatalogRoles, domain_fitting_properties
 from ontocast.tool.facts_validation.unit_findings import domain_violation_findings
 
@@ -95,7 +96,7 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
             additional_standard_namespaces=(),
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
-            subject_contract=lambda: None,
+            statement_contract=StatementContract,
         ),
     )
 
@@ -234,7 +235,7 @@ async def test_no_violation_means_no_call(monkeypatch) -> None:
 def test_a_statement_still_in_violation_is_dropped_with_a_record() -> None:
     state = _state()
 
-    _drop_domain_violations(state, _atomic(), _PHASE)
+    _exit_unit(state, _atomic(), _PHASE)
 
     graph = state.content_unit.graph
     assert (_DATASET, PROV.used, _SOURCE) not in graph

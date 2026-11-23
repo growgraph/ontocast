@@ -32,6 +32,8 @@ cp .env.example .env        # set TS_USERNAME and TS_PASSWORD
 docker compose --env-file .env up fuseki -d
 ```
 
+The container publishes its port on `127.0.0.1` only; reach it from another machine through an SSH tunnel.
+
 Then point OntoCast at it:
 
 ```bash

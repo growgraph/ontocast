@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Literal
 
+from ontocast.onto.well_known import canonical_namespace
+
 URIContext = Literal["ontology", "facts", "auto"]
 
 #: A Turtle prefix name (``PN_PREFIX``, ASCII-led): a letter, then name
@@ -78,19 +80,15 @@ def _resolve_context(namespace: str, context: URIContext) -> URIContext:
     return "facts"
 
 
-# Known aliases of one canonical namespace. Both spellings appear in the wild
-# (LLM output, upstream ontologies); leaving them split scatters the same terms
-# across two IRIs and silently breaks dedup and SPARQL.
-_NAMESPACE_ALIASES: dict[str, str] = {
-    "http://schema.org/": "https://schema.org/",
-    "http://schema.org#": "https://schema.org/",
-    "https://schema.org#": "https://schema.org/",
-}
-
-
 def canonicalize_namespace_iri(namespace: str) -> str:
-    """Map a delimiter-normalized namespace IRI to its canonical alias."""
-    return _NAMESPACE_ALIASES.get(namespace, namespace)
+    """Map a delimiter-normalized namespace IRI to its canonical spelling.
+
+    A spelling of a well-known vocabulary's namespace that differs only in
+    scheme or trailing separator (``http://schema.org/``) scatters its terms
+    across two IRIs and breaks dedup and SPARQL, so it maps to the canonical
+    one (:func:`~ontocast.onto.well_known.canonical_namespace`).
+    """
+    return canonical_namespace(namespace)
 
 
 def normalize_namespace_iri(namespace: str, *, context: URIContext = "auto") -> str:

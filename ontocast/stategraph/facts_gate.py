@@ -43,6 +43,10 @@ from ontocast.tool.agg.signatures import (
     normalize_string_value,
     string_values_compatible,
 )
+from ontocast.tool.agg.statement_conflict import (
+    dimension_conflict_findings,
+    statement_conflict_findings,
+)
 from ontocast.tool.agg.value_names import carrierless_values, name_values
 from ontocast.tool.facts_validation import (
     FactsValidationReport,
@@ -67,7 +71,7 @@ from ontocast.tool.facts_validation import (
     validate_aggregated_facts,
 )
 from ontocast.tool.facts_validation.date_values import add_date_values
-from ontocast.tool.facts_validation.terms import is_value_node
+from ontocast.tool.facts_validation.terms import CatalogRoles, is_value_node
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -673,9 +677,13 @@ def run_facts_gate(
             "it" if len(contradictions) == 1 else "them",
         )
     fact_namespaces = [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""]
+    # The closed ranges of value properties, over the context the gate checks.
+    contract = CatalogRoles.of([ontology_graph]).statement_contract(
+        tools.get_atomic_tools().value_classes()
+    )
 
     def run_validation() -> FactsValidationReport:
-        return validate_aggregated_facts(
+        report = validate_aggregated_facts(
             state.aggregated_facts,
             ontology_graph,
             shapes_graph=shapes_graph,
@@ -701,7 +709,23 @@ def run_facts_gate(
                 facts_validation.additional_standard_namespaces
             ),
             catalog_terms=catalog_terms,
+            contract=contract,
+            document=state.doc_iri,
         )
+        # Telemetry: aggregation vetoes these merges, so the list stays empty.
+        report.findings.extend(
+            statement_conflict_findings(
+                state.aggregated_facts, ontology_graph, fact_namespaces, state.doc_iri
+            )
+        )
+        # Results served under one property, or by one statement, that
+        # disagree in dimension; a unit carries only the anchored ones.
+        report.findings.extend(
+            dimension_conflict_findings(
+                state.aggregated_facts, ontology_graph, fact_namespaces, state.doc_iri
+            )
+        )
+        return report
 
     def merge_signature_errors(report: FactsValidationReport) -> int:
         return sum(

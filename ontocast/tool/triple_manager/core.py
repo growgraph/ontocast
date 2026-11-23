@@ -17,7 +17,7 @@ from ontocast.onto.constants import PROV
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.ontology_header import OntologyHeader
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.scaffolding import is_scaffolding, scaffolding_nodes
+from ontocast.onto.scaffolding import FactScope
 from ontocast.onto.tenancy import TENANCY_SEP, StoreKind
 from ontocast.tool import Tool
 
@@ -184,12 +184,9 @@ class TripleStoreManager(Tool):
         for prefix, namespace in graph.namespaces():
             clean.bind(prefix, namespace)
 
-        scaffolding = scaffolding_nodes(graph)
         headers = set(graph.subjects(RDF.type, OWL.Ontology))
-        for triple in graph:
+        for triple in FactScope.of(graph, None).triples():
             subject, predicate, _ = triple
-            if is_scaffolding(triple, scaffolding):
-                continue
             if subject in headers and predicate == PROV.wasDerivedFrom:
                 continue
             clean.add(triple)

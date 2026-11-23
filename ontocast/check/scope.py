@@ -6,6 +6,7 @@ from collections.abc import Set as AbstractSet
 from rdflib import OWL, RDF, RDFS, Graph, URIRef
 
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.scaffolding import FactScope
 from ontocast.tool.facts_validation.terms import catalog_term_evidence
 
 _DECLARING_TYPES = (
@@ -58,22 +59,18 @@ def instances(
 ) -> set[URIRef]:
     """Return the IRI subjects of `graph` that are instances.
 
-    An instance is not a catalog term (a class or property,
-    :func:`catalog_schema_terms`), not declared in the graph, and not under
-    a standard or well-known namespace. Blank-node and literal subjects are
-    ignored. With `restrict_to`, only IRIs under those namespaces are kept.
+    The fact subjects of `graph` (:attr:`~ontocast.onto.scaffolding.FactScope.subjects`:
+    no scaffolding, no document node) that are not a catalog term (a class or
+    property, :func:`catalog_schema_terms`), not declared in the graph, and
+    not under a standard or well-known namespace. A node the graph only
+    points at is not counted. With `restrict_to`, only IRIs under those
+    namespaces are kept.
     """
     declared = declared_terms(graph)
-    result: set[URIRef] = set()
-    for subject in set(graph.subjects()):
-        if not isinstance(subject, URIRef):
-            continue
-        iri = str(subject)
-        if iri in catalog_terms or iri in declared:
-            continue
-        if iri.startswith(standard_namespaces):
-            continue
-        if restrict_to is not None and not iri.startswith(tuple(restrict_to)):
-            continue
-        result.add(subject)
-    return result
+    return {
+        subject
+        for subject in FactScope.of(graph, restrict_to).subjects
+        if str(subject) not in catalog_terms
+        and str(subject) not in declared
+        and not str(subject).startswith(standard_namespaces)
+    }

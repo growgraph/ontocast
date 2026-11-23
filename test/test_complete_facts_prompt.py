@@ -16,6 +16,7 @@ from ontocast.prompt.complete_facts import (
     build_missing_measurements_chapter,
     output_instruction_for,
 )
+from ontocast.tool.facts_validation.mandate import GapMandate
 from ontocast.util.measurement_lexicon import Mention
 from ontocast.util.numeric_inventory import NumericInventory
 
@@ -100,4 +101,12 @@ def test_the_subject_list_respects_its_cap() -> None:
 @pytest.mark.parametrize("fmt", list(LLMGraphFormat))
 def test_every_wire_format_has_an_output_instruction(fmt: LLMGraphFormat) -> None:
     """The pass must not emit an empty output contract for a supported wire."""
-    assert output_instruction_for(fmt).strip()
+    for mandate in (
+        GapMandate(),
+        GapMandate(
+            inventory=NumericInventory(
+                measurements=[Mention(value="1", unit="m", start=0, end=0, context="")]
+            )
+        ),
+    ):
+        assert output_instruction_for(fmt, mandate).strip()

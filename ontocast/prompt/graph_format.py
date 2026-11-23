@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from contextvars import Token
 from dataclasses import dataclass
@@ -478,7 +478,9 @@ class GraphFormatProfile:
         *,
         facts_namespace: str,
         domain_ontologies_clause: str,
-        quantity_fallback_vocabulary: dict[str, str] | None = None,
+        quantity_chapter: str = "",
+        statement_rules: bool = False,
+        citation_vocabulary: Mapping[str, str] | None = None,
         search_guidelines: str = "",
         vocabulary: str = "strict",
         additional_namespaces: tuple[str, ...] | list[str] = (),
@@ -487,7 +489,9 @@ class GraphFormatProfile:
             facts_namespace=facts_namespace,
             domain_ontologies_clause=domain_ontologies_clause,
             jsonld=self.format == LLMGraphFormat.JSONLD,
-            quantity_fallback_vocabulary=quantity_fallback_vocabulary,
+            quantity_chapter=quantity_chapter,
+            statement_rules=statement_rules,
+            citation_vocabulary=citation_vocabulary,
             search_guidelines=search_guidelines,
             vocabulary=vocabulary,
             additional_namespaces=additional_namespaces,

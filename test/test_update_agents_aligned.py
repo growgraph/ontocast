@@ -30,6 +30,7 @@ from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState, UnitOntologyState
 from ontocast.tool.atomic import AtomicLLMProvider, AtomicToolBox
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.facts_validation.terms import CatalogRoles
 from test.snapshot_helpers import snapshot_from_ontology
 
@@ -88,9 +89,11 @@ def _tools() -> AtomicToolBox:
             property_alias_min_ratio=0.85,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
-            subject_contract=lambda: None,
+            statement_contract=StatementContract,
             code_predicates=(),
             citation_vocabulary={},
+            facts_completion_passes=0,
+            facts_completion_measurements=False,
             quantity_fallback_vocabulary=None,
             acceptance_policy=None,
             ontology_insert_only=False,

@@ -90,10 +90,18 @@ def _temperature_unit(index: int, value: str, unit_name: str) -> ContentUnit:
 
 
 def _normal_form_aggregator(
-    monkeypatch: pytest.MonkeyPatch, **overrides
+    monkeypatch: pytest.MonkeyPatch, *, ablate_literal_guard: bool = False, **overrides
 ) -> EmbeddingBasedAggregator:
-    """Cluster by normal form -- what a model does with two identical mentions."""
+    """Cluster by normal form -- what a model does with two identical mentions.
+
+    ``ablate_literal_guard`` switches the literal-conflict guard off, so a bad
+    merge reaches the gate.
+    """
     aggregator = EmbeddingBasedAggregator(AggregationConfig(**overrides))
+    if ablate_literal_guard:
+        monkeypatch.setattr(
+            aggregator, "_have_conflicting_literals", lambda left, right: False
+        )
 
     def cluster_by_normal_form(representations):
         clusters: dict[str, list[URIRef]] = {}
@@ -378,7 +386,7 @@ def test_gate_vetoes_split_a_cross_unit_collision(
     which the veto repair skips; scoped, the cluster has two members and the
     un-merge pass dissolves it.
     """
-    aggregator = _normal_form_aggregator(monkeypatch, literal_conflict_guard=False)
+    aggregator = _normal_form_aggregator(monkeypatch, ablate_literal_guard=True)
     tools = _fake_tools(aggregator)
     state = AgentState()
     state.current_domain = "https://x.org"

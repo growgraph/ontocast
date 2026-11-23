@@ -42,7 +42,8 @@ from ontocast.onto.iri_policy import (
     normalize_namespace_iri,
 )
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.tool.facts_validation.terms import superclass_closure
+from ontocast.onto.well_known import well_known_value_classes
+from ontocast.tool.facts_validation.terms import CatalogRoles, superclass_closure
 from ontocast.tool.representation_text import (
     normalize_identifier,
     normalize_text,
@@ -54,7 +55,6 @@ from .normalizer import EntityNormalizer, EntityRepresentation
 from .rewriter import GraphRewriter
 from .signatures import (
     MergeGuardContext,
-    build_sibling_pairs,
     empirically_functional_predicates,
     harvest_disjoint_classes,
     harvest_max_one_predicates,
@@ -65,8 +65,15 @@ from .signatures import (
     string_values_compatible,
     tokens_alias_compatible,
 )
+from .statement_conflict import (
+    Same,
+    StatementIndex,
+    dimension_conflict,
+    statement_conflict,
+)
 from .unit_scope import scope_fact_iris, unit_scope_index, unscoped_iri
 from .uri_builder import EntityRole, URIBuilder, to_lower_camel_case
+from .value_names import merge_equal_values
 
 logger = logging.getLogger(__name__)
 _INSTANCE_LOCAL_NAME_RE = re.compile(r"^(?P<stem>.+?)(?P<index>\d+)$")
@@ -455,9 +462,14 @@ class EntityDecision(BaseModel):
     suppress_sameas: bool = False
 
 
-#: Lexical tiers that confirm identity by name; a merge on any other tier is
-#: plausible only, and a candidate for coreference resolution.
+#: Lexical tiers that confirm identity by name. Any other tier (a name inside
+#: another, overlapping words, similar strings, an IRI-derived name) only makes
+#: identity a question: such a pair merges on a coreference "same" verdict.
 CONFIRMING_ALIAS_TIERS: frozenset[str] = frozenset({"label", "initials"})
+
+
+def _identical(left: object, right: object) -> bool:
+    return left == right
 
 
 def build_merged_clusters(
@@ -555,10 +567,12 @@ class AggregationResult(BaseModel):
         rejected_merge_count: Candidate merges rejected by symbolic
             validation (guards, roles, types, lexical bar).
         rejected_by_reason: How many of those each reason refused
-            (``same_unit``, ``sibling``, ``literal_conflict``,
-            ``functional_iri_conflict``, ``initials_conflict``, ``role``,
-            ``type``, ``lexical``, ``cluster_veto``); a pair refused for
-            several reasons counts under each.
+            (``same_unit``, ``relation``, ``literal_conflict``,
+            ``functional_iri_conflict``, ``statement_conflict``,
+            ``dimension_conflict``, ``initials_conflict``, ``role``,
+            ``type``, ``overlap``,
+            ``lexical``, ``cluster_veto``); a pair refused for several
+            reasons counts under each.
         key_supported_clusters: Final URIs of merged clusters containing at
             least one natural-key pair (a shared identifier value). The
             validation gate treats label disagreement inside these clusters
@@ -567,12 +581,11 @@ class AggregationResult(BaseModel):
             objects were contributed by more than one unit -- the only ones a
             merge could have created. See
             :func:`build_cross_unit_object_pairs`.
-        unconfirmed_merges: Source pairs merged on a plausible lexical tier
-            only (not an equal label, initials, a key or a confirmation), with
-            their candidate similarity: what coreference resolution may split.
-        lexical_near_misses: Candidate source pairs refused for ``lexical``
-            alone -- no guard said they are distinct -- with their similarity:
-            what coreference resolution may merge.
+        lexical_near_misses: Candidate source pairs refused only for want of
+            identity evidence -- no guard said they are distinct -- as
+            ``(left, right, similarity, reason)``: ``overlap`` when named alike
+            but not equally, ``lexical`` when not named alike. What
+            coreference resolution may merge.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -584,8 +597,7 @@ class AggregationResult(BaseModel):
     rejected_by_reason: dict[str, int] = Field(default_factory=dict)
     key_supported_clusters: list[str] = Field(default_factory=list)
     cross_unit_object_pairs: list[tuple[str, str]] = Field(default_factory=list)
-    unconfirmed_merges: list[tuple[str, str, float]] = Field(default_factory=list)
-    lexical_near_misses: list[tuple[str, str, float]] = Field(default_factory=list)
+    lexical_near_misses: list[tuple[str, str, float, str]] = Field(default_factory=list)
 
 
 class _EntityCollectionState(BaseModel):
@@ -673,9 +685,6 @@ class EmbeddingBasedAggregator:
         self.lexical_sequence_ratio = cfg.lexical_sequence_ratio
         self.lexical_token_jaccard = cfg.lexical_token_jaccard
         self.functional_min_empirical_support = cfg.functional_min_empirical_support
-        self.sibling_guard_scope = str(cfg.sibling_guard_scope)
-        self.literal_conflict_guard = cfg.literal_conflict_guard
-        self.initials_distinct_guard = cfg.initials_distinct_guard
         self.natural_key_merge = cfg.natural_key_merge
         self.llm_coreference = cfg.llm_coreference
         self.llm_coreference_max_pairs = cfg.llm_coreference_max_pairs
@@ -873,31 +882,6 @@ class EmbeddingBasedAggregator:
             for ancestor in ancestors.get(class_iri, frozenset((class_iri,)))
         }
 
-    def _types_overlap(
-        self,
-        left: URIRef,
-        right: URIRef,
-        representations: dict[URIRef, EntityRepresentation],
-        guard_context: MergeGuardContext | None,
-    ) -> bool:
-        """True when the two typings share a class, superclasses included.
-
-        Types that share nothing do not prove two things, but they cost
-        evidence: such a pair merges only on a name that confirms identity
-        (an equal label, initials), a shared key or a coreference verdict,
-        never on a plausible name match alone.
-        """
-        left_rep = representations.get(left)
-        right_rep = representations.get(right)
-        if left_rep is None or right_rep is None:
-            return False
-        if not left_rep.types or not right_rep.types:
-            return True
-        return bool(
-            self._type_closure(set(left_rep.types), guard_context)
-            & self._type_closure(set(right_rep.types), guard_context)
-        )
-
     def _entity_label_values(self, rep: EntityRepresentation) -> set[str]:
         """Normalized name strings an entity is identified by.
 
@@ -927,11 +911,11 @@ class EmbeddingBasedAggregator:
     ) -> str | None:
         """The lexical tier that makes *left* and *right* aliases, or None.
 
-        ``label`` and ``initials`` confirm identity by name; the other tiers
-        (``sub_label``, ``label_overlap``, ``sequence``, ``token_overlap`` and
-        the IRI-derived ``normal_form`` / ``local_name``) only make it
-        plausible, so a merge on them is a candidate for coreference
-        resolution.
+        ``label`` and ``initials`` confirm identity by name and are tried
+        first; the other tiers (``sub_label``, ``label_overlap``,
+        ``sequence``, ``token_overlap`` and the IRI-derived ``normal_form`` /
+        ``local_name``) only make it a question: such a pair is a coreference
+        candidate and merges on a "same" verdict alone.
         """
         left_rep = representations.get(left)
         right_rep = representations.get(right)
@@ -949,17 +933,6 @@ class EmbeddingBasedAggregator:
             and not left_rep.is_ontology_entity
             and not right_rep.is_ontology_entity
         )
-        if not names_decide:
-            if left_rep.normal_form == right_rep.normal_form:
-                return "normal_form"
-            left_instance_name = self._instance_like_local_name(left)
-            right_instance_name = self._instance_like_local_name(right)
-            if (
-                left_instance_name is not None
-                and right_instance_name is not None
-                and left_instance_name == right_instance_name
-            ):
-                return "local_name"
 
         if left_label_tokens & right_label_tokens:
             return "label"
@@ -979,6 +952,18 @@ class EmbeddingBasedAggregator:
             ):
                 return "sub_label"
             return "initials"
+
+        if not names_decide:
+            if left_rep.normal_form == right_rep.normal_form:
+                return "normal_form"
+            left_instance_name = self._instance_like_local_name(left)
+            right_instance_name = self._instance_like_local_name(right)
+            if (
+                left_instance_name is not None
+                and right_instance_name is not None
+                and left_instance_name == right_instance_name
+            ):
+                return "local_name"
 
         # Guard-literal-bearing entities (measurements, dated events) are
         # individuated by their payload, not their phrasing: "PL red shift of
@@ -1072,9 +1057,12 @@ class EmbeddingBasedAggregator:
         left_rep: EntityRepresentation,
         right_rep: EntityRepresentation,
         functional_predicates: set[URIRef],
+        same: Same = _identical,
     ) -> bool:
-        """Return True when a max-1 object predicate points at disjoint IRIs.
+        """Return True when a max-1 object predicate points at distinct objects.
 
+        Objects compare by ``same``: the aggregator passes the identity it has
+        decided so far, so two objects merged in the same pass are one object.
         Catches conflicts invisible to value comparison — e.g. two "10"
         quantities whose ``qudt:unit`` objects are ``DEG_C`` vs ``KiloHZ``.
         """
@@ -1086,7 +1074,11 @@ class EmbeddingBasedAggregator:
             right_objects = right_rep.predicate_iri_objects.get(predicate)
             if not right_objects or not left_objects:
                 continue
-            if left_objects.isdisjoint(right_objects):
+            if not any(
+                same(left_object, right_object)
+                for left_object in left_objects
+                for right_object in right_objects
+            ):
                 return True
         return False
 
@@ -1115,8 +1107,6 @@ class EmbeddingBasedAggregator:
         right_rep: EntityRepresentation,
     ) -> bool:
         """Label pairs identical except for conflicting initials mark distinctness."""
-        if not self.initials_distinct_guard:
-            return False
         return labels_differ_only_by_initials(
             self._entity_label_values(left_rep),
             self._entity_label_values(right_rep),
@@ -1134,6 +1124,87 @@ class EmbeddingBasedAggregator:
         left_unit = unit_scope_index(str(left))
         return left_unit is not None and left_unit == unit_scope_index(str(right))
 
+    def _distinctness_reasons(
+        self,
+        left: URIRef,
+        right: URIRef,
+        representations: dict[URIRef, EntityRepresentation],
+        direct_relation_pairs: set[frozenset[URIRef]] | None = None,
+        guard_context: MergeGuardContext | None = None,
+        same: Same = _identical,
+        *,
+        first_only: bool = False,
+    ) -> list[str]:
+        """The evidence that *left* and *right* denote distinct entities.
+
+        Unlike the absence of a lexical alias -- which merely fails to support
+        a merge -- each reason is grounds to keep the pair apart in *any*
+        identity cluster, including transitively: two entities a guard
+        separates must not end up merged through a chain of intermediate
+        aliases. Objects and statements compare by ``same``, the identity
+        decided so far. ``first_only`` stops at the first reason.
+        """
+        reasons: list[str] = []
+
+        def found(reason: str) -> bool:
+            reasons.append(reason)
+            return first_only
+
+        if self._minted_by_one_unit(left, right) and found("same_unit"):
+            return reasons
+        pair = frozenset((left, right))
+        # Direct relations are recorded by name; the gate's merge vetoes name
+        # scoped source IRIs. Both spellings are checked.
+        name_pair = frozenset((unscoped_iri(left), unscoped_iri(right)))
+        if (
+            direct_relation_pairs is not None
+            and (pair in direct_relation_pairs or name_pair in direct_relation_pairs)
+            and found("relation")
+        ):
+            return reasons
+        left_rep = representations.get(left)
+        right_rep = representations.get(right)
+        if guard_context is not None:
+            if left_rep is not None and right_rep is not None:
+                if self._have_conflicting_literals(left_rep, right_rep) and found(
+                    "literal_conflict"
+                ):
+                    return reasons
+                if self._have_conflicting_functional_objects(
+                    left_rep, right_rep, guard_context.functional_predicates, same
+                ) and found("functional_iri_conflict"):
+                    return reasons
+            if (
+                guard_context.statements is not None
+                and statement_conflict(guard_context.statements, left, right, same)
+                is not None
+                and found("statement_conflict")
+            ):
+                return reasons
+            if (
+                guard_context.statements is not None
+                and dimension_conflict(guard_context.statements, left, right)
+                is not None
+                and found("dimension_conflict")
+            ):
+                return reasons
+        if (
+            left_rep is not None
+            and right_rep is not None
+            and self._labels_mark_distinct_entities(left_rep, right_rep)
+            and found("initials_conflict")
+        ):
+            return reasons
+        if not self._are_roles_compatible(left, right, representations) and found(
+            "role"
+        ):
+            return reasons
+        if not self._are_types_compatible(
+            left, right, representations, guard_context
+        ) and found("type"):
+            return reasons
+        return reasons
+
     def _pair_distinctness_veto(
         self,
         left: URIRef,
@@ -1141,46 +1212,21 @@ class EmbeddingBasedAggregator:
         representations: dict[URIRef, EntityRepresentation],
         direct_relation_pairs: set[frozenset[URIRef]] | None = None,
         guard_context: MergeGuardContext | None = None,
+        same: Same = _identical,
     ) -> bool:
-        """Positive evidence that *left* and *right* denote distinct entities.
-
-        Unlike the absence of a lexical alias — which merely fails to support
-        a merge — a veto is grounds to keep the pair apart in *any* identity
-        cluster, including transitively: two entities that a guard separates
-        must not end up merged through a chain of intermediate aliases.
-        """
-        if self._minted_by_one_unit(left, right):
-            return True
-        pair = frozenset((left, right))
-        # Direct relations and sibling pairs are recorded by name; the gate's
-        # merge vetoes name scoped source IRIs. Both spellings are checked.
-        name_pair = frozenset((unscoped_iri(left), unscoped_iri(right)))
-        if direct_relation_pairs is not None and (
-            pair in direct_relation_pairs or name_pair in direct_relation_pairs
-        ):
-            return True
-        left_rep = representations.get(left)
-        right_rep = representations.get(right)
-        if guard_context is not None:
-            if name_pair in guard_context.sibling_pairs:
-                return True
-            if left_rep is not None and right_rep is not None:
-                if self.literal_conflict_guard and self._have_conflicting_literals(
-                    left_rep, right_rep
-                ):
-                    return True
-                if self._have_conflicting_functional_objects(
-                    left_rep, right_rep, guard_context.functional_predicates
-                ):
-                    return True
-        if left_rep is not None and right_rep is not None:
-            if self._labels_mark_distinct_entities(left_rep, right_rep):
-                return True
-        if not self._are_roles_compatible(left, right, representations):
-            return True
-        if not self._are_types_compatible(left, right, representations, guard_context):
-            return True
-        return False
+        """Positive evidence that *left* and *right* denote distinct entities
+        (:meth:`_distinctness_reasons`)."""
+        return bool(
+            self._distinctness_reasons(
+                left,
+                right,
+                representations,
+                direct_relation_pairs,
+                guard_context,
+                same,
+                first_only=True,
+            )
+        )
 
     def _can_merge_as_identity(
         self,
@@ -1190,25 +1236,27 @@ class EmbeddingBasedAggregator:
         direct_relation_pairs: set[frozenset[URIRef]] | None = None,
         guard_context: MergeGuardContext | None = None,
         key_pairs: set[frozenset[URIRef]] | None = None,
+        same: Same = _identical,
     ) -> bool:
+        """Whether the pair alone may merge: no distinctness, and identity evidence.
+
+        Identity evidence is a shared key or a "same" verdict (``key_pairs``),
+        or a name that confirms identity (:data:`CONFIRMING_ALIAS_TIERS`).
+        """
         if self._pair_distinctness_veto(
             left,
             right,
             representations,
             direct_relation_pairs=direct_relation_pairs,
             guard_context=guard_context,
+            same=same,
         ):
             return False
         if key_pairs is not None and frozenset((left, right)) in key_pairs:
-            # A shared value on a single-valued identifier-like predicate is
-            # positive identity evidence in its own right; the guards above
-            # still had their say.
             return True
-        tier = self._lexical_alias_tier(left, right, representations)
-        if tier is None:
-            return False
-        return tier in CONFIRMING_ALIAS_TIERS or self._types_overlap(
-            left, right, representations, guard_context
+        return (
+            self._lexical_alias_tier(left, right, representations)
+            in CONFIRMING_ALIAS_TIERS
         )
 
     def _collect_natural_key_pairs(
@@ -1372,40 +1420,33 @@ class EmbeddingBasedAggregator:
         right: URIRef,
         representations: dict[URIRef, EntityRepresentation],
         guard_context: MergeGuardContext | None = None,
+        direct_relation_pairs: set[frozenset[URIRef]] | None = None,
+        same: Same = _identical,
+        *,
+        confirmed: bool = False,
     ) -> list[str]:
-        failures: list[str] = []
-        if self._minted_by_one_unit(left, right):
-            failures.append("same_unit")
-        if guard_context is not None:
-            name_pair = frozenset((unscoped_iri(left), unscoped_iri(right)))
-            if name_pair in guard_context.sibling_pairs:
-                failures.append("sibling")
-            left_rep = representations.get(left)
-            right_rep = representations.get(right)
-            if left_rep is not None and right_rep is not None:
-                if self.literal_conflict_guard and self._have_conflicting_literals(
-                    left_rep, right_rep
-                ):
-                    failures.append("literal_conflict")
-                if self._have_conflicting_functional_objects(
-                    left_rep, right_rep, guard_context.functional_predicates
-                ):
-                    failures.append("functional_iri_conflict")
-                if self._labels_mark_distinct_entities(left_rep, right_rep):
-                    failures.append("initials_conflict")
-        if not self._are_roles_compatible(left, right, representations):
-            failures.append("role")
+        """Every reason the pair alone may not merge.
+
+        The distinctness reasons, then the missing identity evidence:
+        ``overlap`` for a name that only makes identity a question (a
+        coreference candidate), ``lexical`` for no name evidence at all. A
+        ``confirmed`` pair (a shared key or a "same" verdict) lacks no evidence.
+        """
+        failures = self._distinctness_reasons(
+            left,
+            right,
+            representations,
+            direct_relation_pairs,
+            guard_context,
+            same,
+        )
+        if confirmed:
+            return failures
         tier = self._lexical_alias_tier(left, right, representations)
-        if not self._are_types_compatible(
-            left, right, representations, guard_context
-        ) or (
-            tier is not None
-            and tier not in CONFIRMING_ALIAS_TIERS
-            and not self._types_overlap(left, right, representations, guard_context)
-        ):
-            failures.append("type")
         if tier is None:
             failures.append("lexical")
+        elif tier not in CONFIRMING_ALIAS_TIERS:
+            failures.append("overlap")
         return failures
 
     def _build_identity_clusters(
@@ -1419,135 +1460,271 @@ class EmbeddingBasedAggregator:
     ) -> tuple[
         list[list[URIRef]],
         list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]],
-        list[tuple[URIRef, URIRef, float | None]],
     ]:
-        validated_clusters: list[list[URIRef]] = []
-        rejected_merges: list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]] = []
-        unconfirmed_merges: list[tuple[URIRef, URIRef, float | None]] = []
+        """Merge the candidate pairs that identity evidence supports.
 
+        Evidence order: unions for shared keys and "same" verdicts
+        (``key_pairs``) first -- those a confirming name also supports before
+        the rest -- then for names that confirm identity (an equal label,
+        initials); within each, the most similar pair first. A pair
+        named only alike is never merged here; it is returned as refused for
+        ``overlap``, a coreference candidate.
+
+        Distinctness is read on merged identity: objects and statements
+        compare by the clusters built so far, and a union is refused when any
+        two members of the joined cluster are distinct. A union can make two
+        members of a cluster distinct (two subjects become distinct once the
+        properties they report are one), so after each batch of unions, and after each
+        round, the pairs inside the joined clusters are read again on live
+        identity; a union that brought two now-distinct members together is
+        undone, and its pairs are not joined again. Pairs refused in one round
+        are tried again once the clusters have changed, until a round changes
+        nothing. Pairs of exactly equal rank are decided together: when
+        joining them would bring two distinct members together, none of them
+        merges, and undoing one undoes them all, so no union depends on IRI
+        order.
+
+        Returns:
+            The clusters, and every candidate pair left in two clusters with
+            its similarity and reasons (``cluster_veto`` when the pair alone
+            could merge).
+        """
+        keyed = key_pairs or set()
+        parents: dict[URIRef, URIRef] = {
+            entity: entity for cluster in candidate_clusters for entity in cluster
+        }
+        members: dict[URIRef, set[URIRef]] = {entity: {entity} for entity in parents}
+
+        def find(entity: URIRef) -> URIRef:
+            root = entity
+            while parents.get(root, root) != root:
+                root = parents[root]
+            while entity != root:
+                parents[entity], entity = root, parents[entity]
+            return root
+
+        def same(left: object, right: object) -> bool:
+            if left == right:
+                return True
+            if not isinstance(left, URIRef) or not isinstance(right, URIRef):
+                return False
+            return left in parents and right in parents and find(left) == find(right)
+
+        def union(left_root: URIRef, right_root: URIRef) -> None:
+            keep, drop = sorted((left_root, right_root), key=str)
+            parents[drop] = keep
+            members[keep] |= members.pop(drop)
+
+        # The unions kept, in the order applied: each the tied pairs of one
+        # joined group. Undoing one rebuilds the clusters from the rest.
+        applied: list[list[tuple[URIRef, URIRef]]] = []
+        # Pairs whose union was undone: never joined again.
+        blocked: set[frozenset[URIRef]] = set()
+
+        def rebuild() -> None:
+            for entity in parents:
+                parents[entity] = entity
+            members.clear()
+            members.update({entity: {entity} for entity in parents})
+            for edges in applied:
+                for left, right in edges:
+                    a, b = find(left), find(right)
+                    if a != b:
+                        union(a, b)
+
+        def distinct(left: URIRef, right: URIRef) -> bool:
+            return self._pair_distinctness_veto(
+                left,
+                right,
+                representations,
+                direct_relation_pairs=direct_relation_pairs,
+                guard_context=guard_context,
+                same=same,
+            )
+
+        def undo_vetoed(roots: set[URIRef]) -> bool:
+            """Undo every union that joined two members now distinct.
+
+            Distinctness is read on the clusters as they now are, inside the
+            clusters of ``roots``. The union undone is the one that first
+            joined the two, found by replaying the unions in order; its pairs
+            are blocked. Returns whether anything was undone.
+            """
+            vetoed = [
+                (left, right)
+                for root in sorted(roots, key=str)
+                for left, right in combinations(sorted(members[root], key=str), 2)
+                if distinct(left, right)
+            ]
+            if not vetoed:
+                return False
+            scratch: dict[URIRef, URIRef] = {}
+
+            def scratch_find(entity: URIRef) -> URIRef:
+                while scratch.get(entity, entity) != entity:
+                    entity = scratch[entity]
+                return entity
+
+            undone: set[int] = set()
+            pending = list(vetoed)
+            for index, edges in enumerate(applied):
+                for left, right in edges:
+                    a, b = scratch_find(left), scratch_find(right)
+                    if a != b:
+                        scratch[max(a, b, key=str)] = min(a, b, key=str)
+                joined = [
+                    pair
+                    for pair in pending
+                    if scratch_find(pair[0]) == scratch_find(pair[1])
+                ]
+                if joined:
+                    undone.add(index)
+                    pending = [pair for pair in pending if pair not in joined]
+                if not pending:
+                    break
+            for index in undone:
+                blocked.update(frozenset(pair) for pair in applied[index])
+            applied[:] = [
+                edges for index, edges in enumerate(applied) if index not in undone
+            ]
+            rebuild()
+            return True
+
+        # Candidate pairs, each with its rank of identity evidence: 0 for a key
+        # or a verdict with a confirming name, 1 for a key or a verdict alone,
+        # 2 for a confirming name alone, None for none.
+        cluster_pairs: list[tuple[URIRef, URIRef]] = []
+        candidates: list[tuple[URIRef, URIRef, float | None, int | None]] = []
         for candidate_cluster in candidate_clusters:
-            if len(candidate_cluster) <= 1:
-                validated_clusters.append(candidate_cluster)
-                continue
-
-            ordered_cluster = sorted(candidate_cluster, key=str)
-            parents: dict[URIRef, URIRef] = {
-                entity: entity for entity in ordered_cluster
-            }
-            members: dict[URIRef, set[URIRef]] = {
-                entity: {entity} for entity in ordered_cluster
-            }
-
-            # Distinctness vetoes hold cluster-wide: an accepted A–B edge and
-            # an accepted B–C edge must not merge a vetoed A–C pair through
-            # transitive closure. Computed for every pair up front (the guards
-            # are cheap symbolic checks) so unions can be checked against all
-            # current members of both sides.
-            vetoed_pairs: set[frozenset[URIRef]] = {
-                frozenset((left, right))
-                for left, right in combinations(ordered_cluster, 2)
-                if self._pair_distinctness_veto(
-                    left,
-                    right,
-                    representations,
-                    direct_relation_pairs=direct_relation_pairs,
-                    guard_context=guard_context,
-                )
-            }
-
-            def find(entity: URIRef) -> URIRef:
-                root = parents[entity]
-                if root != entity:
-                    parents[entity] = find(root)
-                return parents[entity]
-
-            def union_blocked(left_root: URIRef, right_root: URIRef) -> bool:
-                left_members = members[left_root]
-                right_members = members[right_root]
-                return any(
-                    frozenset((left_member, right_member)) in vetoed_pairs
-                    for left_member in left_members
-                    for right_member in right_members
-                )
-
-            def union(left: URIRef, right: URIRef) -> None:
-                left_root = find(left)
-                right_root = find(right)
-                if left_root == right_root:
-                    return
-                if str(left_root) <= str(right_root):
-                    parents[right_root] = left_root
-                    members[left_root] |= members.pop(right_root)
-                else:
-                    parents[left_root] = right_root
-                    members[right_root] |= members.pop(left_root)
-
-            for left, right in combinations(ordered_cluster, 2):
+            ordered = sorted(candidate_cluster, key=str)
+            for left, right in combinations(ordered, 2):
+                cluster_pairs.append((left, right))
                 pair = frozenset((left, right))
                 score = self._candidate_similarity(left, right, embeddings)
-                if score is not None and score < self.candidate_similarity_threshold:
-                    # Label-confirmed and key-confirmed pairs bypass the cosine
-                    # gate (mirrors EntityAligner): short-string embeddings of
-                    # aliases like "Baranov, D." vs "Dmitry Baranov" hover
-                    # around the threshold, which made identity linking
-                    # nondeterministic — and a shared identifier value needs no
-                    # embedding agreement at all.
-                    if not (
-                        (key_pairs is not None and pair in key_pairs)
-                        or self._labels_confirm_identity(left, right, representations)
-                    ):
-                        continue
-                if self._can_merge_as_identity(
-                    left,
-                    right,
-                    representations,
-                    direct_relation_pairs=direct_relation_pairs,
-                    guard_context=guard_context,
-                    key_pairs=key_pairs,
+                confirmed = pair in keyed
+                if (
+                    score is not None
+                    and score < self.candidate_similarity_threshold
+                    and not confirmed
+                    and not self._labels_confirm_identity(left, right, representations)
                 ):
-                    left_root = find(left)
-                    right_root = find(right)
-                    if left_root == right_root:
-                        continue
-                    if union_blocked(left_root, right_root):
-                        # The pair itself is mergeable, but somewhere in the
-                        # two groups sits a vetoed pair — accepting the edge
-                        # would chain around that guard.
-                        rejected_merges.append((left, right, score, ("cluster_veto",)))
-                        continue
-                    union(left, right)
-                    if (
-                        key_pairs is None or pair not in key_pairs
-                    ) and self._lexical_alias_tier(
-                        left, right, representations
-                    ) not in CONFIRMING_ALIAS_TIERS:
-                        unconfirmed_merges.append((left, right, score))
+                    # Label- and key-confirmed pairs bypass the cosine gate:
+                    # short-string embeddings of aliases ("Baranov, D." vs
+                    # "Dmitry Baranov") hover around the threshold, and a
+                    # shared identifier needs no embedding agreement at all.
                     continue
-                rejected_merges.append(
-                    (
-                        left,
-                        right,
-                        score,
-                        tuple(
-                            self._merge_validation_failures(
-                                left,
-                                right,
-                                representations,
-                                guard_context=guard_context,
-                            )
-                        ),
-                    )
+                named = (
+                    self._lexical_alias_tier(left, right, representations)
+                    in CONFIRMING_ALIAS_TIERS
+                )
+                rank: int | None = (
+                    (0 if named else 1) if confirmed else 2 if named else None
+                )
+                candidates.append((left, right, score, rank))
+
+        def order(item: tuple[URIRef, URIRef, float | None, int | None]):
+            _, _, score, rank = item
+            return (rank, -score if score is not None else float("inf"))
+
+        while True:
+            # Every pair a candidate cluster holds, not only those above the
+            # cosine gate: a union must not join two distinct members.
+            vetoed = {
+                frozenset((left, right))
+                for left, right in cluster_pairs
+                if find(left) != find(right) and distinct(left, right)
+            }
+
+            def holds_veto(group: set[URIRef]) -> bool:
+                return any(
+                    frozenset((a, b)) in vetoed for a, b in combinations(group, 2)
                 )
 
-            grouped: dict[URIRef, list[URIRef]] = {}
-            for entity in ordered_cluster:
+            mergeable = sorted(
+                (
+                    item
+                    for item in candidates
+                    if item[3] is not None
+                    and find(item[0]) != find(item[1])
+                    and frozenset((item[0], item[1])) not in vetoed
+                    and frozenset((item[0], item[1])) not in blocked
+                ),
+                key=lambda item: (*order(item), str(item[0]), str(item[1])),
+            )
+            changed = False
+            index = 0
+            while index < len(mergeable):
+                key = order(mergeable[index])
+                tied: list[tuple[URIRef, URIRef]] = []
+                while index < len(mergeable) and order(mergeable[index]) == key:
+                    left, right = mergeable[index][0], mergeable[index][1]
+                    if find(left) != find(right):
+                        tied.append((left, right))
+                    index += 1
+                # Join the tied pairs on a scratch copy of the clusters, then
+                # keep a joined group only if it holds no distinct members.
+                scratch: dict[URIRef, URIRef] = {}
+
+                def scratch_find(root: URIRef) -> URIRef:
+                    while scratch.get(root, root) != root:
+                        root = scratch[root]
+                    return root
+
+                for left, right in tied:
+                    a, b = scratch_find(find(left)), scratch_find(find(right))
+                    if a != b:
+                        scratch[max(a, b, key=str)] = min(a, b, key=str)
+                groups: dict[URIRef, list[tuple[URIRef, URIRef]]] = {}
+                roots_of: dict[URIRef, set[URIRef]] = {}
+                for left, right in tied:
+                    head = scratch_find(find(left))
+                    groups.setdefault(head, []).append((left, right))
+                    roots_of.setdefault(head, set()).update((find(left), find(right)))
+                joined_roots: set[URIRef] = set()
+                for head, edges in groups.items():
+                    roots = roots_of[head]
+                    if len(roots) < 2:
+                        continue
+                    joined = set().union(*(members[root] for root in roots))
+                    if holds_veto(joined):
+                        continue
+                    applied.append(edges)
+                    first, *rest = sorted(roots, key=str)
+                    for root in rest:
+                        union(find(first), find(root))
+                    joined_roots.add(find(first))
+                    changed = True
+                # The batch moved identity: a pair it joined, or one it made
+                # distinct, is read again on the clusters as they now are.
+                if joined_roots:
+                    undo_vetoed({find(root) for root in joined_roots})
+            # A union may make two members of an older cluster distinct.
+            if undo_vetoed({root for root, group in members.items() if len(group) > 1}):
+                changed = True
+            if not changed:
+                break
+
+        rejected: list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]] = []
+        for left, right, score, rank in candidates:
+            if find(left) == find(right):
+                continue
+            failures = self._merge_validation_failures(
+                left,
+                right,
+                representations,
+                guard_context=guard_context,
+                direct_relation_pairs=direct_relation_pairs,
+                same=same,
+                confirmed=rank in (0, 1),
+            )
+            rejected.append((left, right, score, tuple(failures or ["cluster_veto"])))
+
+        grouped: dict[URIRef, list[URIRef]] = {}
+        for candidate_cluster in candidate_clusters:
+            for entity in candidate_cluster:
                 grouped.setdefault(find(entity), []).append(entity)
-
-            for group in grouped.values():
-                sorted_group = sorted(group, key=str)
-                validated_clusters.append(sorted_group)
-
-        return validated_clusters, rejected_merges, unconfirmed_merges
+        clusters = [sorted(group, key=str) for group in grouped.values()]
+        return clusters, rejected
 
     def _select_ontology_anchor_candidates(
         self,
@@ -1729,11 +1906,11 @@ class EmbeddingBasedAggregator:
                 state.context.add(triple)
                 s, p, o = triple
                 if isinstance(s, URIRef) and isinstance(o, URIRef):
-                    # Structural guards key on *names*, as they did before
-                    # unit scoping: a subject mentioned in two units points at
-                    # two scoped objects, and when those carry the same name
-                    # they must not read as siblings, nor make the predicate
-                    # look single-valued on twice the subjects.
+                    # Direct relations and the single-valued inference key on
+                    # *names*: a subject mentioned in two units points at two
+                    # scoped objects, and one subject named in two units must
+                    # not make a predicate look single-valued on twice the
+                    # subjects.
                     name_s, name_o = unscoped_iri(s), unscoped_iri(o)
                     self._register_direct_relation(
                         state=state, subject=name_s, obj=name_o
@@ -1801,10 +1978,10 @@ class EmbeddingBasedAggregator:
         if merge_vetoes:
             direct_relation_pairs = direct_relation_pairs | merge_vetoes
         schema_functional_predicates = harvest_max_one_predicates(ontology_graph)
+        contract = CatalogRoles.of([ontology_graph]).statement_contract(
+            frozenset(well_known_value_classes())
+        )
         guard_context = MergeGuardContext(
-            sibling_pairs=build_sibling_pairs(
-                object_groups, scope=self.sibling_guard_scope
-            ),
             functional_predicates=schema_functional_predicates
             | empirically_functional_predicates(
                 object_groups,
@@ -1816,6 +1993,9 @@ class EmbeddingBasedAggregator:
                 for entity, classification in entity_classification.items()
                 if classification == EntityClassification.FACT
             },
+            statements=StatementIndex.of(
+                (unit.graph for unit in units if unit.graph is not None), contract
+            ),
         )
         representations = self.normalizer.create_representations_batch(
             entities, entity_graphs
@@ -1892,7 +2072,6 @@ class EmbeddingBasedAggregator:
         key_pairs: set[frozenset[URIRef]] = set()
         clusters: list[list[URIRef]]
         rejected_merges: list[tuple[URIRef, URIRef, float | None, tuple[str, ...]]]
-        unconfirmed_merges: list[tuple[URIRef, URIRef, float | None]] = []
         if self.enabled:
             candidate_clusters, embeddings = self._cluster_entities_by_role(
                 representations
@@ -1924,15 +2103,13 @@ class EmbeddingBasedAggregator:
                 candidate_clusters = self._merge_candidate_clusters_by_key_pairs(
                     candidate_clusters, confirmed
                 )
-            clusters, rejected_merges, unconfirmed_merges = (
-                self._build_identity_clusters(
-                    candidate_clusters=candidate_clusters,
-                    representations=representations,
-                    embeddings=embeddings,
-                    direct_relation_pairs=direct_relation_pairs,
-                    guard_context=guard_context,
-                    key_pairs=(key_pairs | confirmed) or None,
-                )
+            clusters, rejected_merges = self._build_identity_clusters(
+                candidate_clusters=candidate_clusters,
+                representations=representations,
+                embeddings=embeddings,
+                direct_relation_pairs=direct_relation_pairs,
+                guard_context=guard_context,
+                key_pairs=(key_pairs | confirmed) or None,
             )
         else:
             # Consolidation off: every entity is its own cluster, so nothing is
@@ -1952,6 +2129,15 @@ class EmbeddingBasedAggregator:
                     f"{score:.3f}" if score is not None else "n/a",
                     ",".join(failed_checks) if failed_checks else "unknown",
                 )
+
+        cluster_of = {entity: cluster[0] for cluster in clusters for entity in cluster}
+
+        def same(left: object, right: object) -> bool:
+            return left == right or (
+                isinstance(left, URIRef)
+                and isinstance(right, URIRef)
+                and cluster_of.get(left, left) == cluster_of.get(right, right)
+            )
 
         # Step 4: Canonical identity mapping (no URI policy yet)
         identity_mapping = self.selector.create_mapping(
@@ -2003,6 +2189,7 @@ class EmbeddingBasedAggregator:
                         representations,
                         direct_relation_pairs=direct_relation_pairs,
                         guard_context=guard_context,
+                        same=same,
                     ):
                         identity_mapping[tentative_entity] = canonical_known_ontology
                         decisions[tentative_entity].suppress_sameas = True
@@ -2015,6 +2202,7 @@ class EmbeddingBasedAggregator:
                         representations,
                         direct_relation_pairs=direct_relation_pairs,
                         guard_context=guard_context,
+                        same=same,
                     ):
                         identity_mapping[fact_entity] = canonical_known_ontology
                         decisions[fact_entity].suppress_sameas = True
@@ -2041,6 +2229,7 @@ class EmbeddingBasedAggregator:
                             representations,
                             direct_relation_pairs=direct_relation_pairs,
                             guard_context=guard_context,
+                            same=same,
                         ):
                             identity_mapping[tentative_entity] = canonical_fact
                             decisions[tentative_entity].suppress_sameas = True
@@ -2111,6 +2300,9 @@ class EmbeddingBasedAggregator:
             suppress_sameas_origins=suppress_sameas_origins,
             suppress_fact_subject_sources=suppress_fact_subject_sources,
         )
+        merged_values = merge_equal_values(merged_graph, contract)
+        if merged_values:
+            logger.info("Merged %d value(s) equal by content", merged_values)
 
         merged_clusters = build_merged_clusters(final_mapping, identity_mapping)
         key_supported_clusters = sorted(
@@ -2140,14 +2332,10 @@ class EmbeddingBasedAggregator:
             cross_unit_object_pairs=build_cross_unit_object_pairs(
                 active_units, final_mapping
             ),
-            unconfirmed_merges=[
-                (str(left), str(right), score or 0.0)
-                for left, right, score in unconfirmed_merges
-            ],
             lexical_near_misses=[
-                (str(left), str(right), score or 0.0)
+                (str(left), str(right), score or 0.0, failed[0])
                 for left, right, score, failed in rejected_merges
-                if failed == ("lexical",)
+                if failed in (("lexical",), ("overlap",))
             ],
         )
 
@@ -2173,6 +2361,10 @@ class EmbeddingBasedAggregator:
         facts graph. Business-oriented keys mint typed entities under
         ``doc_namespace`` (defaults to the document facts namespace).
 
+        Every facts unit first spells well-known terms in their canonical
+        namespace (:meth:`RDFGraph.canonicalize_well_known_iris`), so a
+        scheme or separator variant never reaches identity resolution.
+
         With ``unit_scoped_fact_iris`` on, every minted fact IRI is suffixed
         with its unit index *in place* on the unit graph before aggregation
         (see :mod:`ontocast.tool.agg.unit_scope`), so a local name minted by
@@ -2197,7 +2389,12 @@ class EmbeddingBasedAggregator:
         """
         for unit in units:
             unit.sanitize()
-            if self.unit_scoped_fact_iris and unit.type != OutputType.ONTOLOGIES:
+            if unit.type == OutputType.ONTOLOGIES:
+                continue
+            # A well-known term spelled in a variant of its namespace is the
+            # same term: canonical before any identity is weighed.
+            unit.graph.canonicalize_well_known_iris()
+            if self.unit_scoped_fact_iris:
                 scope_fact_iris(
                     unit.graph, unit.index, (self.base_iri, str(unit.doc_iri))
                 )

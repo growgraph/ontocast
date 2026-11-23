@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `ontocast process --keep-provenance` also writes `<name>.units.trig`, each unit's facts as aggregation receives them, so aggregation can be re-run without a model call.
+- Each number of a value must be written in the value's label or the unit's text, as written or scaled by a power of ten (`ungrounded_number`); a unit or qualifier contradicted by the catalog's cue next to the number is flagged (`contradicted_individual`).
+- When a facts unit leaves its loop, what a deterministic check rejects is removed with a repair record: unknown terms (only where misused), ungrounded numbers and values left without one, contradicted units and qualifiers. Missing things are reported, not removed. Telemetry `facts_exit_repairs_by_kind`.
+- Aggregation keeps two entities apart when statements about them report one property with conflicting results or with units of different dimensions; the gate reports what remains (`statement_conflict`, `dimension_conflict`).
+- Values on one carrier and property that state one number and nothing different are served as one value.
+- The facts prompts ask that a statement attributed to other work link to it with the new `attributed_to` role of `CHUNK_CITATION_VOCABULARY` (default `dcterms:source`), and that an observed property name exactly the quantity stated.
+- QUDT currency units are a shipped term list.
+- A non-catalog term is offered catalog terms of its kind whose local name matches after folding case and separators; suggestions are never applied.
+
+### Changed
+
+- The Fuseki and Qdrant containers under `docker/` publish their ports on `127.0.0.1` only; recreate a running container to apply it.
+- `StatementContract` replaces `SubjectContract`, and `WellKnownVocabulary.statement_roles` replaces `statement_properties` and `subject_links`; `AtomicToolBox.statement_contract()` replaces `subject_contract()`.
+- `FactScope` replaces `fact_instances`, `is_scaffolding` and `without_scaffolding`.
+- Every declared datatype range is enforced in the render, in patches and in `check_facts` (`range_mismatches`). Any XSD number fits a numeric range; any valid `xsd:date`, `dateTime`, `gYear` or `gYearMonth` fits a range declaring another of them.
+- `write_back_quarantine` replaces `write_back_temporal_quarantine`; `RejectedLiteralTriple.expected_datatypes` replaces `expected_datatype`.
+- `unknown_term` covers a closed vocabulary's IRIs in any position, in the unit loop, the gate and `check_facts`, and a value's unit or qualifier that neither the catalog nor a shipped list holds.
+- `missing_role` replaces `statement_without_subject` and covers a statement's property and the links a restriction requires; the telemetry names follow (`facts_statements_missing_role*`, `n_roles_filled`).
+- The gap pass works from a `GapMandate`: its prompt asks only for the gaps listed, and fixes adding anything else are refused and counted (`n_fixes_refused_by_reason`).
+- An identity merge needs a shared key, a coreference "same" verdict, an equal label or initials; overlapping labels are coreference candidates only (`overlap`). A merge that makes two members of a cluster distinct is undone, and no result depends on IRI order.
+- Coreference asks overlap candidates first, most similar first; `AGG_LLM_COREFERENCE_MAX_PAIRS` defaults to 80 and `AggregationResult.unconfirmed_merges` is gone.
+- The quantity rules of the facts prompts are given only to a unit whose text states a number, and the statement rules and measurement vocabularies only when it does or the catalog has a statement class of its own. Prompt examples are domain-neutral, and no prompt asks for a unit token in `rdfs:comment`.
+- `format_facts_operational_guidelines` takes `quantity_chapter`, `statement_rules` and `citation_vocabulary`; `evaluation_instruction_for` replaces `evaluation_instruction`.
+- A well-known term or literal datatype written with another scheme or trailing separator is rewritten to the vocabulary's namespace as soon as a render or patch is parsed.
+- The document node is identified by the document's IRI where known, so a cited work typed like a document stays a fact.
+
+### Removed
+
+- The `unit_symbol_case_mismatch` finding; `contradicted_individual` covers it.
+- `AGG_LITERAL_CONFLICT_GUARD`, `AGG_INITIALS_DISTINCT_GUARD` and `AGG_SIBLING_GUARD_SCOPE`.
+
+### Fixed
+
+- `check_facts` checks only the facts: content-unit nodes, reifiers and the document node are left out, and `metrics.triples` counts the checked facts.
+- The label-only-number and equal-bounds findings also see values written as blank nodes.
+
 ## [0.9.2] - 2026-11-17
 
 ### Added

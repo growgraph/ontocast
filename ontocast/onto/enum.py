@@ -123,12 +123,13 @@ class RetrievalMetric(StrEnum):
     FACTS_FINDINGS_RESIDUAL = "facts_findings_residual"
     FACTS_MANDATORY_RESIDUAL = "facts_mandatory_residual"
     FACTS_MANDATORY_RESIDUAL_BY_KIND = "facts_mandatory_residual_by_kind"
-    #: Statements and values linked to nothing in the units' renders, and
-    #: those left after the gap pass (``statement_without_subject``).
-    FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED = (
-        "facts_statements_without_subject_rendered"
-    )
-    FACTS_STATEMENTS_WITHOUT_SUBJECT = "facts_statements_without_subject"
+    #: Roles missing from statements, and values linked to nothing, in the
+    #: units' renders and left after the gap pass (``missing_role``).
+    FACTS_STATEMENTS_MISSING_ROLE_RENDERED = "facts_statements_missing_role_rendered"
+    FACTS_STATEMENTS_MISSING_ROLE = "facts_statements_missing_role"
+    #: Triples removed or written back when units left their loop, by repair
+    #: kind (``domain_violation_dropped``, ``unknown_term_dropped``, ...).
+    FACTS_EXIT_REPAIRS_BY_KIND = "facts_exit_repairs_by_kind"
     FACTS_CRITIC_CALLS = "facts_critic_calls"
     FACTS_CRITIC_FIXES_APPLIED = "facts_critic_fixes_applied"
     FACTS_CRITIC_FIXES_RESIDUAL = "facts_critic_fixes_residual"
@@ -168,9 +169,10 @@ class RetrievalMetric(StrEnum):
 
     # Aggregation and the un-merge repair.
     FACTS_REJECTED_MERGES = "facts_rejected_merges"
-    #: The refused merges by reason (same_unit, sibling, literal_conflict,
-    #: functional_iri_conflict, initials_conflict, role, type, lexical,
-    #: cluster_veto), a pair counting under each reason that refused it.
+    #: The refused merges by reason (same_unit, relation, literal_conflict,
+    #: functional_iri_conflict, statement_conflict, dimension_conflict,
+    #: initials_conflict, role, type, overlap, lexical, cluster_veto), a pair
+    #: counting under each reason that refused it.
     FACTS_MERGE_REJECTIONS_BY_REASON = "facts_merge_rejections_by_reason"
     FACTS_MERGE_REPAIR_PASSES = "facts_merge_repair_passes"
     FACTS_MERGE_VETOES = "facts_merge_vetoes"

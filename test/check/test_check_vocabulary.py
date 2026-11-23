@@ -459,7 +459,7 @@ def test_derived_datatype_fits_its_base_range(predicate, value):
 
 @pytest.mark.parametrize(
     ("predicate", "value"),
-    [("ex:count", '"1.5"^^xsd:decimal'), ("ex:at", '"2024-01-01"^^xsd:date')],
+    [("ex:count", '"1.5"^^xsd:decimal'), ("ex:at", '"10:00:00"^^xsd:time')],
 )
 def test_base_datatype_does_not_fit_a_narrower_range(predicate, value):
     catalog = RDFGraph()

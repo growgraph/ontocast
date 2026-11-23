@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from itertools import product
 
 from rdflib import RDF, RDFS, SKOS, Literal, URIRef
-from rdflib.namespace import DCTERMS, FOAF, XSD
+from rdflib.namespace import DCTERMS, XSD
 from rdflib.term import Node
 
 from ontocast.onto.constants import (
@@ -23,6 +23,7 @@ from ontocast.onto.constants import (
     auxiliary_graph_uri,
 )
 from ontocast.onto.rdfgraph import RDFGraph, canonical_literal
+from ontocast.onto.scaffolding import document_nodes
 from ontocast.tool.agg.signatures import normalize_string_value
 
 from .declarations import IdentityDeclarations
@@ -131,13 +132,14 @@ def linkable_instances(
     reached through their entity, never resolved), and not the document node.
     """
     found: set[URIRef] = set()
+    documents = document_nodes(graph)
     for subject in graph.subjects(RDF.type, None):
         if not isinstance(subject, URIRef) or subject in found:
             continue
-        if str(subject) in declarations.catalog_terms:
+        if str(subject) in declarations.catalog_terms or subject in documents:
             continue
         types = _types(graph, subject)
-        if not types or FOAF.Document in map(URIRef, types):
+        if not types:
             continue
         if any(t in value_classes for t in types):
             continue
@@ -307,7 +309,7 @@ def _label_links(
 
 def _document_nodes(graph: RDFGraph) -> list[URIRef]:
     return sorted(
-        (s for s in graph.subjects(RDF.type, FOAF.Document) if isinstance(s, URIRef)),
+        (s for s in document_nodes(graph) if isinstance(s, URIRef)),
         key=str,
     )
 

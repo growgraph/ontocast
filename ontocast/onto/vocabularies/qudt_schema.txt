@@ -1134,6 +1134,7 @@ typeVector
 ucumCode
 udunitsCode
 uneceCommonCode
+unit
 unitFor
 upperBound
 url

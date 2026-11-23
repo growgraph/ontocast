@@ -101,7 +101,7 @@ similar enough and no guard objects.
 sets how similar:
 
 - **Duplicates survive:** lower it.
-- **Distinct entities are merged:** raise it, and keep [`AGG_LITERAL_CONFLICT_GUARD`](../reference/configuration/aggregation.md#agg_literal_conflict_guard) and [`AGG_INITIALS_DISTINCT_GUARD`](../reference/configuration/aggregation.md#agg_initials_distinct_guard) on.
+- **Distinct entities are merged:** a merge needs an equal label, initials, a shared key or a coreference "same" verdict; the log at `DEBUG` names the pair, and [Entity disambiguation](../concepts/entity_disambiguation.md) the evidence that joined it.
 
 `AGG_SIMILARITY_THRESHOLD` does not affect this: it is only a fallback for
 matching entities across graphs.

@@ -66,8 +66,8 @@ async def test_instances_linked_to_nothing_are_offered_and_their_links_counted(
     )
     seen: list[list[URIRef]] = []
 
-    async def fake_complete(_state, _atomic, _inventory, _gaps=(), detached=()):
-        seen.append(list(detached))
+    async def fake_complete(_state, _atomic, mandate):
+        seen.append(list(mandate.detached))
         return [_link(_EVENT, _SERIES)]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -118,13 +118,14 @@ async def test_a_pass_called_for_another_gap_lists_a_lone_detached_instance(
     state = _unit_state(text="The 2020 championships.", graph=_facts())
     seen: list[list[URIRef]] = []
     gap = FactsUnitFinding(
-        kind=FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT,
+        kind=FactsUnitFindingKind.MISSING_ROLE,
         message="a statement names no subject",
         subject=f"{DEFAULT_IRI}reading_1",
+        facet="subject",
     )
 
-    async def fake_complete(_state, _atomic, _inventory, _gaps=(), detached=()):
-        seen.append(list(detached))
+    async def fake_complete(_state, _atomic, mandate):
+        seen.append(list(mandate.detached))
         return []
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)

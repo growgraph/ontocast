@@ -210,8 +210,29 @@ The model is instructed to:
 - never type a `cd:` entity as a class or a property;
 - extract statements: mint an entity only when a statement is about it (it is
   linked to another entity or holds a value), never for a bare mention;
-- write a structured value (a quantity, a range, a bound) as a blank node, the
-  object of the property that carries it, never as an entity of its own;
+- in a part whose text states a number, follow the quantity rules: extract
+  every stated quantity, carry it with your catalog's property or as an
+  observation, write a structured value (a quantity, a range, a bound) as a
+  blank node, the object of the property that carries it, never as an entity
+  of its own, and give an observation a property that names exactly the
+  quantity stated, its kind and what it is relative to: a change, difference
+  or ratio between two states is a quantity of its own, minted in `cd:` as an
+  instance of your catalog's observable-property class when the catalog has
+  none. The prompt names your catalog's observation classes, role links and
+  value classes first, and SOSA and `FACTS_QUANTITY_FALLBACK_VOCABULARY` only
+  for a role your catalog has no term for. A part whose text states no number
+  (a year alone is not one), or a citation-metadata part, is given none of
+  these rules and none of these terms, and neither is its critique or gap
+  pass;
+- link a statement the text attributes to other work to that work, with the
+  `attributed_to` term of
+  [`CHUNK_CITATION_VOCABULARY`](../reference/configuration/chunking.md#chunk_citation_vocabulary)
+  (`dcterms:source` by default): the cited work is an entity typed with the
+  vocabulary's `work_class`, labelled with the reference as written; the
+  citation marker is not an entity. A cited work is never taken for the
+  document node, which is identified by the document's IRI. A
+  citation-metadata part is governed by the citation instructions alone and
+  gets no attribution rule;
 - name what every observation is about: an observation (of `sosa:Observation`,
   `sosa:Actuation`, `sosa:Sampling` or a class of your catalog under one) is
   linked to its subject, `sosa:hasFeatureOfInterest` or your catalog's property
@@ -220,10 +241,45 @@ The model is instructed to:
   `sosa:hasFeatureOfInterest` (or of its inverse `sosa:isFeatureOfInterestOf`,
   or as an inverse of either) for it to count.
 
-An observation or a value that names no subject is a `statement_without_subject`
-finding in its part; the gap pass asks the model for the link
-(`FACTS_COMPLETION_PASSES`), and `facts_statements_without_subject` counts what
-is left.
+The statement rules outside the quantity rules (an observation's subject, the
+sensor link, the checklist line about a statement's roles) and the
+measurement vocabularies among the well-known ones (SOSA, SSN, QUDT and its
+units and quantity kinds) are given to a part whose text states a number, or
+whose ontology context holds a statement class of your catalog's own (a class
+under `sosa:Observation`, `sosa:Actuation` or `sosa:Sampling`). Any other part
+is not pointed at observations or measurements; the terms of those
+vocabularies are still checked if it uses them.
+
+An observation without its subject or its property, or a value that names no
+subject, is a `missing_role` finding in its part. A link counts only when its
+declared domain admits the statement's class: `sosa:observedProperty` gives an
+actuation no property. The gap pass asks the model for the link
+(`FACTS_COMPLETION_PASSES`), and `facts_statements_missing_role` counts what is
+left; the statement is still served.
+
+Each number of a value must be written in digits in the value's label or in
+the part's text, as written or scaled by a power of ten (`5` grounds
+`5000000` for "5 million" and `0.05` for "5%"; a fraction or a converted
+value is not grounded). A cue the text writes next to it, as a whole token
+(an `skos:altLabel`, notation or symbol of your catalog's individuals), must
+agree with the unit or qualifier the value names; "m" in "5 m/s" names no
+unit on its own, and a unit with no cue of its own is never contradicted. A
+digit string is a number only when it is typed numeric or sits on a property
+with a numeric range, so an identifier stays text. When the part leaves its loop, a number that is not
+stated is removed and the label kept, a value left with no number is removed,
+and a contradicted unit or qualifier is removed and reported. A graph without
+values gets none of these checks.
+
+Results reported for one observed property, or by one observation, in
+measurement units of different dimensions (the QUDT dimension vector each
+shipped unit carries) are a `dimension_conflict`. When your catalog declares
+what the property measures (`qudt:hasQuantityKind` or `qudt:applicableUnit` on
+it, or a sub-property of either), the part must resolve it, and the finding
+names the statements whose unit disagrees with the declaration when the
+declared unit's dimension is known; it is not removed at exit but carried to
+the document report. Any other dimension conflict is a document warning. A
+result without a unit is never compared, and dimensionless quantities (a
+ratio, an angle, a percentage) share one dimension, so they never conflict.
 
 The served graph holds statements only. After merging, a statement joining a
 node to itself through a property not declared reflexive is dropped
@@ -252,8 +308,9 @@ instructions](../guides/user_instructions.md).
 `FACTS_VOCABULARY` says what the facts may be written in. Both modes use your
 catalog first, for every class and property it has. Where it has none, the
 model uses a well-known vocabulary, and then the namespaces you list in
-`FACTS_ADDITIONAL_STANDARD_NAMESPACES`. The prompt names them all, with their
-namespace IRIs:
+`FACTS_ADDITIONAL_STANDARD_NAMESPACES`. The prompt names them, with their
+namespace IRIs; SOSA, SSN and the QUDT vocabularies are named only where the
+statement rules apply (above):
 
 | Prefix | Vocabulary | Terms checked |
 |---|---|---|
@@ -271,16 +328,19 @@ namespace IRIs:
 | `schema` | schema.org (`https://` and `http://`) | yes |
 | `qudt` | QUDT schema | yes |
 | `unit` | QUDT units | yes |
+| `cur` | QUDT currency units | yes |
 | `quantitykind` | QUDT quantity kinds | no |
 
 The model writes well-known terms from memory, so a term must exist in its
 vocabulary: one it does not have, such as `schema:vulnerableTo`, is an
-`unknown_term` finding with the vocabulary's near-misses as suggestions. A
+`unknown_term` finding with the vocabulary's near-misses as suggestions, as is
+a unit or other individual it lacks, such as `unit:Million`; a statement still
+using one when its part leaves the loop is removed. A
 vocabulary marked "no" is admitted by namespace, as are your own namespaces.
 The QUDT schema list covers every term its 2.1 and 3.x releases publish; the
-QUDT unit list covers every unit of its 3.1.4 release. A unit comes from the
-ontology context first, then from QUDT; a unit neither has is kept as text on
-the value node.
+QUDT unit and currency lists cover every unit and currency of its 3.1.4 release. A unit comes from the
+ontology context first, then from QUDT; a unit neither has gets no unit link,
+and the value's label keeps the text.
 
 **`strict`** (the default) stops there. A thing that neither your catalog nor
 these vocabularies can type or relate is not extracted. A stated quantity always
@@ -342,7 +402,8 @@ leave provenance out of what you get back:
   default);
 - with `ontocast process`, the files are written without it by default; pass
   `--keep-provenance` to keep it, together with `<name>.units.jsonl`, the text
-  of each unit the provenance points at (see [Reading run
+  of each unit the provenance points at, and `<name>.units.trig`, the facts each
+  unit handed to aggregation (see [Reading run
   telemetry](../guides/telemetry.md#tracing-a-fact-to-its-text-and-the-catalog-across-a-batch)).
 
 A graph without provenance has no link back to the text, so nothing in it can

@@ -50,7 +50,7 @@ from ontocast.onto.annotation import is_annotation
 from ontocast.onto.blank_structures import structure_closure
 from ontocast.onto.iri_policy import is_iriref_text
 from ontocast.onto.model import TripleFix
-from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.rdfgraph import RDFGraph, canonicalize_well_known_terms
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.triple_index import Triple, TripleIndex
 from ontocast.tool.facts_validation.terms import _local_name
@@ -505,6 +505,9 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
         text: ``correct_value`` (or a legacy ``incorrect_value``) as written.
         graph: The unit graph, for prefix bindings.
 
+    A well-known term spelled in a variant of its namespace comes back in its
+    canonical namespace, as the unit graph holds it.
+
     Returns:
         The parsed triples, or why there are none: an empty result for an
         unparseable or statement-less payload (an IRI no ``IRIREF`` can hold
@@ -532,6 +535,7 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
             return _ParsedPayload(unresolved_prefix=True)
         if _has_quarantined_literal(parsed):
             return _ParsedPayload(quarantined_literal=True)
+        canonicalize_well_known_terms(parsed)
         return _ParsedPayload(graph=parsed)
 
     header = _prefix_header(graph)
@@ -552,6 +556,7 @@ def _parse_payload(text: str | None, graph: Graph) -> _ParsedPayload:
                 return _ParsedPayload(unresolved_prefix=True)
             if _has_quarantined_literal(parsed):
                 return _ParsedPayload(quarantined_literal=True)
+            canonicalize_well_known_terms(parsed)
             return _ParsedPayload(graph=parsed)
     return _ParsedPayload()
 

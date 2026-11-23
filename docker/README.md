@@ -7,6 +7,8 @@ This directory contains Docker Compose stacks for **optional** infrastructure On
 | **Apache Fuseki** | `fuseki/` | Persistent RDF triple store (production) |
 | **Qdrant** | `qdrant/` | Vector store for ontology patch retrieval |
 
+Both stacks publish their ports on `127.0.0.1` only, so their development credentials are not reachable from the network. To use them from another machine, open an SSH tunnel.
+
 OntoCast does **not** require Docker to run. When `FUSEKI_URI` is unset, the server uses an **in-memory pyoxigraph** triple store automatically (data is not persisted across restarts).
 
 ---

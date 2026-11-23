@@ -9,7 +9,7 @@ from collections import Counter
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ontocast.agent.common import call_llm_with_retry
+from ontocast.agent.common import call_llm_with_retry, unit_prompt_scope_for
 from ontocast.onto.enum import FailureStage, LLMPhase, Status, WorkflowNode
 from ontocast.onto.model import (
     FactsCritiqueReport,
@@ -22,7 +22,7 @@ from ontocast.onto.rdfgraph import format_quarantine_for_prompt
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import text_template, user_template
 from ontocast.prompt.criticise_facts import (
-    evaluation_instruction,
+    evaluation_instruction_for,
     preamble,
     template_prompt,
 )
@@ -141,9 +141,19 @@ async def criticise_facts(
     search_guidelines = search_guidelines_for(
         WorkflowNode.CRITICISE_FACTS, web_search_enabled
     )
-    evaluation_instruction_str = evaluation_instruction
+    # The same decision as the render's quantity chapter: a unit whose text
+    # states no number is not judged on quantities.
+    scope = unit_prompt_scope_for(state, tools, ctx.graph)
+    evaluation_instruction_str = evaluation_instruction_for(
+        states_quantity=scope.quantities,
+        citation_vocabulary=tools.citation_vocabulary if scope.attribution else None,
+        recovers_measurements=tools.facts_completion_passes > 0
+        and tools.facts_completion_measurements,
+    )
     if search_guidelines:
-        evaluation_instruction_str = f"{evaluation_instruction}\n\n{search_guidelines}"
+        evaluation_instruction_str = (
+            f"{evaluation_instruction_str}\n\n{search_guidelines}"
+        )
 
     prompt_data = {
         "preamble": preamble,

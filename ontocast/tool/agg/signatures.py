@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from itertools import combinations
+from typing import TYPE_CHECKING
 
 from rdflib import OWL, RDF, Literal, URIRef
 from rdflib.namespace import XSD
@@ -27,20 +28,22 @@ from rdflib.namespace import XSD
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool.representation_text import normalize_text
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from .statement_conflict import StatementIndex
 
-_CAMEL_SPLIT_RE = re.compile(r"(?=[A-Z][a-z])")
+logger = logging.getLogger(__name__)
 
 
 def normalize_string_value(text: str) -> str:
     """Normalize a string for identity comparison.
 
-    Lowercase, diacritics removed, special characters cleaned, CamelCase
-    split so it yields the same tokens as snake_case. Single source for the
-    normalizer and the validation gate, which must agree on what counts as
-    "the same string".
+    Lowercase, diacritics removed, special characters cleaned. Case changes
+    inside a word are kept as written: CamelCase is split in IRI local names
+    only, where it marks word boundaries, never in text, where "ABCs" is one
+    word. Single source for the normalizer and the validation gate, which
+    must agree on what counts as "the same string".
     """
-    return normalize_text(_CAMEL_SPLIT_RE.sub(" ", text))
+    return normalize_text(text)
 
 
 _TOKEN_EDGE_PUNCTUATION_RE = re.compile(r"^\W+|\W+$")
@@ -181,27 +184,27 @@ def labels_differ_only_by_initials(
     return False
 
 
-# Bounds the quadratic sibling-pair term per object group.
-SIBLING_GROUP_CAP = 32
-
-_NUMERIC_DATATYPES = {
-    XSD.decimal,
-    XSD.integer,
-    XSD.int,
-    XSD.long,
-    XSD.short,
-    XSD.byte,
-    XSD.float,
-    XSD.double,
-    XSD.nonNegativeInteger,
-    XSD.positiveInteger,
-    XSD.nonPositiveInteger,
-    XSD.negativeInteger,
-    XSD.unsignedInt,
-    XSD.unsignedLong,
-    XSD.unsignedShort,
-    XSD.unsignedByte,
-}
+#: The XSD numeric datatypes.
+NUMERIC_DATATYPES: frozenset[URIRef] = frozenset(
+    {
+        XSD.decimal,
+        XSD.integer,
+        XSD.int,
+        XSD.long,
+        XSD.short,
+        XSD.byte,
+        XSD.float,
+        XSD.double,
+        XSD.nonNegativeInteger,
+        XSD.positiveInteger,
+        XSD.nonPositiveInteger,
+        XSD.negativeInteger,
+        XSD.unsignedInt,
+        XSD.unsignedLong,
+        XSD.unsignedShort,
+        XSD.unsignedByte,
+    }
+)
 
 _TEMPORAL_DATATYPES = {
     XSD.date,
@@ -240,7 +243,7 @@ def canonical_literal(literal: Literal) -> tuple[str, str] | None:
     datatype = literal.datatype
     if datatype in _TEMPORAL_DATATYPES:
         return (str(literal).strip(), "temporal")
-    if datatype in _NUMERIC_DATATYPES or datatype is None:
+    if datatype in NUMERIC_DATATYPES or datatype is None:
         try:
             value = Decimal(str(literal).strip())
         except (InvalidOperation, ValueError):
@@ -317,9 +320,6 @@ class MergeGuardContext:
     """Corpus- and schema-derived context consulted by merge guards.
 
     Attributes:
-        sibling_pairs: Pairs of entities that co-occur as objects of one
-            subject (scope-dependent) and therefore denote distinct
-            individuals.
         functional_predicates: Predicates with a schema-asserted or
             empirically observed max-1 object constraint.
         disjoint_classes: Class pairs the ontology declares disjoint.
@@ -327,69 +327,15 @@ class MergeGuardContext:
             included); a type missing here stands for itself alone.
         fact_entities: Instances the document minted. Their types are each
             unit's reading; a catalog entity's types define it.
+        statements: The units' statements, for the statement-conflict guard;
+            ``None`` reads none.
     """
 
-    sibling_pairs: set[frozenset[URIRef]] = field(default_factory=set)
     functional_predicates: set[URIRef] = field(default_factory=set)
     disjoint_classes: set[frozenset[URIRef]] = field(default_factory=set)
     class_ancestors: dict[URIRef, frozenset[URIRef]] = field(default_factory=dict)
     fact_entities: set[URIRef] = field(default_factory=set)
-
-
-def build_sibling_pairs(
-    object_groups: dict[tuple[URIRef, URIRef], set[URIRef]],
-    *,
-    scope: str,
-) -> set[frozenset[URIRef]]:
-    """Build never-merge pairs from co-object groups.
-
-    Two URIs listed as objects on one subject describe distinct things —
-    merging the endpoints of a range, the samples of areas 1–3, or the
-    grants of one acknowledgement destroys exactly the distinction the
-    author asserted.
-
-    Args:
-        object_groups: ``(subject, predicate) -> URIRef objects`` observed
-            across the unit corpus.
-        scope: ``"subject"`` pairs all objects of one subject regardless of
-            predicate; ``"predicate"`` restricts to objects sharing the same
-            predicate.
-
-    Returns:
-        Set of unordered entity pairs that must never merge.
-    """
-    pairs: set[frozenset[URIRef]] = set()
-    if scope == "predicate":
-        grouped: dict[tuple[URIRef, URIRef], set[URIRef]] = object_groups
-    else:
-        merged: dict[URIRef, set[URIRef]] = {}
-        for (subject, _), objects in object_groups.items():
-            merged.setdefault(subject, set()).update(objects)
-        grouped = {(subject, subject): objects for subject, objects in merged.items()}
-    truncated_groups = 0
-    dropped_objects = 0
-    for objects in grouped.values():
-        if len(objects) < 2:
-            continue
-        if len(objects) > SIBLING_GROUP_CAP:
-            truncated_groups += 1
-            dropped_objects += len(objects) - SIBLING_GROUP_CAP
-        bounded = sorted(objects, key=str)[:SIBLING_GROUP_CAP]
-        for index, left in enumerate(bounded):
-            for right in bounded[index + 1 :]:
-                pairs.add(frozenset((left, right)))
-    if truncated_groups:
-        # Past the cap the guard silently stops protecting the tail, and which
-        # members survive is decided by IRI byte order -- arbitrary with respect
-        # to merge risk. Bounded work, but never a silent bound.
-        logger.warning(
-            "Sibling merge guard truncated %d group(s) at SIBLING_GROUP_CAP=%d, "
-            "leaving %d co-object(s) unguarded (selection is by IRI order)",
-            truncated_groups,
-            SIBLING_GROUP_CAP,
-            dropped_objects,
-        )
-    return pairs
+    statements: StatementIndex | None = None
 
 
 def empirically_functional_predicates(

@@ -428,7 +428,7 @@ def test_fact_merged_into_known_ontology_suppresses_fact_subject_assertions(
     unit = make_fact_unit("Fact court alias", 0, doc_iri, ttl)
     ontology_graph = RDFGraph()
     ontology_graph.add((known_court, RDF.type, court_type))
-    ontology_graph.add((known_court, RDFS.label, Literal("Official Label")))
+    ontology_graph.add((known_court, RDFS.label, Literal("Rouen Court of Appeal")))
     aggregator = EmbeddingBasedAggregator()
 
     def force_cluster(representations):
@@ -578,19 +578,24 @@ def test_aggregate_passes_explicit_known_ontology_map_to_selector(monkeypatch) -
     assert any(isinstance(obj, URIRef) for obj in result.objects(None, heard_at))
 
 
-def test_tentative_ontology_like_alias_maps_to_known_ontology(monkeypatch) -> None:
+def _tentative_alias_result(monkeypatch, alias_label: str | None):
+    """A unit names an invented term in the catalog's namespace."""
     doc_iri = "https://example.org/docs/case-44"
     known_court = URIRef("https://growgraph.dev/fcaont#AppealCourtRouen")
     invented_court = URIRef("https://growgraph.dev/fcaont#AppealCourt_Rouen")
-    heard_at = URIRef("https://growgraph.dev/fcaont#heardAt")
     court_type = URIRef("https://growgraph.dev/fcaont#Court")
 
+    label = (
+        f'fcaont:AppealCourt_Rouen rdfs:label "{alias_label}" .' if alias_label else ""
+    )
     ttl = f"""
     @prefix doc: <{doc_iri}/> .
     @prefix fcaont: <https://growgraph.dev/fcaont#> .
     @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+    @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
     doc:Case1 fcaont:heardAt fcaont:AppealCourt_Rouen .
     fcaont:AppealCourt_Rouen rdf:type fcaont:Court .
+    {label}
     """
     unit = make_fact_unit("Invented ontology-like alias.", 0, doc_iri, ttl)
     aggregator = EmbeddingBasedAggregator()
@@ -618,12 +623,35 @@ def test_tentative_ontology_like_alias_maps_to_known_ontology(monkeypatch) -> No
         force_known_and_invented_together,
     )
 
-    result = aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
+    return aggregator.aggregate_graphs([unit], ontology_graph=ontology_graph).graph
+
+
+def test_tentative_ontology_like_alias_maps_to_known_ontology(monkeypatch) -> None:
+    known_court = URIRef("https://growgraph.dev/fcaont#AppealCourtRouen")
+    invented_court = URIRef("https://growgraph.dev/fcaont#AppealCourt_Rouen")
+    heard_at = URIRef("https://growgraph.dev/fcaont#heardAt")
+
+    result = _tentative_alias_result(monkeypatch, "Rouen Court of Appeal")
 
     heard_at_targets = set(result.objects(None, heard_at))
     assert known_court in heard_at_targets
     assert invented_court not in heard_at_targets
     assert (known_court, OWL.sameAs, invented_court) not in result
+
+
+def test_an_alias_named_like_a_catalog_term_only_by_its_iri_stays_apart(
+    monkeypatch,
+) -> None:
+    """An IRI-derived name only makes identity a question; nothing asks it here."""
+    known_court = URIRef("https://growgraph.dev/fcaont#AppealCourtRouen")
+    invented_court = URIRef("https://growgraph.dev/fcaont#AppealCourt_Rouen")
+    heard_at = URIRef("https://growgraph.dev/fcaont#heardAt")
+
+    result = _tentative_alias_result(monkeypatch, None)
+
+    heard_at_targets = set(result.objects(None, heard_at))
+    assert invented_court in heard_at_targets
+    assert known_court not in heard_at_targets
 
 
 def test_tentative_only_ontology_like_entities_are_preserved(monkeypatch) -> None:

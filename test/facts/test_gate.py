@@ -54,9 +54,15 @@ def _fact_unit(index: int, ttl: str, text: str = "text") -> ContentUnit:
 
 
 def _normal_form_aggregator(
-    monkeypatch, **config_overrides
+    monkeypatch, *, ablate_literal_guard: bool = False
 ) -> EmbeddingBasedAggregator:
-    aggregator = EmbeddingBasedAggregator(AggregationConfig(**config_overrides))
+    """Cluster by normal form; ``ablate_literal_guard`` switches the
+    literal-conflict guard off, so a bad merge reaches the gate."""
+    aggregator = EmbeddingBasedAggregator(AggregationConfig())
+    if ablate_literal_guard:
+        monkeypatch.setattr(
+            aggregator, "_have_conflicting_literals", lambda left, right: False
+        )
 
     def cluster_by_normal_form(representations):
         clusters: dict[str, list[URIRef]] = {}
@@ -244,7 +250,7 @@ def test_transitive_merge_slips_disabled_guard_and_vetoes_split_it(
     guards cannot see; ablating the guard reproduces the historical
     transitive over-merge so the lever stays covered.
     """
-    aggregator = _normal_form_aggregator(monkeypatch, literal_conflict_guard=False)
+    aggregator = _normal_form_aggregator(monkeypatch, ablate_literal_guard=True)
     result = aggregator.aggregate_graphs(
         _conflicting_alias_units(), ontology_graph=RDFGraph()
     )
@@ -465,7 +471,7 @@ def _fake_tools(
 def test_validate_facts_node_repairs_transitive_bad_merge(monkeypatch) -> None:
     # Guard ablated so the historical over-merge reaches the gate at all —
     # with default guards the aggregator blocks it upstream.
-    aggregator = _normal_form_aggregator(monkeypatch, literal_conflict_guard=False)
+    aggregator = _normal_form_aggregator(monkeypatch, ablate_literal_guard=True)
     tools = _fake_tools(aggregator)
     state = AgentState()
     state.current_domain = "https://x.org"
@@ -492,7 +498,7 @@ def test_validate_facts_node_repairs_transitive_bad_merge(monkeypatch) -> None:
 
 
 def test_validate_facts_node_zero_passes_records_findings_only(monkeypatch) -> None:
-    aggregator = _normal_form_aggregator(monkeypatch, literal_conflict_guard=False)
+    aggregator = _normal_form_aggregator(monkeypatch, ablate_literal_guard=True)
     tools = _fake_tools(aggregator, merge_repair_passes=0)
     state = AgentState()
     state.current_domain = "https://x.org"
@@ -526,7 +532,7 @@ def test_repair_pass_republishes_the_guard_count_not_the_veto_count(
     forced apart here: whenever the aggregator rejects pairs the vetoes did not
     name, the veto count under-reports the graph that is served.
     """
-    aggregator = _normal_form_aggregator(monkeypatch, literal_conflict_guard=False)
+    aggregator = _normal_form_aggregator(monkeypatch, ablate_literal_guard=True)
     real_postprocess = aggregator.postprocess_facts_units
     sentinel = 41
 

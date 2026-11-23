@@ -38,10 +38,9 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_REPAIR_DELETE_ONLY": "facts_repair_delete_only",
     "FACTS_MANDATORY_RESIDUAL": "facts_mandatory_residual",
     "FACTS_MANDATORY_RESIDUAL_BY_KIND": "facts_mandatory_residual_by_kind",
-    "FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED": (
-        "facts_statements_without_subject_rendered"
-    ),
-    "FACTS_STATEMENTS_WITHOUT_SUBJECT": "facts_statements_without_subject",
+    "FACTS_STATEMENTS_MISSING_ROLE_RENDERED": "facts_statements_missing_role_rendered",
+    "FACTS_STATEMENTS_MISSING_ROLE": "facts_statements_missing_role",
+    "FACTS_EXIT_REPAIRS_BY_KIND": "facts_exit_repairs_by_kind",
     "FACTS_CRITIC_CALLS": "facts_critic_calls",
     "FACTS_CRITIC_ACCEPTED": "facts_critic_accepted",
     "FACTS_CRITIC_FIXES_APPLIED": "facts_critic_fixes_applied",

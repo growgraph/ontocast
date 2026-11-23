@@ -6,9 +6,9 @@ from rdflib import URIRef
 from ontocast.onto.embedding_policy import strip_provenance_triples_for_embedding
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.scaffolding import (
+    FactScope,
     chunk_nodes,
     document_nodes,
-    is_scaffolding,
     reifier_nodes,
     scaffolding_nodes,
 )
@@ -60,14 +60,11 @@ def test_minted_nodes_are_recognised_by_shape() -> None:
 
 
 def test_domain_prov_triples_are_not_scaffolding() -> None:
-    graph = _graph()
-    nodes = scaffolding_nodes(graph)
+    scope = FactScope.of(_graph(), None)
 
     used = (_cd("study"), URIRef("http://www.w3.org/ns/prov#used"), _cd("dataset"))
-    assert not is_scaffolding(used, nodes)
-    assert any(
-        is_scaffolding(t, nodes) for t in graph.triples((None, None, _cd("chunk_0")))
-    )
+    assert scope.is_fact(used)
+    assert not list(scope.triples((None, None, _cd("chunk_0"))))
 
 
 def test_strip_provenance_keeps_domain_prov_and_drops_bookkeeping() -> None:

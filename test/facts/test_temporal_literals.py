@@ -32,10 +32,11 @@ from ontocast.tool.facts_validation import (
     CriticPatchPolicy,
     literal_ranges,
     normalize_literals_against_schema,
-    partition_literals_outside_temporal_ranges,
+    range_mismatches,
     unresolved_quarantine,
-    write_back_temporal_quarantine,
+    write_back_quarantine,
 )
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.facts_validation.terms import CatalogRoles
 from ontocast.tool.ontology_validation import CatalogSurfaceIndex
 from ontocast.toolbox import ToolBox
@@ -48,6 +49,16 @@ FACTS = "https://growgraph.dev/facts/"
 REVIEW = URIRef(f"{FACTS}review")
 ON = URIRef(f"{EV}on")
 COUNT = URIRef(f"{EV}count")
+
+
+def _partition(
+    graph: RDFGraph, ontology: RDFGraph | None, roles: CatalogRoles | None = None
+) -> tuple[RDFGraph, list[RejectedLiteralTriple]]:
+    """Set aside, as the render does, what :func:`range_mismatches` finds."""
+    found = range_mismatches(graph, ontology, roles)
+    for triple, _ in found:
+        graph.remove(triple)
+    return graph, [record for _, record in found]
 
 
 def _ranges(**declared: URIRef) -> RDFGraph:
@@ -111,7 +122,7 @@ def test_a_date_on_a_date_time_range_takes_the_form_a_typed_one_gets() -> None:
     graph.add((REVIEW, ON, Literal("every year")))
     assert normalize_literals_against_schema(graph, ontology) == 1
     assert (REVIEW, ON, Literal("2021-06-29T00:00:00", datatype=XSD.dateTime)) in graph
-    clean, rejected = partition_literals_outside_temporal_ranges(graph, ontology)
+    clean, rejected = _partition(graph, ontology)
     assert [item.object_lexical for item in rejected] == ["every year"]
     assert len(clean) == 1
 
@@ -148,18 +159,18 @@ def test_a_range_the_snapshot_lacks_is_read_from_the_whole_catalog() -> None:
     roles = CatalogRoles.of([_ranges(on=XSD.dateTime)])
     graph = RDFGraph()
     graph.add((REVIEW, ON, Literal("every year")))
-    _, rejected = partition_literals_outside_temporal_ranges(graph, RDFGraph(), roles)
+    _, rejected = _partition(graph, RDFGraph(), roles)
     assert [item.object_lexical for item in rejected] == ["every year"]
 
 
 def test_a_well_known_date_property_is_checked_without_any_catalog() -> None:
     graph = RDFGraph()
     graph.add((REVIEW, PROV.startedAtTime, Literal("every 5 years or more often")))
-    _, rejected = partition_literals_outside_temporal_ranges(graph, None)
-    assert [item.expected_datatype for item in rejected] == [str(XSD.dateTime)]
+    _, rejected = _partition(graph, None)
+    assert [item.expected_datatypes for item in rejected] == [(str(XSD.dateTime),)]
 
 
-def test_a_property_declared_with_two_datatypes_is_not_checked() -> None:
+def test_a_property_declared_with_two_datatypes_has_no_retype_target() -> None:
     ontology = _ranges(on=XSD.dateTime)
     ontology.add((ON, RDFS.range, XSD.date))
     assert ON not in literal_ranges(ontology)
@@ -174,7 +185,7 @@ def _set_aside(text: str = "every 5 years") -> RejectedLiteralTriple:
         predicate=str(ON),
         object_lexical=text,
         reason="not a value of the property's datatype",
-        expected_datatype=str(XSD.dateTime),
+        expected_datatypes=(str(XSD.dateTime),),
     )
 
 
@@ -204,7 +215,7 @@ def test_a_string_on_an_object_property_is_resolved_by_an_iri() -> None:
     assert unresolved_quarantine(graph, [item]) == []
 
 
-def test_date_text_still_set_aside_is_written_back_as_a_comment() -> None:
+def test_a_literal_still_set_aside_is_written_back_as_a_comment() -> None:
     bad_number = RejectedLiteralTriple(
         subject=str(REVIEW),
         predicate=str(COUNT),
@@ -219,19 +230,18 @@ def test_date_text_still_set_aside_is_written_back_as_a_comment() -> None:
     )
     graph = RDFGraph()
     graph.add((REVIEW, RDFS.label, Literal("review")))
-    records, items = write_back_temporal_quarantine(
-        graph, [_set_aside(), typed, bad_number]
-    )
+    records, items = write_back_quarantine(graph, [_set_aside(), typed, bad_number])
     assert set(graph.objects(REVIEW, RDFS.comment)) == {
         Literal("every 5 years"),
         Literal("June 2021"),
+        Literal("10^-15"),
     }
     assert [record.kind for record in records] == [
         FactsGateRepairKind.QUARANTINE_AS_COMMENT
-    ] * 2
-    assert [item.written_back for item in items] == [True, True, False]
+    ] * 3
+    assert [item.written_back for item in items] == [True, True, True]
     # Written back once: a second exit writes nothing more.
-    assert write_back_temporal_quarantine(graph, items)[0] == []
+    assert write_back_quarantine(graph, items)[0] == []
 
 
 def test_a_blank_node_subject_gets_its_text_back_on_that_node() -> None:
@@ -240,12 +250,10 @@ def test_a_blank_node_subject_gets_its_text_back_on_that_node() -> None:
     graph.add((REVIEW, RDFS.label, Literal("review")))
     graph.add((REVIEW, URIRef(EV + "reading"), reading))
     graph.add((reading, ON, Literal("every year")))
-    clean, rejected = partition_literals_outside_temporal_ranges(
-        graph, _ranges(on=XSD.dateTime)
-    )
+    clean, rejected = _partition(graph, _ranges(on=XSD.dateTime))
     assert rejected[0].subject_is_blank
 
-    records, _ = write_back_temporal_quarantine(clean, rejected)
+    records, _ = write_back_quarantine(clean, rejected)
 
     assert len(records) == 1
     assert (reading, RDFS.comment, Literal("every year")) in clean
@@ -253,7 +261,7 @@ def test_a_blank_node_subject_gets_its_text_back_on_that_node() -> None:
 
 
 def test_text_whose_subject_is_gone_is_not_written_onto_nothing() -> None:
-    records, items = write_back_temporal_quarantine(RDFGraph(), [_set_aside()])
+    records, items = write_back_quarantine(RDFGraph(), [_set_aside()])
     assert records == [] and not items[0].written_back
 
 
@@ -261,9 +269,7 @@ def test_a_value_standing_before_the_text_does_not_resolve_it() -> None:
     graph = RDFGraph()
     graph.add((REVIEW, ON, Literal("2021-06-29T00:00:00", datatype=XSD.dateTime)))
     graph.add((REVIEW, ON, Literal("every year")))
-    clean, rejected = partition_literals_outside_temporal_ranges(
-        graph, _ranges(on=XSD.dateTime)
-    )
+    clean, rejected = _partition(graph, _ranges(on=XSD.dateTime))
     assert unresolved_quarantine(clean, rejected) == rejected
     clean.add((REVIEW, ON, Literal("2022-01-01T00:00:00", datatype=XSD.dateTime)))
     assert unresolved_quarantine(clean, rejected) == []
@@ -321,7 +327,7 @@ def _atomic(roles: CatalogRoles, critic_passes: int = 0) -> AtomicToolBox:
             facts_completion_passes=0,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: roles,
-            subject_contract=lambda: None,
+            statement_contract=StatementContract,
         ),
     )
 
@@ -362,7 +368,7 @@ async def test_with_no_critic_the_text_leaves_the_loop_as_a_comment(
         graph = state.content_unit.graph
         graph.add((REVIEW, RDFS.label, Literal("review of the plans")))
         graph.add((REVIEW, PROV.startedAtTime, Literal("every 5 years")))
-        clean, rejected = partition_literals_outside_temporal_ranges(graph, None)
+        clean, rejected = _partition(graph, None)
         state.content_unit.graph = clean
         state.quarantined_literal_triples = rejected
         state.status = Status.SUCCESS

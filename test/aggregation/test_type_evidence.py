@@ -149,13 +149,13 @@ def _plausible_pair(first_type: str, second_type: str) -> list[ContentUnit]:
     return [
         _unit(
             0,
-            f'cd:temp a {first_type} ; rdfs:label "temperature" .\n'
-            'cd:obs_a a ex:Obs ; rdfs:label "obs a" ; ex:measures cd:temp .',
+            f'cd:reading a {first_type} ; rdfs:label "reading" .\n'
+            'cd:obs_a a ex:Obs ; rdfs:label "obs a" ; ex:measures cd:reading .',
         ),
         _unit(
             1,
-            f'cd:daily_temp a {second_type} ; rdfs:label "daily maximum temperature" .\n'
-            'cd:obs_b a ex:Obs ; rdfs:label "obs b" ; ex:tracks cd:daily_temp .',
+            f'cd:daily_reading a {second_type} ; rdfs:label "daily peak reading" .\n'
+            'cd:obs_b a ex:Obs ; rdfs:label "obs b" ; ex:tracks cd:daily_reading .',
         ),
     ]
 
@@ -172,24 +172,26 @@ def _one_cluster(monkeypatch, units: list[ContentUnit], ontology: str = ""):
     )
 
 
-def test_a_plausible_name_merges_when_the_types_agree(monkeypatch) -> None:
+def test_a_name_inside_another_waits_for_a_verdict_whatever_the_types(
+    monkeypatch,
+) -> None:
+    """One name inside another is a coreference candidate, never a merge."""
     result = _one_cluster(
         monkeypatch,
-        _plausible_pair("ex:DailyMax", "ex:Property"),
-        ontology="ex:DailyMax rdfs:subClassOf ex:Property .",
+        _plausible_pair("ex:DailyPeak", "ex:Property"),
+        ontology="ex:DailyPeak rdfs:subClassOf ex:Property .",
     )
 
-    assert _merged_with(result, "temp")
-
-
-def test_a_plausible_name_does_not_merge_types_that_share_nothing(monkeypatch) -> None:
-    result = _one_cluster(monkeypatch, _plausible_pair("ex:Property", "ex:Sensor"))
-
-    assert not _merged_with(result, "temp")
+    assert not _merged_with(result, "reading")
+    assert any(
+        {left, right} == {f"{CD}reading__u0", f"{CD}daily_reading__u1"}
+        and reason == "overlap"
+        for left, right, _, reason in result.lexical_near_misses
+    )
 
 
 def test_refusals_are_counted_by_reason(monkeypatch) -> None:
     result = _one_cluster(monkeypatch, _plausible_pair("ex:Property", "ex:Sensor"))
 
-    assert result.rejected_by_reason.get("type", 0) >= 1
+    assert result.rejected_by_reason.get("overlap", 0) >= 1
     assert sum(result.rejected_by_reason.values()) >= result.rejected_merge_count

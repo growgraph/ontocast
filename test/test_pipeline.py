@@ -54,6 +54,7 @@ from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.tool.atomic import AtomicToolBox, SearchHit
 from ontocast.tool.facts_validation import CriticPatchPolicy
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.facts_validation.terms import CatalogRoles
 from ontocast.tool.ontology_manager import OntologyManager
 from ontocast.tool.ontology_validation import CatalogSurfaceIndex
@@ -158,7 +159,7 @@ async def test_run_unit_facts_loop_uses_dedicated_state(monkeypatch) -> None:
                     facts_completion_passes=0,
                     catalog_terms=lambda: set(),
                     catalog_roles=lambda: CatalogRoles(),
-                    subject_contract=lambda: None,
+                    statement_contract=StatementContract,
                 ),
             ),
             ontology_manager=OntologyManager(),
@@ -218,7 +219,7 @@ async def test_run_unit_ontology_loop_emits_updates(monkeypatch) -> None:
                     ontology_critic_passes=1,
                     catalog_terms=lambda: set(),
                     catalog_roles=lambda: CatalogRoles(),
-                    subject_contract=lambda: None,
+                    statement_contract=StatementContract,
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
@@ -743,7 +744,7 @@ async def test_ontology_loop_runs_external_evidence_nodes(monkeypatch) -> None:
                     ontology_critic_passes=1,
                     catalog_terms=lambda: set(),
                     catalog_roles=lambda: CatalogRoles(),
-                    subject_contract=lambda: None,
+                    statement_contract=StatementContract,
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
@@ -836,7 +837,7 @@ async def test_ontology_loop_plans_search_when_critic_requests_it(monkeypatch) -
                     ontology_critic_passes=2,  # the critic as judge: runs on a clean unit
                     catalog_terms=lambda: set(),
                     catalog_roles=lambda: CatalogRoles(),
-                    subject_contract=lambda: None,
+                    statement_contract=StatementContract,
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),

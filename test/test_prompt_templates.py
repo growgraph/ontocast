@@ -297,11 +297,13 @@ async def test_render_and_critic_prompts_share_the_prefix_through_the_ontology(
         assert prompt.index("# TEXT") >= end_of_ontology
 
 
-def _rendered_facts_guidelines() -> list[str]:
+def _rendered_facts_guidelines(*, quantities: bool = True) -> list[str]:
     """The facts guidelines as a prompt sees them, in both vocabulary modes."""
     from ontocast.prompt.facts_guidelines import (
+        DEFAULT_QUANTITY_FALLBACK_VOCABULARY,
         VOCABULARY_MODES,
         format_facts_operational_guidelines,
+        format_quantity_chapter,
     )
 
     return [
@@ -310,6 +312,11 @@ def _rendered_facts_guidelines() -> list[str]:
             domain_ontologies_clause="`ex:`",
             jsonld=False,
             vocabulary=mode,
+            quantity_chapter=format_quantity_chapter(
+                DEFAULT_QUANTITY_FALLBACK_VOCABULARY
+            )
+            if quantities
+            else "",
         )
         for mode in VOCABULARY_MODES
     ]
@@ -322,6 +329,9 @@ def test_quantitative_completeness_rule_is_stated() -> None:
         assert "QUANTITATIVE COMPLETENESS" in text
         assert "EVERY quantitative statement" in text
         # The anti-junk guard stays verbatim.
+        assert "Do NOT mint an entity for a bare number" in text
+    for text in _rendered_facts_guidelines(quantities=False):
+        assert "QUANTITATIVE COMPLETENESS" not in text
         assert "Do NOT mint an entity for a bare number" in text
 
 
@@ -343,12 +353,21 @@ def test_critic_completeness_guideline_routes_misses_to_the_completion_pass() ->
     """
     from ontocast.prompt import criticise_facts
 
-    text = criticise_facts.evaluation_instruction
+    text = criticise_facts.evaluation_instruction_for(states_quantity=True)
     assert "NUMERIC COVERAGE" in text
     assert "propose an ADD fix per listed number" in text
     assert "systemic_critique_summary" in text
-    assert "completion pass" in text
+    # A completion pass is promised only when one runs after the critic.
+    assert "completion pass" not in text
+    assert "a completion pass may extract them" in (
+        criticise_facts.evaluation_instruction_for(
+            states_quantity=True, recovers_measurements=True
+        )
+    )
     assert "NEVER mint an entity or placeholder node" in text
+    without = criticise_facts.evaluation_instruction_for(states_quantity=False)
+    assert "NUMERIC COVERAGE" not in without
+    assert "NEVER mint an entity or placeholder node" in without
 
 
 def test_ontology_prompts_ask_for_the_reuse_level() -> None:

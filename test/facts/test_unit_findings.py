@@ -410,6 +410,6 @@ def test_a_unit_kept_as_text_is_not_flagged() -> None:
     assert _units_flagged(with_units=False) == []
 
 
-def test_no_unit_property_configured_means_no_unit_check() -> None:
-    """Units are read from the configured quantity vocabulary, never assumed."""
-    assert _units_flagged(quantity_vocabulary=False) == []
+def test_a_unit_qudt_lacks_is_unknown_whatever_the_quantity_vocabulary() -> None:
+    """The QUDT unit list is closed in any position: no configured role needed."""
+    assert _units_flagged(quantity_vocabulary=False) == [str(UNIT.Kilometer)]

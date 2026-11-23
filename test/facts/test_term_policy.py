@@ -23,6 +23,7 @@ from ontocast.tool.facts_validation import (
     promote_degenerate_bounds_from_vocabulary,
     shacl_catalog_contradictions,
 )
+from ontocast.tool.facts_validation.terms import CatalogRoles
 from ontocast.util.graph_metrics import facts_graph_shape_metrics
 
 pytestmark = pytest.mark.unit
@@ -383,7 +384,11 @@ class TestGraphShapeMetrics:
 
 
 class TestUnitSymbolCaseMismatch:
-    """Two catalog units whose symbols differ only by letter case."""
+    """Two catalog units whose symbols differ only by letter case.
+
+    A unit symbol written next to a value's number is a cue: a cue of another
+    unit, and none of the value's own, contradicts the unit the value names.
+    """
 
     ONTOLOGY = f"""
     @prefix owl:  <http://www.w3.org/2002/07/owl#> .
@@ -413,26 +418,31 @@ class TestUnitSymbolCaseMismatch:
             """
         )
 
-    def _findings(self, unit: str, text: str):
+    def _findings(self, unit: str, text: str, ontology: str | None = None):
+        catalog = _graph(ontology if ontology is not None else self.ONTOLOGY)
+        contract = CatalogRoles.of([catalog]).statement_contract(
+            frozenset({f"{QQ}QualifiedValue"})
+        )
         return [
             item
             for item in _unit_findings(
                 self._facts(unit),
-                _graph(self.ONTOLOGY),
+                catalog,
                 policy=ValidationPolicy(quantity_fallback_vocabulary=VOCAB),
                 extraction_text=text,
+                contract=contract,
             )
-            if item.kind == FactsUnitFindingKind.UNIT_SYMBOL_CASE_MISMATCH
+            if item.kind == FactsUnitFindingKind.CONTRADICTED_INDIVIDUAL
         ]
 
-    def test_case_folded_symbol_match_is_mandatory_and_suggests_the_exact_unit(
+    def test_a_case_folded_symbol_of_another_unit_is_mandatory_and_suggests_it(
         self,
     ) -> None:
         (finding,) = self._findings("big", "a shift of 96 xU was measured")
         assert finding.mandatory
-        assert finding.value == "xU"
+        assert finding.value == f"{QQ}big"
         assert finding.suggestions == [f"{QQ}small"]
-        assert "case" in finding.message
+        assert "'xU'" in finding.message
 
     def test_exact_symbol_match_is_silent(self) -> None:
         assert self._findings("big", "a shift of 96 XU was measured") == []
@@ -445,35 +455,11 @@ class TestUnitSymbolCaseMismatch:
     ) -> None:
         """Only one unit declares the symbol: the text merely spelt it in
         another case, and there is no other unit the value could belong to."""
-        ontology = _graph(
-            self.ONTOLOGY.replace(
-                'qq:small a qq:Unit ; rdfs:label "small unit" ; qudt:symbol "xU" .', ""
-            )
+        ontology = self.ONTOLOGY.replace(
+            'qq:small a qq:Unit ; rdfs:label "small unit" ; qudt:symbol "xU" .', ""
         )
-        findings = [
-            item
-            for item in _unit_findings(
-                self._facts("big"),
-                ontology,
-                policy=ValidationPolicy(quantity_fallback_vocabulary=VOCAB),
-                extraction_text="a shift of 96 xU was measured",
-            )
-            if item.kind == FactsUnitFindingKind.UNIT_SYMBOL_CASE_MISMATCH
-        ]
-        assert findings == []
+        assert self._findings("big", "a shift of 96 xU was measured", ontology) == []
 
-    def test_a_label_spelt_with_a_capital_is_not_a_symbol(self) -> None:
-        ontology = _graph(
-            self.ONTOLOGY.replace('qudt:symbol "XU"', 'rdfs:altLabel "XU"')
-        )
-        findings = [
-            item
-            for item in _unit_findings(
-                self._facts("big"),
-                ontology,
-                policy=ValidationPolicy(quantity_fallback_vocabulary=VOCAB),
-                extraction_text="a shift of 96 xU was measured",
-            )
-            if item.kind == FactsUnitFindingKind.UNIT_SYMBOL_CASE_MISMATCH
-        ]
-        assert findings == []
+    def test_a_label_is_no_cue(self) -> None:
+        ontology = self.ONTOLOGY.replace('qudt:symbol "xU"', 'rdfs:label "xU"')
+        assert self._findings("big", "a shift of 96 xU was measured", ontology) == []

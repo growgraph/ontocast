@@ -32,6 +32,15 @@ def unknown_well_known_term(
     return f"{term} is not a term of {vocabulary_title}." + _did_you_mean(suggestions)
 
 
+def unknown_closed_range_term(term: str, suggestions: Sequence[str]) -> str:
+    """An individual a value names where its property takes a known one."""
+    return (
+        f"{term} is neither an individual of the project's ontologies nor a "
+        "term of a listed vocabulary, and its property takes one of those."
+        + _did_you_mean(suggestions)
+    )
+
+
 def unknown_placeholder_term(term: str, suggestions: Sequence[str]) -> str:
     """A term in a placeholder namespace such as ``example.org``."""
     return (

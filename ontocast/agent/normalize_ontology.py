@@ -10,7 +10,7 @@ from ontocast.onto.namespace_merge import merge_namespace_bindings
 from ontocast.onto.null import NULL_ONTOLOGY
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.scaffolding import is_scaffolding, scaffolding_nodes
+from ontocast.onto.scaffolding import FactScope
 from ontocast.onto.sparql_models import GraphUpdate, TripleOp
 from ontocast.onto.state import AgentState
 from ontocast.onto.util import is_rdflib_default_namespace
@@ -57,16 +57,14 @@ def split_ontology_and_provenance_graph(
             clean_graph.bind(prefix, namespace)
             provenance_graph.bind(prefix, namespace)
 
-    scaffolding = scaffolding_nodes(graph)
+    scope = FactScope.of(graph, None)
 
     def is_provenance_or_alignment_triple(
         subject: Node, predicate: Node, obj: Node
     ) -> bool:
         # The header's source-document link is not scaffolding: it stays with
         # the ontology. owl:sameAs is the aggregator's alignment bookkeeping.
-        return predicate == OWL.sameAs or is_scaffolding(
-            (subject, predicate, obj), scaffolding
-        )
+        return predicate == OWL.sameAs or not scope.is_fact((subject, predicate, obj))
 
     for triple in graph:
         if is_provenance_or_alignment_triple(*triple):

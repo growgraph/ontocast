@@ -12,7 +12,9 @@ import re
 from collections.abc import Sequence
 from typing import Literal as TypingLiteral
 
+from pydantic import BaseModel, ConfigDict
 from rdflib import RDF, RDFS, SKOS, Literal, URIRef
+from rdflib.term import Node
 
 from ontocast.onto.model import (
     FactsUnitFinding,
@@ -23,28 +25,42 @@ from ontocast.onto.rdfgraph import (
     RDFGraph,
     RejectedLiteralTriple,
 )
-from ontocast.onto.scaffolding import scaffolding_nodes
-from ontocast.onto.well_known import (
-    is_listed_unit,
-    well_known_terms,
+from ontocast.onto.scaffolding import FactScope
+from ontocast.onto.well_known import StatementRoleName, well_known_terms
+from ontocast.tool.agg.signatures import harvest_max_one_predicates
+from ontocast.tool.agg.statement_conflict import (
+    StatementIndex,
+    dimension_conflict_message,
+    dimension_conflicts,
 )
-from ontocast.tool.agg.signatures import canonical_literal, harvest_max_one_predicates
 from ontocast.tool.facts_validation.connectivity import (
     isolated_instances,
     states_a_value,
 )
+from ontocast.tool.facts_validation.grounding import (
+    node_name as _node_name,
+)
+from ontocast.tool.facts_validation.grounding import (
+    value_grounding_findings,
+)
+from ontocast.tool.facts_validation.statements import (
+    StatementContract,
+    own_terms,
+    value_components,
+)
 from ontocast.tool.facts_validation.term_verdict import (
     TermVerdictKind,
     term_verdict,
+    used_terms,
 )
 from ontocast.tool.facts_validation.terms import (
     _STANDARD_NAMESPACES,
-    SubjectContract,
     ValidationPolicy,
     _alias_candidates,
     _catalog_term_roles,
     _declared_domains,
     _described_classes,
+    _folded_local_name,
     _local_name,
     _name_tokens,
     _namespace_of,
@@ -53,18 +69,15 @@ from ontocast.tool.facts_validation.terms import (
     collect_catalog_terms,
     collect_declared_namespaces,
     expand_vocabulary_terms,
-    fact_instances,
     types_compatible,
     untyped_instances,
 )
-from ontocast.util.measurement_lexicon import unit_adjacent_numbers
 from ontocast.util.numeric_inventory import (
     NumericInventory,
     canonical_number,
     missing_numeric_inventory,
-    unit_surface_index,
+    states_quantity,
     unit_surfaces_in_ontology,
-    unit_symbol_index,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,6 +134,66 @@ def unit_numeric_inventory(
         unit_properties=unit_properties,
         ignore_identifier_fragments=policy.numeric_identifier_guard,
         limit=limit,
+    )
+
+
+class UnitPromptScope(BaseModel):
+    """Which conditional rules the facts prompts of one content unit carry.
+
+    One decision, read by the render, critic and gap-pass prompts alike.
+
+    Attributes:
+        quantities: The quantity chapter: the unit's text states a number
+            (:func:`~ontocast.util.numeric_inventory.states_quantity`) and the
+            unit is not a citation-metadata unit.
+        statements: The statement rules outside the chapter (a statement's
+            subject, the sensor link, the statement checklist line, the
+            measurement vocabularies among the well-known ones): ``quantities``,
+            or the unit's ontology context holds a statement class of the
+            catalog's own (one under a well-known statement class).
+        attribution: The attribution rule: every unit but a citation-metadata
+            unit, which the citation lane governs.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    quantities: bool = False
+    statements: bool = False
+    attribution: bool = True
+
+
+def unit_prompt_scope(
+    *,
+    extraction_text: str,
+    ontology_graph: RDFGraph | None,
+    contract: StatementContract,
+    policy: ValidationPolicy | None = None,
+    is_citation_metadata: bool = False,
+) -> UnitPromptScope:
+    """The :class:`UnitPromptScope` of one content unit.
+
+    A number is read as the coverage inventory reads it, with the same unit
+    surfaces and identifier guard as :func:`unit_numeric_inventory`, so the
+    prompts and the coverage findings agree on which units state numbers.
+    """
+    if is_citation_metadata:
+        quantities = False
+    else:
+        policy = policy or ValidationPolicy()
+        unit_properties = expand_vocabulary_terms(
+            _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "unit"),
+            ontology_graph,
+        )
+        quantities = states_quantity(
+            extraction_text,
+            unit_surfaces=unit_surfaces_in_ontology(ontology_graph, unit_properties),
+            ignore_identifier_fragments=policy.numeric_identifier_guard,
+        )
+    return UnitPromptScope(
+        quantities=quantities,
+        statements=quantities
+        or bool(own_terms(ontology_graph, contract.statement_classes)),
+        attribution=not is_citation_metadata,
     )
 
 
@@ -240,7 +313,7 @@ def untyped_instance_findings(
     """Report every instance of the graph that has no concrete type.
 
     An instance is a fact-namespace IRI in subject or IRI-object position
-    (:func:`fact_instances`); it is typed when one of its ``rdf:type`` objects
+    (:attr:`~ontocast.onto.scaffolding.FactScope.instances`); it is typed when one of its ``rdf:type`` objects
     is a class outside the fact namespaces that is neither a schema metaclass
     nor vacuous (:func:`concrete_types`). Suggested classes are the declared
     domain of every predicate the instance carries and the declared range of
@@ -309,69 +382,105 @@ def untyped_instance_findings(
     return findings
 
 
-def statement_without_subject_findings(
+def _role_message(node: URIRef, role: str, link: str) -> str:
+    if role == "subject":
+        return (
+            f"<{node}> states a value but names nothing it is about. Link "
+            "it to the instance the text says was measured or described "
+            "(its feature of interest, or the property the ontology gives "
+            "for it), in the direction the property runs; mint that "
+            "instance if the text names it and it is missing."
+        )
+    if role == "property":
+        return (
+            f"<{node}> states a value but names no property it reports. Link "
+            "it to the property the text says was measured or observed, with "
+            "a property link its class takes; mint that property instance if "
+            "it is missing."
+        )
+    if role == "link":
+        return (
+            f"<{node}> states a value without <{link}>, which a restriction "
+            "on its class requires. Add it if the text gives it."
+        )
+    return f"<{node}> states a value but has no {role} link, which its class requires."
+
+
+def missing_role_findings(
     graph: RDFGraph,
+    contract: StatementContract,
     fact_namespaces: Sequence[str],
-    contract: SubjectContract | None,
     *,
     max_candidates: int = 12,
 ) -> list[FactsUnitFinding]:
-    """Report every statement or value in the unit that names no subject.
+    """Report every statement missing a role its class requires.
 
-    An instance of a statement class (an observation) that states a value
+    A statement is an instance of a statement class; one that states a value
     (:func:`~ontocast.tool.facts_validation.connectivity.states_a_value`)
-    names its subject only through a subject property: a ``forward`` one from
-    it, or an ``inverse`` one to it. A link to its observed property or its
-    procedure is not that. An instance of a value class names its subject by
-    being linked to any other instance, in either direction. An instance of
-    another class stating its own values is a fact about itself and is not
-    reported.
+    must carry each role its classes require
+    (:meth:`~ontocast.tool.facts_validation.statements.StatementContract.required_roles`):
+    a link playing the role, from the statement or to it as the link runs,
+    whose declared side admits one of the statement's classes
+    (:meth:`~ontocast.tool.facts_validation.statements.StatementContract.serves`).
+    A link a catalog restriction requires on its class (``required_links``)
+    must be there too, or a sub-property of it. A value (an instance of a
+    value class) outside any statement carries its subject by being linked to
+    another instance, in either direction. An instance of another class
+    stating its own values is a fact about itself and is not reported.
 
     Args:
         graph: Rendered facts graph for one unit.
+        contract: The catalog's statement contract.
         fact_namespaces: Namespaces holding minted instances.
-        contract: The catalog's statement and value classes and subject
-            properties; ``None`` reports nothing.
         max_candidates: Most candidate subjects suggested per finding.
 
     Returns:
-        list: One mandatory finding per such instance, ordered by IRI; its
-        suggestions are the unit's instances that could be the subject.
+        list: One mandatory finding per missing role, ordered by IRI then
+        role; ``facet`` is the role (``link`` for a required link, named in
+        ``predicate``), the suggestions the unit's instances that are neither
+        statements nor values.
     """
-    if contract is None:
-        return []
     statements = {URIRef(iri) for iri in contract.statement_classes}
     values = {URIRef(iri) for iri in contract.value_classes}
-    forward = [URIRef(iri) for iri in contract.forward]
-    inverse = [URIRef(iri) for iri in contract.inverse]
-    scaffolding = scaffolding_nodes(graph)
+    scope = FactScope.of(graph, fact_namespaces)
     isolated = isolated_instances(graph, fact_namespaces)
-    instances = sorted(
-        (
-            node
-            for node in fact_instances(graph, fact_namespaces)
-            if isinstance(node, URIRef)
-        ),
-        key=str,
-    )
+    instances = sorted(scope.instances, key=str)
 
-    def names_subject(node: URIRef) -> bool:
-        return any((node, prop, None) in graph for prop in forward) or any(
-            (None, prop, node) in graph for prop in inverse
+    def plays(node: URIRef, role: StatementRoleName, types: set[Node]) -> bool:
+        links = contract.links(role)
+        return any(
+            contract.serves(str(prop), types)
+            for prop in graph.predicates(node, None)
+            if str(prop) in links.forward
+        ) or any(
+            contract.serves(str(prop), types)
+            for prop in graph.predicates(None, node)
+            if str(prop) in links.inverse
         )
 
-    lapsed: list[URIRef] = []
+    def carries(node: URIRef, link: str) -> bool:
+        return any(
+            link in contract.properties_of(str(prop))
+            for prop in graph.predicates(node, None)
+        )
+
+    lapsed: list[tuple[URIRef, str, str]] = []
     for node in instances:
         types = set(graph.objects(node, RDF.type))
-        if not types & (statements | values):
-            continue
-        if not states_a_value(graph, node, scaffolding):
+        if not types & (statements | values) or not states_a_value(scope, node):
             continue
         if types & statements:
-            if not names_subject(node):
-                lapsed.append(node)
+            for role in sorted(contract.required_roles(types)):
+                if not plays(node, role, types):
+                    lapsed.append((node, role, ""))
+            required = set().union(
+                *(contract.required_links.get(str(cls), frozenset()) for cls in types)
+            )
+            for link in sorted(required):
+                if not carries(node, link):
+                    lapsed.append((node, "link", link))
         elif node in isolated:
-            lapsed.append(node)
+            lapsed.append((node, "subject", ""))
     if not lapsed:
         return []
     candidates = [
@@ -381,18 +490,14 @@ def statement_without_subject_findings(
     ][:max_candidates]
     return [
         FactsUnitFinding(
-            kind=FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT,
-            message=(
-                f"<{node}> states a value but names nothing it is about. Link "
-                "it to the instance the text says was measured or described "
-                "(its feature of interest, or the property the ontology gives "
-                "for it), in the direction the property runs; mint that "
-                "instance if the text names it and it is missing."
-            ),
+            kind=FactsUnitFindingKind.MISSING_ROLE,
+            message=_role_message(node, role, link),
             subject=str(node),
+            predicate=link,
+            facet=role,
             suggestions=candidates,
         )
-        for node in lapsed
+        for node, role, link in lapsed
     ]
 
 
@@ -423,59 +528,55 @@ def _closed_range_suggestions(
 
 
 def _label_only_number_findings(
-    graph: RDFGraph,
+    scope: FactScope,
+    contract: StatementContract,
     *,
     unit_properties: set[str],
     numeric_value_properties: set[str],
-    fact_namespaces: Sequence[str],
 ) -> list[FactsUnitFinding]:
     """Flag value nodes whose only numeric content sits in a label.
 
-    A node carrying a unit property but no numeric literal on any
-    non-annotation property, while its label or comment contains a number, is
-    a measurement the renderer described instead of structuring — invisible to
-    every query and to SHACL alike. Driven entirely by the configured quantity
-    vocabulary (the unit-role property identifies value nodes), so no domain
-    terms are hardcoded.
+    A fact node, blank or named (:meth:`FactScope.holds`), carrying a unit
+    property but no number among its value components
+    (:func:`~ontocast.tool.facts_validation.statements.value_components`),
+    while its label or comment contains a number, is a measurement the
+    renderer described instead of structuring — invisible to every query and
+    to SHACL alike. Driven entirely by the configured quantity vocabulary
+    (the unit-role property identifies value nodes), so no domain terms are
+    hardcoded.
     """
     if not unit_properties:
         return []
+    graph = scope.graph
     annotation_predicates = {RDFS.label, RDFS.comment, SKOS.prefLabel, SKOS.altLabel}
     findings: list[FactsUnitFinding] = []
     subjects = {
         subject
-        for subject, predicate, _ in graph
-        if isinstance(subject, URIRef)
-        and str(predicate) in unit_properties
-        and any(str(subject).startswith(ns) for ns in fact_namespaces)
+        for subject, predicate, _ in scope.triples()
+        if str(predicate) in unit_properties and scope.holds(subject)
     }
     for subject in sorted(subjects, key=str):
-        has_numeric_literal = False
+        if value_components(graph, subject, contract).numbers:
+            continue
         label_numbers: set[str] = set()
         label_text = ""
         for _, predicate, obj in graph.triples((subject, None, None)):
-            if not isinstance(obj, Literal):
+            if not isinstance(obj, Literal) or predicate not in annotation_predicates:
                 continue
-            if predicate in annotation_predicates:
-                for match in _LABEL_NUMBER_PATTERN.finditer(str(obj)):
-                    canonical = canonical_number(match.group(1))
-                    if canonical is not None:
-                        label_numbers.add(canonical)
-                        if not label_text:
-                            label_text = str(obj)
-                continue
-            canonical = canonical_number(str(obj).strip())
-            if canonical is not None:
-                has_numeric_literal = True
-                break
-        if has_numeric_literal or not label_numbers:
+            for match in _LABEL_NUMBER_PATTERN.finditer(str(obj)):
+                canonical = canonical_number(match.group(1))
+                if canonical is not None:
+                    label_numbers.add(canonical)
+                    if not label_text:
+                        label_text = str(obj)
+        if not label_numbers:
             continue
         numbers = ", ".join(sorted(label_numbers, key=lambda v: (len(v), v)))
         findings.append(
             FactsUnitFinding(
                 kind=FactsUnitFindingKind.LABEL_ONLY_NUMBER,
                 message=(
-                    f"<{subject}> carries a unit but no numeric literal on any "
+                    f"{_node_name(graph, subject)} carries a unit but no numeric literal on any "
                     f"property; its label “{label_text}” holds the "
                     f"number(s) {numbers} as prose. Extract each number into "
                     "the appropriate numeric property as a typed literal "
@@ -496,169 +597,10 @@ _LABEL_NUMBER_PATTERN = re.compile(
 )
 
 
-def _unit_outside_context_findings(
-    graph: RDFGraph,
-    ontology_graph: RDFGraph | None,
-    context_terms: set[str],
-    policy: ValidationPolicy,
-) -> list[FactsUnitFinding]:
-    """Flag a unit IRI that is neither in the ontology context nor a QUDT unit.
-
-    A unit written from memory is often a name no vocabulary has. Real units
-    are the context's unit individuals and the shipped QUDT unit list; any
-    other is kept as text on the value node instead. Mandatory, so a patch
-    that adds one is rolled back.
-    """
-    if not context_terms:
-        return []
-    unit_properties = expand_vocabulary_terms(
-        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "unit"),
-        graph,
-        ontology_graph,
-    )
-    outside = sorted(
-        {
-            str(unit)
-            for prop in unit_properties
-            for unit in graph.objects(None, URIRef(prop))
-            if isinstance(unit, URIRef)
-            and str(unit) not in context_terms
-            and not is_listed_unit(str(unit))
-        }
-    )
-    return [
-        FactsUnitFinding(
-            kind=FactsUnitFindingKind.UNKNOWN_TERM,
-            message=(
-                f"<{unit}> is neither a unit of the ontology context nor a "
-                "QUDT unit; use a unit individual the context lists, else a "
-                "QUDT unit (`unit:`) whose exact name exists, or, when neither "
-                "fits, keep the unit's token as text on the value node "
-                "(rdfs:comment) and drop the unit link."
-            ),
-            predicate=unit,
-        )
-        for unit in outside
-    ]
-
-
-def _unit_symbol_case_findings(
-    graph: RDFGraph,
-    ontology_graph: RDFGraph | None,
-    extraction_text: str,
-    fact_namespaces: Sequence[str],
-    policy: ValidationPolicy,
-) -> list[FactsUnitFinding]:
-    """Flag a unit whose declared symbol matches the text only by letter case.
-
-    Symbols are case-significant: a catalog may hold two units whose symbols
-    differ by case alone, a prefix apart in magnitude. Retrieval and prompt
-    assembly are case-folded in places, so both units can be offered side by
-    side, and a render that picks the wrong one is a silent magnitude error
-    that no other check sees -- the value is numeric, the unit is a real
-    catalog individual, and the shapes conform.
-
-    The check is fully generic: symbols come from the catalog's own code,
-    symbol and notation literals (:func:`unit_symbol_index`), the text side
-    from the unit-adjacent numbers of the unit's own text. A node is flagged
-    only when its numeric value is written in the text next to a token that
-    equals one of the assigned unit's symbols after case folding and none of
-    them exactly, **and** a different catalog unit declares that token as a
-    surface exactly -- the competing unit is what makes the case difference
-    a magnitude error rather than a spelling variant, and it is offered as
-    the suggestion. Mandatory: the value is otherwise recorded a factor wrong.
-    """
-    if not extraction_text:
-        return []
-    unit_properties = expand_vocabulary_terms(
-        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "unit"),
-        graph,
-        ontology_graph,
-    )
-    numeric_value_properties = expand_vocabulary_terms(
-        _vocabulary_role_subset(policy.quantity_fallback_vocabulary, "numeric_value"),
-        graph,
-        ontology_graph,
-    )
-    if not unit_properties or not numeric_value_properties:
-        return []
-    symbols = unit_symbol_index(ontology_graph, unit_properties)
-    if not symbols:
-        return []
-    surfaces = unit_surface_index(ontology_graph, unit_properties)
-    tokens_by_value: dict[str, set[str]] = {}
-    for mention in unit_adjacent_numbers(extraction_text, frozenset(surfaces)):
-        canonical = canonical_number(mention.value)
-        if canonical is not None:
-            tokens_by_value.setdefault(canonical, set()).add(mention.unit)
-    if not tokens_by_value:
-        return []
-    unit_predicates = {URIRef(iri) for iri in unit_properties}
-    value_predicates = {URIRef(iri) for iri in numeric_value_properties}
-    findings: list[FactsUnitFinding] = []
-    flagged: set[URIRef] = set()
-    for subject, predicate, unit in graph:
-        if predicate not in unit_predicates or not isinstance(unit, URIRef):
-            continue
-        if not isinstance(subject, URIRef) or subject in flagged:
-            continue
-        if not any(str(subject).startswith(ns) for ns in fact_namespaces):
-            continue
-        declared = symbols.get(str(unit))
-        if not declared:
-            continue
-        folded = {symbol.lower() for symbol in declared}
-        for value_predicate in value_predicates:
-            for obj in graph.objects(subject, value_predicate):
-                if not isinstance(obj, Literal):
-                    continue
-                canonical = canonical_literal(obj)
-                if canonical is None or canonical[1] != "numeric":
-                    continue
-                written = tokens_by_value.get(canonical[0], set())
-                if any(token in declared for token in written):
-                    continue
-                competing = [
-                    (
-                        token,
-                        [iri for iri in surfaces.get(token, ()) if iri != str(unit)],
-                    )
-                    for token in sorted(written)
-                    if token.lower() in folded
-                ]
-                competing = [(token, iris) for token, iris in competing if iris]
-                if not competing:
-                    continue
-                token, suggestions = competing[0]
-                findings.append(
-                    FactsUnitFinding(
-                        kind=FactsUnitFindingKind.UNIT_SYMBOL_CASE_MISMATCH,
-                        message=(
-                            f"<{subject}> records {canonical[0]} with unit "
-                            f"<{unit}>, whose declared symbol "
-                            f"({', '.join(sorted(declared))}) differs from the "
-                            f"text's '{token}' only by letter case, and "
-                            f"another catalog unit declares '{token}' exactly. "
-                            "Unit symbols are case-sensitive: assign the unit "
-                            "whose declared symbol matches the text exactly."
-                        ),
-                        subject=str(subject),
-                        predicate=str(predicate),
-                        value=token,
-                        suggestions=suggestions,
-                    )
-                )
-                flagged.add(subject)
-                break
-            if subject in flagged:
-                break
-    return findings
-
-
 def _scalar_as_bounds_findings(
-    graph: RDFGraph,
+    scope: FactScope,
+    contract: StatementContract,
     ontology_graph: RDFGraph | None,
-    fact_namespaces: Sequence[str],
 ) -> list[FactsUnitFinding]:
     """Flag one numeric value duplicated across single-valued numeric predicates.
 
@@ -666,27 +608,31 @@ def _scalar_as_bounds_findings(
     max-1) numeric predicates of one node — the classic case being equal lower
     and upper bounds — encodes a single measurement as if it carried epistemic
     structure it does not have. Fully generic: predicates come from the
-    ontology's own functional/cardinality declarations, values compare via
-    :func:`canonical_literal`.
+    ontology's own functional/cardinality declarations, values are the numbers
+    of each fact node, blank or named
+    (:func:`~ontocast.tool.facts_validation.statements.value_components`).
     """
     constrained = harvest_max_one_predicates(ontology_graph)
     if not constrained:
         return []
+    graph = scope.graph
     findings: list[FactsUnitFinding] = []
-    by_subject: dict[URIRef, dict[URIRef, set[str]]] = {}
-    for subject, predicate, obj in graph:
-        if not isinstance(subject, URIRef) or not isinstance(obj, Literal):
+    by_subject: dict[Node, dict[URIRef, set[str]]] = {}
+    for subject, predicate, obj in scope.triples():
+        if (
+            subject in by_subject
+            or not isinstance(obj, Literal)
+            or predicate not in constrained
+            or not scope.holds(subject)
+        ):
             continue
-        if not isinstance(predicate, URIRef) or predicate not in constrained:
-            continue
-        if not any(str(subject).startswith(ns) for ns in fact_namespaces):
-            continue
-        canonical = canonical_literal(obj)
-        if canonical is None or canonical[1] != "numeric":
-            continue
-        by_subject.setdefault(subject, {}).setdefault(predicate, set()).add(
-            canonical[0]
-        )
+        per_predicate: dict[URIRef, set[str]] = {}
+        for number in value_components(graph, subject, contract).numbers:
+            if number.number is not None and URIRef(number.predicate) in constrained:
+                per_predicate.setdefault(URIRef(number.predicate), set()).add(
+                    number.number
+                )
+        by_subject[subject] = per_predicate
     for subject, per_predicate in by_subject.items():
         value_to_predicates: dict[str, list[URIRef]] = {}
         for predicate, values in per_predicate.items():
@@ -700,7 +646,7 @@ def _scalar_as_bounds_findings(
                 FactsUnitFinding(
                     kind=FactsUnitFindingKind.SCALAR_AS_BOUNDS,
                     message=(
-                        f"<{subject}> carries the same numeric value {value} on "
+                        f"{_node_name(graph, subject)} carries the same numeric value {value} on "
                         f"multiple single-valued numeric properties "
                         f"({predicate_list}). This encodes one exact scalar as "
                         "if it had epistemic structure. Record the value ONCE, "
@@ -820,10 +766,6 @@ def _domain_adherence_findings(
     ]
 
 
-def _folded_local_name(iri: str) -> str:
-    return re.sub(r"[_\-]", "", _local_name(iri)).lower()
-
-
 def _containment_qualified(term: URIRef, candidates: list[str]) -> list[str]:
     """Keep only replacement candidates that are near-misses of the term.
 
@@ -862,18 +804,26 @@ def collect_unit_findings(
     policy: ValidationPolicy | None = None,
     is_citation_metadata: bool = False,
     is_non_content: bool = False,
-    subject_contract: SubjectContract | None = None,
+    contract: StatementContract = StatementContract(),
     full_catalog_terms: set[str] | None = None,
+    document: Node | None = None,
 ) -> list[FactsUnitFinding]:
     """Assemble all deterministic findings for one rendered unit graph.
 
     Mandatory: quarantined literals (with closed-range individual
     suggestions), forbidden-namespace terms (``example.org``), doc-namespace
-    predicates, unresolved catalog near-misses, predicates asserted on a
-    subject whose type contradicts their ``rdfs:domain``, statements and
-    values that name no subject (``subject_contract``), instances with no
-    concrete type, and value nodes whose only numeric content sits in a
-    label. Advisory by default: numeric
+    predicates, terms a closed vocabulary does not have in any position
+    (:func:`~ontocast.tool.facts_validation.term_verdict.used_terms`; an
+    individual of a value whose property's range is a closed class by role),
+    unresolved catalog near-misses, predicates asserted on a subject whose
+    type contradicts their ``rdfs:domain``, statements missing a role their
+    class requires and values linked to nothing (``contract``), instances
+    with no concrete type, value nodes whose only numeric content sits in a
+    label, and the numbers and individuals of values the text does not bear
+    out (:func:`~ontocast.tool.facts_validation.grounding.value_grounding_findings`),
+    and results that disagree in dimension under a property whose quantity
+    kind or measurement unit the catalog declares (:func:`dimension_findings`).
+    Advisory by default: numeric
     mentions of the source text absent from the graph, as two findings --
     measurements (a number with its unit, in text order with context) and
     bare numbers -- whose mandatory flag ``coverage_mandatory`` sets
@@ -895,6 +845,9 @@ def collect_unit_findings(
     did not retrieve is still a term, so it is never reported as unknown --
     and, for a term that is genuinely unknown, replacement candidates are
     offered only under token containment, never on similarity alone.
+
+    ``document`` is the IRI of the document the unit belongs to: a work the
+    text cites is a fact instance, never the document node.
     """
     policy = policy or ValidationPolicy()
     known_terms = set(full_catalog_terms or ())
@@ -935,165 +888,67 @@ def collect_unit_findings(
         prefix: str(namespace) for prefix, namespace in graph.namespaces() if prefix
     }
     flagged_terms: set[str] = set()
-    for subject, predicate, obj in graph:
-        if predicate == RDF.type and isinstance(obj, Literal):
-            lexical = str(obj).strip()
-            if lexical in flagged_terms:
-                continue
-            flagged_terms.add(lexical)
-            resolved = _resolve_type_literal(lexical, prefix_map)
-            findings.append(
-                FactsUnitFinding(
-                    kind=FactsUnitFindingKind.LITERAL_TYPE_OBJECT,
-                    message=(
-                        f"rdf:type object '{lexical}' is a string literal, not "
-                        "an IRI; assert the type as a catalog class IRI "
-                        "(`a prefix:Class`), never as a quoted string."
-                    ),
-                    subject=str(subject),
-                    value=lexical,
-                    suggestions=[resolved]
-                    if resolved and resolved in catalog_terms
-                    else [],
-                )
-            )
+    for subject, obj in graph.subject_objects(RDF.type):
+        if not isinstance(obj, Literal):
             continue
-        for position, term in (("predicate", predicate), ("type", obj)):
-            if not isinstance(term, URIRef):
-                continue
-            if position == "type" and predicate != RDF.type:
-                continue
-            text = str(term)
-            if text in flagged_terms:
-                continue
-            verdict = term_verdict(
-                text,
-                catalog_terms=catalog_terms,
-                known_terms=known_terms,
-                fallback_terms=fallback_terms,
-                declared_namespaces=declared_namespaces,
-                catalog_namespaces=catalog_namespaces,
-                standard_namespaces=standard_namespaces,
-                vocabulary=policy.vocabulary,
+        lexical = str(obj).strip()
+        if lexical in flagged_terms:
+            continue
+        flagged_terms.add(lexical)
+        resolved = _resolve_type_literal(lexical, prefix_map)
+        findings.append(
+            FactsUnitFinding(
+                kind=FactsUnitFindingKind.LITERAL_TYPE_OBJECT,
+                message=(
+                    f"rdf:type object '{lexical}' is a string literal, not "
+                    "an IRI; assert the type as a catalog class IRI "
+                    "(`a prefix:Class`), never as a quoted string."
+                ),
+                subject=str(subject),
+                value=lexical,
+                suggestions=[resolved]
+                if resolved and resolved in catalog_terms
+                else [],
             )
-            if (
-                verdict is not None
-                and verdict.kind is TermVerdictKind.PLACEHOLDER_NAMESPACE
-            ):
-                flagged_terms.add(text)
-                findings.append(
-                    FactsUnitFinding(
-                        kind=FactsUnitFindingKind.UNKNOWN_TERM,
-                        message=(
-                            f"<{text}> uses the example.org placeholder namespace; "
-                            "replace it with a catalog term or express the "
-                            "statement with catalog/standard vocabulary."
-                        ),
-                        predicate=text,
-                        suggestions=_containment_qualified(
-                            term,
-                            _alias_candidates(
-                                term,
-                                graph,
-                                catalog_terms,
-                                ontology_graph=ontology_graph,
-                                position=position,
-                            ),
-                        )
-                        if catalog_terms
-                        else [],
-                    )
-                )
-                continue
-            if any(text.startswith(ns) for ns in normalized_fact_namespaces):
-                flagged_terms.add(text)
-                role_message = (
-                    f"Predicate <{text}> is minted in the facts/document "
-                    "namespace; facts namespaces hold instances only — "
-                    "use a catalog or standard-vocabulary property."
-                    if position == "predicate"
-                    else f"rdf:type object <{text}> is a class minted in the "
-                    "facts/document namespace; facts namespaces hold instances, "
-                    "not classes — type the instance with a catalog or "
-                    "standard-vocabulary class."
-                )
-                findings.append(
-                    FactsUnitFinding(
-                        kind=FactsUnitFindingKind.UNKNOWN_TERM,
-                        message=role_message,
-                        predicate=text,
-                        suggestions=_containment_qualified(
-                            term,
-                            _alias_candidates(
-                                term,
-                                graph,
-                                catalog_terms,
-                                ontology_graph=ontology_graph,
-                                position=position,
-                            ),
-                        )
-                        if catalog_terms
-                        else [],
-                    )
-                )
-                continue
-            if verdict is None:
-                continue
-            namespace = _namespace_of(text)
-            if verdict.kind is TermVerdictKind.WELL_KNOWN_MISSING:
-                # Written from memory: the prompt names the vocabulary, not
-                # its terms, so a plausible term it does not have is caught
-                # here, with near-misses from the vocabulary itself.
-                flagged_terms.add(text)
-                findings.append(
-                    FactsUnitFinding(
-                        kind=FactsUnitFindingKind.UNKNOWN_TERM,
-                        message=(
-                            f"<{text}> is not a term of {verdict.vocabulary_title}; "
-                            "rewrite the statement IN PLACE with a term that "
-                            "exists in it (or a suggested candidate), or with a "
-                            "term from the ontology chapter, keeping the "
-                            "statement and its value."
-                        ),
-                        predicate=text,
-                        suggestions=_containment_qualified(
-                            term,
-                            _alias_candidates(
-                                term,
-                                graph,
-                                well_known_terms(namespace),
-                                position=position,
-                            ),
-                        ),
-                    )
-                )
-                continue
-            if verdict.kind is TermVerdictKind.CLOSED_NAMESPACE_MISSING:
-                # A member of a closed namespace: a near-miss of a real term.
-                message = (
-                    f"<{text}> does not exist in its ontology; rewrite "
-                    "the term IN PLACE to the closest correct term from "
-                    "the ontology chapter (or a suggested candidate), "
-                    "keeping the statement and its value. Do NOT delete "
-                    "the statement."
-                )
-            else:
-                # A vocabulary that is neither the catalog's, one it borrows
-                # from, nor well-known. The strict vocabulary admits nothing
-                # else, so the statement is re-expressed or left out.
-                message = (
-                    f"<{text}> is not a term of the ontology nor of a "
-                    "well-known vocabulary, and the vocabulary is strict: "
-                    "rewrite the statement with a term from the ontology "
-                    "chapter or a well-known vocabulary, or leave the "
-                    "statement out if none can express it."
-                )
-            flagged_terms.add(text)
+        )
+
+    scope = FactScope.of(graph, normalized_fact_namespaces, document)
+    # One finding per term and position: exit removes the uses in that one.
+    flagged_uses: set[tuple[str, str]] = set()
+    for used in used_terms(scope, contract):
+        text = used.iri
+        position = used.position
+        if text in flagged_terms or (text, position) in flagged_uses:
+            continue
+        term = URIRef(text)
+        verdict = term_verdict(
+            text,
+            catalog_terms=catalog_terms,
+            known_terms=known_terms,
+            fallback_terms=fallback_terms,
+            declared_namespaces=declared_namespaces,
+            catalog_namespaces=catalog_namespaces,
+            standard_namespaces=standard_namespaces,
+            vocabulary=policy.vocabulary,
+            position=position,
+            closed_range=used.closed_range,
+        )
+        if (
+            verdict is not None
+            and verdict.kind is TermVerdictKind.PLACEHOLDER_NAMESPACE
+        ):
+            flagged_uses.add((text, position))
             findings.append(
                 FactsUnitFinding(
                     kind=FactsUnitFindingKind.UNKNOWN_TERM,
-                    message=message,
+                    message=(
+                        f"<{text}> uses the example.org placeholder namespace; "
+                        "replace it with a catalog term or express the "
+                        "statement with catalog/standard vocabulary."
+                    ),
                     predicate=text,
+                    position=position,
+                    facet=verdict.kind.value,
                     suggestions=_containment_qualified(
                         term,
                         _alias_candidates(
@@ -1103,26 +958,120 @@ def collect_unit_findings(
                             ontology_graph=ontology_graph,
                             position=position,
                         ),
-                    ),
+                    )
+                    if catalog_terms
+                    else [],
                 )
             )
+            continue
+        if position != "object" and any(
+            text.startswith(ns) for ns in normalized_fact_namespaces
+        ):
+            flagged_uses.add((text, position))
+            role_message = (
+                f"Predicate <{text}> is minted in the facts/document "
+                "namespace; facts namespaces hold instances only — "
+                "use a catalog or standard-vocabulary property."
+                if position == "predicate"
+                else f"rdf:type object <{text}> is a class minted in the "
+                "facts/document namespace; facts namespaces hold instances, "
+                "not classes — type the instance with a catalog or "
+                "standard-vocabulary class."
+            )
+            findings.append(
+                FactsUnitFinding(
+                    kind=FactsUnitFindingKind.UNKNOWN_TERM,
+                    message=role_message,
+                    predicate=text,
+                    position=position,
+                    facet="fact_namespace",
+                    suggestions=_containment_qualified(
+                        term,
+                        _alias_candidates(
+                            term,
+                            graph,
+                            catalog_terms,
+                            ontology_graph=ontology_graph,
+                            position=position,
+                        ),
+                    )
+                    if catalog_terms
+                    else [],
+                )
+            )
+            continue
+        if verdict is None:
+            continue
+        flagged_uses.add((text, position))
+        namespace = _namespace_of(text)
+        if verdict.kind is TermVerdictKind.WELL_KNOWN_MISSING:
+            # Written from memory: the prompt names the vocabulary, not
+            # its terms, so a plausible term it does not have is caught
+            # here, with near-misses from the vocabulary itself.
+            message = (
+                f"<{text}> is not a term of {verdict.vocabulary_title}; link "
+                "a term that exists in it (or a suggested candidate), or "
+                "leave the link out."
+                if position == "object"
+                else f"<{text}> is not a term of {verdict.vocabulary_title}; "
+                "rewrite the statement IN PLACE with a term that "
+                "exists in it (or a suggested candidate), or with a "
+                "term from the ontology chapter, keeping the "
+                "statement and its value."
+            )
+            pool: set[str] = well_known_terms(namespace)
+        elif verdict.kind is TermVerdictKind.CLOSED_RANGE_MISSING:
+            message = (
+                f"<{text}> is neither an individual of the ontology nor a "
+                "term of a listed vocabulary, and its property takes one of "
+                "those: link one that exists, or leave the link out."
+            )
+            pool = catalog_terms
+        elif verdict.kind is TermVerdictKind.CLOSED_NAMESPACE_MISSING:
+            # A member of a closed namespace: a near-miss of a real term.
+            message = (
+                f"<{text}> does not exist in its ontology; rewrite "
+                "the term IN PLACE to the closest correct term from "
+                "the ontology chapter (or a suggested candidate), "
+                "keeping the statement and its value. Do NOT delete "
+                "the statement."
+            )
+            pool = catalog_terms
+        else:
+            # A vocabulary that is neither the catalog's, one it borrows
+            # from, nor well-known. The strict vocabulary admits nothing
+            # else, so the statement is re-expressed or left out.
+            message = (
+                f"<{text}> is not a term of the ontology nor of a "
+                "well-known vocabulary, and the vocabulary is strict: "
+                "rewrite the statement with a term from the ontology "
+                "chapter or a well-known vocabulary, or leave the "
+                "statement out if none can express it."
+            )
+            pool = catalog_terms
+        findings.append(
+            FactsUnitFinding(
+                kind=FactsUnitFindingKind.UNKNOWN_TERM,
+                message=message,
+                predicate=text,
+                position=position,
+                facet=verdict.kind.value,
+                suggestions=_containment_qualified(
+                    term,
+                    _alias_candidates(
+                        term,
+                        graph,
+                        pool,
+                        ontology_graph=ontology_graph,
+                        position=position,
+                    ),
+                ),
+            )
+        )
 
+    findings.extend(_scalar_as_bounds_findings(scope, contract, ontology_graph))
     findings.extend(
-        _unit_outside_context_findings(
-            graph, ontology_graph, catalog_terms | known_terms, policy
-        )
-    )
-    findings.extend(
-        _scalar_as_bounds_findings(graph, ontology_graph, normalized_fact_namespaces)
-    )
-    findings.extend(
-        _unit_symbol_case_findings(
-            graph,
-            ontology_graph,
-            extraction_text,
-            normalized_fact_namespaces,
-            policy,
-        )
+        value_grounding_findings(scope, contract, extraction_text, ontology_graph)
     )
     findings.extend(domain_violation_findings(graph, ontology_graph))
     findings.extend(
@@ -1130,10 +1079,9 @@ def collect_unit_findings(
     )
     if not is_citation_metadata and not is_non_content:
         findings.extend(
-            statement_without_subject_findings(
-                graph, normalized_fact_namespaces, subject_contract
-            )
+            missing_role_findings(graph, contract, normalized_fact_namespaces)
         )
+        findings.extend(dimension_findings(scope, contract, ontology_graph))
         findings.extend(
             _domain_adherence_findings(
                 graph,
@@ -1145,7 +1093,8 @@ def collect_unit_findings(
         )
     findings.extend(
         _label_only_number_findings(
-            graph,
+            scope,
+            contract,
             unit_properties=expand_vocabulary_terms(
                 _vocabulary_role_subset(quantity_fallback_vocabulary, "unit"),
                 graph,
@@ -1156,7 +1105,6 @@ def collect_unit_findings(
                 graph,
                 ontology_graph,
             ),
-            fact_namespaces=normalized_fact_namespaces,
         )
     )
 
@@ -1175,6 +1123,37 @@ def collect_unit_findings(
         )
 
     return findings
+
+
+def dimension_findings(
+    scope: FactScope,
+    contract: StatementContract,
+    ontology_graph: RDFGraph | None,
+) -> list[FactsUnitFinding]:
+    """Mandatory findings for results that disagree in dimension under an
+    anchored property.
+
+    A conflict (:func:`~ontocast.tool.agg.statement_conflict.dimension_conflicts`)
+    is the unit's to resolve only when the catalog declares what the property
+    measures (a quantity kind or an applicable measurement unit, through the
+    contract's ``anchor_links``); the declaration says which result is the
+    odd one, listed in ``suggestions`` when its dimension is known. Any other
+    conflict is reported for the document by the facts gate. Inert without
+    measurement units, and blind among dimensionless quantities (a ratio, an
+    angle, a percentage share one dimension).
+    """
+    index = StatementIndex.of([scope.facts()], contract)
+    return [
+        FactsUnitFinding(
+            kind=FactsUnitFindingKind.DIMENSION_CONFLICT,
+            message=dimension_conflict_message(conflict),
+            subject=str(conflict.node),
+            value=", ".join(sorted(conflict.dimensions)),
+            suggestions=[str(node) for node in conflict.odd],
+        )
+        for conflict in dimension_conflicts(index, ontology_graph, contract)
+        if conflict.anchored
+    ]
 
 
 def _numeric_coverage_findings(

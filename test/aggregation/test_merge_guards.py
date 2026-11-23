@@ -14,7 +14,6 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.tool.agg.signatures import (
     MergeGuardContext,
-    build_sibling_pairs,
     canonical_literal,
     empirically_functional_predicates,
     harvest_max_one_predicates,
@@ -127,25 +126,6 @@ def test_empirically_functional_predicates_requires_support_and_no_multi() -> No
     )
 
 
-def test_build_sibling_pairs_subject_scope_covers_cross_predicate() -> None:
-    range_node = URIRef("http://x/range1")
-    lower = URIRef("http://x/lower")
-    upper = URIRef("http://x/upper")
-    groups = {
-        (range_node, URIRef(f"{QQVAL}hasLowerBound")): {lower},
-        (range_node, URIRef(f"{QQVAL}hasUpperBound")): {upper},
-    }
-    # Subject scope: the two bound endpoints hang off one subject via
-    # *different* predicates and must never merge (degenerate-range shape).
-    assert frozenset((lower, upper)) in build_sibling_pairs(groups, scope="subject")
-    assert frozenset((lower, upper)) not in build_sibling_pairs(
-        groups, scope="predicate"
-    )
-
-
-# --- guards through _can_merge_as_identity ----------------------------------
-
-
 def test_literal_conflict_blocks_merge_case4_shape() -> None:
     """12.5 meV and 96 meV red shifts must never become one node."""
     aggregator = EmbeddingBasedAggregator()
@@ -235,27 +215,6 @@ def test_functional_object_conflict_blocks_unit_mismatch() -> None:
     # Same predicate on a non-functional predicate set: allowed.
     assert aggregator._can_merge_as_identity(
         left, right, representations, guard_context=MergeGuardContext()
-    )
-
-
-def test_sibling_guard_blocks_co_listed_objects() -> None:
-    aggregator = EmbeddingBasedAggregator()
-    graph = _facts_ttl(
-        """
-        cd:sample_area_1 rdfs:label "superlattice sample in area 1" .
-        cd:sample_area_2 rdfs:label "superlattice sample in area 2" .
-        """
-    )
-    left = URIRef(f"{DEFAULT_IRI}/sample_area_1")
-    right = URIRef(f"{DEFAULT_IRI}/sample_area_2")
-    representations = _pair_representations(aggregator, graph, left, right)
-    guard_context = MergeGuardContext(sibling_pairs={frozenset((left, right))})
-
-    assert not aggregator._can_merge_as_identity(
-        left, right, representations, guard_context=guard_context
-    )
-    assert "sibling" in aggregator._merge_validation_failures(
-        left, right, representations, guard_context=guard_context
     )
 
 

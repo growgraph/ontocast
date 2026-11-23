@@ -26,25 +26,40 @@ from ontocast.onto.model import (
 from ontocast.onto.rdfgraph import (
     RDFGraph,
 )
-from ontocast.onto.scaffolding import document_nodes, is_scaffolding, scaffolding_nodes
-from ontocast.onto.well_known import well_known_vocabulary
+from ontocast.onto.scaffolding import FactScope
+from ontocast.onto.well_known import (
+    well_known_namespaces,
+    well_known_terms,
+    well_known_vocabulary,
+)
 from ontocast.tool.agg.signatures import (
     canonical_literal,
     harvest_max_one_predicates,
     normalize_string_value,
     string_values_compatible,
 )
+from ontocast.tool.facts_validation.grounding import node_key
 from ontocast.tool.facts_validation.shacl import (
     ShaclRepairResult,
     ShaclViolation,
     _violation_in_fact_scope,
     run_shacl,
 )
+from ontocast.tool.facts_validation.statements import StatementContract
+from ontocast.tool.facts_validation.term_verdict import (
+    TermPosition,
+    TermVerdictKind,
+    term_verdict,
+    used_terms,
+)
 from ontocast.tool.facts_validation.terms import (
+    _STANDARD_NAMESPACES,
+    _alias_candidates,
     _in_fact_scope,
     _local_name,
     _namespace_of,
     collect_catalog_terms,
+    expand_vocabulary_terms,
 )
 
 logger = logging.getLogger(__name__)
@@ -308,37 +323,44 @@ def _non_catalog_vocabulary_findings(
     namespaces: list[str],
     quantity_fallback_vocabulary: dict[str, str] | None,
     *,
-    scaffolding: set[Node],
-    document: set[Node],
+    scope: FactScope,
+    contract: StatementContract | None = None,
     severity: str = "warning",
     declared_namespaces: tuple[str, ...] = (),
     catalog_terms: AbstractSet[str] = frozenset(),
 ) -> list[FactsValidationFinding]:
     """Report terms the facts graph uses that neither the context nor the catalog has.
 
-    When the renderer cannot find a term for something the text states, the
-    prompt's documented fallback is to reach for a well-known vocabulary
-    instead. That is the right behaviour -- the alternative is dropping the
-    fact -- but it is silent, and it looks identical to success: a clean graph
-    scoring in the nineties, expressed in vocabulary the catalog does not
-    contain and downstream queries will not match. A fallback firing is
-    evidence of a *retrieval* miss, so it is worth a finding even though the
-    facts graph itself is well-formed.
+    Every IRI the fact triples use (:func:`~ontocast.tool.facts_validation.term_verdict.used_terms`)
+    is judged by :func:`~ontocast.tool.facts_validation.term_verdict.term_verdict`,
+    as the unit validator judges it. A term a closed vocabulary does not have
+    -- a well-known vocabulary's term list, in any position, or the closed
+    range of a value's property -- is ``unknown_term``, an error, with
+    look-alikes that exist suggested and never applied.
 
-    Never the signature of a bad merge, so it must not drive the un-merge
-    repair whatever its severity. Under an open vocabulary it is a warning:
-    telemetry about context assembly. Under a strict one a term outside the
+    The rest is telemetry about predicates and classes. When the renderer
+    cannot find a term for something the text states, the prompt's
+    documented fallback is to reach for a well-known vocabulary instead. That
+    is the right behaviour -- the alternative is dropping the fact -- but it
+    is silent, and it looks identical to success. A fallback firing is
+    evidence of a *retrieval* miss, so it is worth a finding even though the
+    facts graph itself is well-formed: ``non_catalog_vocabulary``. Under an
+    open vocabulary it is a warning. Under a strict one a term outside the
     catalog is a defect, reported at ``severity``; a term of a namespace the
-    deployment declared as its own (``declared_namespaces``) or of the
-    configured fallback vocabulary stays a warning in both, and so does a
-    term of a well-known vocabulary (:mod:`ontocast.onto.well_known`) that
-    exists in it; one it does not have is reported at ``severity``.
+    deployment declared as its own (``declared_namespaces``), of the
+    configured fallback vocabulary or of a well-known vocabulary that has it
+    stays a warning in both. None of these is the signature of a bad merge,
+    so none drives the un-merge repair.
 
     Args:
         graph: Aggregated facts graph.
         ontology_graph: Merged ontology context that was offered to the renderer.
         namespaces: Fact namespaces; terms minted there are the extraction, not
             borrowed vocabulary.
+        quantity_fallback_vocabulary: The configured fallback vocabulary.
+        scope: The graph's fact scope.
+        contract: The catalog's statement contract, for the closed ranges of
+            value properties.
         severity: Severity of a term outside every configured vocabulary.
         declared_namespaces: Namespaces the deployment counts as its own.
         catalog_terms: Every term the whole catalog declares or references.
@@ -346,7 +368,7 @@ def _non_catalog_vocabulary_findings(
             validator and the shapes chapter both count it, so the gate does too.
 
     Returns:
-        list: One finding per non-catalog term, ordered by IRI.
+        list: One finding per term, ordered by IRI.
     """
     # A pure graph-vs-graph check: with nothing to compare against there is no
     # per-term finding to make. The *deployment* condition this used to mask --
@@ -356,26 +378,32 @@ def _non_catalog_vocabulary_findings(
         return []
 
     fallback_namespaces = _fallback_namespaces(graph, quantity_fallback_vocabulary)
+    fallback_terms = expand_vocabulary_terms(
+        quantity_fallback_vocabulary, graph, ontology_graph
+    )
     # Must match UNKNOWN_TERM's notion of "in the catalog" (collect_catalog_terms,
     # all three triple positions). A subjects()-only view calls a term supplied
     # solely as an rdfs:range object non-catalog -- exactly the terms the
     # domain/range schema closure is designed to admit.
-    supplied = collect_catalog_terms(ontology_graph) | catalog_terms
+    supplied = collect_catalog_terms(ontology_graph) | set(catalog_terms)
+    standard = (*_STANDARD_NAMESPACES, *well_known_namespaces(), *declared_namespaces)
     used: dict[str, set[str]] = {}
-    for subject, predicate, obj in graph:
-        if not isinstance(subject, URIRef) or is_scaffolding(
-            (subject, predicate, obj), scaffolding
-        ):
-            continue
-        term = obj if predicate == RDF.type else predicate
-        if not isinstance(term, URIRef):
-            continue
+    positions: dict[str, TermPosition] = {}
+    closed: dict[str, frozenset[str]] = {}
+    for term in used_terms(scope, contract):
         # The metadata the pipeline writes on the document node (its
         # ``foaf:Document`` type, ``dcterms:title`` …): no catalog will ever
         # supply it. The same term on an extracted instance is reported.
-        if subject in document and term in DOCUMENT_METADATA_TERMS:
+        if (
+            term.subject in scope.documents
+            and URIRef(term.iri) in DOCUMENT_METADATA_TERMS
+        ):
             continue
-        used.setdefault(str(term), set()).add(str(subject))
+        used.setdefault(term.iri, set()).add(node_key(term.subject))
+        if term.position != "object" or term.iri not in positions:
+            positions[term.iri] = term.position
+        if term.closed_range:
+            closed[term.iri] = closed.get(term.iri, frozenset()) | term.closed_range
 
     findings: list[FactsValidationFinding] = []
     for term in sorted(used):
@@ -385,29 +413,74 @@ def _non_catalog_vocabulary_findings(
             continue
         if any(term.startswith(ns) for ns in namespaces):
             continue
-        subjects = sorted(used[term])
+        position = positions[term]
+        subjects = sorted(used[term], key=lambda key: (key.startswith("_:"), key))
+        verdict = term_verdict(
+            term,
+            catalog_terms=supplied,
+            known_terms=supplied,
+            fallback_terms=fallback_terms,
+            declared_namespaces=frozenset(),
+            catalog_namespaces=frozenset(),
+            standard_namespaces=standard,
+            vocabulary="strict",
+            position=position,
+            closed_range=closed.get(term, frozenset()),
+        )
+        if verdict is not None and verdict.kind in (
+            TermVerdictKind.WELL_KNOWN_MISSING,
+            TermVerdictKind.CLOSED_RANGE_MISSING,
+        ):
+            pool = (
+                well_known_terms(_namespace_of(term))
+                if verdict.kind is TermVerdictKind.WELL_KNOWN_MISSING
+                else set(supplied)
+            )
+            suggestions = _alias_candidates(
+                URIRef(term),
+                graph,
+                pool,
+                ontology_graph=ontology_graph,
+                position=position,
+            )
+            vocabulary_name = (
+                verdict.vocabulary_title
+                if verdict.kind is TermVerdictKind.WELL_KNOWN_MISSING
+                else "the ontology nor of a listed vocabulary"
+            )
+            message = (
+                f"<{term}> is used by {len(subjects)} subject(s) but is not a "
+                f"term of {vocabulary_name}."
+            )
+            if suggestions:
+                message += (
+                    " Spelled like: "
+                    + ", ".join(f"<{candidate}>" for candidate in suggestions)
+                    + "."
+                )
+            findings.append(
+                FactsValidationFinding(
+                    kind=FactsValidationFindingKind.UNKNOWN_TERM,
+                    message=message,
+                    subject=subjects[0],
+                    predicate=term,
+                    values=subjects,
+                    suggestions=suggestions,
+                )
+            )
+            continue
+        if position == "object":
+            continue
         # A term the deployment itself named as the fallback is a configured
         # choice the prompt instructed. Still a retrieval miss worth reporting,
         # but not the same signal as vocabulary invented out of nowhere -- the
         # message must not accuse the renderer of improvising what it was told.
-        vocabulary = well_known_vocabulary(term)
-        missing_from = (
-            vocabulary
-            if vocabulary is not None
-            and not vocabulary.has_term(term[len(_namespace_of(term)) :])
-            else None
-        )
-        configured = missing_from is None and (
-            vocabulary is not None
+        configured = verdict is None and (
+            well_known_vocabulary(term) is not None
             or _is_configured_fallback(term, fallback_namespaces)
             or (bool(declared_namespaces) and term.startswith(declared_namespaces))
         )
-        if missing_from is not None:
-            message = (
-                f"<{term}> is used by {len(subjects)} subject(s) but is not a "
-                f"term of {missing_from.title}."
-            )
-        elif configured:
+        if configured:
             message = (
                 f"<{term}> is used by {len(subjects)} subject(s) but was "
                 "absent from the ontology context — the renderer took the "
@@ -496,6 +569,8 @@ def validate_aggregated_facts(
     non_catalog_severity: str = "warning",
     additional_standard_namespaces: Sequence[str] = (),
     catalog_terms: AbstractSet[str] = frozenset(),
+    contract: StatementContract | None = None,
+    document: Node | None = None,
 ) -> FactsValidationReport:
     """Check post-merge invariants over the aggregated facts graph.
 
@@ -522,6 +597,9 @@ def validate_aggregated_facts(
         - ``DEGENERATE_COREFERENCE``: one IRI object shared by >= 2 distinct
           functional-ish predicates of one subject (collapsed range bounds).
         - ``SHACL``: optional, when ``pyshacl`` is installed and shapes exist.
+        - ``UNKNOWN_TERM``: a term a closed vocabulary does not have, in any
+          position (an individual of a value by its property's closed range,
+          read from ``contract``); an error.
         - ``NON_CATALOG_VOCABULARY``: terms neither the ontology context nor
           ``catalog_terms`` supplies. A warning under an open vocabulary (a retrieval miss the
           renderer papered over with a documented fallback);
@@ -559,6 +637,9 @@ def validate_aggregated_facts(
             correct merge.
         catalog_terms: Every term of the whole catalog, so NON_CATALOG_VOCABULARY
             agrees with the unit validator on what "in the catalog" means.
+        contract: The catalog's statement contract, for UNKNOWN_TERM by role.
+        document: The IRI of the document node; its pipeline metadata is not
+            the gate's business, and a work the text cites is never it.
 
     Returns:
         Report with all findings, ordered by subject.
@@ -569,14 +650,13 @@ def validate_aggregated_facts(
 
     # Provenance machinery (chunks, reifiers) and the document node's metadata
     # are legitimately multi-valued and never the gate's business.
-    scaffolding = scaffolding_nodes(graph)
-    document = document_nodes(graph)
+    scope = FactScope.of(graph, namespaces, document)
 
     object_groups: dict[tuple[URIRef, URIRef], set] = {}
     iri_groups: dict[tuple[URIRef, URIRef], set[URIRef]] = {}
     string_groups: dict[tuple[URIRef, URIRef], set[str]] = {}
     predicate_object_kinds: dict[URIRef, dict[str, int]] = {}
-    for subject, predicate, obj in graph:
+    for subject, predicate, obj in scope.triples():
         if (
             not isinstance(subject, URIRef)
             or not isinstance(predicate, URIRef)
@@ -587,8 +667,7 @@ def validate_aggregated_facts(
             # Left in, it reads as "dominantly single-valued" and every large
             # cluster becomes an error that drives the repair to un-merge it.
             or predicate == OWL.sameAs
-            or subject in document
-            or is_scaffolding((subject, predicate, obj), scaffolding)
+            or subject in scope.documents
         ):
             continue
         object_groups.setdefault((subject, predicate), set()).add(obj)
@@ -804,17 +883,15 @@ def validate_aggregated_facts(
             ontology_graph,
             namespaces,
             quantity_fallback_vocabulary,
-            scaffolding=scaffolding,
-            document=document,
+            scope=scope,
+            contract=contract,
             severity=non_catalog_severity,
             declared_namespaces=tuple(additional_standard_namespaces),
             catalog_terms=catalog_terms,
         )
     )
 
-    findings.extend(
-        _dangling_reference_findings(graph, namespaces, scaffolding=scaffolding)
-    )
+    findings.extend(_dangling_reference_findings(scope))
 
     # Object-kind self-consistency: a predicate carrying IRI objects on some
     # subjects and literal objects on others ("worksFor <org>" here, "worksFor
@@ -854,12 +931,7 @@ _DANGLING_REFERENCE_REPORT_CAP = 20
 _DANGLING_EXEMPT_PREDICATES = frozenset({OWL.sameAs})
 
 
-def _dangling_reference_findings(
-    graph: RDFGraph,
-    fact_namespaces: list[str],
-    *,
-    scaffolding: set[Node],
-) -> list[FactsValidationFinding]:
+def _dangling_reference_findings(scope: FactScope) -> list[FactsValidationFinding]:
     """Warning telemetry: fact-namespace objects that are never described.
 
     A fact-namespace IRI referenced as an object but never appearing as a
@@ -868,19 +940,17 @@ def _dangling_reference_findings(
     it never drives un-merge.
     """
     subjects: set[URIRef] = {
-        subject for subject in graph.subjects() if isinstance(subject, URIRef)
+        subject for subject in scope.graph.subjects() if isinstance(subject, URIRef)
     }
     dangling: dict[URIRef, set[URIRef]] = {}
-    for subject, predicate, obj in graph:
+    for _, predicate, obj in scope.triples():
         if predicate == RDF.type or not isinstance(obj, URIRef):
             continue
         if predicate in _DANGLING_EXEMPT_PREDICATES:
             continue
-        if is_scaffolding((subject, predicate, obj), scaffolding):
-            continue
         if obj in subjects:
             continue
-        if not any(str(obj).startswith(ns) for ns in fact_namespaces):
+        if not scope.in_namespaces(obj):
             continue
         if not isinstance(predicate, URIRef):
             continue

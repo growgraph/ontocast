@@ -142,8 +142,8 @@ class EntityNormalizer:
     def normalize_string(self, text: str) -> str:
         """Normalize a string: lowercase, remove diacritics, clean special chars.
 
-        CamelCase is split so that it yields the same logical tokens as snake_case
-        (e.g. 'PLRedShift' -> 'pl red shift').
+        Text keeps its words as written: CamelCase is split in IRI local names
+        only (:meth:`normalize_uri`).
 
         Args:
             text: Input string to normalize
@@ -152,8 +152,8 @@ class EntityNormalizer:
             Normalized string suitable for comparison
 
         Examples:
-            'PLRedShift' -> 'pl red shift'
             'PL_red_shift_value' -> 'pl red shift value'
+            'ABCs' -> 'abcs'
             'Café' -> 'cafe'
         """
         from ontocast.tool.agg.signatures import normalize_string_value
@@ -237,9 +237,9 @@ class EntityNormalizer:
                 if p == RDF.type and isinstance(o, URIRef):
                     types.append(o)
                 elif isinstance(p, URIRef) and isinstance(o, URIRef):
-                    # Compared across units by the functional-object guard:
-                    # same-named objects of two mentions are one object there.
-                    predicate_iri_objects.setdefault(p, set()).add(unscoped_iri(o))
+                    # The functional-object guard compares these by the
+                    # identity the aggregator decides, never by minted name.
+                    predicate_iri_objects.setdefault(p, set()).add(o)
 
                 # Collect labels
                 if p == RDFS.label and isinstance(o, Literal):

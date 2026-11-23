@@ -4,7 +4,7 @@ import logging
 import random
 import re
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from langchain_core.output_parsers import BaseOutputParser, PydanticOutputParser
 from langchain_core.prompts import BasePromptTemplate
@@ -26,6 +26,12 @@ from ontocast.tool.llm import (
     record_active_count,
     use_llm_phase,
 )
+
+if TYPE_CHECKING:
+    from ontocast.onto.rdfgraph import RDFGraph
+    from ontocast.onto.unit_states import UnitFactsState
+    from ontocast.tool.atomic import AtomicToolBox
+    from ontocast.tool.facts_validation.unit_findings import UnitPromptScope
 
 logger = logging.getLogger(__name__)
 
@@ -673,3 +679,26 @@ async def call_llm_with_retry(
                 raise
 
     raise RuntimeError("Unexpected error in call_llm_with_retry")
+
+
+def unit_prompt_scope_for(
+    state: "UnitFactsState", tools: "AtomicToolBox", ontology_graph: "RDFGraph | None"
+) -> "UnitPromptScope":
+    """The :class:`~ontocast.tool.facts_validation.unit_findings.UnitPromptScope`
+    of a facts unit: the one decision the render, critic and gap-pass prompts
+    read for their conditional rules.
+
+    Args:
+        state: The unit's facts state.
+        tools: The atomic toolbox (statement contract, validation policy).
+        ontology_graph: The unit's ontology context.
+    """
+    from ontocast.tool.facts_validation.unit_findings import unit_prompt_scope
+
+    return unit_prompt_scope(
+        extraction_text=state.content_unit.extraction_text,
+        ontology_graph=ontology_graph,
+        contract=tools.statement_contract(),
+        policy=tools.validation_policy,
+        is_citation_metadata=state.content_unit.is_citation_metadata,
+    )

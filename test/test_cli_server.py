@@ -972,6 +972,7 @@ def test_dump_validation_report_carries_unit_repairs_and_failures(tmp_path) -> N
                 "source": "ex:hasASiteComponent",
                 "target": "ex:hasBSiteComponent",
                 "triple_count": 2,
+                "suggestions": [],
             }
         ]
     }
@@ -1474,16 +1475,17 @@ class _UnitsWorkflow:
             )
             units.append(unit)
         aggregator = EmbeddingBasedAggregator(AggregationConfig(enabled=False))
-        facts = aggregator.postprocess_facts_units(
-            [unit.model_copy(deep=True) for unit in units], RDFGraph()
-        ).graph
+        facts_units = [unit.model_copy(deep=True) for unit in units]
+        facts = aggregator.postprocess_facts_units(facts_units, RDFGraph()).graph
         self.facts = facts
+        self.facts_units = facts_units
 
         async def _stream():
             yield {
                 "status": Status.SUCCESS,
                 "aggregated_facts": facts,
                 "content_units": units,
+                "facts_units": facts_units,
             }
 
         return _stream()
@@ -1537,6 +1539,114 @@ def test_kept_provenance_resolves_through_the_units_sidecar(
         "Sample B was annealed.",
     }
     assert all(row["summarized"] is False for row in rows)
+
+
+@pytest.mark.parametrize("strip_provenance", [True, False])
+def test_kept_provenance_writes_the_graphs_aggregation_receives(
+    tmp_path, strip_provenance: bool
+) -> None:
+    """``.units.trig`` holds each unit's facts as merged, named by its unit IRI."""
+    from rdflib import Dataset
+    from rdflib.compare import isomorphic
+
+    from ontocast.api.process_helpers import process_files_input
+
+    tools = _batch_toolbox()
+    workflow = _UnitsWorkflow()
+    src = tmp_path / "a.txt"
+    src.write_text("Sample A was annealed. Sample B was annealed.", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    failed = asyncio.run(
+        process_files_input(
+            [src],
+            config=tools.config,
+            head_chunks=None,
+            use_unit_pipeline=False,
+            tools=tools,
+            workflow=cast(CompiledStateGraph, workflow),
+            ontology_context_mode_value=OntologyContextMode.SELECTED_SINGLE_ONTOLOGY,
+            tenant=None,
+            project=None,
+            output_dir=out_dir,
+            strip_provenance=strip_provenance,
+        )
+    )
+    assert failed == []
+
+    dumps = list(out_dir.rglob("a.units.trig"))
+    if strip_provenance:
+        assert dumps == []
+        return
+    dataset = Dataset()
+    dataset.parse(dumps[0], format="trig")
+    for unit in workflow.facts_units:
+        named = dataset.graph(URIRef(unit.iri_absolute))
+        assert len(named) > 0
+        assert isomorphic(named, unit.graph)
+
+
+def test_units_trig_describes_units_and_keeps_lexical_forms(tmp_path) -> None:
+    """Unit text, document metadata, the ontology context and coreference
+    verdicts ride along; a double keeps its lexical form; a repeated unit IRI
+    gets its own graph."""
+    from rdflib import OWL, XSD, Dataset, Literal
+
+    from ontocast.api.process_helpers import dump_units_trig
+    from ontocast.onto.constants import DEFAULT_IRI, ONTOCAST, SCHEMA
+
+    state = _batch_state()
+    state.document_metadata = {"doi": "10.1/x"}
+    cd = DEFAULT_IRI
+    units = []
+    for index in (0, 1):
+        unit = ContentUnit(text="Same text.", index=index, doc_iri=state.doc_iri)
+        unit.graph.add(
+            (
+                URIRef(f"{cd}m{index}"),
+                URIRef("https://example.org/value"),
+                Literal("1.23456789012", datatype=XSD.double),
+            )
+        )
+        units.append(unit)
+    state.facts_units = units
+    state.coreference_vetoes = [(f"{cd}m0", f"{cd}m1")]
+    ontology = URIRef("https://example.org/onto")
+    state.facts_ontology_context.add((ontology, RDF.type, OWL.Ontology))
+
+    out = dump_units_trig(state, tmp_path / "paper.pdf", output_dir=tmp_path)
+    assert out is not None
+    assert out == tmp_path / "paper.units.trig"
+    assert '"1.23456789012"^^xsd:double' in out.read_text(encoding="utf-8")
+
+    dataset = Dataset()
+    dataset.parse(out, format="trig")
+    first = URIRef(units[0].iri_absolute)
+    second = URIRef(f"{units[1].iri_absolute}#1")
+    assert len(dataset.graph(first)) == 1
+    assert len(dataset.graph(second)) == 1
+    default = dataset.default_context
+    assert default.value(second, SCHEMA.position) == Literal(1)
+    assert str(default.value(first, SCHEMA.text)) == "Same text."
+    assert default.value(first, SCHEMA.isPartOf) == state.doc_iri
+    assert '"doi": "10.1/x"' in str(
+        default.value(state.doc_iri, ONTOCAST.documentMetadata)
+    )
+    assert (
+        URIRef(f"{cd}m0"),
+        ONTOCAST.coreferenceDifferent,
+        URIRef(f"{cd}m1"),
+    ) in default
+    context = default.value(state.doc_iri, ONTOCAST.ontologyContext)
+    assert context == URIRef(f"{state.doc_iri}#ontology-context")
+    assert (ontology, RDF.type, OWL.Ontology) in dataset.graph(context)
+
+
+def test_units_trig_needs_facts_units(tmp_path) -> None:
+    from ontocast.api.process_helpers import dump_units_trig
+
+    assert dump_units_trig(_batch_state(), tmp_path / "paper.pdf") is None
 
 
 def test_dump_catalog_writes_one_catalog_per_document(tmp_path) -> None:

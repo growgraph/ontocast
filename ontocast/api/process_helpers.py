@@ -10,17 +10,20 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
+import pyoxigraph as ox
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
+from rdflib import XSD, URIRef
 
 from ontocast._version import __version__
 from ontocast.agent.serialize import serialize as serialize_agent_state
 from ontocast.config import Config, ServerConfig
 from ontocast.config.snapshot import config_snapshot
-from ontocast.onto.constants import DEFAULT_IRI
+from ontocast.onto.constants import DEFAULT_IRI, ONTOCAST, PROV, SCHEMA
 from ontocast.onto.enum import OntologyContextMode, Status
 from ontocast.onto.ontology import Ontology
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.reification import ox_triple
 from ontocast.onto.run_manifest import (
     RunManifest,
     RunManifestHome,
@@ -39,6 +42,7 @@ from ontocast.onto.run_meter import (
 )
 from ontocast.onto.state import AgentState, InputDocument
 from ontocast.stategraph.facts_gate import run_facts_gate
+from ontocast.stategraph.node_factories import facts_document_metadata
 from ontocast.stategraph.unit_pipeline import DocumentConversionError, run_unit_pipeline
 from ontocast.tool.chunk.prepare import SectionSelectionEmptyError
 from ontocast.tool.llm import LLMConfigurationError
@@ -292,6 +296,170 @@ def dump_units_jsonl(
         encoding="utf-8",
     )
     logger.info("Dumped %d content units to %s", len(state.content_units), output_path)
+    return output_path
+
+
+def dump_units_trig(
+    state: AgentState,
+    file_path: pathlib.Path,
+    *,
+    line_number: int | None = None,
+    output_dir: pathlib.Path | None = None,
+) -> pathlib.Path | None:
+    """Write the facts each unit hands to aggregation, one named graph per unit.
+
+    A graph is named by its unit's IRI (``<doc_iri>/<hid>``; ``#<index>`` is
+    appended when two units share one) and holds that unit's facts exactly as
+    the merge step receives them, so aggregation and the facts gate can be
+    re-run on this input without a model call. The default graph describes
+    each graph name (``schema:position``, ``schema:identifier``,
+    ``schema:text``, ``schema:articleSection`` with
+    ``ontocast:sectionLabelSource`` / ``ontocast:sectionLabelStrength``,
+    ``prov:generatedAtTime``, ``ontocast:citationMetadata``,
+    ``schema:isPartOf`` the document) and the document: the metadata
+    aggregation attaches to it (``ontocast:documentMetadata``, a JSON object),
+    the ontology context the facts were aggregated against
+    (``ontocast:ontologyContext``, the graph ``<doc_iri>#ontology-context``)
+    and the coreference verdicts the run kept (``ontocast:coreferenceSame`` /
+    ``ontocast:coreferenceDifferent`` between source entities). Literals keep
+    their lexical form.
+
+    Returns:
+        The path written, or None when no unit produced facts. A unit
+        that produced none is described but has no graph.
+    """
+    units = state.facts_units
+    if not units:
+        return None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    facts_path = facts_ttl_output_path(
+        file_path, line_number=line_number, output_dir=output_dir
+    )
+    output_path = facts_path.with_name(
+        f"{facts_path.name.removesuffix('.facts.ttl')}.units.trig"
+    )
+
+    default = ox.DefaultGraph()
+    quads: list[ox.Quad] = []
+    namespaces: dict[str, str] = {
+        "schema": str(SCHEMA),
+        "prov": str(PROV),
+        "ontocast": str(ONTOCAST),
+        "xsd": str(XSD),
+    }
+
+    def meta(subject: str, predicate: URIRef, obj: ox.NamedNode | ox.Literal) -> None:
+        quads.append(
+            ox.Quad(ox.NamedNode(subject), ox.NamedNode(str(predicate)), obj, default)
+        )
+
+    doc_iri = str(state.doc_iri)
+    seen: set[str] = set()
+    for unit in sorted(units, key=lambda u: u.index):
+        name = unit.iri_absolute
+        if name in seen:
+            name = f"{name}#{unit.index}"
+        seen.add(name)
+        graph_name = ox.NamedNode(name)
+        for triple in unit.graph:
+            term = ox_triple(triple)
+            if term is not None:
+                quads.append(
+                    ox.Quad(term.subject, term.predicate, term.object, graph_name)
+                )
+        if unit.graph.has_reifications:
+            quads.extend(
+                ox.Quad(q.subject, q.predicate, q.object, graph_name)
+                for q in unit.graph.reifications.quads()
+            )
+        for prefix, namespace in unit.graph.namespaces():
+            if prefix:
+                namespaces.setdefault(str(prefix), str(namespace))
+        meta(name, SCHEMA.isPartOf, ox.NamedNode(doc_iri))
+        meta(
+            name,
+            SCHEMA.position,
+            ox.Literal(str(unit.index), datatype=ox.NamedNode(str(XSD.integer))),
+        )
+        meta(name, SCHEMA.identifier, ox.Literal(unit.hid))
+        meta(name, SCHEMA.text, ox.Literal(unit.text))
+        if unit.section_label is not None:
+            meta(name, SCHEMA.articleSection, ox.Literal(unit.section_label))
+            if unit.section_label_source is not None:
+                meta(
+                    name,
+                    ONTOCAST.sectionLabelSource,
+                    ox.Literal(str(unit.section_label_source)),
+                )
+            if unit.section_label_strength is not None:
+                meta(
+                    name,
+                    ONTOCAST.sectionLabelStrength,
+                    ox.Literal(str(unit.section_label_strength)),
+                )
+        if unit.generated_at is not None:
+            meta(
+                name,
+                PROV.generatedAtTime,
+                ox.Literal(
+                    unit.generated_at.isoformat(),
+                    datatype=ox.NamedNode(str(XSD.dateTime)),
+                ),
+            )
+        if unit.is_citation_metadata:
+            meta(
+                name,
+                ONTOCAST.citationMetadata,
+                ox.Literal("true", datatype=ox.NamedNode(str(XSD.boolean))),
+            )
+
+    document_metadata = facts_document_metadata(state)
+    if document_metadata:
+        meta(
+            doc_iri,
+            ONTOCAST.documentMetadata,
+            ox.Literal(json.dumps(document_metadata, sort_keys=True, default=str)),
+        )
+    if len(state.facts_ontology_context) > 0:
+        context_name = f"{doc_iri}#ontology-context"
+        context_graph = ox.NamedNode(context_name)
+        for triple in state.facts_ontology_context:
+            term = ox_triple(triple)
+            if term is not None:
+                quads.append(
+                    ox.Quad(term.subject, term.predicate, term.object, context_graph)
+                )
+        for prefix, namespace in state.facts_ontology_context.namespaces():
+            if prefix:
+                namespaces.setdefault(str(prefix), str(namespace))
+        meta(doc_iri, ONTOCAST.ontologyContext, context_graph)
+    for predicate, pairs in (
+        (ONTOCAST.coreferenceSame, state.coreference_confirmations),
+        (ONTOCAST.coreferenceDifferent, state.coreference_vetoes),
+    ):
+        for left, right in sorted(pairs):
+            meta(left, predicate, ox.NamedNode(right))
+
+    used: set[str] = set()
+    for quad in quads:
+        for term in (quad.subject, quad.predicate, quad.object, quad.graph_name):
+            if isinstance(term, ox.NamedNode):
+                used.add(term.value)
+            elif isinstance(term, ox.Literal):
+                used.add(term.datatype.value)
+    prefixes = {
+        prefix: namespace
+        for prefix, namespace in sorted(namespaces.items())
+        if any(iri.startswith(namespace) for iri in used)
+    }
+    raw = ox.serialize(quads, format=ox.RdfFormat.TRIG, prefixes=prefixes)
+    output_path.write_bytes(raw or b"")
+    logger.info(
+        "Dumped the facts of %d unit(s) as aggregation receives them to %s",
+        len(units),
+        output_path,
+    )
     return output_path
 
 
@@ -1040,6 +1208,12 @@ async def process_files_input(
                 )
                 if not strip_provenance:
                     dump_units_jsonl(
+                        state,
+                        file_path,
+                        line_number=line_number,
+                        output_dir=facts_dir,
+                    )
+                    dump_units_trig(
                         state,
                         file_path,
                         line_number=line_number,

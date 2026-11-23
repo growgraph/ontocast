@@ -22,7 +22,7 @@ from ontocast.onto.rdfgraph import RDFGraph, RejectedLiteralTriple
 from ontocast.tool.facts_validation import (
     collect_unit_findings,
     normalize_literals_against_schema,
-    partition_literals_outside_temporal_ranges,
+    range_mismatches,
     repair_literal_type_objects,
     repair_property_aliases,
 )
@@ -106,7 +106,7 @@ def test_a_date_range_probe_is_silent_and_keeps_text_that_is_no_date(
     assert not [r for r in caplog.records if r.name == "rdflib.term"]
 
 
-def test_text_that_is_no_date_on_a_date_range_is_set_aside_for_the_critic() -> None:
+def test_a_literal_off_its_declared_range_is_set_aside_for_the_critic() -> None:
     ev = "https://ex.org/events#"
     started, note, count = (URIRef(ev + n) for n in ("startedAt", "note", "count"))
     ontology = RDFGraph()
@@ -122,25 +122,29 @@ def test_text_that_is_no_date_on_a_date_range_is_set_aside_for_the_critic() -> N
     graph.add((subject, count, Literal("about five")))
     normalize_literals_against_schema(graph, ontology)
 
-    clean, rejected = partition_literals_outside_temporal_ranges(graph, ontology)
+    found = range_mismatches(graph, ontology)
+    rejected = {record.object_lexical: record for _, record in found}
 
-    assert {item.object_lexical for item in rejected} == {
+    assert rejected.keys() == {
         "every 5 years or more often",
         "every year",
+        "about five",
     }
-    assert all(item.expected_datatype == str(XSD.dateTime) for item in rejected)
-    assert set(clean.objects(subject, started)) == {
-        Literal("2021-06-29T00:00:00", datatype=XSD.dateTime)
-    }
-    assert (subject, note, Literal("every 5 years")) in clean
-    assert (subject, count, Literal("about five")) in clean
+    assert rejected["every year"].expected_datatypes == (str(XSD.dateTime),)
+    assert rejected["about five"].expected_datatypes == (str(XSD.decimal),)
+    set_aside = {triple for triple, _ in found}
+    assert (subject, note, Literal("every 5 years")) not in set_aside
+    assert (
+        subject,
+        started,
+        Literal("2021-06-29T00:00:00", datatype=XSD.dateTime),
+    ) not in set_aside
 
 
-def test_no_ontology_sets_nothing_aside() -> None:
+def test_no_declared_range_sets_nothing_aside() -> None:
     graph = RDFGraph()
     graph.add((URIRef(f"{FACTS}a"), URIRef("https://ex.org/events#at"), Literal("x")))
-    clean, rejected = partition_literals_outside_temporal_ranges(graph, None)
-    assert clean is graph and rejected == []
+    assert range_mismatches(graph, None) == []
 
 
 def test_a_real_well_known_term_is_never_an_alias() -> None:

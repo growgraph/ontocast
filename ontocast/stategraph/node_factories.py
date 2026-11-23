@@ -106,6 +106,18 @@ T = TypeVar("T")
 #: _gather_units re-raises them instead of counting N of them as unit errors.
 _DEPLOYMENT_FAULTS = (OntologyContextConfigError, *RUN_STOPPING_ERRORS)
 
+#: The repairs a unit's exit applies (:mod:`ontocast.stategraph.unit_exit`).
+_EXIT_REPAIR_KINDS = frozenset(
+    {
+        FactsGateRepairKind.DOMAIN_VIOLATION_DROPPED,
+        FactsGateRepairKind.UNKNOWN_TERM_DROPPED,
+        FactsGateRepairKind.UNGROUNDED_NUMBER_DROPPED,
+        FactsGateRepairKind.VALUE_WITHOUT_NUMBER_DROPPED,
+        FactsGateRepairKind.CONTRADICTED_INDIVIDUAL_DROPPED,
+        FactsGateRepairKind.QUARANTINE_AS_COMMENT,
+    }
+)
+
 
 def _insert_only(tools: ToolBox) -> bool:
     """Whether ``ONTOLOGY_UPDATE_MODE=insert_only`` is in force."""
@@ -937,8 +949,8 @@ def make_render_facts_node(tools: ToolBox):
         findings_residual = 0
         mandatory_residual = 0
         mandatory_by_kind: Counter[str] = Counter()
-        subject_gaps_rendered = 0
-        subject_gaps_left = 0
+        role_gaps_rendered = 0
+        role_gaps_left = 0
         critic_fixes_applied = 0
         critic_fixes_residual = 0
         critic_fixes_noop = 0
@@ -965,11 +977,11 @@ def make_render_facts_node(tools: ToolBox):
                 for finding in result.deterministic_findings
                 if finding.mandatory
             )
-            subject_gaps_rendered += result.statements_without_subject_rendered
-            subject_gaps_left += sum(
+            role_gaps_rendered += result.statements_missing_role_rendered
+            role_gaps_left += sum(
                 1
                 for finding in result.deterministic_findings
-                if finding.kind == FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT
+                if finding.kind == FactsUnitFindingKind.MISSING_ROLE
             )
             critic_fixes_applied += result.critic_fixes_applied
             critic_fixes_residual += result.critic_fixes_residual
@@ -1076,10 +1088,10 @@ def make_render_facts_node(tools: ToolBox):
             dict(sorted(mandatory_by_kind.items()))
         )
         state.retrieval_metrics[
-            RetrievalMetric.FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED
-        ] = subject_gaps_rendered
-        state.retrieval_metrics[RetrievalMetric.FACTS_STATEMENTS_WITHOUT_SUBJECT] = (
-            subject_gaps_left
+            RetrievalMetric.FACTS_STATEMENTS_MISSING_ROLE_RENDERED
+        ] = role_gaps_rendered
+        state.retrieval_metrics[RetrievalMetric.FACTS_STATEMENTS_MISSING_ROLE] = (
+            role_gaps_left
         )
         # The critic's own ledger. `node_visits` counting CRITICISE_FACTS lived
         # on the per-unit state copy and died with it, so the number of critic
@@ -1152,6 +1164,14 @@ def make_render_facts_node(tools: ToolBox):
             for record in records
             if record.kind == FactsGateRepairKind.DOMAIN_VIOLATION_DROPPED
         )
+        exit_repairs: Counter[str] = Counter()
+        for records in state.facts_repairs_applied.values():
+            for record in records:
+                if record.kind in _EXIT_REPAIR_KINDS:
+                    exit_repairs[str(record.kind)] += record.triple_count
+        state.retrieval_metrics[RetrievalMetric.FACTS_EXIT_REPAIRS_BY_KIND] = dict(
+            sorted(exit_repairs.items())
+        )
         state.facts_units = facts_units
         state.status = _map_stage_status(
             failed_without_output_count, len(state.content_units)
@@ -1222,6 +1242,15 @@ def _facts_aggregation_inputs(
         if merged_context is not None and len(merged_context.snapshot.graph) > 0:
             ontology_graph = merged_context.snapshot.graph
             state.facts_ontology_context = ontology_graph
+    return ontology_graph, facts_document_metadata(state)
+
+
+def facts_document_metadata(state: AgentState) -> dict:
+    """The document metadata facts aggregation attaches to the document IRI.
+
+    The caller's metadata, plus ``source_url`` when the state has one and the
+    metadata names no source.
+    """
     document_metadata = dict(state.document_metadata)
     if (
         state.source_url
@@ -1229,7 +1258,7 @@ def _facts_aggregation_inputs(
         and "source_uri" not in document_metadata
     ):
         document_metadata["source_url"] = state.source_url
-    return ontology_graph, document_metadata
+    return document_metadata
 
 
 def make_merge_facts_node(tools: ToolBox):
@@ -1252,7 +1281,6 @@ def make_merge_facts_node(tools: ToolBox):
         aggregator = tools.aggregator
         if aggregator.llm_coreference and len(state.facts_units) > 1:
             state.coreference_candidates = coreference_candidates(
-                unconfirmed_merges=result.unconfirmed_merges,
                 lexical_near_misses=result.lexical_near_misses,
                 units=state.facts_units,
                 final_uri={

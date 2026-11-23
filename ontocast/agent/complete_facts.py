@@ -1,10 +1,11 @@
 """Insert-only facts gap agent.
 
-Runs after the facts render/critic loop, only when the unit has a gap: the
-numeric-coverage inventory still lists measurements the render missed (see
-:func:`ontocast.tool.facts_validation.unit_findings.unit_numeric_inventory`),
-or a statement or value is linked to nothing (``statement_without_subject``
-findings).
+Runs after the facts render/critic loop, only when the unit has a gap its
+:class:`~ontocast.tool.facts_validation.mandate.GapMandate` lists: a
+statement missing a role its class requires (``missing_role`` findings), an
+instance linked to nothing, or, with measurement recovery on, a measurement
+the numeric-coverage inventory still lists as missing (see
+:func:`ontocast.tool.facts_validation.unit_findings.unit_numeric_inventory`).
 Mirrors :mod:`ontocast.agent.criticise_facts` in shape -- one LLM call parsed
 into :class:`~ontocast.onto.model.TripleFix` fixes -- but proposes insertions
 instead of judging what is already there.
@@ -17,24 +18,24 @@ worse is rolled back exactly the way a bad critic fix would be.
 """
 
 import logging
-from collections.abc import Sequence
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
-from rdflib import URIRef
 
-from ontocast.agent.common import call_llm_with_retry
+from ontocast.agent.common import call_llm_with_retry, unit_prompt_scope_for
 from ontocast.onto.enum import LLMPhase
-from ontocast.onto.model import FactsCompletionReport, FactsUnitFinding, TripleFix
+from ontocast.onto.model import FactsCompletionReport, TripleFix
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import text_template, user_template
 from ontocast.prompt.complete_facts import (
+    asks_property,
     build_catalog_subjects_chapter,
     build_detached_chapter,
     build_missing_measurements_chapter,
-    build_subject_gaps_chapter,
+    build_role_gaps_chapter,
+    build_task_chapter,
     build_term_sheet,
-    completion_instruction,
+    completion_guidelines,
     output_instruction_for,
     preamble,
     template_prompt,
@@ -45,9 +46,9 @@ from ontocast.tool.facts_validation import (
     collect_catalog_terms,
     expand_vocabulary_terms,
 )
+from ontocast.tool.facts_validation.mandate import GapMandate
 from ontocast.tool.facts_validation.terms import link_properties
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
-from ontocast.util.numeric_inventory import NumericInventory
 
 logger = logging.getLogger(__name__)
 
@@ -75,11 +76,12 @@ def _build_prompt() -> PromptTemplate:
             "conformance_chapter",
             "term_sheet",
             "catalog_subjects_chapter",
+            "task_chapter",
             "completion_instruction",
             "user_instruction",
             "text_chapter",
             "missing_measurements_chapter",
-            "subject_gaps_chapter",
+            "role_gaps_chapter",
             "detached_chapter",
             "output_instruction",
             "format_instructions",
@@ -90,9 +92,7 @@ def _build_prompt() -> PromptTemplate:
 async def complete_facts(
     state: UnitFactsState,
     atomic: AtomicToolBox,
-    inventory: NumericInventory,
-    subject_gaps: Sequence[FactsUnitFinding] = (),
-    detached: Sequence[URIRef] = (),
+    mandate: GapMandate,
 ) -> list[TripleFix]:
     """Propose insert-only fixes closing the unit's gaps.
 
@@ -100,19 +100,16 @@ async def complete_facts(
         state: The unit's current facts state. Read-only here -- the unit
             loop applies whatever this returns.
         atomic: Toolbox for the LLM call and the unit's quantity vocabulary.
-        inventory: The unit's missing-measurement inventory, already computed
-            by the caller so the completion pass and the NUMERIC_COVERAGE
-            finding agree on what is missing.
-        subject_gaps: The unit's ``statement_without_subject`` findings.
-        detached: The unit's instances linked to nothing that no subject gap
-            names. With no gap of any kind there is no call.
+        mandate: The gaps this call is for, built by the caller; the unit
+            loop admits only what it lists. With no gap of any kind there is
+            no call.
 
     Returns:
         Proposed fixes, action ``ADD`` only. Anything else the model returns
         is dropped defensively rather than trusted -- this pass is
         insert-only by contract, not by the model's cooperation.
     """
-    if not inventory.measurements and not subject_gaps and not detached:
+    if not (mandate.inventory.measurements or mandate.role_gaps or mandate.detached):
         return []
 
     llm_tool = await atomic.get_llm_tool(state.budget_tracker)
@@ -126,23 +123,32 @@ async def complete_facts(
     ontology_graph = state.ontology_snapshot.graph
     fact_graph = state.content_unit.graph
 
+    # The same decision as the render's quantity chapter.
+    quantities = unit_prompt_scope_for(state, atomic, ontology_graph).quantities
+    # The statement roles are shown only to a call that repairs or recovers a
+    # statement.
+    statements = bool(mandate.role_gaps or mandate.inventory.measurements)
     unit_properties = _unit_role_property(atomic, ontology_graph, fact_graph)
     term_sheet = build_term_sheet(
         ontology_graph,
         unit_properties,
         value_terms=atomic.quantity_fallback_vocabulary,
-        contract=atomic.subject_contract(),
+        contract=atomic.statement_contract(),
+        quantities=quantities,
+        statements=statements,
+        values=bool(mandate.inventory.measurements),
+        property_class=asks_property(mandate),
     )
     catalog_subjects_chapter = build_catalog_subjects_chapter(
         fact_graph, collect_catalog_terms(ontology_graph)
     )
-    missing_measurements_chapter = build_missing_measurements_chapter(inventory)
-    subject_gaps_chapter = build_subject_gaps_chapter(fact_graph, subject_gaps)
+    missing_measurements_chapter = build_missing_measurements_chapter(mandate.inventory)
+    role_gaps_chapter = build_role_gaps_chapter(fact_graph, mandate.role_gaps)
     detached_chapter = build_detached_chapter(
         fact_graph,
         [
             (node, link_properties(node, fact_graph, ontology_graph))
-            for node in detached
+            for node in mandate.detached
         ],
     )
 
@@ -158,13 +164,14 @@ async def complete_facts(
         "conformance_chapter": state.conformance_chapter,
         "term_sheet": term_sheet,
         "catalog_subjects_chapter": catalog_subjects_chapter,
-        "completion_instruction": completion_instruction,
+        "task_chapter": build_task_chapter(mandate),
+        "completion_instruction": completion_guidelines(mandate),
         "user_instruction": user_instruction,
         "text_chapter": text_chapter,
         "missing_measurements_chapter": missing_measurements_chapter,
-        "subject_gaps_chapter": subject_gaps_chapter,
+        "role_gaps_chapter": role_gaps_chapter,
         "detached_chapter": detached_chapter,
-        "output_instruction": output_instruction_for(profile.format),
+        "output_instruction": output_instruction_for(profile.format, mandate),
         "format_instructions": profile.format_instructions(
             FactsCompletionReport, web_search_enabled=False
         ),
