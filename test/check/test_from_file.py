@@ -90,7 +90,8 @@ def test_from_file_reads_the_library_turtle_with_reifications(tmp_path: Path) ->
     ((_, triple),) = list(loaded.reifications)
     assert triple == (_S, _P, Literal("v"))
     report = check_facts(loaded, None)
-    assert report.metrics.triples == len(loaded)
+    # The reifier's provenance arc is not a fact: only the fact is checked.
+    assert report.metrics.triples == 1
 
 
 def test_from_file_reads_ntriples_with_triple_terms(tmp_path: Path) -> None:

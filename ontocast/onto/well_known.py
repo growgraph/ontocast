@@ -4,11 +4,13 @@ Every facts vocabulary mode admits them: the W3C and DCMI core, FOAF,
 schema.org and QUDT. A term of one of them must exist in it. Term lists come
 from rdflib's bundled namespace definitions; RDF 1.2 terms rdflib does not
 list yet are added here. The QUDT schema, QUDT unit and vCard lists ship as
-data in ``vocabularies/``. QUDT quantity kinds are admitted by namespace,
-without a list.
+data in ``vocabularies/``, with the dimension of each QUDT unit. QUDT
+quantity kinds are admitted by namespace, without a list.
 
 Some vocabularies also name the classes of structured values (a quantity, an
-amount): a node of such a class belongs to the statement that carries it.
+amount): a node of such a class belongs to the statement that carries it. And
+some name statements (an observation) with the roles that link one to what it
+is about: its subject, the property it reports, its result and its context.
 """
 
 from __future__ import annotations
@@ -41,6 +43,36 @@ from rdflib.namespace import (
 
 QUDT_UNIT_NAMESPACE = "http://qudt.org/vocab/unit/"
 
+StatementRoleName = Literal["subject", "property", "result", "context"]
+"""A role a statement link plays: what the statement is about (``subject``),
+the property it reports, its result, or its context (a time, a procedure)."""
+
+
+class StatementRole(BaseModel):
+    """The role a property plays for a statement.
+
+    Attributes:
+        role: The role.
+        direction: ``forward`` runs from the statement, ``inverse`` to it.
+        label: How the prompt names the property beside a statement class;
+            ``None`` for one it does not offer.
+        classes: Local names of the statement classes its published domain
+            (``forward``) or range (``inverse``) lists; empty admits every
+            statement class.
+        range_class: For a ``forward`` link, the local name of the class its
+            published range names (what a statement's property is an
+            instance of), if any.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    role: StatementRoleName
+    direction: Literal["forward", "inverse"] = "forward"
+    label: str | None = None
+    classes: frozenset[str] = frozenset()
+    range_class: str | None = None
+
+
 _RDF_12_TERMS = ("reifies", "dirLangString", "CompoundLiteral", "language", "direction")
 _CONTAINER_MEMBER = re.compile(r"_[1-9][0-9]*")
 
@@ -55,24 +87,36 @@ class WellKnownVocabulary(BaseModel):
         terms: Local names of its terms, or ``None`` when it is admitted by
             namespace (no term list is bundled).
         value_classes: Local names of its classes of structured values.
-        datatype_ranges: Local name of a property -> local name of the XSD
-            datatype its published ``rdfs:range`` declares, for the date and
-            time properties the facts repairs check literals against.
+        datatype_ranges: Local name of a property -> local names of the XSD
+            datatypes its published range admits: one for an ``rdfs:range``,
+            several for a union of datatypes.
         temporal_properties: Local names of its properties whose object is a
             time, a temporal entity or a date literal; those in
             ``datatype_ranges`` count without being listed here.
-        statement_classes: Local names of its classes whose instances are
-            statements about something else (an observation of a feature of
-            interest): one is a fact only with its subject.
-        statement_properties: Local name -> label of the properties a
-            statement takes (its subject, what it observed, its result),
-            shown beside a catalog's statement classes.
-        subject_links: Local name -> direction of the properties that link a
-            statement and what it is about: ``forward`` runs from the
-            statement to its subject, ``inverse`` from the subject.
+        statement_classes: Local name -> required roles of its classes whose
+            instances are statements about something else (an observation of
+            a feature of interest).
+        statement_roles: Local name -> the role a property plays for a
+            statement, with its direction.
+        class_ranges: Local name of an object property -> local name of the
+            class its published ``rdfs:range`` declares.
+        member_class: For a vocabulary of individuals with a term list, the
+            IRI of the class its terms are instances of.
+        member_dimensions: Local name of a term -> the IRI of its dimension:
+            two terms of different dimensions measure different kinds of
+            quantity. A term absent here has no known dimension.
         object_pairs: Local name of a datatype property -> local name of the
             object property the vocabulary gives for the same relation when
             the object is a node.
+        anchor_properties: Local names of its properties that declare what a
+            property node measures: its quantity kind, or a measurement unit
+            that applies to it.
+        measurement: Whether it models statements and measurements (an
+            observation, a quantity, a measurement unit): the facts prompt
+            names it only where its statement rules apply.
+        superseded: Whether its publisher deprecated it in favour of another
+            vocabulary: its terms are accepted where used, and the prompt
+            never offers it.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -82,14 +126,19 @@ class WellKnownVocabulary(BaseModel):
     namespaces: tuple[str, ...]
     terms: frozenset[str] | None
     value_classes: frozenset[str] = frozenset()
-    datatype_ranges: dict[str, str] = Field(default_factory=dict)
+    datatype_ranges: dict[str, frozenset[str]] = Field(default_factory=dict)
     temporal_properties: frozenset[str] = frozenset()
-    statement_classes: frozenset[str] = frozenset()
-    statement_properties: dict[str, str] = Field(default_factory=dict)
-    subject_links: dict[str, Literal["forward", "inverse"]] = Field(
+    statement_classes: dict[str, frozenset[StatementRoleName]] = Field(
         default_factory=dict
     )
+    statement_roles: dict[str, StatementRole] = Field(default_factory=dict)
+    class_ranges: dict[str, str] = Field(default_factory=dict)
+    member_class: str | None = None
+    member_dimensions: dict[str, str] = Field(default_factory=dict)
     object_pairs: dict[str, str] = Field(default_factory=dict)
+    anchor_properties: frozenset[str] = frozenset()
+    measurement: bool = False
+    superseded: bool = False
 
     def has_term(self, local_name: str) -> bool:
         """Whether ``local_name`` is a term of this vocabulary."""
@@ -113,36 +162,48 @@ def _vocabulary(
     also: tuple[str, ...] = (),
     extra: tuple[str, ...] = (),
     value_classes: tuple[str, ...] = (),
-    datatype_ranges: dict[str, str] | None = None,
+    datatype_ranges: dict[str, frozenset[str]] | None = None,
     temporal_properties: tuple[str, ...] = (),
-    statement_classes: tuple[str, ...] = (),
-    statement_properties: dict[str, str] | None = None,
-    subject_links: dict[str, Literal["forward", "inverse"]] | None = None,
+    statement_classes: dict[str, frozenset[StatementRoleName]] | None = None,
+    statement_roles: dict[str, StatementRole] | None = None,
     object_pairs: dict[str, str] | None = None,
+    measurement: bool = False,
 ) -> WellKnownVocabulary:
     return WellKnownVocabulary(
         prefix=prefix,
         title=title,
+        measurement=measurement,
         namespaces=(str(namespace._NS), *also),
         terms=_defined_terms(namespace, *extra),
         value_classes=frozenset(value_classes),
         datatype_ranges=datatype_ranges or {},
         temporal_properties=frozenset(temporal_properties),
-        statement_classes=frozenset(statement_classes),
-        statement_properties=statement_properties or {},
-        subject_links=subject_links or {},
+        statement_classes=statement_classes or {},
+        statement_roles=statement_roles or {},
         object_pairs=object_pairs or {},
     )
 
 
-def _shipped_terms(name: str) -> frozenset[str]:
-    """Local names listed in ``vocabularies/<name>``, one per line, ``#`` comments."""
+def _shipped_lines(name: str) -> list[str]:
+    """The lines of ``vocabularies/<name>``, without blanks and ``#`` comments."""
     text = resources.files(__package__).joinpath("vocabularies", name).read_text()
-    return frozenset(
+    return [
         line.strip()
         for line in text.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
-    )
+    ]
+
+
+def _shipped_terms(name: str) -> frozenset[str]:
+    """Local names listed in ``vocabularies/<name>``, one per line."""
+    return frozenset(_shipped_lines(name))
+
+
+def _shipped_dimensions(name: str, namespace: str) -> dict[str, str]:
+    """``vocabularies/<name>``: a local name, a tab, its dimension's local name
+    in ``namespace``; as local name -> dimension IRI."""
+    pairs = (line.split("\t") for line in _shipped_lines(name))
+    return {term.strip(): namespace + dimension.strip() for term, dimension in pairs}
 
 
 def _listed(
@@ -152,21 +213,48 @@ def _listed(
     terms: str,
     *,
     value_classes: tuple[str, ...] = (),
+    datatype_ranges: dict[str, frozenset[str]] | None = None,
+    class_ranges: dict[str, str] | None = None,
+    member_class: str | None = None,
+    member_dimensions: dict[str, str] | None = None,
+    anchor_properties: tuple[str, ...] = (),
+    measurement: bool = False,
+    superseded: bool = False,
+) -> WellKnownVocabulary:
+    return WellKnownVocabulary(
+        prefix=prefix,
+        title=title,
+        measurement=measurement,
+        superseded=superseded,
+        namespaces=(namespace,),
+        terms=_shipped_terms(terms),
+        value_classes=frozenset(value_classes),
+        datatype_ranges=datatype_ranges or {},
+        class_ranges=class_ranges or {},
+        member_class=member_class,
+        member_dimensions=member_dimensions or {},
+        anchor_properties=frozenset(anchor_properties),
+    )
+
+
+def _by_namespace(
+    prefix: str, title: str, namespace: str, *, measurement: bool = False
 ) -> WellKnownVocabulary:
     return WellKnownVocabulary(
         prefix=prefix,
         title=title,
         namespaces=(namespace,),
-        terms=_shipped_terms(terms),
-        value_classes=frozenset(value_classes),
+        terms=None,
+        measurement=measurement,
     )
 
 
-def _by_namespace(prefix: str, title: str, namespace: str) -> WellKnownVocabulary:
-    return WellKnownVocabulary(
-        prefix=prefix, title=title, namespaces=(namespace,), terms=None
-    )
+#: The SOSA classes whose instances act on a feature of interest: the classes
+#: SOSA lists as the domain of its subject, result and context properties.
+_SOSA_ACTS = frozenset({"Observation", "Actuation", "Sampling"})
 
+#: The XSD datatypes the QUDT shapes admit for a numeric value, as a union.
+_QUDT_NUMBERS = frozenset({"decimal", "double", "float", "integer"})
 
 WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
     _vocabulary("rdf", "RDF", RDF, extra=_RDF_12_TERMS),
@@ -186,7 +274,7 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
         "PROV-O",
         PROV,
         datatype_ranges={
-            name: "dateTime"
+            name: frozenset({"dateTime"})
             for name in (
                 "atTime",
                 "startedAtTime",
@@ -200,31 +288,56 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
         "sosa",
         "SOSA",
         SOSA,
-        datatype_ranges={"resultTime": "dateTime"},
+        datatype_ranges={"resultTime": frozenset({"dateTime"})},
         temporal_properties=("phenomenonTime",),
-        statement_classes=("Observation", "Actuation", "Sampling"),
-        statement_properties={
-            "hasFeatureOfInterest": "has feature of interest",
-            "observedProperty": "observed property",
-            "hasResult": "has result",
+        statement_classes={
+            "Observation": frozenset({"subject", "property"}),
+            "Actuation": frozenset({"subject", "property"}),
+            "Sampling": frozenset({"subject"}),
         },
-        subject_links={
-            "hasFeatureOfInterest": "forward",
-            "isFeatureOfInterestOf": "inverse",
+        statement_roles={
+            "hasFeatureOfInterest": StatementRole(
+                role="subject", label="has feature of interest", classes=_SOSA_ACTS
+            ),
+            "isFeatureOfInterestOf": StatementRole(
+                role="subject", direction="inverse", classes=_SOSA_ACTS
+            ),
+            "observedProperty": StatementRole(
+                role="property",
+                label="observed property",
+                classes=frozenset({"Observation"}),
+                range_class="ObservableProperty",
+            ),
+            "actsOnProperty": StatementRole(
+                role="property",
+                classes=frozenset({"Actuation"}),
+                range_class="ActuatableProperty",
+            ),
+            "hasResult": StatementRole(
+                role="result", label="has result", classes=_SOSA_ACTS
+            ),
+            "hasSimpleResult": StatementRole(role="result", classes=_SOSA_ACTS),
+            "isResultOf": StatementRole(
+                role="result", direction="inverse", classes=_SOSA_ACTS
+            ),
+            "phenomenonTime": StatementRole(role="context", classes=_SOSA_ACTS),
+            "resultTime": StatementRole(role="context", classes=_SOSA_ACTS),
+            "usedProcedure": StatementRole(role="context", classes=_SOSA_ACTS),
         },
         object_pairs={"hasSimpleResult": "hasResult"},
+        measurement=True,
     ),
-    _vocabulary("ssn", "SSN", SSN),
+    _vocabulary("ssn", "SSN", SSN, measurement=True),
     _vocabulary(
         "time",
         "OWL-Time",
         TIME,
         datatype_ranges={
-            "inXSDDate": "date",
-            "inXSDDateTime": "dateTime",
-            "inXSDDateTimeStamp": "dateTimeStamp",
-            "inXSDgYear": "gYear",
-            "inXSDgYearMonth": "gYearMonth",
+            "inXSDDate": frozenset({"date"}),
+            "inXSDDateTime": frozenset({"dateTime"}),
+            "inXSDDateTimeStamp": frozenset({"dateTimeStamp"}),
+            "inXSDgYear": frozenset({"gYear"}),
+            "inXSDgYearMonth": frozenset({"gYearMonth"}),
         },
         temporal_properties=("hasTime", "hasBeginning", "hasEnd", "inside"),
     ),
@@ -258,10 +371,36 @@ WELL_KNOWN_VOCABULARIES: tuple[WellKnownVocabulary, ...] = (
         "http://qudt.org/schema/qudt/",
         "qudt_schema.txt",
         value_classes=("QuantityValue",),
+        datatype_ranges={"numericValue": _QUDT_NUMBERS},
+        class_ranges={"hasUnit": "Unit", "unit": "Unit"},
+        anchor_properties=("hasQuantityKind", "applicableUnit"),
+        measurement=True,
     ),
-    _listed("unit", "QUDT units", QUDT_UNIT_NAMESPACE, "qudt_units.txt"),
+    _listed(
+        "unit",
+        "QUDT units",
+        QUDT_UNIT_NAMESPACE,
+        "qudt_units.txt",
+        member_class="http://qudt.org/schema/qudt/Unit",
+        member_dimensions=_shipped_dimensions(
+            "qudt_unit_dimensions.txt", "http://qudt.org/vocab/dimensionvector/"
+        ),
+        measurement=True,
+    ),
+    _listed(
+        "cur",
+        "QUDT currency units",
+        "http://qudt.org/vocab/currency/",
+        "qudt_currencies.txt",
+        member_class="http://qudt.org/schema/qudt/Unit",
+        measurement=True,
+        superseded=True,
+    ),
     _by_namespace(
-        "quantitykind", "QUDT quantity kinds", "http://qudt.org/vocab/quantitykind/"
+        "quantitykind",
+        "QUDT quantity kinds",
+        "http://qudt.org/vocab/quantitykind/",
+        measurement=True,
     ),
 )
 
@@ -291,6 +430,62 @@ def well_known_namespaces() -> tuple[str, ...]:
 def well_known_vocabulary(iri: str) -> WellKnownVocabulary | None:
     """The well-known vocabulary ``iri`` belongs to, if any."""
     return _index().get(_split(iri)[0])
+
+
+def well_known_dimension(iri: str) -> str | None:
+    """The dimension of a listed individual (a measurement unit), as an IRI.
+
+    ``None`` for an IRI outside the well-known vocabularies or one whose
+    dimension is not shipped.
+    """
+    namespace, local_name = _split(iri)
+    vocabulary = _index().get(namespace)
+    if vocabulary is None:
+        return None
+    return vocabulary.member_dimensions.get(local_name)
+
+
+def _variant_key(namespace: str) -> str | None:
+    """``namespace`` without its ``http``/``https`` scheme and trailing separator."""
+    for scheme in ("https:", "http:"):
+        if namespace.startswith(scheme):
+            rest = namespace[len(scheme) :]
+            return rest[:-1] if rest.endswith(("/", "#")) else rest
+    return None
+
+
+@cache
+def _canonical_by_variant() -> dict[str, str]:
+    found: dict[str, set[str]] = {}
+    for vocabulary in WELL_KNOWN_VOCABULARIES:
+        for namespace in vocabulary.namespaces:
+            key = _variant_key(namespace)
+            if key is not None:
+                found.setdefault(key, set()).add(vocabulary.namespaces[0])
+    # A key two vocabularies share is no exact variant of either.
+    return {key: next(iter(c)) for key, c in found.items() if len(c) == 1}
+
+
+def canonical_namespace(namespace: str) -> str:
+    """The canonical namespace of the well-known vocabulary ``namespace`` spells.
+
+    ``namespace`` spells one when it differs from one of the vocabulary's
+    namespaces only in its scheme (``http``/``https``) or its trailing
+    separator (``/``, ``#``, none). Any other namespace is returned as given.
+    """
+    key = _variant_key(namespace)
+    if key is None:
+        return namespace
+    return _canonical_by_variant().get(key, namespace)
+
+
+def canonical_iri(iri: str) -> str:
+    """``iri`` with its namespace made canonical (:func:`canonical_namespace`)."""
+    namespace, local_name = _split(iri)
+    if not local_name:
+        return iri
+    canonical = canonical_namespace(namespace)
+    return iri if canonical == namespace else canonical + local_name
 
 
 def is_listed_unit(iri: str) -> bool:
@@ -415,64 +610,77 @@ def well_known_value_classes() -> frozenset[str]:
 
 
 @cache
-def well_known_datatype_ranges() -> dict[str, str]:
-    """Property IRI -> XSD datatype IRI, as the well-known vocabularies publish them.
+def well_known_datatype_ranges() -> dict[str, frozenset[str]]:
+    """Property IRI -> the XSD datatype IRIs its published range admits.
 
-    Only the date and time properties are listed. Treat as read-only.
+    A literal fits the range when it is a value of one of them. Treat as
+    read-only.
     """
     return {
-        namespace + name: str(XSD) + datatype
+        namespace + name: frozenset(str(XSD) + datatype for datatype in datatypes)
         for vocabulary in WELL_KNOWN_VOCABULARIES
         for namespace in vocabulary.namespaces
-        for name, datatype in vocabulary.datatype_ranges.items()
+        for name, datatypes in vocabulary.datatype_ranges.items()
     }
 
 
 @cache
-def well_known_statement_classes() -> frozenset[str]:
-    """Classes of the well-known vocabularies whose instances are statements.
+def well_known_statement_classes() -> dict[str, frozenset[StatementRoleName]]:
+    """Statement class IRI -> the roles an instance of it must carry.
 
     An instance of one (or of a subclass) is about something else, its
-    feature of interest; without that link it states a value of nothing.
+    subject; without the required links it states a value of nothing.
+    Treat as read-only.
     """
-    return frozenset(
-        namespace + name
+    return {
+        namespace + name: roles
         for vocabulary in WELL_KNOWN_VOCABULARIES
         for namespace in vocabulary.namespaces
-        for name in vocabulary.statement_classes
-    )
-
-
-@cache
-def well_known_statement_properties() -> dict[str, str]:
-    """Property IRI -> label of the properties a well-known statement takes."""
-    return {
-        vocabulary.namespaces[0] + name: label
-        for vocabulary in WELL_KNOWN_VOCABULARIES
-        for name, label in vocabulary.statement_properties.items()
+        for name, roles in vocabulary.statement_classes.items()
     }
 
 
 @cache
-def well_known_subject_links() -> tuple[frozenset[str], frozenset[str]]:
-    """The well-known properties linking a statement and its subject, as IRIs.
+def well_known_statement_roles() -> dict[str, StatementRole]:
+    """Property IRI -> the role it plays for a well-known statement.
 
-    Returns:
-        ``(forward, inverse)``: those running from the statement to its
-        subject, and those running from the subject to the statement.
+    ``classes`` are local names in the property's vocabulary. Treat as
+    read-only.
     """
-    links = [
-        (vocabulary.namespaces[0] + name, direction)
+    return {
+        vocabulary.namespaces[0] + name: role
         for vocabulary in WELL_KNOWN_VOCABULARIES
-        for name, direction in vocabulary.subject_links.items()
-    ]
-    return (
-        frozenset(iri for iri, direction in links if direction == "forward"),
-        frozenset(iri for iri, direction in links if direction == "inverse"),
-    )
+        for name, role in vocabulary.statement_roles.items()
+    }
 
 
 @cache
+def well_known_closed_ranges() -> dict[str, frozenset[str]]:
+    """Property IRI -> its published range classes whose members are listed.
+
+    A class is listed when a well-known vocabulary ships its individuals
+    (``member_class``). Treat as read-only.
+    """
+    listed = well_known_member_classes()
+    found: dict[str, set[str]] = {}
+    for vocabulary in WELL_KNOWN_VOCABULARIES:
+        namespace = vocabulary.namespaces[0]
+        for name, class_name in vocabulary.class_ranges.items():
+            if namespace + class_name in listed:
+                found.setdefault(namespace + name, set()).add(namespace + class_name)
+    return {prop: frozenset(classes) for prop, classes in found.items()}
+
+
+@cache
+def well_known_member_classes() -> dict[str, tuple[WellKnownVocabulary, ...]]:
+    """Class IRI -> the well-known vocabularies that list its individuals."""
+    found: dict[str, list[WellKnownVocabulary]] = {}
+    for vocabulary in WELL_KNOWN_VOCABULARIES:
+        if vocabulary.member_class is not None:
+            found.setdefault(vocabulary.member_class, []).append(vocabulary)
+    return {cls: tuple(vocabularies) for cls, vocabularies in found.items()}
+
+
 @cache
 def well_known_object_pairs() -> dict[str, str]:
     """Datatype property IRI -> the object property IRI paired with it.
@@ -488,41 +696,82 @@ def well_known_object_pairs() -> dict[str, str]:
     }
 
 
+@cache
+def well_known_anchor_properties() -> frozenset[str]:
+    """Property IRIs that declare what a property node measures.
+
+    A property node carrying one (a quantity kind, an applicable measurement
+    unit) is anchored: the catalog says which kind of quantity it is.
+    """
+    return frozenset(
+        namespace + name
+        for vocabulary in WELL_KNOWN_VOCABULARIES
+        for namespace in vocabulary.namespaces
+        for name in vocabulary.anchor_properties
+    )
+
+
+#: Local names of the XSD datatypes whose value is a time.
+_TEMPORAL_DATATYPE_NAMES = frozenset(
+    {"date", "dateTime", "dateTimeStamp", "gYear", "gYearMonth", "time"}
+)
+
+
 def well_known_temporal_properties() -> frozenset[str]:
     """Property IRIs of the well-known vocabularies whose object is a time."""
     return frozenset(
         namespace + name
         for vocabulary in WELL_KNOWN_VOCABULARIES
         for namespace in vocabulary.namespaces
-        for name in (*vocabulary.temporal_properties, *vocabulary.datatype_ranges)
+        for name in (
+            *vocabulary.temporal_properties,
+            *(
+                prop
+                for prop, datatypes in vocabulary.datatype_ranges.items()
+                if datatypes & _TEMPORAL_DATATYPE_NAMES
+            ),
+        )
     )
 
 
-def well_known_prompt_list() -> str:
-    """The vocabularies as the facts prompt names them: ``prefix:`` and IRI."""
+def well_known_prompt_list(*, measurement: bool = True) -> str:
+    """The vocabularies as the facts prompt names them: ``prefix:`` and IRI.
+
+    Args:
+        measurement: Whether to name the vocabularies of statements and
+            measurements (:attr:`WellKnownVocabulary.measurement`).
+    """
     return ", ".join(
         f"`{vocabulary.prefix}:` <{vocabulary.namespaces[0]}>"
         for vocabulary in WELL_KNOWN_VOCABULARIES
+        if not vocabulary.superseded and (measurement or not vocabulary.measurement)
     )
 
 
 __all__ = [
     "QUDT_UNIT_NAMESPACE",
     "WELL_KNOWN_VOCABULARIES",
+    "StatementRole",
+    "StatementRoleName",
     "WellKnownRole",
     "WellKnownVocabulary",
+    "canonical_iri",
+    "canonical_namespace",
     "is_listed_unit",
     "is_well_known_term",
+    "well_known_anchor_properties",
     "well_known_by_local_name",
     "well_known_role",
     "well_known_namespaces",
     "well_known_object_pairs",
     "well_known_prompt_list",
     "well_known_terms",
+    "well_known_closed_ranges",
     "well_known_datatype_ranges",
+    "well_known_dimension",
+    "well_known_member_classes",
     "well_known_statement_classes",
-    "well_known_statement_properties",
-    "well_known_subject_links",
+    "well_known_statement_roles",
     "well_known_temporal_properties",
     "well_known_value_classes",
     "well_known_vocabulary",

@@ -8,8 +8,10 @@ from ontocast.tool.agg.normalizer import EntityNormalizer, EntityRepresentation
 pytestmark = pytest.mark.unit
 
 
-def test_normalize_string_camel_case(normalizer: EntityNormalizer) -> None:
-    assert normalizer.normalize_string("PLRedShift") == "pl red shift"
+def test_text_keeps_case_changes_inside_a_word(normalizer: EntityNormalizer) -> None:
+    """CamelCase is split in IRI local names only, never in text."""
+    assert normalizer.normalize_string("ABCs") == "abcs"
+    assert normalizer.normalize_string("PLRedShift") == "plredshift"
 
 
 def test_normalize_string_snake_case(normalizer: EntityNormalizer) -> None:

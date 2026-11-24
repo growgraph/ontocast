@@ -437,7 +437,7 @@ def strip_sparql_update_wrapper(turtle_str: str) -> str:
 def _is_namespace_declaration(value: object) -> bool:
     """True when a JSON-LD ``@context`` entry declares a namespace IRI.
 
-    Distinguishes ``"qqval": "https://…/qqval#"`` -- a prefix binding, which
+    Distinguishes ``"vals": "https://…/vals#"`` -- a prefix binding, which
     an authoritative map may override -- from ``"label": "rdfs:label"`` or a
     term-definition object, which it must not touch.
     """
@@ -512,9 +512,9 @@ class RejectedLiteralTriple(BaseModel):
 
     Covers three cases: the literal's lexical form fails XSD validation for its
     declared ``datatype``; a literal sits on a predicate whose schema declares
-    an IRI object (``reason``/``expected_range`` are set); or a text sits on a
-    predicate whose range is a date, time or duration datatype it is not a
-    value of (``reason``/``expected_datatype`` are set).
+    an IRI object (``reason``/``expected_range`` are set); or a literal sits on
+    a predicate whose declared datatype range it is not a value of
+    (``reason``/``expected_datatypes`` are set).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -525,7 +525,9 @@ class RejectedLiteralTriple(BaseModel):
     datatype: str = ""
     reason: str | None = None
     expected_range: str | None = None
-    expected_datatype: str | None = None
+    #: The declared datatypes of the predicate's range; a value of any one
+    #: of them fits.
+    expected_datatypes: tuple[str, ...] = ()
     #: The subject is a blank node, its id in ``subject``.
     subject_is_blank: bool = False
     #: Valid values the subject already held on the predicate when the text
@@ -556,10 +558,12 @@ def _quarantine_hint(item: RejectedLiteralTriple) -> str:
     hint = item.reason
     if item.expected_range:
         hint += f" (expected IRI with range <{item.expected_range}>)"
-    if item.expected_datatype:
-        hint += (
-            f" (expected a literal of {_datatype_to_compact(item.expected_datatype)})"
+    if item.expected_datatypes:
+        names = [_datatype_to_compact(datatype) for datatype in item.expected_datatypes]
+        listed = (
+            names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" or {names[-1]}"
         )
+        hint += f" (expected a literal of {listed})"
     return hint
 
 
@@ -613,6 +617,42 @@ def format_quarantine_for_prompt(
             line += f"  # {hint}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def canonical_well_known_term(term: Node) -> Node:
+    """``term`` with a well-known namespace variant made canonical: an IRI, or
+    the datatype of a literal (:func:`~ontocast.onto.well_known.canonical_iri`)."""
+    from ontocast.onto.well_known import canonical_iri
+
+    if isinstance(term, URIRef):
+        text = canonical_iri(str(term))
+        return URIRef(text) if text != str(term) else term
+    if isinstance(term, Literal) and term.datatype is not None:
+        datatype = canonical_iri(str(term.datatype))
+        if datatype != str(term.datatype):
+            return Literal(str(term), datatype=URIRef(datatype), normalize=False)
+    return term
+
+
+def canonicalize_well_known_terms(graph: Graph) -> int:
+    """Rewrite ``graph``'s triples with :func:`canonical_well_known_term`, in place.
+
+    Returns:
+        The number of triples rewritten.
+    """
+    updates = {}
+    for subject, predicate, obj in graph:
+        moved = (
+            canonical_well_known_term(subject),
+            canonical_well_known_term(predicate),
+            canonical_well_known_term(obj),
+        )
+        if moved != (subject, predicate, obj):
+            updates[(subject, predicate, obj)] = moved
+    for triple, moved in updates.items():
+        graph.remove(triple)
+        graph.add(moved)
+    return len(updates)
 
 
 def finalize_llm_graph(
@@ -2479,6 +2519,28 @@ class RDFGraph(Graph):
             self.add(moved)
         if self.has_reifications:
             self.reifications.rename(remap)
+
+    def canonicalize_well_known_iris(self) -> int:
+        """Spell every term of a well-known vocabulary in its canonical namespace.
+
+        An IRI whose namespace differs from a well-known vocabulary's only in
+        scheme or trailing separator
+        (:func:`~ontocast.onto.well_known.canonical_namespace`) is rewritten,
+        in the triples, in literal datatypes and in the reifications alike;
+        prefixes bound to such a namespace are rebound to the canonical one.
+        Any other IRI is left as it is: whether it is a term is for the
+        vocabulary checks to say. Applied to a unit's graph as soon as a
+        render or a patch is parsed, and again before aggregation.
+
+        Returns:
+            The number of triples rewritten.
+        """
+        updates = canonicalize_well_known_terms(self)
+        if self.has_reifications:
+            self.reifications.rename(canonical_well_known_term)
+        if updates:
+            self.sanitize_prefixes_namespaces()
+        return updates
 
     def add_triple(self, subject: str, predicate: str, object_: str) -> None:
         """Add a triple to the graph.

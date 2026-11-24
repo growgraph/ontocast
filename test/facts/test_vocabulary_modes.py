@@ -22,14 +22,18 @@ from ontocast.onto.well_known import (
     is_well_known_term,
 )
 from ontocast.prompt.facts_guidelines import (
+    DEFAULT_QUANTITY_FALLBACK_VOCABULARY,
     format_facts_operational_guidelines,
+    format_quantity_chapter,
     format_vocabulary_rules,
+    quantity_terms,
 )
 from ontocast.tool.facts_validation import (
     ValidationPolicy,
     collect_unit_findings,
     validate_aggregated_facts,
 )
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.ontology_validation.unit_findings import (
     collect_ontology_unit_findings,
 )
@@ -115,7 +119,7 @@ def test_the_well_known_set() -> None:
     assert {vocabulary.prefix for vocabulary in WELL_KNOWN_VOCABULARIES} == {
         "rdf", "rdfs", "owl", "xsd", "skos", "dcterms", "dc", "prov", "sosa",
         "ssn", "time", "csvw", "dcat", "org", "vcard", "foaf", "schema", "qudt",
-        "unit", "quantitykind",
+        "unit", "cur", "quantitykind",
     }  # fmt: skip
 
 
@@ -129,6 +133,8 @@ def test_the_well_known_set() -> None:
         ("http://www.w3.org/1999/02/22-rdf-syntax-ns#_7", True),
         ("http://qudt.org/vocab/unit/NanoM", True),
         ("http://qudt.org/vocab/unit/DegreeCelsius", False),
+        ("http://qudt.org/vocab/currency/EUR", True),
+        ("http://qudt.org/vocab/currency/Euro", False),
         ("http://qudt.org/vocab/quantitykind/AnyKind", True),
         (f"{DBO}Person", None),
     ],
@@ -165,11 +171,16 @@ def _guidelines(vocabulary: str, **kwargs) -> str:
 
 @pytest.mark.parametrize("vocabulary", ["strict", "open"])
 def test_both_modes_name_the_well_known_vocabularies(vocabulary: str) -> None:
-    text = _guidelines(vocabulary)
+    text = _guidelines(vocabulary, statement_rules=True)
 
     for named in (f"`schema:` <{SCHEMA}>", f"`foaf:` <{FOAF}>", "`csvw:`", "`qudt:`"):
         assert named in text
     assert "never invent a term" in text
+    # The measurement vocabularies are named only where statement rules apply.
+    plain = _guidelines(vocabulary)
+    assert f"`schema:` <{SCHEMA}>" in plain
+    for measurement in ("`qudt:`", "`unit:`", "`sosa:`", "`ssn:`", "`quantitykind:`"):
+        assert measurement not in plain
 
 
 def test_strict_prompt_admits_no_other_vocabulary() -> None:
@@ -189,11 +200,18 @@ def test_open_prompt_admits_other_established_vocabularies() -> None:
     assert "No other vocabulary is available" not in text
 
 
+def _quantity_chapter(vocabulary: dict[str, str] | None = None) -> str:
+    return format_quantity_chapter(
+        DEFAULT_QUANTITY_FALLBACK_VOCABULARY if vocabulary is None else vocabulary,
+        quantity_terms(None, StatementContract(), DEFAULT_QUANTITY_FALLBACK_VOCABULARY),
+    )
+
+
 def test_declared_namespaces_and_the_carrier_are_named() -> None:
     text = _guidelines(
         "strict",
         additional_namespaces=(DBO,),
-        quantity_fallback_vocabulary={"carrier": "ex:hasValue"},
+        quantity_chapter=_quantity_chapter({"carrier": "ex:hasValue"}),
     )
 
     assert f"<{DBO}>" in text
@@ -202,19 +220,23 @@ def test_declared_namespaces_and_the_carrier_are_named() -> None:
 
 def test_both_modes_extract_every_stated_quantity() -> None:
     """A mode narrows the terms, never the measurements: rule 3a is shared."""
-    strict, open_ = _guidelines("strict"), _guidelines("open")
+    chapter = _quantity_chapter()
+    strict = _guidelines("strict", quantity_chapter=chapter)
+    open_ = _guidelines("open", quantity_chapter=chapter)
 
     for text in (strict, open_):
         assert "extract EVERY quantitative statement in the text" in text
         assert "`sosa:Observation`" in text
-        assert "use the observation form of rule 3a." in text
+        assert "use the observation form above." in text
         assert "never at a separate result node that holds the value" in text
         assert "`sosa:hasFeatureOfInterest`" in text
         assert "can carry is not extracted" not in text
 
 
 def test_mode_changes_only_the_vocabulary_rules() -> None:
-    strict, open_ = _guidelines("strict"), _guidelines("open")
+    chapter = _quantity_chapter()
+    strict = _guidelines("strict", quantity_chapter=chapter)
+    open_ = _guidelines("open", quantity_chapter=chapter)
 
     for shared in (
         "TWO-NAMESPACE CONTRACT",
@@ -297,7 +319,26 @@ def test_gate_under_strict() -> None:
     assert severities[f"{FOAF}Person"] == "warning"
     assert severities[f"{SCHEMA}memberOf"] == "warning"
     assert severities[f"{DBO}leader"] == "error"
-    assert severities[f"{SCHEMA}vulnerableTo"] == "error"
+    # A term the well-known vocabulary lacks is an unknown term, in either mode.
+    assert f"{SCHEMA}vulnerableTo" not in severities
+
+
+@pytest.mark.parametrize("severity", ["error", "warning"])
+def test_gate_reports_a_term_a_well_known_vocabulary_lacks_as_unknown(
+    severity: str,
+) -> None:
+    report = validate_aggregated_facts(
+        _graph(FACTS),
+        _graph(ONTOLOGY),
+        fact_namespaces=[CD],
+        non_catalog_severity=severity,
+    )
+    unknown = {
+        finding.predicate: finding
+        for finding in report.findings
+        if finding.kind == FactsValidationFindingKind.UNKNOWN_TERM
+    }
+    assert unknown[f"{SCHEMA}vulnerableTo"].severity == "error"
 
 
 def test_gate_under_open_warns_only() -> None:

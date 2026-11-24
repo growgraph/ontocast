@@ -32,7 +32,8 @@ from ontocast.prompt.shapes_contract import (
     format_conformance_chapter,
 )
 from ontocast.tool.atomic import AtomicToolBox
-from ontocast.tool.facts_validation.terms import CatalogRoles
+from ontocast.tool.facts_validation.statements import StatementContract
+from ontocast.tool.facts_validation.terms import CatalogRoles, ValidationPolicy
 from ontocast.tool.ontology_validation.catalog_terms import (
     catalog_prefixes,
     catalog_terms,
@@ -112,13 +113,16 @@ def _tools(table: PrefixTable) -> AtomicToolBox:
             property_alias_min_ratio=0.85,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
-            subject_contract=lambda: None,
+            statement_contract=StatementContract,
             code_predicates=(),
             citation_vocabulary={},
+            facts_completion_passes=0,
+            facts_completion_measurements=False,
             quantity_fallback_vocabulary=dict(DEFAULT_QUANTITY_FALLBACK_VOCABULARY),
             facts_vocabulary="strict",
             additional_standard_namespaces=(),
             acceptance_policy=None,
+            validation_policy=ValidationPolicy(),
         ),
     )
 

@@ -37,9 +37,11 @@ from ontocast.stategraph.context_resolver import UnitOntologyContext
 from ontocast.stategraph.unit_context import UnitLoopContext
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy, ValidationPolicy
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.facts_validation.terms import CatalogRoles
 from ontocast.tool.ontology_validation import CatalogSurfaceIndex
 from ontocast.toolbox import ToolBox
+from ontocast.util.numeric_inventory import NumericInventory
 from test.snapshot_helpers import empty_snapshot
 
 pytestmark = pytest.mark.unit
@@ -109,7 +111,7 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
             numeric_coverage_mandatory="off",
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
-            subject_contract=lambda: None,
+            statement_contract=StatementContract,
         ),
     )
 
@@ -159,9 +161,7 @@ def _poison_sensitive_findings(state, _atomic) -> list[FactsUnitFinding]:
 async def test_a_pass_produces_only_additions(monkeypatch) -> None:
     state = _unit_state()
 
-    async def fake_complete(
-        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
-    ):
+    async def fake_complete(_state, _atomic, _mandate):
         return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -188,11 +188,13 @@ async def test_a_regressing_insert_is_rolled_back(monkeypatch) -> None:
     same as a critic fix would be -- see ``test_critic_patch_pass.py``.
     """
     state = _unit_state()
-    poison = f'<{_SUBJECT}> <{_POISON}> "bad" .'
+    # Admitted -- a value whose number the measurement list holds -- but it
+    # carries a statement the validator rejects.
+    poison = (
+        f'<{_SUBJECT}> <{_MEASURED_VALUE}> "96"^^<{_XSD_DECIMAL}> ; <{_POISON}> "bad" .'
+    )
 
-    async def fake_complete(
-        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
-    ):
+    async def fake_complete(_state, _atomic, _mandate):
         return [_fix(poison)]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -219,9 +221,7 @@ async def test_only_add_fixes_are_kept(monkeypatch) -> None:
     """
     state = _unit_state()
 
-    async def fake_complete(
-        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
-    ):
+    async def fake_complete(_state, _atomic, _mandate):
         return [
             _fix(_mev_insert()),
             TripleFix(
@@ -249,9 +249,7 @@ async def test_n_measurements_recovered_counts_precisely(monkeypatch) -> None:
     """One of two missing measurements is addressed; the count reflects that."""
     state = _unit_state(text="a shift of 96 meV and a gap of 12 nm")
 
-    async def fake_complete(
-        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
-    ):
+    async def fake_complete(_state, _atomic, _mandate):
         return [_fix(_mev_insert())]
 
     monkeypatch.setattr(atomic_module, "complete_facts", fake_complete)
@@ -270,9 +268,7 @@ async def test_it_stops_early_once_measurements_are_covered(monkeypatch) -> None
     state = _unit_state()
     calls = {"n": 0}
 
-    async def fake_complete(
-        _state, _atomic, _inventory, _subject_gaps=(), _detached=()
-    ):
+    async def fake_complete(_state, _atomic, _mandate):
         calls["n"] += 1
         return [_fix(_mev_insert())]
 
@@ -309,7 +305,7 @@ def _facts_tools(*, completion_passes: int) -> object:
             facts_completion_detached=False,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
-            subject_contract=lambda: None,
+            statement_contract=StatementContract,
         ),
     )
     return SimpleNamespace(get_atomic_tools=lambda: atomic)
@@ -382,7 +378,7 @@ async def test_the_pass_does_not_run_on_the_ontology_loop(monkeypatch) -> None:
                     ontology_critic_passes=0,
                     catalog_terms=lambda: set(),
                     catalog_roles=lambda: CatalogRoles(),
-                    subject_contract=lambda: None,
+                    statement_contract=StatementContract,
                     ontology_max_class_depth=6,
                     catalog_surface_index=CatalogSurfaceIndex,
                     ontology_patch_policy=CriticPatchPolicy(),
@@ -437,24 +433,34 @@ def _gap_term_sheet(*, vocabulary: dict[str, str], contract) -> str:
     )
 
 
-def test_the_guidelines_take_a_qudt_unit_else_keep_it_as_text_and_ask_for_a_subject() -> (
-    None
-):
-    from ontocast.prompt.complete_facts import completion_instruction
+def test_the_guidelines_take_a_qudt_unit_else_add_no_unit_link() -> None:
+    from ontocast.prompt.complete_facts import completion_guidelines
+    from ontocast.tool.facts_validation.mandate import GapMandate
+    from ontocast.util.measurement_lexicon import Mention
 
-    text = " ".join(completion_instruction.split())
+    mandate = GapMandate(
+        inventory=NumericInventory(
+            measurements=[Mention(value="1", unit="m", start=0, end=0, context="")]
+        )
+    )
+    text = " ".join(completion_guidelines(mandate).split())
     assert "use the QUDT unit (`unit:`) for exactly that unit" in text
-    assert "keep the unit token as text on the value node" in text
-    assert "never an invented or approximate unit IRI" in text
+    assert "When no measurement unit fits, add no unit link" in text
+    assert "rdfs:comment" not in text
+    assert "an invented or approximate unit IRI is never right" in text
     assert "A value node nothing points to is not a fact" in text
 
 
 def test_the_term_sheet_lists_the_configured_value_terms_and_subject_links() -> None:
-    from ontocast.tool.facts_validation.terms import SubjectContract
+    from ontocast.tool.facts_validation.statements import RoleLinks
 
-    contract = SubjectContract(
-        forward=frozenset({"https://ex.org/v#about"}),
-        inverse=frozenset({"https://ex.org/v#hasReading"}),
+    contract = StatementContract(
+        roles={
+            "subject": RoleLinks(
+                forward=frozenset({"https://ex.org/v#about"}),
+                inverse=frozenset({"https://ex.org/v#hasReading"}),
+            )
+        }
     )
     sheet = _gap_term_sheet(
         vocabulary={
@@ -480,8 +486,15 @@ def test_the_output_example_is_a_statement_that_names_its_subject(fmt) -> None:
 
     from ontocast.onto.enum import LLMGraphFormat
     from ontocast.prompt.complete_facts import output_instruction_for
+    from ontocast.tool.facts_validation.mandate import GapMandate
+    from ontocast.util.measurement_lexicon import Mention
 
-    instruction = output_instruction_for(LLMGraphFormat(fmt))
+    mandate = GapMandate(
+        inventory=NumericInventory(
+            measurements=[Mention(value="1", unit="m", start=0, end=0, context="")]
+        )
+    )
+    instruction = output_instruction_for(LLMGraphFormat(fmt), mandate)
     example = instruction.split("Example: ", 1)[1].strip()
     payload = json.loads(example)
     graph = RDFGraph()

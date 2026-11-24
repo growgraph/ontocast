@@ -2,7 +2,14 @@
 
 This module provides enhanced prompt templates for facts criticism that support
 with improved critique quality.
+
+The evaluation guidelines are built per unit (:func:`evaluation_instruction_for`):
+the quantitative-completeness guideline only for a unit whose text states a
+number, the cited-work clause only when the citation vocabulary names an
+``attributed_to`` term.
 """
+
+from collections.abc import Mapping
 
 from ontocast.onto.constants import DEFAULT_IRI
 
@@ -42,27 +49,34 @@ Following evaluation guidelines provide concrete suggestions for improvement of 
 preamble = system_preamble_semantic
 
 
-evaluation_instruction = f"""\n\n
-# EVALUATION GUIDELINES
-
-1. Appropriateness: Are the facts appropriate for the document?
-
-2. Completeness: Are all possible facts extracted from the text given the ontology?
-   - Quantitative completeness is checked mechanically: the NUMERIC COVERAGE
+_QUANTITATIVE_COMPLETENESS = """   - Quantitative completeness is checked mechanically: the NUMERIC COVERAGE
      findings list numbers stated in the text but absent from the graph —
      measurements (a number with its unit) first, bare numbers after. Do NOT
      propose an ADD fix per listed number. A number only becomes a fact
      together with the quantity it measures, and a value whose quantity you
      can name is an omission the extractor must see in full context: list the
      measurements you judge missed — verbatim value, unit, and the phrase
-     they occur in — in `systemic_critique_summary`; a separate completion pass
-     extracts them.
-   - NEVER mint an entity or placeholder node for a bare number, an ignored
+     they occur in — in `systemic_critique_summary`{completion}.
+"""
+
+_COMPLETION_CLAUSE = "; a completion pass may extract them"
+
+_CITED_WORK = """     The work a citation marker refers to, linked with `{attributed_to}` from
+     the statement the text attributes to it, is an entity; keep it.
+"""
+
+_EVALUATION_INSTRUCTION = f"""\n\n
+# EVALUATION GUIDELINES
+
+1. Appropriateness: Are the facts appropriate for the document?
+
+2. Completeness: Are all possible facts extracted from the text given the ontology?
+{{quantitative_completeness}}   - NEVER mint an entity or placeholder node for a bare number, an ignored
      token, a citation marker, a page/figure/equation token, or a conversion
      artifact. Such tokens are typography, not facts: name them in
      `explanation` if at all, never as a subject in `correct_value`. A node
      whose only content is a label or comment is not a fact either.
-
+{{cited_work}}
 3. Concreteness: Only concrete facts should be extracted.
 
 4. Structure: Are all concrete entities linked to abstract classes via relations?
@@ -73,15 +87,15 @@ evaluation_instruction = f"""\n\n
    - `cd:` is reserved for concrete instances/facts only (not ontology classes/properties)
    - CRITICAL — Invented instances under ontology prefix: the most common error is placing newly-created
      instances under the domain ontology prefix just because their class exists in the ontology.
-     Example of the error: `onto:Trial_1 a onto:Trial` — `Trial_1` is a new instance, so it MUST be `cd:trial_1 a onto:Trial`.
+     Example of the error: `onto:Project_1 a onto:Project` — `Project_1` is a new instance, so it MUST be `cd:project_1 a onto:Project`.
      Flag every case where a subject IRI uses a domain ontology prefix but represents a concrete instance
      that does not literally exist in the provided ontology as a named individual.
 
 6. Ontology Validity: Verify that every non-cd: entity exists in either the provided domain ontology or standard ontologies (RDFS, OWL, schema.org, etc.).
-   - Every class, property, and individual using ontology prefixes (fca:, onto:, schema:, etc.) must be defined in its respective ontology
+   - Every class, property, and individual using ontology prefixes (onto:, schema:, etc.) must be defined in its respective ontology
    - Invented entities using ontology prefixes are errors
    - Fix: REMOVE invented entities or REPLACE with semantically similar existing entities from available ontologies
-   - Treat morphology/casing variants of ontology terms as likely mistakes (e.g. `AppealCourt_Rouen` vs `AppealCourtRouen`) unless the variant exists explicitly in ontology
+   - Treat morphology/casing variants of ontology terms as likely mistakes (e.g. `onto:Work_Unit` vs `onto:WorkUnit`) unless the variant exists explicitly in ontology
    - For multilingual variants, prefer the exact canonical ontology IRI that exists in ontology; do not allow translated/reformatted ontology-prefixed IRIs as new entities
 6a. Opaque Identifier Ontologies (Wikidata-style Q/P codes, hashes, UUIDs):
    - When the domain ontology uses opaque local IRI names (Q-numbers, P-numbers, hash IDs, numeric codes),
@@ -116,9 +130,11 @@ Before finalizing your critique:
    - Search available ontologies for semantically similar entities
    - Suggest REPLACE if found, or REMOVE if no suitable replacement exists
 
-7. Quarantined typed literals: When a "Quarantined triples" section is present,
-   each entry had an XSD datatype whose lexical form is invalid for that type
-   (e.g. ranges, approximations, or unit suffixes encoded as a single decimal).
+7. Quarantined literals: When a "Quarantined triples" section is present,
+   each entry is a literal that does not fit its property's declared range,
+   or whose form is invalid for its datatype: text where the property takes a
+   number or a date (e.g. a range, an approximation, or a number with a unit
+   written as one value).
    - Propose critical REPLACE fixes that use ontology-defined structured representations
      from the ontology chapter (not ad-hoc xsd:string unless no pattern exists).
    - `correct_value` / `incorrect_value` MUST follow the GRAPH FORMAT INSTRUCTION below.
@@ -128,3 +144,33 @@ Before finalizing your critique:
 - Respond with valid JSON only. Do NOT include `//` comments or any other non-JSON syntax inside the JSON block.
 - Use the `explanation` field to convey any reasoning that you would otherwise put in a comment.
 """
+
+
+def evaluation_instruction_for(
+    *,
+    states_quantity: bool,
+    citation_vocabulary: Mapping[str, str] | None = None,
+    recovers_measurements: bool = False,
+) -> str:
+    """The EVALUATION GUIDELINES chapter for one unit.
+
+    Args:
+        states_quantity: Whether the unit text states a number; without one
+            the quantitative-completeness guideline is left out.
+        citation_vocabulary: ``CHUNK_CITATION_VOCABULARY``; its
+            ``attributed_to`` term keeps the cited work out of the typography
+            the critic removes.
+        recovers_measurements: Whether a gap pass recovering missing
+            measurements runs after the critic; only then does the guideline
+            say one may extract them.
+    """
+    attributed_to = (citation_vocabulary or {}).get("attributed_to")
+    completeness = _QUANTITATIVE_COMPLETENESS.format(
+        completion=_COMPLETION_CLAUSE if recovers_measurements else ""
+    )
+    return _EVALUATION_INSTRUCTION.format(
+        quantitative_completeness=completeness if states_quantity else "",
+        cited_work=_CITED_WORK.format(attributed_to=attributed_to)
+        if attributed_to
+        else "",
+    )

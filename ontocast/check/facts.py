@@ -20,7 +20,7 @@ from ontocast.check.report import (
 from ontocast.check.scope import catalog_schema_terms, declared_terms, instances
 from ontocast.onto.model import FactsValidationFindingKind
 from ontocast.onto.rdfgraph import RDFGraph, copy_triples
-from ontocast.onto.scaffolding import is_scaffolding, scaffolding_nodes
+from ontocast.onto.scaffolding import FactScope
 from ontocast.onto.well_known import well_known_terms
 from ontocast.onto.xsd_lexical import TEMPORAL_DATATYPES
 from ontocast.tool.facts_validation.connectivity import (
@@ -29,51 +29,39 @@ from ontocast.tool.facts_validation.connectivity import (
     twin_labels,
 )
 from ontocast.tool.facts_validation.gate import validate_aggregated_facts
+from ontocast.tool.facts_validation.grounding import node_of
 from ontocast.tool.facts_validation.literal_repair import (
-    literal_ranges,
+    range_mismatches,
     schema_retypings,
-    temporal_range_mismatches,
 )
 from ontocast.tool.facts_validation.shacl import run_shacl
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.facts_validation.term_verdict import (
+    TermPosition,
     TermVerdict,
     TermVerdictKind,
     term_verdict,
+    used_terms,
 )
 from ontocast.tool.facts_validation.terms import (
+    CatalogRoles,
     ValidationPolicy,
     _alias_candidates,
-    _catalog_term_roles,
     _namespace_of,
     collect_catalog_terms,
     collect_declared_namespaces,
+    value_class_base,
 )
-from ontocast.tool.facts_validation.unit_findings import domain_violation_findings
+from ontocast.tool.facts_validation.unit_findings import (
+    domain_violation_findings,
+    empty_value_findings,
+    role_outside_statement_findings,
+)
 
 _SEVERITY_ORDER = {"error": 0, "warning": 1}
 _KIND_ORDER = {kind: index for index, kind in enumerate(FactsCheckKind)}
 # Types that say nothing about what an instance is.
 _VACUOUS_TYPES = frozenset({OWL.Thing, RDFS.Resource, OWL.NamedIndividual})
-
-# The XSD 1.1 datatype each built-in datatype is derived from by restriction:
-# every value of the derived type is a value of its base, so it fits a range
-# declared as the base.
-_XSD_BASE = {
-    XSD.integer: XSD.decimal,
-    XSD.long: XSD.integer,
-    XSD.int: XSD.long,
-    XSD.short: XSD.int,
-    XSD.byte: XSD.short,
-    XSD.nonNegativeInteger: XSD.integer,
-    XSD.positiveInteger: XSD.nonNegativeInteger,
-    XSD.unsignedLong: XSD.nonNegativeInteger,
-    XSD.unsignedInt: XSD.unsignedLong,
-    XSD.unsignedShort: XSD.unsignedInt,
-    XSD.unsignedByte: XSD.unsignedShort,
-    XSD.nonPositiveInteger: XSD.integer,
-    XSD.negativeInteger: XSD.nonPositiveInteger,
-    XSD.dateTimeStamp: XSD.dateTime,
-}
 
 Vocabulary = TypingLiteral["strict", "open"]
 
@@ -100,9 +88,12 @@ def check_facts(
     """Check a facts graph against a catalog ontology and report what is wrong.
 
     The graph is never modified: every check that rewrites runs on a copy.
-    With an empty or missing catalog, the checks that need one are skipped
-    and the report says so (``catalog_empty``); the well-known-term checks
-    and literal syntax still run.
+    Only the facts are checked: OntoCast's provenance (chunk nodes, reifiers,
+    :meth:`~ontocast.onto.scaffolding.FactScope.facts`) is left out, and the
+    document node is not an instance. With an empty or missing catalog,
+    the checks that need one are skipped and the report says so
+    (``catalog_empty``); the well-known-term checks and literal syntax still
+    run.
 
     Args:
         graph: Facts graph, in the user's own namespaces.
@@ -123,7 +114,7 @@ def check_facts(
     Returns:
         The report.
     """
-    work = _rdf_copy(graph)
+    work = FactScope.of(graph, None).facts()
     catalog = _as_rdf_graph(ontology_graph)
     catalog_empty = catalog is None
     policy = ValidationPolicy(
@@ -144,14 +135,21 @@ def check_facts(
     names = _Names(work, catalog)
 
     findings: list[FactsCheckFinding] = []
+    roles = CatalogRoles.of([catalog] if catalog is not None else [])
+    contract = roles.statement_contract(value_class_base(None, {}))
     term_findings, complete = _term_findings(
-        work, catalog, catalog_terms, policy, names
+        work, catalog, catalog_terms, policy, names, roles, instance_namespaces
     )
     findings.extend(term_findings)
     findings.extend(_subject_findings(work, schema_terms, names))
-    findings.extend(_literal_findings(work, catalog, names))
+    findings.extend(_literal_findings(work, catalog, roles, names))
     if catalog is not None:
         findings.extend(_domain_findings(work, catalog, instance_iris, names))
+        findings.extend(
+            _statement_shape_findings(
+                work, catalog, contract, instance_namespaces, names
+            )
+        )
         findings.extend(
             _functional_findings(
                 work, catalog, catalog_terms, instance_iris, policy, names
@@ -159,7 +157,7 @@ def check_facts(
         )
 
     structure = _structure_findings(
-        work, catalog, catalog_terms, instance_iris, policy, names
+        work, catalog, catalog_terms, instance_iris, policy, names, contract
     )
     findings.extend(structure.findings)
     shacl_evaluated: bool | None = None
@@ -191,7 +189,7 @@ def check_facts(
         findings_total=total,
         counts=counts,
         metrics=FactsCheckMetrics(
-            triples=len(graph),
+            triples=len(work),
             instances=len(found),
             isolated=structure.isolated,
             untyped=structure.untyped,
@@ -250,17 +248,26 @@ class _Names:
         return f"<{iri}>"
 
 
+#: Which position a term used in several is judged in: as a predicate, else
+#: as a class, else as an individual.
+_POSITION_ORDER: dict[TermPosition, int] = {"predicate": 0, "type": 1, "object": 2}
+
+
 def _term_findings(
     graph: RDFGraph,
     catalog: RDFGraph | None,
     catalog_terms: set[str],
     policy: ValidationPolicy,
     names: _Names,
+    roles: CatalogRoles,
+    instance_namespaces: Sequence[str] | None,
 ) -> tuple[list[FactsCheckFinding], dict[int, Callable[[], FactsCheckFinding]]]:
     """``unknown_term`` and ``non_catalog_vocabulary``, once per term.
 
-    Predicates and ``rdf:type`` objects are judged by :func:`term_verdict`, as
-    extraction judges them. It is asked for the strict verdict in both modes,
+    Every IRI the facts use (:func:`used_terms`: predicates, ``rdf:type``
+    objects and other IRI objects) is judged by :func:`term_verdict`, as
+    extraction judges it: an IRI object only by the closed vocabularies, an
+    individual of a value also by its property's closed range (``contract``). It is asked for the strict verdict in both modes,
     so a term outside every known vocabulary is found under ``open`` too and
     reported there as a warning. Terms are judged by IRI: no namespace the
     catalog borrows from admits a term the catalog does not name, and a term
@@ -275,7 +282,8 @@ def _term_findings(
     declared_namespaces = collect_declared_namespaces(catalog)
     fallback_terms = policy.exempt_terms(graph, catalog)
     standard_namespaces = policy.standard_namespaces()
-    catalog_roles = _catalog_term_roles(catalog)
+    contract = roles.statement_contract(value_class_base(None, {}))
+    catalog_roles = (set(roles.properties), set(roles.classes))
     no_roles: tuple[set[str], set[str]] = (set(), set())
 
     def acceptable(text: str) -> bool:
@@ -294,19 +302,25 @@ def _term_findings(
         )
 
     uses: dict[str, int] = {}
-    as_predicate: set[str] = set()
-    for _, predicate, obj in graph:
-        if isinstance(predicate, URIRef):
-            uses[str(predicate)] = uses.get(str(predicate), 0) + 1
-            as_predicate.add(str(predicate))
-        if predicate == RDF.type and isinstance(obj, URIRef):
-            uses[str(obj)] = uses.get(str(obj), 0) + 1
+    positions: dict[str, TermPosition] = {}
+    closed: dict[str, frozenset[str]] = {}
+    for term in used_terms(FactScope.of(graph, instance_namespaces), contract):
+        uses[term.iri] = uses.get(term.iri, 0) + 1
+        # A term used as a predicate is judged as one; a class next.
+        if (
+            term.iri not in positions
+            or _POSITION_ORDER[term.position] < (_POSITION_ORDER[positions[term.iri]])
+        ):
+            positions[term.iri] = term.position
+        if term.closed_range:
+            closed[term.iri] = closed.get(term.iri, frozenset()) | term.closed_range
 
     findings: list[FactsCheckFinding] = []
     complete: dict[int, Callable[[], FactsCheckFinding]] = {}
     for text in sorted(uses):
         if text in catalog_terms:
             continue
+        position = positions[text]
         judged = term_verdict(
             text,
             catalog_terms=catalog_terms,
@@ -316,10 +330,11 @@ def _term_findings(
             catalog_namespaces=frozenset(),
             standard_namespaces=standard_namespaces,
             vocabulary="strict",
+            position=position,
+            closed_range=closed.get(text, frozenset()),
         )
         if judged is None:
             continue
-        position = "predicate" if text in as_predicate else "type"
         if judged.kind is TermVerdictKind.PLACEHOLDER_NAMESPACE:
             kind, severity = FactsCheckKind.UNKNOWN_TERM, "error"
             pool, with_catalog = catalog_terms or None, True
@@ -337,6 +352,13 @@ def _term_findings(
                 return messages.unknown_well_known_term(
                     names(text), judged.vocabulary_title or "", suggestions
                 )
+
+        elif judged.kind is TermVerdictKind.CLOSED_RANGE_MISSING:
+            kind, severity = FactsCheckKind.UNKNOWN_TERM, "error"
+            pool, with_catalog = catalog_terms, True
+
+            def message(suggestions: list[str], text: str = text) -> str:
+                return messages.unknown_closed_range_term(names(text), suggestions)
 
         else:
             kind = FactsCheckKind.NON_CATALOG_VOCABULARY
@@ -459,6 +481,43 @@ def _domain_findings(
     return findings
 
 
+def _statement_shape_findings(
+    graph: RDFGraph,
+    catalog: RDFGraph,
+    contract: StatementContract,
+    instance_namespaces: Sequence[str] | None,
+    names: _Names,
+) -> list[FactsCheckFinding]:
+    """``role_outside_statement`` and ``empty_value``, as extraction finds them."""
+    scope = FactScope.of(graph, instance_namespaces)
+    findings = [
+        FactsCheckFinding(
+            kind=FactsCheckKind.ROLE_OUTSIDE_STATEMENT,
+            severity="error",
+            message=messages.role_outside_statement(
+                _node_name(node_of(found.subject), names),
+                names(found.predicate),
+                found.facet,
+            ),
+            subject=found.subject,
+            predicate=found.predicate,
+            value=found.value,
+            suggestions=list(found.suggestions),
+        )
+        for found in role_outside_statement_findings(scope, contract, catalog)
+    ]
+    findings.extend(
+        FactsCheckFinding(
+            kind=FactsCheckKind.EMPTY_VALUE,
+            severity="warning",
+            message=messages.empty_value(_node_name(node_of(found.subject), names)),
+            subject=found.subject,
+        )
+        for found in empty_value_findings(scope, contract)
+    )
+    return findings
+
+
 def _functional_findings(
     graph: RDFGraph,
     catalog: RDFGraph,
@@ -472,8 +531,8 @@ def _functional_findings(
         graph,
         catalog,
         fact_namespaces=sorted({_namespace_of(iri) for iri in instance_iris}),
-        key_supported_subjects=None,
-        cross_unit_pairs=None,
+        confirmed_subjects=None,
+        merge_provenance=None,
         non_catalog_severity="error" if policy.vocabulary == "strict" else "warning",
         additional_standard_namespaces=policy.additional_standard_namespaces,
         catalog_terms=catalog_terms,
@@ -501,19 +560,19 @@ def _functional_findings(
 
 
 def _literal_findings(
-    graph: RDFGraph, catalog: RDFGraph | None, names: _Names
+    graph: RDFGraph, catalog: RDFGraph | None, roles: CatalogRoles, names: _Names
 ) -> list[FactsCheckFinding]:
     """``invalid_literal``, ``untyped_value`` and ``temporal_range_mismatch``.
 
     Each literal gets at most one finding. A literal that is no value of its
     own datatype is ``invalid_literal`` whatever the catalog says. The rest is
-    judged against the declared datatype ranges, on a copy retyped as at
-    parse time: a value the retyping fixes is ``untyped_value``; text it
-    cannot read as the range, language-tagged text (retyping would lose the
-    tag), or a value of another type on a numeric range, is
-    ``invalid_literal``; a value of another type on a date, time or duration
-    range is ``temporal_range_mismatch``. Without a catalog only the first
-    check runs.
+    judged against the declared datatype ranges, the catalog's and the
+    well-known vocabularies', on a copy retyped as at parse time: a value the
+    retyping fixes is ``untyped_value``; a literal that is no value of the
+    range (:func:`~ontocast.tool.facts_validation.literal_repair.range_mismatches`)
+    is ``temporal_range_mismatch`` when it is a typed value of another type on
+    a date, time or duration range, and ``invalid_literal`` otherwise. Without
+    a catalog only the first check runs.
     """
     findings: list[FactsCheckFinding] = []
     clean = RDFGraph()
@@ -571,52 +630,25 @@ def _literal_findings(
             )
         )
 
-    # Text a date, time or duration range cannot read, as the library judges it.
-    unreadable_text: set[tuple] = set()
-    for triple, record in temporal_range_mismatches(clean, catalog):
-        unreadable_text.add(triple)
+    # Every literal that is no value of its property's declared range, as the
+    # library judges it at extraction.
+    for triple, record in range_mismatches(clean, catalog, roles):
         subject, predicate, obj = triple
-        findings.append(
-            _literal_finding(
-                FactsCheckKind.INVALID_LITERAL,
-                "error",
-                subject,
-                predicate,
-                obj,
-                messages.invalid_literal(
-                    _node_name(subject, names),
-                    names(str(predicate)),
-                    record.object_lexical,
-                    names(record.expected_datatype or ""),
-                ),
-            )
+        if not isinstance(obj, Literal):
+            continue
+        temporal = any(
+            URIRef(dt) in TEMPORAL_DATATYPES for dt in record.expected_datatypes
         )
-
-    ranges = literal_ranges(catalog)
-    for triple in clean:
-        subject, predicate, obj = triple
-        if (
-            triple in unreadable_text
-            or not isinstance(predicate, URIRef)
-            or not isinstance(obj, Literal)
-        ):
-            continue
-        declared = ranges.get(predicate)
-        if declared is None or _fits(obj.datatype, declared):
-            continue
-        temporal = declared in TEMPORAL_DATATYPES
         is_text = obj.datatype in (None, XSD.string)
-        if temporal and is_text and obj.language is None:
-            # A readable value was retyped; an unreadable one is reported above.
-            continue
-        if temporal and obj.language is None:
+        if temporal and not is_text and obj.language is None:
+            # A value of another type where a date, time or duration belongs.
             kind = FactsCheckKind.TEMPORAL_RANGE_MISMATCH
             message = messages.temporal_range_mismatch(
                 _node_name(subject, names),
                 names(str(predicate)),
                 str(obj),
                 names(str(obj.datatype)),
-                names(str(declared)),
+                " or ".join(names(dt) for dt in record.expected_datatypes),
             )
         else:
             kind = FactsCheckKind.INVALID_LITERAL
@@ -624,22 +656,13 @@ def _literal_findings(
                 _node_name(subject, names),
                 names(str(predicate)),
                 str(obj),
-                names(str(declared)),
+                " or ".join(names(dt) for dt in record.expected_datatypes),
                 obj.language,
             )
         findings.append(
             _literal_finding(kind, "error", subject, predicate, obj, message)
         )
     return findings
-
-
-def _fits(datatype: Node | None, declared: Node) -> bool:
-    """Whether a value of ``datatype`` is a value of the ``declared`` range."""
-    while datatype is not None:
-        if datatype == declared:
-            return True
-        datatype = _XSD_BASE.get(datatype)
-    return False
 
 
 def _literal_finding(
@@ -749,6 +772,7 @@ def _structure_findings(
     instance_iris: AbstractSet[str],
     policy: ValidationPolicy,
     names: _Names,
+    contract: StatementContract,
 ) -> _Structure:
     """Untyped, isolated, silent, dangling and twin-label findings.
 
@@ -796,12 +820,11 @@ def _structure_findings(
                 kind = FactsCheckKind.ISOLATED_INSTANCE
             result.isolated += 1
             result.warn(kind, message, iri)
-        twins = twin_labels(graph, namespaces)
+        twins = twin_labels(graph, namespaces, contract=contract)
         result.twin_labels = len(twins)
         for label, count in twins.items():
             result.warn(FactsCheckKind.TWIN_LABELS, messages.twin_labels(label, count))
 
-    scaffolding = scaffolding_nodes(graph)
     subjects = {s for s in graph.subjects() if isinstance(s, URIRef)}
     dangling: dict[str, set[str]] = {}
     for subject, predicate, obj in graph:
@@ -814,7 +837,6 @@ def _structure_findings(
             or str(obj) in catalog_terms
             or str(obj).startswith(standard)
             or not str(obj).startswith(tuple(namespaces))
-            or is_scaffolding((subject, predicate, obj), scaffolding)
         ):
             continue
         dangling.setdefault(str(obj), set()).add(str(predicate))

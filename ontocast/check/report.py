@@ -12,6 +12,8 @@ class FactsCheckKind(StrEnum):
     NON_CATALOG_VOCABULARY = "non_catalog_vocabulary"
     UNKNOWN_TERM = "unknown_term"
     DOMAIN_VIOLATION = "domain_violation"
+    ROLE_OUTSIDE_STATEMENT = "role_outside_statement"
+    EMPTY_VALUE = "empty_value"
     UNTYPED_VALUE = "untyped_value"
     INVALID_LITERAL = "invalid_literal"
     TEMPORAL_RANGE_MISMATCH = "temporal_range_mismatch"

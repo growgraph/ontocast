@@ -210,6 +210,32 @@ def test_a_well_known_term_of_the_other_kind_is_neither_a_reuse_nor_a_parent():
     assert person.decision == "mint"
 
 
+def test_a_name_the_well_known_vocabulary_lacks_is_minted_not_reused():
+    """``schema:leader`` is no schema.org term: reusing it would serve an unknown term."""
+    report = OntologyPlanReport(
+        proposals=[
+            _proposal(
+                kind="object_property",
+                label="leader",
+                local_name="leader",
+                reuse="schema:leader",
+            ),
+            _proposal(
+                kind="object_property",
+                label="team",
+                local_name="team",
+                parent="schema:affiliationOf",
+            ),
+        ]
+    )
+    plan = check_plan(
+        report, home=HOME, catalog_index=_catalog(), prefixes=PREFIXES, max_terms=10
+    )
+    leader, team = plan.terms
+    assert (leader.decision, leader.iri) == ("mint", f"{HOME.namespace}leader")
+    assert team.parent_iri is None
+
+
 SIDE_PREFIXES = {
     **PREFIXES,
     "skos": "http://www.w3.org/2004/02/skos/core#",

@@ -25,11 +25,12 @@ from ontocast.prompt.repair_facts_domain import build_violations_chapter
 from ontocast.stategraph import atomic as atomic_module
 from ontocast.stategraph.atomic import (
     FACTS_PHASE,
-    _drop_domain_violations,
+    _exit_unit,
     _run_domain_repair,
 )
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import CriticPatchPolicy, ValidationPolicy
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.facts_validation.terms import CatalogRoles, domain_fitting_properties
 from ontocast.tool.facts_validation.unit_findings import domain_violation_findings
 
@@ -95,7 +96,7 @@ def _atomic(*, completion_passes: int = 1) -> AtomicToolBox:
             additional_standard_namespaces=(),
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
-            subject_contract=lambda: None,
+            statement_contract=StatementContract,
         ),
     )
 
@@ -234,7 +235,7 @@ async def test_no_violation_means_no_call(monkeypatch) -> None:
 def test_a_statement_still_in_violation_is_dropped_with_a_record() -> None:
     state = _state()
 
-    _drop_domain_violations(state, _atomic(), _PHASE)
+    _exit_unit(state, _atomic(), _PHASE)
 
     graph = state.content_unit.graph
     assert (_DATASET, PROV.used, _SOURCE) not in graph
@@ -260,3 +261,25 @@ def test_the_prompt_template_and_its_variables_agree() -> None:
         field for _, field, _, _ in string.Formatter().parse(template_prompt) if field
     }
     assert named == set(_build_prompt().input_variables)
+
+
+@pytest.mark.anyio
+async def test_a_swap_to_a_property_the_catalog_says_does_not_fit_is_refused(
+    monkeypatch,
+) -> None:
+    """The swap is judged by the catalog's domain, not only what retrieval kept."""
+    state = _state()
+    catalog = _ontology()
+    # The snapshot never shows this property's domain; the catalog does.
+    catalog.add((PROV.wasInformedBy, RDFS.domain, PROV.Activity))
+    atomic = _atomic()
+    cast(SimpleNamespace, atomic).catalog_roles = lambda: CatalogRoles.of([catalog])
+    fake, _ = _fake_repair(
+        _replace(_statement(_DATASET, PROV.wasInformedBy, _SOURCE), [1])
+    )
+    monkeypatch.setattr(atomic_module, "repair_domain_violations", fake)
+
+    await _run_domain_repair(state, atomic, _PHASE, render_attempt=1)
+
+    assert (_DATASET, PROV.wasInformedBy, _SOURCE) not in state.content_unit.graph
+    assert state.attempt_log[-1].n_fixes_applied == 0

@@ -638,7 +638,9 @@ def serve(
     help=(
         "Keep chunk-level provenance in the dumped facts Turtle. Provenance is "
         "what lets a statement be traced back to its source span and "
-        "re-verified against the document."
+        "re-verified against the document. Also writes <name>.units.jsonl "
+        "(each unit's text) and <name>.units.trig (each unit's facts as "
+        "aggregation receives them)."
     ),
 )
 @click.option(

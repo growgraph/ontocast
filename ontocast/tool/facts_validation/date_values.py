@@ -26,12 +26,13 @@ from rdflib.term import Node
 from ontocast.onto.model import FactsGateRepairKind, GraphRepairRecord
 from ontocast.onto.property_sides import side_classes, sides_by_property
 from ontocast.onto.rdfgraph import RDFGraph
+from ontocast.onto.scaffolding import FactScope
 from ontocast.onto.well_known import (
     well_known_datatype_ranges,
     well_known_temporal_properties,
 )
 from ontocast.onto.xsd_lexical import CALENDAR_DATATYPES
-from ontocast.tool.facts_validation.terms import fact_instances, superclass_closure
+from ontocast.tool.facts_validation.terms import superclass_closure
 
 #: Datatypes that state a date or a time; a node holding one is dated.
 DATE_DATATYPES: frozenset[URIRef] = CALENDAR_DATATYPES
@@ -45,8 +46,9 @@ _TEMPORAL_PROPERTIES: frozenset[URIRef] = frozenset(
 #: the inverse of its published ranges.
 _INSTANT_PROPERTY: dict[URIRef, URIRef] = {
     URIRef(datatype): URIRef(prop)
-    for prop, datatype in well_known_datatype_ranges().items()
+    for prop, datatypes in well_known_datatype_ranges().items()
     if prop.startswith(str(TIME))
+    for datatype in datatypes
 }
 
 _MONTHS: dict[str, int] = {
@@ -232,7 +234,7 @@ def add_date_values(
         for obj in graph.objects(None, predicate)
         if isinstance(obj, BNode | URIRef)
     }
-    instances = fact_instances(graph, fact_namespaces)
+    instances = set(FactScope.of(graph, fact_namespaces).instances)
     # A structured value under a temporal property is a blank node.
     candidates = instances | {node for node in in_position if isinstance(node, BNode)}
     records: list[GraphRepairRecord] = []

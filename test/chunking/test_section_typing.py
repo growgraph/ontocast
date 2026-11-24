@@ -251,12 +251,11 @@ def test_citation_units_are_not_coreference_candidates() -> None:
         unit(1, "cd:j_smith__u1 a q:Person ; q:authorOf cd:work__u1 .", citation=True),
     ]
     final = {cd + "work__u0": cd + "Work", cd + "work__u1": cd + "Work"}
-    merges = [(cd + "smith__u0", cd + "j_smith__u1", 0.6)]
+    near = [(cd + "smith__u0", cd + "j_smith__u1", 0.6, "overlap")]
 
     assert (
         coreference_candidates(
-            unconfirmed_merges=merges,
-            lexical_near_misses=[],
+            lexical_near_misses=near,
             units=units,
             final_uri=final,
             max_pairs=10,

@@ -190,7 +190,7 @@ def test_batch_state_merge_carries_the_selection_census_and_unit_ledgers() -> No
             ]
         },
         "aggregation_clusters": {"ex:final": ["ex:a", "ex:b"]},
-        "aggregation_key_clusters": ["ex:final"],
+        "aggregation_confirmed_clusters": ["ex:final"],
     }
     state = _merge_workflow_state_into_agent_state(AgentState(), chunk)
 
@@ -202,7 +202,7 @@ def test_batch_state_merge_carries_the_selection_census_and_unit_ledgers() -> No
     assert [failure.unit_index for failure in state.unit_failures] == [2]
     assert state.facts_repairs_applied[0][0].target == "ex:hasBSite"
     assert state.aggregation_clusters == {"ex:final": ["ex:a", "ex:b"]}
-    assert state.aggregation_key_clusters == ["ex:final"]
+    assert state.aggregation_confirmed_clusters == ["ex:final"]
 
 
 def test_selection_manifest_records_the_summary_cap_only_when_summarizing() -> None:

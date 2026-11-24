@@ -31,7 +31,7 @@ from ontocast.onto.property_sides import (
     side_predicates,
 )
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.well_known import well_known_vocabulary
+from ontocast.onto.well_known import is_well_known_term, well_known_vocabulary
 from ontocast.tool.facts_validation.terms import _local_name
 from ontocast.tool.ontology_validation.axiom_hygiene import (
     DATATYPE_PRECEDENCE,
@@ -86,7 +86,12 @@ def compact_iri(iri: str, prefixes: Mapping[str, str]) -> str:
 
 
 def _known_term(iri: str, catalog_index: CatalogSurfaceIndex) -> bool:
-    return iri in catalog_index.terms or well_known_vocabulary(iri) is not None
+    """A catalog term, or a term its well-known vocabulary has.
+
+    A name in a well-known namespace that the vocabulary lacks
+    (``schema:leader``) is not a term: reusing it would serve an unknown term.
+    """
+    return iri in catalog_index.terms or is_well_known_term(iri) is True
 
 
 def _resolve_known(

@@ -43,6 +43,10 @@ from ontocast.tool.agg.signatures import (
     normalize_string_value,
     string_values_compatible,
 )
+from ontocast.tool.agg.statement_conflict import (
+    dimension_conflict_findings,
+    statement_conflict_findings,
+)
 from ontocast.tool.agg.value_names import carrierless_values, name_values
 from ontocast.tool.facts_validation import (
     FactsValidationReport,
@@ -67,7 +71,7 @@ from ontocast.tool.facts_validation import (
     validate_aggregated_facts,
 )
 from ontocast.tool.facts_validation.date_values import add_date_values
-from ontocast.tool.facts_validation.terms import is_value_node
+from ontocast.tool.facts_validation.terms import CatalogRoles, is_value_node
 from ontocast.toolbox import ToolBox
 
 logger = logging.getLogger(__name__)
@@ -673,9 +677,13 @@ def run_facts_gate(
             "it" if len(contradictions) == 1 else "them",
         )
     fact_namespaces = [DEFAULT_IRI, str(state.doc_iri), state.doc_namespace or ""]
+    # The closed ranges of value properties, over the context the gate checks.
+    contract = CatalogRoles.of([ontology_graph]).statement_contract(
+        tools.get_atomic_tools().value_classes()
+    )
 
     def run_validation() -> FactsValidationReport:
-        return validate_aggregated_facts(
+        report = validate_aggregated_facts(
             state.aggregated_facts,
             ontology_graph,
             shapes_graph=shapes_graph,
@@ -688,10 +696,10 @@ def run_facts_gate(
             shacl_inference=facts_validation.shacl_inference,
             shacl_advanced=facts_validation.shacl_advanced,
             shacl_max_triples=facts_validation.shacl_max_triples,
-            key_supported_subjects=state.aggregation_key_clusters,
-            cross_unit_pairs=(
-                state.aggregation_cross_unit_pairs
-                if facts_validation.suspect_multi_value_require_cross_unit
+            confirmed_subjects=state.aggregation_confirmed_clusters,
+            merge_provenance=(
+                state.aggregation_merge_provenance
+                if facts_validation.suspect_multi_value_require_merge
                 else None
             ),
             non_catalog_severity=(
@@ -701,7 +709,23 @@ def run_facts_gate(
                 facts_validation.additional_standard_namespaces
             ),
             catalog_terms=catalog_terms,
+            contract=contract,
+            document=state.doc_iri,
         )
+        # Telemetry: aggregation vetoes these merges, so the list stays empty.
+        report.findings.extend(
+            statement_conflict_findings(
+                state.aggregated_facts, ontology_graph, fact_namespaces, state.doc_iri
+            )
+        )
+        # Results served under one property, or by one statement, that
+        # disagree in dimension; a unit carries only the anchored ones.
+        report.findings.extend(
+            dimension_conflict_findings(
+                state.aggregated_facts, ontology_graph, fact_namespaces, state.doc_iri
+            )
+        )
+        return report
 
     def merge_signature_errors(report: FactsValidationReport) -> int:
         return sum(
@@ -755,14 +779,14 @@ def run_facts_gate(
         # coreference for nothing and must not be kept.
         previous_graph = state.aggregated_facts
         previous_clusters = state.aggregation_clusters
-        previous_key_clusters = state.aggregation_key_clusters
-        previous_cross_unit_pairs = state.aggregation_cross_unit_pairs
+        previous_confirmed_clusters = state.aggregation_confirmed_clusters
+        previous_merge_provenance = state.aggregation_merge_provenance
         state.aggregated_facts = result.graph
         state.aggregation_clusters = result.merged_clusters
-        state.aggregation_key_clusters = result.key_supported_clusters
+        state.aggregation_confirmed_clusters = result.confirmed_clusters
         # Re-aggregation rewrites subject IRIs, so the pairs the validator
         # keys on have to come from the pass it is about to score.
-        state.aggregation_cross_unit_pairs = result.cross_unit_object_pairs
+        state.aggregation_merge_provenance = result.merge_provenance
         candidate_report = run_validation()
         candidate_errors = merge_signature_errors(candidate_report)
         if candidate_errors >= previous_errors:
@@ -776,8 +800,8 @@ def run_facts_gate(
             )
             state.aggregated_facts = previous_graph
             state.aggregation_clusters = previous_clusters
-            state.aggregation_key_clusters = previous_key_clusters
-            state.aggregation_cross_unit_pairs = previous_cross_unit_pairs
+            state.aggregation_confirmed_clusters = previous_confirmed_clusters
+            state.aggregation_merge_provenance = previous_merge_provenance
             rejected_repairs += 1
             break
         repair_passes += 1
@@ -888,7 +912,9 @@ def run_facts_gate(
         isolated_instances(state.aggregated_facts, fact_namespaces, state.doc_iri),
     )[:_ISOLATED_STATE_CAP]
     state.retrieval_metrics[RetrievalMetric.FACTS_TWIN_LABELS] = len(
-        twin_labels(state.aggregated_facts, fact_namespaces, state.doc_iri)
+        twin_labels(
+            state.aggregated_facts, fact_namespaces, state.doc_iri, contract=contract
+        )
     )
     # Values are blank nodes under their carriers until here, so the counts
     # above see them as parts of statements; the served graph names them.

@@ -245,8 +245,11 @@ that labeled it, and the run manifest's `selection.route_histogram` counts
 units and characters per route and reason. In `citations_only` mode the record
 vocabulary defaults to schema.org; set
 [`CHUNK_CITATION_VOCABULARY`](../reference/configuration/chunking.md#chunk_citation_vocabulary)
-to use another, such as BIBO. The detectors work on English, Latin-script
-documents; elsewhere they find less, never more.
+to use another, such as BIBO. Its `attributed_to` role (`dcterms:source` by
+default) is also the property every facts prompt asks for when a statement in
+the body text is attributed to other work: the statement links to the cited
+work, an entity of the vocabulary's `work_class`. The detectors work on
+English, Latin-script documents; elsewhere they find less, never more.
 
 ## Preview before you extract
 

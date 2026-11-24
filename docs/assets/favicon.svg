@@ -1,14 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
-  <circle cx="48" cy="48" r="47" fill="#ffffff"/>
-  <g transform="translate(-2 0)">
-    <g stroke="#0b8a7f" stroke-width="8" stroke-linecap="round">
-      <line x1="22" y1="44" x2="65" y2="32"/>
-      <line x1="65" y1="32" x2="63" y2="73"/>
-    </g>
-    <g fill="#0b8a7f">
-      <circle cx="65" cy="32" r="17"/>
-      <circle cx="22" cy="44" r="10"/>
-      <circle cx="63" cy="73" r="10"/>
-    </g>
+  <rect width="96" height="96" rx="22" fill="#224777"/>
+  <!-- OntoCast: two nodes joined by a doubled (typed) edge in #F0883A, one satellite off the hub. -->
+  <g stroke="#F0883A" stroke-width="6.5" stroke-linecap="round">
+    <line x1="25.6" y1="53.1" x2="65.6" y2="37.1"/><line x1="22.4" y1="44.9" x2="62.4" y2="28.9"/>
+  </g>
+  <g stroke="#34D3A0" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" fill="#224777">
+    <line x1="64" y1="33" x2="57" y2="76"/>
+    <circle cx="64" cy="33" r="13"/><circle cx="24" cy="49" r="8.5"/><circle cx="57" cy="76" r="6"/>
   </g>
 </svg>

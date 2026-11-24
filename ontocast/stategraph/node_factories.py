@@ -69,6 +69,7 @@ from ontocast.stategraph.term_decisions import (
     decide_minted_terms,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
+from ontocast.stategraph.unit_exit import EXIT_REPAIR_KINDS
 from ontocast.tool.agg.aggregate import AggregationResult
 from ontocast.tool.agg.coreference import coreference_candidates, verdict_pairs
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
@@ -937,8 +938,8 @@ def make_render_facts_node(tools: ToolBox):
         findings_residual = 0
         mandatory_residual = 0
         mandatory_by_kind: Counter[str] = Counter()
-        subject_gaps_rendered = 0
-        subject_gaps_left = 0
+        role_gaps_rendered = 0
+        role_gaps_left = 0
         critic_fixes_applied = 0
         critic_fixes_residual = 0
         critic_fixes_noop = 0
@@ -965,11 +966,11 @@ def make_render_facts_node(tools: ToolBox):
                 for finding in result.deterministic_findings
                 if finding.mandatory
             )
-            subject_gaps_rendered += result.statements_without_subject_rendered
-            subject_gaps_left += sum(
+            role_gaps_rendered += result.statements_missing_role_rendered
+            role_gaps_left += sum(
                 1
                 for finding in result.deterministic_findings
-                if finding.kind == FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT
+                if finding.kind == FactsUnitFindingKind.MISSING_ROLE
             )
             critic_fixes_applied += result.critic_fixes_applied
             critic_fixes_residual += result.critic_fixes_residual
@@ -1076,10 +1077,10 @@ def make_render_facts_node(tools: ToolBox):
             dict(sorted(mandatory_by_kind.items()))
         )
         state.retrieval_metrics[
-            RetrievalMetric.FACTS_STATEMENTS_WITHOUT_SUBJECT_RENDERED
-        ] = subject_gaps_rendered
-        state.retrieval_metrics[RetrievalMetric.FACTS_STATEMENTS_WITHOUT_SUBJECT] = (
-            subject_gaps_left
+            RetrievalMetric.FACTS_STATEMENTS_MISSING_ROLE_RENDERED
+        ] = role_gaps_rendered
+        state.retrieval_metrics[RetrievalMetric.FACTS_STATEMENTS_MISSING_ROLE] = (
+            role_gaps_left
         )
         # The critic's own ledger. `node_visits` counting CRITICISE_FACTS lived
         # on the per-unit state copy and died with it, so the number of critic
@@ -1152,6 +1153,14 @@ def make_render_facts_node(tools: ToolBox):
             for record in records
             if record.kind == FactsGateRepairKind.DOMAIN_VIOLATION_DROPPED
         )
+        exit_repairs: Counter[str] = Counter()
+        for records in state.facts_repairs_applied.values():
+            for record in records:
+                if record.kind in EXIT_REPAIR_KINDS:
+                    exit_repairs[str(record.kind)] += record.triple_count
+        state.retrieval_metrics[RetrievalMetric.FACTS_EXIT_REPAIRS_BY_KIND] = dict(
+            sorted(exit_repairs.items())
+        )
         state.facts_units = facts_units
         state.status = _map_stage_status(
             failed_without_output_count, len(state.content_units)
@@ -1222,6 +1231,15 @@ def _facts_aggregation_inputs(
         if merged_context is not None and len(merged_context.snapshot.graph) > 0:
             ontology_graph = merged_context.snapshot.graph
             state.facts_ontology_context = ontology_graph
+    return ontology_graph, facts_document_metadata(state)
+
+
+def facts_document_metadata(state: AgentState) -> dict:
+    """The document metadata facts aggregation attaches to the document IRI.
+
+    The caller's metadata, plus ``source_url`` when the state has one and the
+    metadata names no source.
+    """
     document_metadata = dict(state.document_metadata)
     if (
         state.source_url
@@ -1229,7 +1247,7 @@ def _facts_aggregation_inputs(
         and "source_uri" not in document_metadata
     ):
         document_metadata["source_url"] = state.source_url
-    return ontology_graph, document_metadata
+    return document_metadata
 
 
 def make_merge_facts_node(tools: ToolBox):
@@ -1252,7 +1270,6 @@ def make_merge_facts_node(tools: ToolBox):
         aggregator = tools.aggregator
         if aggregator.llm_coreference and len(state.facts_units) > 1:
             state.coreference_candidates = coreference_candidates(
-                unconfirmed_merges=result.unconfirmed_merges,
                 lexical_near_misses=result.lexical_near_misses,
                 units=state.facts_units,
                 final_uri={
@@ -1277,8 +1294,8 @@ def _store_aggregation(state: AgentState, result: AggregationResult) -> None:
     """Make ``result`` the aggregation the later nodes read."""
     state.aggregated_facts = result.graph
     state.aggregation_clusters = result.merged_clusters
-    state.aggregation_key_clusters = result.key_supported_clusters
-    state.aggregation_cross_unit_pairs = result.cross_unit_object_pairs
+    state.aggregation_confirmed_clusters = result.confirmed_clusters
+    state.aggregation_merge_provenance = result.merge_provenance
     state.retrieval_metrics[RetrievalMetric.FACTS_REJECTED_MERGES] = (
         result.rejected_merge_count
     )
@@ -1292,8 +1309,11 @@ def make_resolve_coreference_node(tools: ToolBox):
         """Put the pairs aggregation could not settle to the model, then re-aggregate.
 
         ``same`` verdicts merge like a shared key and ``different`` ones veto;
-        the aggregator's guards still apply. The verdicts are kept on the state
-        so the facts gate's own re-aggregation honours them.
+        the aggregator's guards still apply. A ``same`` verdict counts only if
+        the pair, asked again on its own, is judged ``same`` again: in one call
+        over many pairs a verdict can answer for a neighbouring pair, and a
+        wrong merge costs more than a duplicate. The verdicts are kept on the
+        state so the facts gate's own re-aggregation honours them.
         """
         candidates = state.coreference_candidates
         if not candidates:
@@ -1307,6 +1327,14 @@ def make_resolve_coreference_node(tools: ToolBox):
         metrics[RetrievalMetric.FACTS_COREFERENCE_DIFFERENT] = sum(
             1 for v in verdicts.values() if v == "different"
         )
+        same = sorted(n for n, v in verdicts.items() if v == "same")
+        alone = await asyncio.gather(
+            *(judge_coreference(state, tools, [candidates[n - 1]]) for n in same)
+        )
+        retracted = [n for n, again in zip(same, alone) if again.get(1) != "same"]
+        for number in retracted:
+            verdicts[number] = "unsure"
+        metrics[RetrievalMetric.FACTS_COREFERENCE_RETRACTED] = len(retracted)
         vetoes, confirmations = verdict_pairs(candidates, verdicts)
         if not vetoes and not confirmations:
             return state

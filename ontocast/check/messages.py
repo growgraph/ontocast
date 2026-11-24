@@ -32,6 +32,15 @@ def unknown_well_known_term(
     return f"{term} is not a term of {vocabulary_title}." + _did_you_mean(suggestions)
 
 
+def unknown_closed_range_term(term: str, suggestions: Sequence[str]) -> str:
+    """An individual a value names where its property takes a known one."""
+    return (
+        f"{term} is neither an individual of the project's ontologies nor a "
+        "term of a listed vocabulary, and its property takes one of those."
+        + _did_you_mean(suggestions)
+    )
+
+
 def unknown_placeholder_term(term: str, suggestions: Sequence[str]) -> str:
     """A term in a placeholder namespace such as ``example.org``."""
     return (
@@ -47,6 +56,21 @@ def domain_violation(
     return (
         f"{subject} is typed {', '.join(types)} but has {predicate}, "
         f"which applies to {', '.join(expected)}."
+    )
+
+
+def role_outside_statement(node: str, predicate: str, role: str) -> str:
+    """A statement's role link held by a node that is not a statement."""
+    return (
+        f"{node} is not a statement but has {predicate}, which gives a "
+        f"statement its {role}; held here, it states nothing about a quantity."
+    )
+
+
+def empty_value(node: str) -> str:
+    """A value node with no number, bound, unit or qualifier."""
+    return (
+        f"{node} is a value that states nothing: no number, bound, unit or qualifier."
     )
 
 

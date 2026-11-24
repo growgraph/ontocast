@@ -11,7 +11,7 @@ every key.
 | Where | What you get |
 |---|---|
 | `/process` and `/process_unit` responses | `metadata`: `status`, `budget`, `retrieval_metrics`, `unit_context_sources`, `failed_units`, `facts_conformance`, `facts_validation_findings`, `facts_repairs`, `facts_gate_repairs`, `improvement_suggestions`, `ontology_versions` |
-| `ontocast process` | Per document, beside `<name>.facts.ttl`: `<name>.run.json`, the run manifest, and `<name>.facts.validation.json` when validation has something to report. With `--keep-provenance`, also `<name>.units.jsonl`; with `--dump-catalog`, `<name>.catalog.nq` beside the ontology files |
+| `ontocast process` | Per document, beside `<name>.facts.ttl`: `<name>.run.json`, the run manifest, and `<name>.facts.validation.json` when validation has something to report. With `--keep-provenance`, also `<name>.units.jsonl` and `<name>.units.trig`; with `--dump-catalog`, `<name>.catalog.nq` beside the ontology files |
 | The log | A summary of calls, tokens, durations and effective workers at `INFO` when a document finishes |
 
 `ontocast process` writes these files into `--output-dir` (or
@@ -211,6 +211,13 @@ input:
   unit as chunked, from the converted document, so markup the converter added
   is part of it; `summarized` is true when the model was shown a summary
   instead.
+  It also writes `<name>.units.trig`: one named graph per unit, named by the
+  unit IRI, holding the facts that unit hands to aggregation before any merge.
+  The default graph carries each unit's position, hash id and text, the
+  document metadata and the coreference verdicts the run kept, and the graph
+  `<doc_iri>#ontology-context` holds the ontology context the facts were merged
+  against: what aggregation and the facts gate need to run again on the same
+  input without a model call.
 - `--dump-catalog` writes `<name>.catalog.nq` after each document: every ontology
   in the catalog at that point, as the next document will see it, in sorted
   N-Quads with the ontology IRI as graph name. Comparing consecutive dumps shows

@@ -31,6 +31,7 @@ from ontocast.onto.model import (
     FactsValidationFinding,
     GraphRepairRecord,
     LoopAttempt,
+    MergeProvenance,
     OntologyPlan,
     UnitFailure,
 )
@@ -850,25 +851,24 @@ class AgentState(BasePydanticModel):
         ),
     )
 
-    aggregation_key_clusters: list[str] = Field(
+    aggregation_confirmed_clusters: list[str] = Field(
         default_factory=list,
         description=(
-            "Final URIs of merge clusters supported by natural-key evidence "
-            "(a shared identifier value). The gate downgrades string "
-            "multi-value findings on these subjects to warnings: two label "
-            "variants on a key-evidenced merge are two names for one thing, "
-            "not two things."
+            "Final URIs of merge clusters confirmed as one entity by a shared "
+            'identifier value or a coreference "same" verdict. The gate '
+            "downgrades string multi-value findings on these subjects to "
+            "warnings: two label variants on a confirmed merge are two names "
+            "for one thing, not two things."
         ),
     )
 
-    aggregation_cross_unit_pairs: list[tuple[str, str]] = Field(
-        default_factory=list,
+    aggregation_merge_provenance: MergeProvenance = Field(
+        default_factory=MergeProvenance,
         description=(
-            "Canonical (subject, predicate) pairs whose IRI objects were "
-            "contributed by more than one unit. A multi-valued predicate "
-            "asserted by a single unit cannot be the product of an identity "
-            "merge, so the gate needs this to tell a merge signature from "
-            "legitimate multi-value modelling."
+            "Which values and links of the aggregated facts only a merge "
+            "brought together. What one subject was written with cannot be "
+            "the product of an identity merge, so the gate needs this to tell "
+            "a merge signature from legitimate multi-value modelling."
         ),
     )
 

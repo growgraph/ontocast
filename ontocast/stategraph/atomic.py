@@ -18,8 +18,6 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, TypeVar
 
-from rdflib import URIRef
-
 from ontocast.agent.complete_facts import complete_facts
 from ontocast.agent.criticise_facts import criticise_facts
 from ontocast.agent.criticise_ontology import criticise_ontology
@@ -64,8 +62,8 @@ from ontocast.stategraph.context_resolver import (
     resolve_unit_ontology_context,
     snapshot_context_terms,
 )
-from ontocast.stategraph.facts_gate import drop_domain_violations
 from ontocast.stategraph.unit_context import UnitLoopContext
+from ontocast.stategraph.unit_exit import exit_unit
 from ontocast.tool.atomic import AtomicToolBox
 from ontocast.tool.facts_validation import (
     FactsAcceptancePolicy,
@@ -76,19 +74,20 @@ from ontocast.tool.facts_validation import (
     material_defects,
     materialize_entailed_types,
     normalize_literals_against_schema,
+    range_mismatches,
     repair_compact_iri_literals,
     repair_paired_object_properties,
     repair_reversed_triples,
-    temporal_range_mismatches,
     unit_numeric_inventory,
     unresolved_quarantine,
-    write_back_temporal_quarantine,
 )
 from ontocast.tool.facts_validation.critic_patch import (
     CriticPatchPolicy,
     FixPatch,
     compile_critic_fixes,
 )
+from ontocast.tool.facts_validation.mandate import GapMandate
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.ontology_validation import collect_ontology_unit_findings
 from ontocast.tool.ontology_validation.label_repair import derive_missing_labels
@@ -167,9 +166,9 @@ def _repair_facts_patch(
     Patches are parsed outside the render, so they miss its parse-time repairs;
     a bare-string IRI they insert would otherwise read as a missing property,
     a node they add would miss the type its predicates entail, an untyped
-    number would stay untyped, and text on a date property would pass. Such
-    text is quarantined as the render quarantines it, which raises the
-    mandatory count and so rolls the patch back.
+    number would stay untyped, and a literal off its property's declared
+    range would pass. Such a literal is quarantined as the render quarantines
+    it, which raises the mandatory count and so rolls the patch back.
     """
     graph = unit_state.content_unit.graph
     context = ontology_access_for_unit_facts(unit_state).effective_ontology_for_prompt()
@@ -183,7 +182,7 @@ def _repair_facts_patch(
     axioms = roles.with_axioms(context.graph)
     _, turned = repair_reversed_triples(graph, axioms)
     _, entailed = materialize_entailed_types(graph, axioms)
-    for triple, record in temporal_range_mismatches(graph, context.graph, roles):
+    for triple, record in range_mismatches(graph, context.graph, roles):
         graph.remove(triple)
         if record not in unit_state.quarantined_literal_triples:
             unit_state.quarantined_literal_triples.append(record)
@@ -270,6 +269,7 @@ def _collect_facts_findings(
         ),
         extraction_text=unit_state.content_unit.extraction_text,
         fact_namespaces=[DEFAULT_IRI, str(unit_state.content_unit.doc_iri)],
+        document=unit_state.content_unit.doc_iri,
         full_catalog_terms=full_catalog_terms,
         # Citation numerics (pages, years, volume numbers) are not extractable
         # quantities — never push coverage repair on bibliography units.
@@ -281,8 +281,12 @@ def _collect_facts_findings(
         is_citation_metadata=unit_state.content_unit.is_citation_metadata,
         is_non_content=unit_state.content_unit.is_non_content,
         # Read over the whole catalog: a unit's snapshot may lack the
-        # hierarchy placing its observation class under a statement class.
-        subject_contract=atomic.subject_contract() if atomic is not None else None,
+        # hierarchy placing its observation class under a statement class,
+        # or a property's domain and range.
+        contract=atomic.statement_contract()
+        if atomic is not None
+        else StatementContract(),
+        catalog_roles=atomic.catalog_roles() if atomic is not None else None,
     )
 
 
@@ -357,8 +361,9 @@ def _record_attempt(
     n_fixes_junk_refused: int = 0,
     n_fixes_unresolved_prefix: int = 0,
     n_measurements_recovered: int = 0,
-    n_subjects_linked: int = 0,
+    n_roles_filled: int = 0,
     n_detached_linked: int = 0,
+    n_fixes_refused_by_reason: dict[str, int] | None = None,
 ) -> None:
     """Append one telemetry record for the current loop attempt.
 
@@ -391,8 +396,9 @@ def _record_attempt(
             n_fixes_junk_refused=n_fixes_junk_refused,
             n_fixes_unresolved_prefix=n_fixes_unresolved_prefix,
             n_measurements_recovered=n_measurements_recovered,
-            n_subjects_linked=n_subjects_linked,
+            n_roles_filled=n_roles_filled,
             n_detached_linked=n_detached_linked,
+            n_fixes_refused_by_reason=dict(n_fixes_refused_by_reason or {}),
         )
     )
 
@@ -767,7 +773,7 @@ async def _run_domain_repair(
     loop. Only a patch that swaps the property of the statements it cites,
     for one whose domain the subject fits, is applied, and each goes through
     :func:`_apply_patches` like a critic fix. Whatever is still in violation
-    afterwards is dropped by :func:`_drop_domain_violations`.
+    afterwards is dropped when the unit leaves the loop (:func:`_exit_unit`).
     """
     findings = phase.collect_findings(unit_state, atomic)
     if not any(
@@ -782,7 +788,10 @@ async def _run_domain_repair(
         fixes, graph, index=index, policy=atomic.facts_patch_policy
     )
     patches = property_swaps(
-        compiled.patches, index, graph, unit_state.ontology_snapshot.graph
+        compiled.patches,
+        index,
+        graph,
+        atomic.catalog_roles().with_axioms(unit_state.ontology_snapshot.graph),
     )
     run = _apply_patches(
         unit_state,
@@ -819,24 +828,32 @@ async def _run_domain_repair(
     )
 
 
-def _drop_domain_violations(
+def _exit_unit(
     unit_state: UnitFactsState, atomic: AtomicToolBox, phase: "LoopPhase"
 ) -> None:
-    """Remove the statements still in domain violation, with a record each.
+    """Apply the exit table to what the loop left unresolved, with a record each.
 
-    A statement whose property's declared domain contradicts its subject's
-    types asserts a type the subject does not have; served, it entails it.
+    Runs after the gap pass (:func:`~ontocast.stategraph.unit_exit.exit_unit`):
+    a statement a deterministic check still rejects does not leave the loop,
+    a literal still set aside goes back as text, and a finding about an
+    absence stays on the unit for the document report.
     """
     findings = phase.collect_findings(unit_state, atomic)
-    records = drop_domain_violations(unit_state.content_unit.graph, findings)
-    if not records:
+    result = exit_unit(
+        unit_state.content_unit.graph,
+        findings,
+        unit_state.quarantined_literal_triples,
+        atomic.statement_contract(),
+    )
+    unit_state.quarantined_literal_triples = result.quarantined
+    if not result.records:
         unit_state.deterministic_findings = findings
         return
     logger.info(
-        "Unit facts: dropped %d statement(s) still in domain violation",
-        sum(record.triple_count for record in records),
+        "Unit facts exit: %d statement(s) removed or written back",
+        sum(record.triple_count for record in result.records),
     )
-    unit_state.applied_repairs.extend(records)
+    unit_state.applied_repairs.extend(result.records)
     unit_state.deterministic_findings = phase.collect_findings(unit_state, atomic)
     _reevaluate_unit_status(
         unit_state, phase, atomic, unit_state.deterministic_findings
@@ -852,16 +869,25 @@ async def _run_completion_passes(
 ) -> None:
     """Insert-only gap passes, run once the critic loop is done.
 
-    Each pass asks :func:`ontocast.agent.complete_facts.complete_facts` to
-    close the unit's gaps -- statements or values linked to nothing, and,
-    when ``atomic.facts_completion_measurements`` is on, measurements the
-    numeric inventory still lists as missing -- then applies
-    the proposal through :func:`_apply_patches`, the same per-subject
-    regression check a critic fix goes through, so an insert that leaves the
-    unit worse is rolled back on its own. Stops once no gap is left; the
-    caller has already checked ``atomic.facts_completion_passes > 0`` and
-    that this is the facts phase.
+    Each pass builds the unit's :class:`~ontocast.tool.facts_validation.mandate.GapMandate`
+    -- statements missing a role, instances linked to nothing, and, when
+    ``atomic.facts_completion_measurements`` is on, measurements the numeric
+    inventory still lists as missing -- and asks
+    :func:`ontocast.agent.complete_facts.complete_facts` to close those gaps.
+    A proposed fix adding anything the mandate did not list is refused before
+    compilation and counted by reason; the rest is applied through
+    :func:`_apply_patches`, the same per-subject regression check a critic
+    fix goes through, so an insert that leaves the unit worse is rolled back
+    on its own. Stops once no gap is left; the caller has already checked
+    ``atomic.facts_completion_passes > 0`` and that this is the facts phase.
     """
+    fact_namespaces = [DEFAULT_IRI, str(unit_state.content_unit.doc_iri)]
+    # A misplaced result is asked for once: an insert cannot remove the link
+    # its finding names, so only the exit clears it.
+    asked: set[tuple[str, str, str]] = set()
+
+    def misplaced_key(finding: FactsUnitFinding) -> tuple[str, str, str]:
+        return finding.subject, finding.predicate, finding.value
 
     def missing_measurements() -> NumericInventory:
         if not atomic.facts_completion_measurements:
@@ -874,38 +900,46 @@ async def _run_completion_passes(
             limit=atomic.numeric_coverage_limit,
         )
 
-    def detached_instances(subject_gaps: Sequence[FactsUnitFinding]) -> list[URIRef]:
-        if not atomic.facts_completion_detached:
-            return []
-        named = {finding.subject for finding in subject_gaps}
-        return sorted(
-            (
-                node
-                for node in isolated_instances(
-                    unit_state.content_unit.graph, [DEFAULT_IRI]
-                )
-                if str(node) not in named
-            ),
-            key=str,
+    def mandate_for(findings: Sequence[FactsUnitFinding]) -> GapMandate:
+        isolated = (
+            sorted(
+                isolated_instances(unit_state.content_unit.graph, [DEFAULT_IRI]),
+                key=str,
+            )
+            if atomic.facts_completion_detached
+            else []
+        )
+        return GapMandate.of(
+            [
+                finding
+                for finding in findings
+                if finding.kind != FactsUnitFindingKind.ROLE_OUTSIDE_STATEMENT
+                or misplaced_key(finding) not in asked
+            ],
+            isolated,
+            missing_measurements(),
+            atomic.statement_contract(),
+            fact_namespaces,
         )
 
     for pass_index in range(1, atomic.facts_completion_passes + 1):
-        inventory = missing_measurements()
         findings = phase.collect_findings(unit_state, atomic)
         unit_state.deterministic_findings = findings
-        subject_gaps = _subject_gaps(findings)
-        detached = detached_instances(subject_gaps)
-        if (
-            not inventory.measurements
-            and not subject_gaps
-            and len(detached) < DETACHED_TRIGGER_MIN
-        ):
+        mandate = mandate_for(findings)
+        if not mandate.calls:
             break
-        mandatory_before = sum(1 for finding in findings if finding.mandatory)
+        mandate_before = sum(1 for finding in findings if finding.mandatory)
 
-        fixes = await complete_facts(
-            unit_state, atomic, inventory, subject_gaps, detached
-        )
+        proposed = await complete_facts(unit_state, atomic, mandate)
+        asked.update(misplaced_key(finding) for finding in mandate.misplaced)
+        fixes, refused = mandate.admit(proposed, unit_state.patch_target_graph())
+        if refused:
+            logger.info(
+                "Unit facts gap pass %s: %s fix(es) refused by the mandate: %s",
+                pass_index,
+                sum(refused.values()),
+                refused,
+            )
         compiled = compile_critic_fixes(
             fixes, unit_state.patch_target_graph(), policy=atomic.facts_patch_policy
         )
@@ -914,36 +948,37 @@ async def _run_completion_passes(
             atomic,
             phase,
             compiled.patches,
-            mandatory_before=mandatory_before,
+            mandatory_before=mandate_before,
             findings_before=findings,
         )
         unit_state.deterministic_findings = run.findings
         _reevaluate_unit_status(unit_state, phase, atomic, run.findings)
 
-        post_inventory = missing_measurements()
+        after = mandate_for(run.findings)
         recovered = max(
-            0, len(inventory.measurements) - len(post_inventory.measurements)
+            0,
+            len(mandate.inventory.measurements) - len(after.inventory.measurements),
         )
-        linked = max(0, len(subject_gaps) - len(_subject_gaps(run.findings)))
+        filled = max(0, len(mandate.role_gaps) - len(after.role_gaps))
         still_detached = isolated_instances(
             unit_state.content_unit.graph, [DEFAULT_IRI]
         )
         detached_linked = sum(
             1
-            for node in detached
+            for node in mandate.detached
             if node not in still_detached
             and (node, None, None) in unit_state.content_unit.graph
         )
         logger.info(
             "Unit facts gap pass %s/%s: %d applied, %d rolled back, "
-            "%d measurement(s) recovered, %d statement(s) given a subject, "
+            "%d measurement(s) recovered, %d role(s) filled, "
             "%d detached instance(s) linked",
             pass_index,
             atomic.facts_completion_passes,
             len(run.applied),
             len(run.rolled_back),
             recovered,
-            linked,
+            filled,
             detached_linked,
         )
         _record_attempt(
@@ -962,30 +997,20 @@ async def _run_completion_passes(
             n_fixes_junk_refused=compiled.junk_refused,
             n_fixes_unresolved_prefix=compiled.unresolved_prefix,
             n_measurements_recovered=recovered,
-            n_subjects_linked=linked,
+            n_roles_filled=filled,
             n_detached_linked=detached_linked,
+            n_fixes_refused_by_reason=refused,
         )
-        if (
-            not post_inventory.measurements
-            and not _subject_gaps(run.findings)
-            and len(detached_instances(_subject_gaps(run.findings)))
-            < DETACHED_TRIGGER_MIN
-        ):
+        if not after.calls:
             break
 
 
-#: Detached instances that call the gap pass on their own. A lone unlinked
-#: instance is often an aside the text relates to nothing, so it does not pay
-#: for a call; a pass called for another gap still lists it.
-DETACHED_TRIGGER_MIN = 2
-
-
-def _subject_gaps(findings: Sequence) -> list[FactsUnitFinding]:
-    """The ``statement_without_subject`` findings among ``findings``."""
+def _role_gaps(findings: Sequence) -> list[FactsUnitFinding]:
+    """The ``missing_role`` findings among ``findings``."""
     return [
         finding
         for finding in findings
-        if finding.kind == FactsUnitFindingKind.STATEMENT_WITHOUT_SUBJECT
+        if finding.kind == FactsUnitFindingKind.MISSING_ROLE
     ]
 
 
@@ -1383,8 +1408,8 @@ async def run_unit_loop(
 
         if isinstance(unit_state, UnitFactsState):
             # The render's own lapses, before any pass repairs them.
-            unit_state.statements_without_subject_rendered = len(
-                _subject_gaps(phase.collect_findings(unit_state, atomic))
+            unit_state.statements_missing_role_rendered = len(
+                _role_gaps(phase.collect_findings(unit_state, atomic))
             )
 
         stage = phase.critic_stage
@@ -1482,24 +1507,10 @@ async def run_unit_loop(
                 await _run_domain_repair(
                     unit_state, atomic, phase, render_attempt=render_attempt
                 )
-            _drop_domain_violations(unit_state, atomic, phase)
-            if atomic.facts_completion_passes > 0:
                 await _run_completion_passes(
                     unit_state, atomic, phase, render_attempt=render_attempt
                 )
-
-        if isinstance(unit_state, UnitFactsState):
-            written_back, unit_state.quarantined_literal_triples = (
-                write_back_temporal_quarantine(
-                    unit_state.content_unit.graph,
-                    unit_state.quarantined_literal_triples,
-                )
-            )
-            if written_back:
-                unit_state.applied_repairs.extend(written_back)
-                unit_state.deterministic_findings = phase.collect_findings(
-                    unit_state, atomic
-                )
+            _exit_unit(unit_state, atomic, phase)
 
         mandatory = sum(
             1 for finding in unit_state.deterministic_findings if finding.mandatory

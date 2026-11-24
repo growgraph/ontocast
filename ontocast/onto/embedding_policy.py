@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.scaffolding import document_nodes, is_scaffolding, scaffolding_nodes
+from ontocast.onto.scaffolding import FactScope
 
 
 def strip_provenance_triples_for_embedding(graph: RDFGraph) -> RDFGraph:
@@ -18,8 +18,9 @@ def strip_provenance_triples_for_embedding(graph: RDFGraph) -> RDFGraph:
         if prefix:
             result.bind(prefix, namespace)
 
-    dropped = scaffolding_nodes(graph) | document_nodes(graph)
-    for triple in graph:
-        if not is_scaffolding(triple, dropped):
+    scope = FactScope.of(graph, None)
+    for triple in scope.triples():
+        subject, _, obj = triple
+        if subject not in scope.documents and obj not in scope.documents:
             result.add(triple)
     return result

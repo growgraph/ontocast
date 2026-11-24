@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from rdflib import OWL, RDF, RDFS, BNode, Literal, Namespace, URIRef
 from rdflib.collection import Collection
-from rdflib.namespace import DCTERMS, FOAF, XSD
+from rdflib.namespace import DCTERMS, FOAF, PROV, XSD
 
 from ontocast.config import (
     Config,
@@ -77,7 +77,9 @@ def catalog_graph(*, court_globally_named: bool = True) -> RDFGraph:
 
 
 def _doc_node(g: RDFGraph, doc: str) -> URIRef:
+    """The document node as the pipeline mints it."""
     node = URIRef(doc.rstrip("/"))
+    g.add((node, RDF.type, PROV.Entity))
     g.add((node, RDF.type, FOAF.Document))
     return node
 

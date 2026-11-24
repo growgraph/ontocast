@@ -33,7 +33,7 @@ from ontocast.onto.property_sides import SIDE_PREDICATES, side_predicates
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.well_known import (
     well_known_statement_classes,
-    well_known_statement_properties,
+    well_known_statement_roles,
 )
 
 #: Rendered in this order, each under its own heading. Individuals come last:
@@ -278,8 +278,9 @@ def build_ontology_term_sheet(graph: RDFGraph) -> str:
             lines.extend(term_line(graph, term, kind=kind))
     if _has_statement_class(graph, classes):
         lines.append("\n## Properties every statement above takes  (well-known)")
-        for iri, label in sorted(well_known_statement_properties().items()):
-            lines.append(f'  {qname_for(graph, URIRef(iri))}  "{label}"')
+        for iri, role in sorted(well_known_statement_roles().items()):
+            if role.label is not None:
+                lines.append(f'  {qname_for(graph, URIRef(iri))}  "{role.label}"')
     return "\n".join(lines)
 
 

@@ -155,18 +155,27 @@ Three kinds of triple are then **quarantined**, removed from the graph and
 shown to the critic for repair: typed literals whose lexical form is invalid
 for the datatype (dates, times and durations by their XSD lexical spaces);
 string literals on a property whose range is a class
-(`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`); and text on a property whose range is
-a date, time or duration datatype that is not a value of it, such as a
-recurrence where a date belongs. Critic and completion patches get the same
-retyping and the same date check, so a patch that writes such text again adds a
-mandatory finding and is rolled back.
+(`FACTS_OBJECT_PROPERTY_LITERAL_CHECK`); and a literal on a property with a
+declared datatype range that is not a value of it, such as a recurrence where a
+date belongs or prose where a number belongs. Every declared range counts: the
+catalog's `rdfs:range` and the ranges the well-known vocabularies publish
+(`qudt:numericValue` takes any of `xsd:decimal`, `xsd:double`, `xsd:float` and
+`xsd:integer`). A numeric range takes a number in any XSD numeric form, so
+`"1e3"` is a decimal value; the calendar types (`xsd:date`, `dateTime`,
+`gYear`, `gYearMonth`) are one family, so a valid typed value of any of them
+fits a range declaring another and stays typed; a boolean range takes `true`,
+`false`, `1` or `0`; a string range takes any literal. Critic and completion patches get the same
+retyping and the same range check, so a patch that writes such a literal again
+adds a mandatory finding and is rolled back.
 
 A quarantined triple stops counting as a finding once the unit's graph makes it
-good: its subject states the property with a value of the kind it lacked, or
-states its text under any property. Date text still quarantined when the unit
-leaves its loop, as it always is with `FACTS_CRITIC_PASSES=0`, is put back on
-its subject verbatim as `rdfs:comment` (repair kind `quarantine_as_comment`),
-so no text is lost and no false date is stated.
+good: its subject states the property with a value of the kind it lacked,
+states its text under any property, or holds it inside an annotation (a value's
+label) as whole words ("5" is not held by "15 units"). A literal still
+quarantined when the unit leaves its loop, as it always
+is with `FACTS_CRITIC_PASSES=0`, is put back on its subject verbatim as
+`rdfs:comment` (repair kind `quarantine_as_comment`), so no text is lost and no
+false value is stated.
 
 Type and compact-IRI coercions, predicate rewrites, code resolutions, entailed types and malformed-IRI drops are recorded as
 `GraphRepairRecord`s and returned per unit as `facts_repairs`, so a consumer can
@@ -183,15 +192,19 @@ fix. Every kind is mandatory except numeric coverage:
 | Finding | What it catches |
 |---|---|
 | `quarantined_literal` | A quarantined triple, with the catalog individuals of the property's range as suggestions |
-| `unknown_term` | A term under `example.org`, a predicate or class minted in the facts namespace, a term missing from a closed catalog namespace, or a unit (the object of the unit property of `FACTS_QUANTITY_FALLBACK_VOCABULARY`) that the ontology context does not hold |
+| `unknown_term` | A predicate or class under `example.org` or minted in the facts namespace; any IRI, in any position, missing from a closed namespace (a well-known vocabulary's term list, such as the QUDT units, or a namespace the catalog declares terms in); or an individual of a value, on a property whose range is a closed class, that neither the catalog nor a shipped term list holds. `facet` names the verdict |
 | `literal_type_object` | An `rdf:type` written as a string that layer 1 could not resolve |
-| `domain_violation` | A predicate asserted on a subject whose stated type contradicts the predicate's `rdfs:domain`. A class `schema:domainIncludes` lists is an expected one and is never contradicted |
-| `statement_without_subject` | An instance that states a value but names nothing it is about. For a statement class (`sosa:Observation`, `sosa:Actuation`, `sosa:Sampling`, or a catalog class under one): no subject property from it (`sosa:hasFeatureOfInterest`) nor to it (`sosa:isFeatureOfInterestOf`), counting the catalog's sub-properties and inverses of either; a link to its observed property is not a subject. For a value class: linked to no other instance of the unit. An instance of another class stating its own values is a fact about itself and is not reported. Suggestions are the unit's other instances. Not raised on citation or non-content units; counted per document as `facts_statements_without_subject_rendered` (on the renders) and `facts_statements_without_subject` (after the passes) |
+| `domain_violation` | A predicate asserted on a subject whose stated type contradicts the predicate's `rdfs:domain`. A class `schema:domainIncludes` lists is an expected one and is never contradicted. Domains are read over the unit's snapshot together with the whole catalog's axioms, so a domain retrieval did not keep still counts |
+| `role_outside_statement` | A link playing a statement role (subject, property, result, context; the catalog's sub-properties and inverses included) whose statement end is a node the link's declared side does not admit: its domain from the statement, its range to it, `rdfs` or `schema:*Includes`, else a catalog super-property's. Reported only when the catalog places both in a hierarchy and they are unrelated; an untyped node is not. `facet` names the role. A misplaced result is listed for the gap pass to restate as a statement about its holder; at exit the link goes, with a blank value only it reached |
+| `empty_value` | A value-class instance with no triple but its types and annotations. Removed with the links to it at exit; its carrier stays |
+| `missing_role` | A statement that states a value without a role its class requires, named in `facet`. `sosa:Observation` and `sosa:Actuation` (and catalog classes under them) need a subject and a property, `sosa:Sampling` a subject; a link counts, counting the catalog's sub-properties and inverses, only when its declared domain (from the statement) or range (to it) admits the statement's class, so `sosa:observedProperty` gives an actuation no property. A link a catalog restriction requires on the class (`owl:someValuesFrom`, a minimum or exact cardinality of at least one) is a role too (`facet` `link`). A value-class instance linked to no other instance lacks its subject. An instance of another class stating its own values is a fact about itself and is not reported. Suggestions are the unit's other instances. Not raised on citation or non-content units; counted per document as `facts_statements_missing_role_rendered` (on the renders) and `facts_statements_missing_role` (after the passes) |
 | `untyped_instance` | A facts-namespace IRI in subject or IRI-object position with no `rdf:type` naming a concrete class: one outside the facts namespaces that is neither a metaclass (`owl:Class`, `rdf:Property`, `owl:NamedIndividual`, …) nor vacuous (`owl:Thing`, `rdfs:Resource`, `schema:Thing`). Blank nodes and the chunk and document nodes are not instances. Suggestions are the domain and range classes of the predicates the instance carries, then catalog classes sharing a name token with its label |
 | `domain_adherence` | Too few of the render's schema terms come from the ontology context (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, judged from `FACTS_DOMAIN_ADHERENCE_MIN_TERMS` terms up); not judged on citation or non-content units |
 | `scalar_as_bounds` | One value written into two single-valued numeric properties of one node |
 | `label_only_number` | A value node with a unit but no numeric literal, whose number sits only in its label |
-| `unit_symbol_case_mismatch` | A unit whose symbol matches the text only after case folding, while another catalog unit matches it exactly |
+| `ungrounded_number` | A number of a value (blank or named) that the unit's text writes neither in digits nor in the number words of a value label the text writes verbatim ("five constituencies", "twenty-five", "fifth", "two-month"; read in English, French, Spanish, Portuguese, German, Italian and Dutch), as written or scaled by a power of ten from 10^-12 to 10^12, compared exactly. `1e3` is grounded by "1000", "1,000" or "1'000", `0.05` by "5%", `5000000` by "5 million"; a number written against its unit ("5kg"), grouped with points ("1.234,5") or in scientific notation ("1.5 × 10−3") counts, each side of a range ("10-15") counts, and a vague quantity ("several"), a fraction or a converted value is not stated. A label the text does not write grounds nothing. A literal is a number when it is typed numeric, or untyped on a property with a numeric range; a digit string elsewhere (an identifier) is not. The numeric inventory reads the text with the same reader, so a measurement the gap pass is asked for is never one this finding removes |
+| `contradicted_individual` | An individual of a value, on a property whose range is a closed class (a unit, a qualifier), when the text writes next to one of the value's numbers a cue of another individual of that class and none of its own, and the individual has cues of its own. Cues are the individuals' `skos:altLabel`, `skos:notation` and symbol or code literals, case kept; a catalog without them gives no finding. A cue after the number counts only as a whole token: followed by the end of the text, punctuation, or a space and a word that is no further unit token, never by `/`, `·`, `*`, `^`, a digit or a sign ("m" in "5 m/s" or "5 m s-2" names nothing). Suggestions are the individuals the cue names |
+| `dimension_conflict` | Results reported for one property node, or by one statement, in measurement units of different dimensions, when the catalog declares what the property measures: a link of the contract's anchor role (`qudt:hasQuantityKind`, `qudt:applicableUnit`, or a catalog sub-property of either) from it, to a unit or to a quantity kind whose units the catalog names. With a declared unit of known dimension, a single result in a unit of another dimension is enough, and the disagreeing statements are the suggestions. Without a declaration the conflict is reported only by the post-merge gate. Inert for results without a unit; blind among dimensionless quantities, which share one dimension |
 | `numeric_coverage` | Numbers in the source text missing from the graph, split into measurements (number with unit) and bare numbers. A measurement is present when one node, blank or named, states the number outside an annotation (as a value or a bound) together with its unit, as a unit IRI or as the unit's token kept in a literal on that node. Advisory unless `FACTS_NUMERIC_COVERAGE_MANDATORY` says otherwise; `FACTS_NUMERIC_IDENTIFIER_GUARD` keeps digit groups of identifiers out |
 
 The critic is told to resolve every mandatory finding by rewriting the
@@ -214,16 +227,36 @@ schema.org, QUDT), `FACTS_ADDITIONAL_STANDARD_NAMESPACES`, the terms of
 `FACTS_QUANTITY_FALLBACK_VOCABULARY` (the prompt recommends them),
 `FACTS_CODE_PREDICATES`, and every term the SHACL shapes require. Replacement
 candidates are offered only by token containment and filtered by role, so a
-property is never offered as a class or the reverse.
+property is never offered as a class or the reverse. A catalog term of the same
+kind (a property for a predicate, a class for a type) whose local name equals
+the term's once case and `_`/`-` separators are folded is offered from any
+namespace. Suggestions are reported, never applied: the parse-time alias repair
+rewrites only to a term of the alias's own namespace.
 
 A well-known term must exist in its vocabulary, checked against rdflib's
-bundled term lists, and the QUDT schema, QUDT unit and vCard lists that ship
-with OntoCast (QUDT quantity kinds are admitted by namespace). A unit linked
-through the unit property must be a unit individual of the ontology context or
-a unit of the QUDT list; otherwise the render keeps the unit's token as text.
-One it does not have is `unknown_term` in both modes, with the vocabulary's
-near-misses as suggestions; an ontology render that mints one gets
-`foreign_namespace`.
+bundled term lists, and the QUDT schema, QUDT unit, QUDT currency and vCard lists that ship
+with OntoCast (QUDT quantity kinds are admitted by namespace), in every
+position: a predicate, a class, or the object of any other property. One it
+does not have is `unknown_term` in both modes, with the vocabulary's
+near-misses as suggestions, never applied (`unit:Million` gets `unit:MILLION`
+suggested: case carries magnitude); an ontology render that mints one gets
+`foreign_namespace`. An individual of a value, on a property whose range is a
+closed class (`qudt:unit` takes a `qudt:Unit`; a catalog class whose
+individuals the catalog names or enumerates), must be a catalog term or a term
+of a shipped list, whatever its namespace: a unit minted in the facts
+namespace is unknown too. The QUDT currency units are members of the unit
+range.
+
+Each shipped QUDT unit also carries its dimension (from the same QUDT
+release), read through `well_known_dimension`. Aggregation uses it to keep two
+property nodes apart when their results are in units of different dimensions,
+and the `dimension_conflict` finding reads the same signal within one graph;
+a value without a unit, or with a unit of no shipped dimension, has none.
+
+Before aggregation, a facts term of a well-known vocabulary written in a
+variant of its namespace (another scheme, another trailing separator, such as
+`http://schema.org/` or `sosa#`) is rewritten to the vocabulary's namespace.
+Any other spelling is left as written for the checks above to judge.
 
 Under `FACTS_VOCABULARY=strict` (the default) a term of any other vocabulary
 the catalog neither declares nor borrows from is unknown as well: the facts are
@@ -326,13 +359,23 @@ a score rule (`success`, or a score above 90) would have decided.
 
 The critic judges whether what was rendered is right, not whether something is
 missing. `FACTS_COMPLETION_PASSES` (default 1) adds insert-only passes after the
-critic loop, run only while the unit has a gap: a `statement_without_subject`
-finding holds; with `FACTS_COMPLETION_DETACHED=true` (the default), at
-least two instances are linked to no other instance (a pass called for
-another gap lists a lone one too); or, with
-`FACTS_COMPLETION_MEASUREMENTS=true` (off by default), the numeric inventory
-still lists a measurement (a number with its unit) absent from the graph. A
-unit with no gap makes no call.
+critic loop, run only while the unit has a gap: a `missing_role` finding holds,
+or a `role_outside_statement` finding names a misplaced result (asked for once
+per unit, since an insert cannot remove the link; the exit does); with `FACTS_COMPLETION_DETACHED=true` (the default), at least two instances are
+linked to no other instance (a pass called for another gap lists a lone one
+too); or, with `FACTS_COMPLETION_MEASUREMENTS=true` (off by default), the
+numeric inventory still lists a measurement (a number with its unit) absent
+from the graph. A unit with no gap makes no call.
+
+The gaps of one call form its mandate. The prompt's task names only the gap
+kinds present, and only what the mandate lists is admitted: a link giving a
+listed statement the role it lacks, a link with a listed detached instance at
+one end, a value whose every number is a listed measurement (none when
+measurement recovery is off) or a number of a misplaced result, a statement's
+result link to a misplaced named value, and the type and label of a node an admitted
+triple introduces, with the role links of a statement it introduces. Any other
+fix is refused before it is applied, and counted by reason on the pass's loop
+attempt (`n_fixes_refused_by_reason`: `value_not_listed`, `outside_mandate`).
 Each pass:
 
 - shows the model a term sheet instead of the full ontology chapter: the
@@ -340,29 +383,37 @@ Each pass:
   terms of the quantity fallback vocabulary, the properties a statement takes
   when the sheet lists a statement class, and the properties that link a
   statement to its subject (`sosa:hasFeatureOfInterest`, its inverse, and the
-  context's sub-properties and inverses of either);
+  context's sub-properties and inverses of either). The quantity parts (the
+  quantity classes, unit individuals and fallback terms, the measurement-unit
+  and exact-quantity guidelines, and a value in the output example) are given
+  only when the unit's text states a number and the unit is not a citation
+  unit, as for the render's quantity chapter. The statement properties, the
+  subject links and the role guideline are given only when the call lists a
+  statement gap or a missing measurement, and the detached-instance guideline
+  only when it lists a detached instance;
 - shows the unit's existing catalog-typed subjects, so a recovered measurement
   attaches to a node that is already there;
-- lists the missing measurements, and the statements that name nothing with
-  the unit's candidate subjects;
+- lists the missing measurements, and the statements missing a role, each
+  with the role it lacks, with the unit's candidate subjects;
 - lists the instances linked to nothing, each with the context's object
   properties whose domain or class range fits it and the direction it would
   take, and asks for the one link the text states to an existing instance;
 - asks for each recovered measurement as a statement about a subject, never a
   value on its own, with a unit the term sheet does not list taken from QUDT
-  when the model is certain of its name, else kept as text on the value node;
+  when the model is certain of its name, else no unit link;
 - keeps only `ADD` fixes, whatever else the model returns;
 - applies them through the same one-at-a-time regression check as critic
   fixes.
 
 The passes stop as soon as no gap is left. Each records the measurements it
-recovered, the statements it gave a subject and the detached instances it
-linked on its loop attempt.
+recovered, the roles it filled (`n_roles_filled`) and the detached instances
+it linked on its loop attempt.
 
 ### Domain repair
 
-A `domain_violation` is a statement whose property declares an `rdfs:domain`
-that the subject's asserted types contradict; served, it would entail a type
+A `domain_violation` is a statement whose property declares an `rdfs:domain`,
+in the unit's snapshot or anywhere in the catalog, that the subject's asserted
+types contradict; served, it would entail a type
 the subject does not have. With `FACTS_COMPLETION_PASSES` above 0, a unit that
 still holds one after the critic loop gets one call before the gap passes:
 
@@ -379,6 +430,26 @@ Whatever is still in violation when the unit leaves its loop is removed, with
 the blank nodes only it reached, as a `domain_violation_dropped` repair record
 (subject as source, property as target). This drop runs whatever the pass
 budget.
+
+### Exit
+
+When a facts unit leaves its loop, after the gap pass and whatever the pass
+budgets, each finding still standing gets the action its kind has:
+
+| Finding | At exit |
+|---|---|
+| `domain_violation` | the statements of the subject and property are removed (`domain_violation_dropped`) |
+| `unknown_term` of error severity | every statement using the term in the position the finding names (`position`: as a predicate, as an `rdf:type` object, or as another object) is removed (`unknown_term_dropped`), with the terms the finding suggested on the record, never applied; a fact instance used as a class loses only that typing, not its own description. This covers a term a closed vocabulary does not have, a placeholder term, a class or property minted in a facts namespace and, under a `strict` vocabulary, a term outside the catalog and the well-known vocabularies. Under `open` such a term raises no unit finding and stays (the post-merge gate reports it as a warning) |
+| `literal_type_object` | the statement is removed (`unknown_term_dropped`) |
+| `contradicted_individual` | the value's link to the individual is removed (`contradicted_individual_dropped`); no individual is ever added |
+| `ungrounded_number` | the number is removed and the value's label kept (`ungrounded_number_dropped`); a value left with no number is removed with the link to it, its carrier kept (`value_without_number_dropped`) |
+| `quarantined_literal` | the literal goes back on its subject as `rdfs:comment` (`quarantine_as_comment`) |
+| `missing_role`, `dimension_conflict`, `untyped_instance`, `label_only_number`, `scalar_as_bounds`, `numeric_coverage`, `domain_adherence` | nothing is removed: each is about an absence or no single statement (results that disagree in dimension name no one wrong number), and is carried to the document report |
+
+The table is the mechanism: `exit_unit` hands each mandatory finding to the
+handler of its kind's action (`EXIT_HANDLERS`), and a test fails when an
+action other than reporting has no handler. The removals are counted per
+document in `facts_exit_repairs_by_kind`.
 
 ## Layer 3: the post-merge gate
 
@@ -397,14 +468,25 @@ budget.
     | `suspect_multi_value`: two numeric values on one property; irreconcilable short strings on a property that is single-valued for most subjects; or two IRIs on such a property | `FACTS_SUSPECT_MULTI_VALUE_SEVERITY` | un-merge when an error |
     | `degenerate_coreference`: one IRI object shared by two single-valued properties of a subject | error | un-merge |
     | `shacl` | from the shape | autofix |
-    | `non_catalog_vocabulary`: a term neither the ontology context nor the catalog has | a term of an existing well-known, declared or fallback vocabulary: warning; any other term, or a well-known term that does not exist: error under `FACTS_VOCABULARY=strict`, warning under `open` | reported (a retrieval miss, or outside the projection) |
+    | `unknown_term`: an IRI, in any position, that a well-known vocabulary's term list lacks, or an individual of a value missing from the closed range of its property, with look-alikes that exist as suggestions | error | reported |
+    | `non_catalog_vocabulary`: a predicate or class neither the ontology context nor the catalog has | a term of an existing well-known, declared or fallback vocabulary: warning; any other term: error under `FACTS_VOCABULARY=strict`, warning under `open` | reported (a retrieval miss, or outside the projection) |
     | `dangling_reference` | warning | reported |
     | `mixed_object_kinds`: a property used with both IRI and literal objects | warning | reported |
+    | `statement_conflict`: statements about one node report one property with conflicting results and no differing time, condition or procedure | warning | reported; aggregation refuses the merges that make one |
+    | `dimension_conflict`: results served under one property node, or by one statement, in measurement units of different dimensions, whether or not the catalog declares what the property measures | warning | reported |
 
-    String values on a cluster confirmed by a natural key are reported as
-    warnings. With `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` (on by
-    default), two IRI objects asserted by a single unit are a warning: only
-    objects from different units can come from a bad merge.
+    String values on a cluster confirmed as one entity, by a shared key or a
+    coreference "same" verdict, are reported as warnings: "number of teams"
+    and "team count" are two names of one confirmed thing. With
+    `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_MERGE` (on by default),
+    `suspect_multi_value` and `degenerate_coreference` are errors only when a
+    merge brought their values or links together. When one source subject (a
+    subject as one unit wrote it) asserted every distinct value, such as a
+    league's English and French abbreviations, or wrote every link, such as
+    a final's winner that is also its competitor, the finding is a warning,
+    since no identity decision joined them and an un-merge cannot separate
+    them. Values are compared as the finding compares them: numbers by value,
+    strings after normalization, IRIs after the merge's rewrite.
 3. **Un-merge repair** (document path only). The first three kinds are merge
    signatures: two things that are not the same got one IRI. A finding
    implicates a cluster: the subject's for `functional_violation` and
@@ -474,7 +556,9 @@ budget.
    vocabulary, PROV-O included). An isolated instance left holds a value of its
    own and is kept; the run manifest lists each (`facts_isolated`: IRI, label,
    and `holds_value` or `other`). `facts_twin_labels` counts the labels two or
-   more instances share.
+   more instances of one role share (statements, the properties statements
+   observe, other instances), leaving out values and instances one links to
+   the other.
    Then each blank-node value is named under its carrier
    (`<carrier>.<property>`), with the reifiers of its statements repointed.
 7. **Summary**: `facts_conformance`, `facts_validation_findings` and

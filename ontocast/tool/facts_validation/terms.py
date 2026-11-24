@@ -28,18 +28,20 @@ from ontocast.onto.property_sides import (
 from ontocast.onto.rdfgraph import (
     RDFGraph,
 )
-from ontocast.onto.scaffolding import (
-    document_nodes,
-    is_scaffolding,
-    scaffolding_nodes,
-)
+from ontocast.onto.scaffolding import FactScope
 from ontocast.onto.well_known import (
+    StatementRoleName,
+    well_known_anchor_properties,
+    well_known_closed_ranges,
     well_known_datatype_ranges,
+    well_known_member_classes,
     well_known_namespaces,
     well_known_statement_classes,
-    well_known_subject_links,
+    well_known_statement_roles,
     well_known_value_classes,
 )
+from ontocast.tool.agg.signatures import NUMERIC_DATATYPES
+from ontocast.tool.facts_validation.statements import RoleLinks, StatementContract
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,11 @@ def _local_name(iri: str) -> str:
         if sep and local:
             return local
     return iri
+
+
+def _folded_local_name(iri: str) -> str:
+    """The local name of ``iri`` with case and ``_``/``-`` separators folded away."""
+    return re.sub(r"[_\-]", "", _local_name(iri)).lower()
 
 
 def _name_tokens(local: str) -> set[str]:
@@ -284,7 +291,11 @@ def _alias_candidates(
     of that namespace the graph itself uses on >= 2 subjects (the renderer's
     own dominant usage defines the alias target — this is how
     ``qudt:value`` resolves to ``qudt:numericValue`` even when the snapshot
-    does not spell the property out).
+    does not spell the property out), plus catalog terms of the alias's kind
+    (a property in ``predicate`` position, a class in ``type`` position) in
+    any namespace whose local name is the alias's once case and separators
+    are folded. Those last are suggestions only: a repair that applies a
+    candidate must keep to the alias's namespace.
 
     Candidates are role-filtered against the catalog's own declarations: a
     term in ``predicate`` position never gets a known class suggested, and a
@@ -304,6 +315,16 @@ def _alias_candidates(
         pool -= known_classes
     elif position == "type":
         pool -= known_properties
+    same_kind = (
+        known_properties
+        if position == "predicate"
+        else known_classes
+        if position == "type"
+        else set()
+    )
+    folded = _folded_local_name(str(alias))
+    if folded:
+        pool.update(term for term in same_kind if _folded_local_name(term) == folded)
     predicate_subjects: dict[str, set[str]] = {}
     for subject, predicate, _ in graph:
         text = str(predicate)
@@ -427,25 +448,6 @@ _HIERARCHY_PREDICATES = (
 )
 
 
-class SubjectContract(BaseModel):
-    """What makes a statement name its subject, over the whole catalog.
-
-    Attributes:
-        statement_classes: Classes whose instances are statements about
-            something else (an observation), with every catalog class under one.
-        value_classes: Classes whose instances are values, likewise.
-        forward: Properties running from a statement to its subject.
-        inverse: Properties running from a subject to a statement.
-    """
-
-    model_config = {"frozen": True}
-
-    statement_classes: frozenset[str] = frozenset()
-    value_classes: frozenset[str] = frozenset()
-    forward: frozenset[str] = frozenset()
-    inverse: frozenset[str] = frozenset()
-
-
 class CatalogRoles:
     """What the whole catalog says each term is, read once per catalog state.
 
@@ -462,6 +464,10 @@ class CatalogRoles:
         datatype_ranges: Each property's declared ``rdfs:range`` IRIs in the
             XSD namespace, across every graph; more than one means the catalog
             contradicts itself.
+        restrictions: Class -> the properties a restriction on it requires
+            (``owl:someValuesFrom``, or a minimum or exact cardinality, plain
+            or qualified, of at least one), read from its direct
+            ``rdfs:subClassOf`` restrictions.
     """
 
     def __init__(
@@ -471,14 +477,17 @@ class CatalogRoles:
         hierarchy: RDFGraph | None = None,
         datatype_ranges: dict[str, frozenset[str]] | None = None,
         axioms: RDFGraph | None = None,
+        restrictions: dict[str, frozenset[str]] | None = None,
     ) -> None:
         self.properties = properties
         self.classes = classes
         self.hierarchy = hierarchy if hierarchy is not None else RDFGraph()
         self.axioms = axioms if axioms is not None else RDFGraph()
         self.datatype_ranges = datatype_ranges or {}
+        self.restrictions = restrictions or {}
         self._declared_ranges: dict[str, frozenset[str]] | None = None
-        self._subject_links: tuple[frozenset[str], frozenset[str]] | None = None
+        self._role_links: dict[str, RoleLinks] = {}
+        self._contracts: dict[frozenset[str], StatementContract] = {}
         self._classes_under: dict[frozenset[str], frozenset[str]] = {}
 
     @classmethod
@@ -489,6 +498,7 @@ class CatalogRoles:
         hierarchy = RDFGraph()
         axioms = RDFGraph()
         ranges: dict[str, set[str]] = {}
+        restrictions: dict[str, set[str]] = {}
         for graph in graphs:
             for predicate in _AXIOM_PREDICATES:
                 for triple in graph.triples((None, predicate, None)):
@@ -506,12 +516,15 @@ class CatalogRoles:
                 *_HIERARCHY_PREDICATES,
                 RDFS.subPropertyOf,
                 OWL.inverseOf,
+                OWL.oneOf,
             ):
                 for triple in graph.triples((None, predicate, None)):
                     hierarchy.add(triple)
             for subject, range_iri in graph.subject_objects(RDFS.range):
                 if isinstance(subject, URIRef) and str(range_iri).startswith(str(XSD)):
                     ranges.setdefault(str(subject), set()).add(str(range_iri))
+            for cls_iri, prop in _required_restrictions(graph):
+                restrictions.setdefault(cls_iri, set()).add(prop)
         # A term typed both ways across files is contradictory; trust neither.
         ambiguous = properties & classes
         return cls(
@@ -520,6 +533,7 @@ class CatalogRoles:
             hierarchy,
             {iri: frozenset(found) for iri, found in ranges.items()},
             axioms + hierarchy,
+            {iri: frozenset(found) for iri, found in restrictions.items()},
         )
 
     def with_axioms(self, graph: RDFGraph) -> RDFGraph:
@@ -536,12 +550,14 @@ class CatalogRoles:
     def declared_ranges(self) -> dict[str, frozenset[str]]:
         """Each property's declared XSD ranges: the catalog's and the well-known.
 
+        A literal on the property fits when it is a value of one of them
+        (:func:`~ontocast.tool.facts_validation.literal_repair.range_mismatches`).
         Read once per catalog state; a unit adds only its snapshot's.
         """
         if self._declared_ranges is None:
             merged: dict[str, set[str]] = {}
-            for prop, datatype in well_known_datatype_ranges().items():
-                merged.setdefault(prop, set()).add(datatype)
+            for prop, datatypes in well_known_datatype_ranges().items():
+                merged.setdefault(prop, set()).update(datatypes)
             for prop, datatypes in self.datatype_ranges.items():
                 merged.setdefault(prop, set()).update(datatypes)
             self._declared_ranges = {
@@ -549,17 +565,22 @@ class CatalogRoles:
             }
         return self._declared_ranges
 
-    def subject_links(self) -> tuple[frozenset[str], frozenset[str]]:
-        """The properties linking a statement and its subject, each direction.
+    def role_links(self, role: StatementRoleName) -> RoleLinks:
+        """The properties playing ``role`` for a statement, each direction.
 
-        The well-known ones, every catalog sub-property of one, and every
-        catalog inverse of one in the other direction.
-
-        Returns:
-            ``(forward, inverse)``: statement -> subject, subject -> statement.
+        The well-known ones (:func:`~ontocast.onto.well_known.well_known_statement_roles`),
+        every catalog sub-property of one, and every catalog inverse of one
+        in the other direction, to a fixed point.
         """
-        if self._subject_links is None:
-            forward, inverse = (set(found) for found in well_known_subject_links())
+        found = self._role_links.get(role)
+        if found is None:
+            seeds = [
+                (iri, link.direction)
+                for iri, link in well_known_statement_roles().items()
+                if link.role == role
+            ]
+            forward = {iri for iri, direction in seeds if direction == "forward"}
+            inverse = {iri for iri, direction in seeds if direction == "inverse"}
             changed = True
             while changed:
                 before = len(forward) + len(inverse)
@@ -580,22 +601,215 @@ class CatalogRoles:
                             if isinstance(term, URIRef)
                         }
                 changed = len(forward) + len(inverse) != before
-            self._subject_links = (frozenset(forward), frozenset(inverse))
-        return self._subject_links
+            found = RoleLinks(forward=frozenset(forward), inverse=frozenset(inverse))
+            self._role_links[role] = found
+        return found
 
-    def subject_contract(self, value_base: frozenset[str]) -> SubjectContract:
-        """The :class:`SubjectContract` of this catalog.
+    def statement_contract(self, value_base: frozenset[str]) -> StatementContract:
+        """The :class:`~ontocast.tool.facts_validation.statements.StatementContract`
+        of this catalog, memoised per ``value_base``.
 
         Args:
             value_base: The value classes to anchor on (:func:`value_class_base`).
         """
-        forward, inverse = self.subject_links()
-        return SubjectContract(
-            statement_classes=self.classes_under(well_known_statement_classes()),
-            value_classes=self.classes_under(value_base),
-            forward=forward,
-            inverse=inverse,
-        )
+        contract = self._contracts.get(value_base)
+        if contract is None:
+            contract = StatementContract(
+                statement_classes=self._statement_classes(),
+                required_links=self._required_links(),
+                value_classes=self.classes_under(value_base),
+                roles={
+                    role: self.role_links(role)
+                    for role in typing.get_args(StatementRoleName)
+                },
+                super_properties=self._super_properties(),
+                closed_ranges=self._closed_ranges(),
+                link_classes=self._link_classes(),
+                anchor_links=self._anchor_links(),
+                numeric_properties=frozenset(
+                    prop
+                    for prop, datatypes in self.declared_ranges().items()
+                    if any(URIRef(dt) in NUMERIC_DATATYPES for dt in datatypes)
+                ),
+                property_classes=self._property_classes(),
+            )
+            self._contracts[value_base] = contract
+        return contract
+
+    def _link_classes(self) -> dict[str, frozenset[str]]:
+        """Each role link with the statement classes its declared side admits.
+
+        The side is the link's domain when it runs from the statement, its
+        range when it runs to it: the catalog's own declaration
+        (``rdfs:*`` or ``schema:*Includes``), else the well-known one, else
+        that of its nearest super-property. A class is admitted when it is
+        under a declared class or above one. A link with no declaration
+        anywhere is left out: it admits every class.
+        """
+        statement_classes = self._statement_classes()
+        seeds = well_known_statement_roles()
+        sides = {
+            "forward": sides_by_property(self.axioms, "domain"),
+            "inverse": sides_by_property(self.axioms, "range"),
+        }
+        closures: dict[str, set[str]] = {}
+
+        def closure(cls: str) -> set[str]:
+            if cls not in closures:
+                closures[cls] = {
+                    str(c) for c in superclass_closure(URIRef(cls), self.hierarchy)
+                }
+            return closures[cls]
+
+        def declared(prop: str, direction: str) -> set[str] | None:
+            frontier = [prop]
+            seen: set[str] = set()
+            while frontier:
+                current = frontier.pop(0)
+                if current in seen:
+                    continue
+                seen.add(current)
+                own = sides[direction].get(URIRef(current))
+                if own:
+                    return {str(cls) for cls in own}
+                seed = seeds.get(current)
+                if seed is not None and seed.classes:
+                    namespace = _namespace_of(current)
+                    return {namespace + name for name in seed.classes}
+                frontier.extend(
+                    str(parent)
+                    for parent in self.hierarchy.objects(
+                        URIRef(current), RDFS.subPropertyOf
+                    )
+                    if isinstance(parent, URIRef)
+                )
+            return None
+
+        found: dict[str, frozenset[str]] = {}
+        for role in typing.get_args(StatementRoleName):
+            links = self.role_links(role)
+            for direction, props in (
+                ("forward", links.forward),
+                ("inverse", links.inverse),
+            ):
+                for prop in props:
+                    side = declared(prop, direction)
+                    if side is None:
+                        continue
+                    found[prop] = frozenset(
+                        cls
+                        for cls in statement_classes
+                        if closure(cls) & side or any(cls in closure(d) for d in side)
+                    )
+        return found
+
+    def _statement_classes(self) -> dict[str, frozenset[StatementRoleName]]:
+        """Each statement class, catalog subclasses included, with its roles."""
+        anchors = well_known_statement_classes()
+        found: dict[str, set[StatementRoleName]] = {}
+        for anchor, roles in anchors.items():
+            for cls in self.classes_under(frozenset({anchor})):
+                found.setdefault(cls, set()).update(roles)
+        return {cls: frozenset(roles) for cls, roles in found.items()}
+
+    def _required_links(self) -> dict[str, frozenset[str]]:
+        """Each statement class with the properties its restrictions require."""
+        found: dict[str, frozenset[str]] = {}
+        for cls in self._statement_classes():
+            required: set[str] = set()
+            for ancestor in superclass_closure(URIRef(cls), self.hierarchy):
+                required |= self.restrictions.get(str(ancestor), frozenset())
+            if required:
+                found[cls] = frozenset(required)
+        return found
+
+    def _property_classes(self) -> frozenset[str]:
+        """The classes a statement's ``property`` link names, with those under them.
+
+        The range each forward ``property`` link declares: the catalog's own,
+        else the well-known one (:attr:`StatementRole.range_class`).
+        """
+        seeds = well_known_statement_roles()
+        declared = declared_class_ranges(self.axioms)
+        base: set[str] = set()
+        for prop in self.role_links("property").forward:
+            own = declared.get(URIRef(prop))
+            if own:
+                base |= {str(cls) for cls in own}
+                continue
+            seed = seeds.get(prop)
+            if seed is not None and seed.range_class is not None:
+                base.add(_namespace_of(prop) + seed.range_class)
+        return self.classes_under(frozenset(base))
+
+    def _anchor_links(self) -> frozenset[str]:
+        """The well-known anchor properties and every catalog sub-property of one."""
+        found = set(well_known_anchor_properties())
+        frontier = list(found)
+        while frontier:
+            prop = frontier.pop()
+            for sub in self.hierarchy.subjects(RDFS.subPropertyOf, URIRef(prop)):
+                if isinstance(sub, URIRef) and str(sub) not in found:
+                    found.add(str(sub))
+                    frontier.append(str(sub))
+        return frozenset(found)
+
+    def _super_properties(self) -> dict[str, frozenset[str]]:
+        """Each catalog sub-property with its transitive super-properties."""
+        found: dict[str, frozenset[str]] = {}
+        for prop in {
+            s
+            for s in self.hierarchy.subjects(RDFS.subPropertyOf, None)
+            if isinstance(s, URIRef)
+        }:
+            seen: set[URIRef] = set()
+            frontier = [prop]
+            while frontier:
+                current = frontier.pop()
+                for parent in self.hierarchy.objects(current, RDFS.subPropertyOf):
+                    if isinstance(parent, URIRef) and parent not in seen:
+                        seen.add(parent)
+                        frontier.append(parent)
+            seen.discard(prop)
+            if seen:
+                found[str(prop)] = frozenset(str(p) for p in seen)
+        return found
+
+    def _closed_ranges(self) -> dict[str, frozenset[str]]:
+        """Each property with the range classes whose members are known.
+
+        A class is closed when the catalog names an individual of it or of a
+        subclass, enumerates it (``owl:oneOf``), or a well-known vocabulary
+        ships its term list. Ranges are the catalog's and the well-known
+        vocabularies' published ones.
+        """
+        listed = set(well_known_member_classes())
+        individuals = {
+            s
+            for s in self.axioms.subjects(RDF.type, None)
+            if isinstance(s, URIRef)
+            and str(s) not in self.classes
+            and str(s) not in self.properties
+        }
+        typed = {
+            str(cls)
+            for individual in individuals
+            for cls in self.axioms.objects(individual, RDF.type)
+        }
+
+        def closed(cls: str) -> bool:
+            if cls in listed or (URIRef(cls), OWL.oneOf, None) in self.hierarchy:
+                return True
+            return bool(typed & self.classes_under(frozenset({cls})))
+
+        found: dict[str, set[str]] = {
+            prop: set(classes) for prop, classes in well_known_closed_ranges().items()
+        }
+        for prop, classes in declared_class_ranges(self.axioms).items():
+            for cls in classes:
+                if closed(str(cls)):
+                    found.setdefault(str(prop), set()).add(str(cls))
+        return {prop: frozenset(classes) for prop, classes in found.items()}
 
     def classes_under(self, base: frozenset[str]) -> frozenset[str]:
         """``base`` and every catalog class whose supertypes meet it.
@@ -617,6 +831,44 @@ class CatalogRoles:
             }
             self._classes_under[base] = found
         return found
+
+
+_REQUIRING_CARDINALITIES = (
+    OWL.minCardinality,
+    OWL.cardinality,
+    OWL.minQualifiedCardinality,
+    OWL.qualifiedCardinality,
+)
+
+
+def _required_restrictions(graph: RDFGraph) -> typing.Iterator[tuple[str, str]]:
+    """``(class, property)`` for each direct restriction of a class requiring a link.
+
+    A restriction requires one when it is ``owl:someValuesFrom``, or a minimum
+    or exact cardinality (plain or qualified) of at least one. A restriction
+    inside a union or an intersection requires nothing on its own.
+    """
+    for cls, restriction in graph.subject_objects(RDFS.subClassOf):
+        if not isinstance(cls, URIRef):
+            continue
+        prop = graph.value(restriction, OWL.onProperty)
+        if not isinstance(prop, URIRef):
+            continue
+        requires = (restriction, OWL.someValuesFrom, None) in graph or any(
+            _at_least_one(graph.value(restriction, cardinality))
+            for cardinality in _REQUIRING_CARDINALITIES
+        )
+        if requires:
+            yield str(cls), str(prop)
+
+
+def _at_least_one(value: Node | None) -> bool:
+    if not isinstance(value, Literal):
+        return False
+    try:
+        return int(str(value)) >= 1
+    except ValueError:
+        return False
 
 
 def value_class_base(
@@ -951,47 +1203,6 @@ _SCHEMA_METACLASSES: frozenset[URIRef] = frozenset(
     }
 )
 
-# Objects of these predicates are alias handles, not instances.
-_HANDLE_PREDICATES: frozenset[URIRef] = frozenset({OWL.sameAs})
-
-
-def fact_instances(graph: RDFGraph, fact_namespaces: Sequence[str]) -> set[URIRef]:
-    """The instances a facts graph asserts.
-
-    An instance is a ``URIRef`` in one of ``fact_namespaces`` that occurs as a
-    subject, or as the IRI object of a triple other than ``rdf:type``,
-    ``owl:sameAs``. Blank nodes are never instances, and neither are the
-    nodes the pipeline mints: chunks, reifiers and the document node
-    (:mod:`ontocast.onto.scaffolding`). Triples touching a chunk or reifier
-    are skipped, whatever their vocabulary.
-
-    Args:
-        graph: Facts graph for one unit or the aggregated document.
-        fact_namespaces: Namespaces holding minted instances.
-
-    Returns:
-        set[URIRef]: The instances, in no particular order.
-    """
-    namespaces = [ns for ns in fact_namespaces if ns]
-    if not namespaces:
-        return set()
-    scaffolding = scaffolding_nodes(graph)
-    minted = scaffolding | document_nodes(graph)
-    instances: set[URIRef] = set()
-    for subject, predicate, obj in graph:
-        if is_scaffolding((subject, predicate, obj), scaffolding):
-            continue
-        if isinstance(subject, URIRef) and _in_fact_scope(subject, namespaces):
-            instances.add(subject)
-        if (
-            isinstance(obj, URIRef)
-            and predicate != RDF.type
-            and predicate not in _HANDLE_PREDICATES
-            and _in_fact_scope(obj, namespaces)
-        ):
-            instances.add(obj)
-    return instances - minted
-
 
 def concrete_types(
     graph: RDFGraph, node: Node, fact_namespaces: Sequence[str]
@@ -1016,7 +1227,7 @@ def concrete_types(
 
 
 def untyped_instances(graph: RDFGraph, fact_namespaces: Sequence[str]) -> list[URIRef]:
-    """Instances of ``graph`` (:func:`fact_instances`) with no concrete type.
+    """Instances of ``graph`` (:attr:`FactScope.instances`) with no concrete type.
 
     Returns:
         list[URIRef]: The untyped instances, ordered by IRI.
@@ -1024,7 +1235,7 @@ def untyped_instances(graph: RDFGraph, fact_namespaces: Sequence[str]) -> list[U
     return sorted(
         (
             instance
-            for instance in fact_instances(graph, fact_namespaces)
+            for instance in FactScope.of(graph, fact_namespaces).instances
             if not concrete_types(graph, instance, fact_namespaces)
         ),
         key=str,

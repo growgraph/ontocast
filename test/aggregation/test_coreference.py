@@ -68,7 +68,6 @@ _CASE = {CD + f"case__u{i}": CD + "Case" for i in range(4)}
 def test_shared_link_pairs_the_only_two_entities_holding_a_link() -> None:
     """A role phrase and a name for one referent: no name or embedding evidence."""
     candidates = coreference_candidates(
-        unconfirmed_merges=[],
         lexical_near_misses=[],
         units=_applicant_units("cd:court__u2 a q:Court ; q:heardIn cd:case__u2 ."),
         final_uri=_CASE,
@@ -84,7 +83,6 @@ def test_shared_link_pairs_the_only_two_entities_holding_a_link() -> None:
 
 def test_a_link_many_entities_hold_is_no_evidence() -> None:
     candidates = coreference_candidates(
-        unconfirmed_merges=[],
         lexical_near_misses=[],
         units=_applicant_units("cd:other__u2 a q:Person ; q:applicantIn cd:case__u2 ."),
         final_uri=_CASE,
@@ -95,30 +93,69 @@ def test_a_link_many_entities_hold_is_no_evidence() -> None:
 
 
 def test_candidate_kinds_take_turns_under_the_cap() -> None:
-    merges = [(CD + f"m{i}__u0", CD + f"m{i}__u1", 0.5 + i / 10) for i in range(3)]
-    near = [(CD + f"n{i}__u0", CD + f"n{i}__u1", 0.5 + i / 10) for i in range(3)]
-    catalog = [(CD + "x__u0", Q + "Term", 0.99)]
+    near = [
+        (CD + f"n{i}__u0", CD + f"n{i}__u1", 0.5 + i / 10, "lexical") for i in range(3)
+    ]
+    catalog = [(CD + "x__u0", Q + "Term", 0.99, "overlap")]
 
     candidates = coreference_candidates(
-        unconfirmed_merges=merges,
         lexical_near_misses=catalog + near,
-        units=[],
-        final_uri={},
-        max_pairs=4,
+        units=_applicant_units("cd:court__u2 a q:Court ; q:heardIn cd:case__u2 ."),
+        final_uri=_CASE,
+        max_pairs=3,
     )
 
     assert [(c.kind, c.left) for c in candidates] == [
-        ("unconfirmed_merge", CD + "m0__u0"),  # least similar merge first
         ("near_miss", CD + "n2__u0"),  # most similar near miss first
-        ("unconfirmed_merge", CD + "m1__u0"),
+        ("shared_link", CD + "applicant_1__u0"),
         ("near_miss", CD + "n1__u0"),
     ]
+
+
+def test_overlap_pairs_are_asked_first_and_the_cap_holds() -> None:
+    """Pairs named alike but not equally come before every other kind."""
+    near = [
+        (CD + f"n{i}__u0", CD + f"n{i}__u1", 0.9 - i / 10, "lexical") for i in range(2)
+    ]
+    overlap = [
+        (CD + f"o{i}__u0", CD + f"o{i}__u1", 0.5 + i / 10, "overlap") for i in range(3)
+    ]
+
+    candidates = coreference_candidates(
+        lexical_near_misses=near + overlap,
+        units=_applicant_units("cd:court__u2 a q:Court ; q:heardIn cd:case__u2 ."),
+        final_uri=_CASE,
+        max_pairs=5,
+    )
+
+    assert [(c.kind, c.left) for c in candidates] == [
+        ("overlap", CD + "o2__u0"),  # most similar overlap first
+        ("overlap", CD + "o1__u0"),
+        ("overlap", CD + "o0__u0"),
+        ("near_miss", CD + "n0__u0"),
+        ("shared_link", CD + "applicant_1__u0"),
+    ]
+    assert (
+        len(
+            coreference_candidates(
+                lexical_near_misses=near + overlap,
+                units=_applicant_units(),
+                final_uri=_CASE,
+                max_pairs=2,
+            )
+        )
+        == 2
+    )
+
+
+def test_the_default_cap_is_eighty_pairs() -> None:
+    assert AggregationConfig.model_fields["llm_coreference_max_pairs"].default == 80
 
 
 def test_verdicts_become_vetoes_and_confirmations() -> None:
     candidates = [
         CoreferenceCandidate(left="a", right="b", kind="near_miss"),
-        CoreferenceCandidate(left="c", right="d", kind="unconfirmed_merge"),
+        CoreferenceCandidate(left="c", right="d", kind="near_miss"),
         CoreferenceCandidate(left="e", right="f", kind="shared_link"),
     ]
     vetoes, confirmations = verdict_pairs(
@@ -193,28 +230,94 @@ def _judge(verdicts: dict[int, str]):
     return judge
 
 
-@pytest.mark.anyio
-async def test_a_different_verdict_splits_an_unconfirmed_merge(monkeypatch) -> None:
-    aggregator = _one_cluster_aggregator(monkeypatch)
-    tools = cast(
+def _overlapping_names() -> list[ContentUnit]:
+    """One name inside the other: identity is a question, not evidence."""
+    return [
+        _unit(0, 'cd:batch a q:Sample ; rdfs:label "sample batch" .'),
+        _unit(1, 'cd:large_batch a q:Sample ; rdfs:label "large sample batch" .'),
+    ]
+
+
+def _tools(aggregator: EmbeddingBasedAggregator) -> ToolBox:
+    return cast(
         ToolBox,
         SimpleNamespace(
             aggregator=aggregator,
             ontology_manager=SimpleNamespace(get_head_by_iri=lambda iri: None),
         ),
     )
-    state = _state(
-        [
-            _unit(0, 'cd:max_temp a q:Property ; rdfs:label "maximum temperature" .'),
-            _unit(
-                1,
-                'cd:daily_max a q:Property ; rdfs:label "daily maximum temperature" .',
-            ),
-        ]
-    )
+
+
+@pytest.mark.anyio
+async def test_an_overlapping_name_merges_only_on_a_same_verdict(monkeypatch) -> None:
+    tools = _tools(_one_cluster_aggregator(monkeypatch))
+    state = _state(_overlapping_names())
     make_merge_facts_node(tools)(state)
+    assert len(_subjects(state)) == 2
+    assert [c.kind for c in state.coreference_candidates] == ["overlap"]
+
+    monkeypatch.setattr(node_factories, "judge_coreference", _judge({1: "same"}))
+    await make_resolve_coreference_node(tools)(state)
+
     assert len(_subjects(state)) == 1
-    assert [c.kind for c in state.coreference_candidates] == ["unconfirmed_merge"]
+    assert len(state.coreference_confirmations) == 1
+
+
+@pytest.mark.anyio
+async def test_a_same_verdict_not_repeated_alone_neither_merges_nor_vetoes(
+    monkeypatch,
+) -> None:
+    tools = _tools(_one_cluster_aggregator(monkeypatch))
+    state = _state(_overlapping_names())
+    make_merge_facts_node(tools)(state)
+    calls: list[int] = []
+
+    async def judge(state, tools, candidates):
+        calls.append(len(candidates))
+        return {1: "same"} if len(calls) == 1 else {1: "different"}
+
+    monkeypatch.setattr(node_factories, "judge_coreference", judge)
+    await make_resolve_coreference_node(tools)(state)
+
+    assert calls == [1, 1]
+    assert len(_subjects(state)) == 2
+    assert not state.coreference_confirmations
+    assert not state.coreference_vetoes
+    metrics = state.retrieval_metrics
+    assert metrics[RetrievalMetric.FACTS_COREFERENCE_SAME] == 1
+    assert metrics[RetrievalMetric.FACTS_COREFERENCE_RETRACTED] == 1
+
+
+@pytest.mark.anyio
+async def test_only_same_verdicts_are_asked_again_one_pair_per_call(
+    monkeypatch,
+) -> None:
+    tools = _tools(_one_cluster_aggregator(monkeypatch))
+    state = _state(_overlapping_names())
+    make_merge_facts_node(tools)(state)
+    pair = state.coreference_candidates[0]
+    state.coreference_candidates = [pair, pair.model_copy(), pair.model_copy()]
+    asked: list[int] = []
+
+    async def judge(state, tools, candidates):
+        asked.append(len(candidates))
+        return (
+            {1: "same", 2: "different", 3: "unsure"} if len(asked) == 1 else {1: "same"}
+        )
+
+    monkeypatch.setattr(node_factories, "judge_coreference", judge)
+    await make_resolve_coreference_node(tools)(state)
+
+    assert asked == [3, 1]
+    assert state.retrieval_metrics[RetrievalMetric.FACTS_COREFERENCE_RETRACTED] == 0
+    assert len(state.coreference_confirmations) == 1
+
+
+@pytest.mark.anyio
+async def test_a_different_verdict_keeps_an_overlapping_name_apart(monkeypatch) -> None:
+    tools = _tools(_one_cluster_aggregator(monkeypatch))
+    state = _state(_overlapping_names())
+    make_merge_facts_node(tools)(state)
 
     monkeypatch.setattr(node_factories, "judge_coreference", _judge({1: "different"}))
     await make_resolve_coreference_node(tools)(state)

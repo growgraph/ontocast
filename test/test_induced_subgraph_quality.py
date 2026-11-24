@@ -26,7 +26,7 @@ from ontocast.tool.vector_store.patch_retriever import _ranked_entity_weights
 pytestmark = pytest.mark.unit
 
 BASE = "https://growgraph.dev/ontologies/"
-QQVAL = Namespace(f"{BASE}qqval#")
+VALS = Namespace(f"{BASE}vals#")
 MATSCI = Namespace(f"{BASE}matsci#")
 PEROV = Namespace(f"{BASE}perovskitemat#")
 
@@ -61,16 +61,16 @@ def _assert_no_degenerate_restriction_bnodes(graph) -> None:
 
 def test_bind_implicit_namespaces_skips_parent_directory_stem() -> None:
     graph = RDFGraph()
-    graph.bind("qqval", QQVAL)
-    graph.add((URIRef(f"{BASE}qqval"), RDF.type, OWL.Ontology))
+    graph.bind("vals", VALS)
+    graph.add((URIRef(f"{BASE}vals"), RDF.type, OWL.Ontology))
     graph.add((URIRef(f"{BASE}perovskitemat"), RDF.type, OWL.Ontology))
-    graph.add((QQVAL["Approximate"], RDF.type, OWL.NamedIndividual))
+    graph.add((VALS["Approximate"], RDF.type, OWL.NamedIndividual))
 
-    graph.bind_implicit_namespaces(prefix_base="qqval")
+    graph.bind_implicit_namespaces(prefix_base="vals")
 
     bound = {prefix: str(ns) for prefix, ns in graph.namespaces() if prefix}
-    assert "qqval_ontologies" not in bound
-    assert bound["qqval"] == str(QQVAL)
+    assert "vals_ontologies" not in bound
+    assert bound["vals"] == str(VALS)
 
 
 def test_bind_implicit_namespaces_own_stem_gets_plain_prefix() -> None:
@@ -154,14 +154,14 @@ def test_select_relevant_ontologies_iri_filter_still_excludes() -> None:
 
 def test_filter_overbroad_namespace_map_drops_parent_directory_uri() -> None:
     ns_map = {
-        "qqval_ontologies": f"{BASE}",
-        "qqval": str(QQVAL),
+        "vals_ontologies": f"{BASE}",
+        "vals": str(VALS),
         "matsci": str(MATSCI),
         "perovskitemat": str(PEROV),
     }
     filtered = filter_overbroad_namespace_map(ns_map)
-    assert "qqval_ontologies" not in filtered
-    assert filtered["qqval"] == str(QQVAL)
+    assert "vals_ontologies" not in filtered
+    assert filtered["vals"] == str(VALS)
     assert filtered["matsci"] == str(MATSCI)
 
 
@@ -480,14 +480,14 @@ def test_prune_disconnected_uri_literal_island() -> None:
 
 def test_quantity_range_no_empty_restriction_bnodes() -> None:
     graph = RDFGraph()
-    graph.bind("qqval", QQVAL)
-    graph.add((URIRef(f"{BASE}qqval"), RDF.type, OWL.Ontology))
+    graph.bind("vals", VALS)
+    graph.add((URIRef(f"{BASE}vals"), RDF.type, OWL.Ontology))
 
     quantity_value = URIRef(f"{BASE}qudt#QuantityValue")
-    parent = QQVAL["Quantity"]
-    cls = QQVAL["QuantityRange"]
-    prop_lower = QQVAL["hasLowerBound"]
-    prop_upper = QQVAL["hasUpperBound"]
+    parent = VALS["Quantity"]
+    cls = VALS["QuantityRange"]
+    prop_lower = VALS["hasLowerBound"]
+    prop_upper = VALS["hasUpperBound"]
 
     graph.add((parent, RDF.type, OWL.Class))
     graph.add((parent, RDFS.label, Literal("Quantity")))
@@ -514,7 +514,7 @@ def test_quantity_range_no_empty_restriction_bnodes() -> None:
     graph.add((cls, RDFS.subClassOf, stub_restriction))
     graph.add((stub_restriction, RDF.type, OWL.Class))
 
-    ontologies = [_ontology(f"{BASE}qqval", graph)]
+    ontologies = [_ontology(f"{BASE}vals", graph)]
     result, metrics = SPARQLTool._build_induced_subgraph(
         ontologies=ontologies,
         entity_uris=[str(cls)],
@@ -543,7 +543,7 @@ def test_quantity_range_no_empty_restriction_bnodes() -> None:
 
 def test_prune_degenerate_restriction_bnodes_removes_stub() -> None:
     graph = RDFGraph()
-    cls = QQVAL["QuantityRange"]
+    cls = VALS["QuantityRange"]
     stub = BNode("stub")
     graph.add((cls, RDFS.subClassOf, stub))
     graph.add((stub, RDF.type, OWL.Class))

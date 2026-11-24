@@ -14,10 +14,11 @@ from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.tool import EmbeddingBasedAggregator
 from ontocast.tool.agg.signatures import (
     MergeGuardContext,
-    build_sibling_pairs,
     canonical_literal,
     empirically_functional_predicates,
     harvest_max_one_predicates,
+    is_acronym_of,
+    labels_alias_with_initials,
     numbers_agree,
     string_values_compatible,
 )
@@ -127,25 +128,6 @@ def test_empirically_functional_predicates_requires_support_and_no_multi() -> No
     )
 
 
-def test_build_sibling_pairs_subject_scope_covers_cross_predicate() -> None:
-    range_node = URIRef("http://x/range1")
-    lower = URIRef("http://x/lower")
-    upper = URIRef("http://x/upper")
-    groups = {
-        (range_node, URIRef(f"{QQVAL}hasLowerBound")): {lower},
-        (range_node, URIRef(f"{QQVAL}hasUpperBound")): {upper},
-    }
-    # Subject scope: the two bound endpoints hang off one subject via
-    # *different* predicates and must never merge (degenerate-range shape).
-    assert frozenset((lower, upper)) in build_sibling_pairs(groups, scope="subject")
-    assert frozenset((lower, upper)) not in build_sibling_pairs(
-        groups, scope="predicate"
-    )
-
-
-# --- guards through _can_merge_as_identity ----------------------------------
-
-
 def test_literal_conflict_blocks_merge_case4_shape() -> None:
     """12.5 meV and 96 meV red shifts must never become one node."""
     aggregator = EmbeddingBasedAggregator()
@@ -235,27 +217,6 @@ def test_functional_object_conflict_blocks_unit_mismatch() -> None:
     # Same predicate on a non-functional predicate set: allowed.
     assert aggregator._can_merge_as_identity(
         left, right, representations, guard_context=MergeGuardContext()
-    )
-
-
-def test_sibling_guard_blocks_co_listed_objects() -> None:
-    aggregator = EmbeddingBasedAggregator()
-    graph = _facts_ttl(
-        """
-        cd:sample_area_1 rdfs:label "superlattice sample in area 1" .
-        cd:sample_area_2 rdfs:label "superlattice sample in area 2" .
-        """
-    )
-    left = URIRef(f"{DEFAULT_IRI}/sample_area_1")
-    right = URIRef(f"{DEFAULT_IRI}/sample_area_2")
-    representations = _pair_representations(aggregator, graph, left, right)
-    guard_context = MergeGuardContext(sibling_pairs={frozenset((left, right))})
-
-    assert not aggregator._can_merge_as_identity(
-        left, right, representations, guard_context=guard_context
-    )
-    assert "sibling" in aggregator._merge_validation_failures(
-        left, right, representations, guard_context=guard_context
     )
 
 
@@ -381,6 +342,50 @@ def test_names_with_different_numbers_are_not_variants() -> None:
     assert string_values_compatible("mr beer", "mr karlheinz beer")
     assert not string_values_compatible("june 2021", "29 june 2021")
     assert not string_values_compatible("grant 1165", "grant 11654005")
+
+
+@pytest.mark.parametrize(
+    ("acronym", "expansion"),
+    [
+        ("cfl", "canadian football league"),
+        ("wifu", "western interprovincial football union"),
+        ("iww", "industrial workers of the world"),
+        ("lcf", "ligue canadienne de football"),
+        ("u.s.", "united states"),
+    ],
+)
+def test_an_acronym_is_compatible_with_its_expansion(acronym, expansion) -> None:
+    assert is_acronym_of(acronym, expansion)
+    assert string_values_compatible(acronym, expansion)
+    assert string_values_compatible(expansion, acronym)
+
+
+@pytest.mark.parametrize(
+    ("acronym", "expansion"),
+    [
+        # The French acronym does not spell the English name.
+        ("lcf", "canadian football league"),
+        # A content word the acronym leaves out.
+        ("cl", "canadian football league"),
+        # A letter no word accounts for.
+        ("cfla", "canadian football league"),
+        # Two words are not an acronym.
+        ("bf", "bigger"),
+        ("b f", "bigger fourth"),
+        # One word is not an expansion.
+        ("cfl", "league"),
+        # Digits make a code, not an acronym.
+        ("g7", "group seven"),
+    ],
+)
+def test_a_value_spelling_other_initials_is_not_an_acronym(acronym, expansion) -> None:
+    assert not is_acronym_of(acronym, expansion)
+
+
+def test_an_initial_and_a_full_name_alias_a_full_name() -> None:
+    """The full word matches its identical token, not the initial before it."""
+    assert labels_alias_with_initials({"j. jayalalithaa"}, {"jayalalithaa"})
+    assert string_values_compatible("j. jayalalithaa", "jayalalithaa")
 
 
 def test_date_nodes_are_told_apart_by_their_iso_value() -> None:

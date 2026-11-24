@@ -5,11 +5,12 @@ mentions from different units denote one thing is decided after aggregation.
 The symbolic tiers settle most pairs; the ones they cannot settle are put to
 the model, one call per document:
 
-* ``unconfirmed_merge`` -- merged on a plausible lexical tier only (label
-  overlap, string similarity, an IRI-derived name), never on an equal label,
-  initials, a shared key or a confirmation. A ``different`` verdict splits it.
-* ``near_miss`` -- similar enough to be a candidate, refused for ``lexical``
-  alone, with no guard saying the two are distinct. A ``same`` verdict merges.
+* ``overlap`` -- named alike but not equally (one name inside the other,
+  overlapping words, similar strings), with no guard saying the two are
+  distinct: identity rules hand exactly these pairs to the verdict, so they
+  are asked first. A ``same`` verdict merges.
+* ``near_miss`` -- similar enough to be a candidate, refused only because
+  they are not named alike, with no guard saying the two are distinct.
 * ``shared_link`` -- two entities of one type from different units, the only
   two that point to one node through one predicate (both "applicant in" one
   case), with no name or embedding evidence: a role phrase and a name for one
@@ -33,7 +34,7 @@ from ontocast.onto.content_unit import ContentUnit
 from ontocast.onto.iri_policy import split_namespace_local
 from ontocast.onto.model import CoreferenceCandidate
 from ontocast.onto.rdfgraph import RDFGraph
-from ontocast.onto.scaffolding import is_scaffolding, scaffolding_nodes
+from ontocast.onto.scaffolding import FactScope
 
 from .unit_scope import strip_unit_scope, unit_scope_index
 
@@ -68,8 +69,7 @@ def _shared_link_candidates(
         graph = unit.graph
         if graph is None:
             continue
-        scaffolding = scaffolding_nodes(graph)
-        for subject, predicate, obj in graph:
+        for subject, predicate, obj in FactScope.of(graph, None).triples():
             if (
                 not isinstance(subject, URIRef)
                 or unit_scope_index(str(subject)) is None
@@ -78,11 +78,7 @@ def _shared_link_candidates(
             if predicate == RDF.type and isinstance(obj, URIRef):
                 types[str(subject)] = types.get(str(subject), frozenset()) | {str(obj)}
                 continue
-            if (
-                predicate in _NON_LINKS
-                or not isinstance(obj, URIRef)
-                or is_scaffolding((subject, predicate, obj), scaffolding)
-            ):
+            if predicate in _NON_LINKS or not isinstance(obj, URIRef):
                 continue
             target = final_uri.get(str(obj), str(obj))
             pointing.setdefault((str(predicate), target), set()).add(str(subject))
@@ -112,8 +108,7 @@ def _shared_link_candidates(
 
 def coreference_candidates(
     *,
-    unconfirmed_merges: Sequence[tuple[str, str, float]],
-    lexical_near_misses: Sequence[tuple[str, str, float]],
+    lexical_near_misses: Sequence[tuple[str, str, float, str]],
     units: Sequence[ContentUnit],
     final_uri: dict[str, str],
     max_pairs: int,
@@ -122,27 +117,27 @@ def coreference_candidates(
 
     Only entities units minted are asked about; catalog terms are not, and
     neither are entities of a citation-metadata unit: authors and venues of a
-    reference list would spend the cap on bibliography. The
-    three kinds take turns, so none crowds the others out: the least similar
-    unconfirmed merges first (the likeliest wrong), the most similar near
-    misses first (the likeliest right), then shared links.
+    reference list would spend the cap on bibliography. Overlap pairs come
+    first, then near misses and shared links take turns, so neither of those
+    crowds the other out; within each kind the most similar first (the
+    likeliest right).
 
     Args:
-        unconfirmed_merges: ``AggregationResult.unconfirmed_merges``.
         lexical_near_misses: ``AggregationResult.lexical_near_misses``.
         units: The aggregated units, their graphs unit-scoped.
         final_uri: Source entity IRI -> its final IRI after aggregation.
         max_pairs: Cap on the pairs returned.
     """
-    merges = [
-        CoreferenceCandidate(
-            left=left, right=right, kind="unconfirmed_merge", similarity=score
-        )
-        for left, right, score in sorted(unconfirmed_merges, key=lambda m: m[2])
+    by_similarity = sorted(lexical_near_misses, key=lambda m: -m[2])
+    overlap = [
+        CoreferenceCandidate(left=left, right=right, kind="overlap", similarity=score)
+        for left, right, score, reason in by_similarity
+        if reason == "overlap"
     ]
     near = [
         CoreferenceCandidate(left=left, right=right, kind="near_miss", similarity=score)
-        for left, right, score in sorted(lexical_near_misses, key=lambda m: -m[2])
+        for left, right, score, reason in by_similarity
+        if reason != "overlap"
     ]
     links = _shared_link_candidates(units, final_uri)
 
@@ -160,17 +155,25 @@ def coreference_candidates(
             and not from_citations(c.right)
         ]
 
+    ordered = [
+        *minted(overlap),
+        *(
+            candidate
+            for round_ in zip_longest(minted(near), minted(links))
+            for candidate in round_
+            if candidate is not None
+        ),
+    ]
     asked: set[frozenset[str]] = set()
     out: list[CoreferenceCandidate] = []
-    for round_ in zip_longest(minted(merges), minted(near), minted(links)):
-        for candidate in round_:
-            if candidate is None or len(out) >= max_pairs:
-                continue
-            pair = frozenset((candidate.left, candidate.right))
-            if pair in asked:
-                continue
-            asked.add(pair)
-            out.append(candidate)
+    for candidate in ordered:
+        if len(out) >= max_pairs:
+            break
+        pair = frozenset((candidate.left, candidate.right))
+        if pair in asked:
+            continue
+        asked.add(pair)
+        out.append(candidate)
     return out
 
 

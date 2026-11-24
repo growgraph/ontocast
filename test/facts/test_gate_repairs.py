@@ -14,7 +14,11 @@ from rdflib.namespace import XSD
 
 from ontocast.config import FactsValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
-from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
+from ontocast.onto.model import (
+    FactsValidationFinding,
+    FactsValidationFindingKind,
+    MergeProvenance,
+)
 from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.stategraph.facts_gate import vetoes_from_findings
@@ -253,8 +257,10 @@ def test_repair_that_does_not_reduce_errors_is_reverted(monkeypatch, caplog) -> 
             return SimpleNamespace(
                 graph=conflicting_graph(),
                 merged_clusters={},
-                key_supported_clusters=[],
-                cross_unit_object_pairs=[],
+                confirmed_clusters=[],
+                merge_provenance=MergeProvenance(
+                    joined_values=[(str(subject), Q + "numericValue")]
+                ),
             )
 
     aggregator = _StubAggregator()
@@ -266,6 +272,10 @@ def test_repair_that_does_not_reduce_errors_is_reverted(monkeypatch, caplog) -> 
     original = conflicting_graph()
     state.aggregated_facts = original
     state.aggregation_clusters = {str(subject): [CD + "a", CD + "b"]}
+    # Members a and b each wrote one of the two values.
+    state.aggregation_merge_provenance = MergeProvenance(
+        joined_values=[(str(subject), Q + "numericValue")]
+    )
     state.facts_units = [
         ContentUnit(
             text="t",

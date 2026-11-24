@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 
-from ontocast.agent.common import call_llm_with_retry
+from ontocast.agent.common import call_llm_with_retry, unit_prompt_scope_for
 from ontocast.agent.update_common import drop_malformed_iris
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import FailureStage, LLMPhase, Status, WorkflowNode
@@ -34,6 +34,7 @@ from ontocast.onto.rdfgraph import (
 from ontocast.onto.state import BudgetTracker
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.prompt.common import text_template, user_template
+from ontocast.prompt.facts_guidelines import format_quantity_chapter, quantity_terms
 from ontocast.prompt.graph_format import get_graph_format_profile
 from ontocast.prompt.ontology_context import (
     build_ontology_index,
@@ -50,8 +51,8 @@ from ontocast.tool.facts_validation import (
     expand_vocabulary_terms,
     materialize_entailed_types,
     normalize_literals_against_schema,
-    partition_literals_outside_temporal_ranges,
     promote_degenerate_bounds_from_vocabulary,
+    range_mismatches,
     repair_compact_iri_literals,
     repair_literal_type_objects,
     repair_paired_object_properties,
@@ -59,6 +60,7 @@ from ontocast.tool.facts_validation import (
     repair_reversed_triples,
     resolve_code_literals,
 )
+from ontocast.tool.facts_validation.unit_findings import UnitPromptScope
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
 from ontocast.tool.validate import partition_object_property_literal_triples
 
@@ -231,13 +233,31 @@ def _record_chapter_report(
         budget_tracker.incr("chapter/text_over_budget")
 
 
+def unit_quantity_chapter(
+    scope: UnitPromptScope, tools: AtomicToolBox, ontology_graph: RDFGraph | None
+) -> str:
+    """The quantity chapter for the unit, or empty when ``scope`` has none.
+
+    Its terms are the unit's ontology context's first, the well-known
+    registry's and the configured quantity vocabulary's after.
+    """
+    if not scope.quantities:
+        return ""
+    vocabulary = tools.quantity_fallback_vocabulary
+    return format_quantity_chapter(
+        vocabulary,
+        quantity_terms(ontology_graph, tools.statement_contract(), vocabulary),
+    )
+
+
 def _prepare_prompt_data(
     state: UnitFactsState,
     access: UnitFactsOntologyAccess,
     profile,
     *,
     citation_vocabulary: dict[str, str] | None = None,
-    quantity_fallback_vocabulary: dict[str, str] | None = None,
+    quantity_chapter: str = "",
+    scope: UnitPromptScope | None = None,
     search_guidelines: str = "",
     vocabulary: str = "strict",
     additional_namespaces: tuple[str, ...] = (),
@@ -248,6 +268,10 @@ def _prepare_prompt_data(
         state: The current unit facts state
         access: Read-only ontology context (facts prompts use snapshot only).
         profile: Active graph format profile.
+        citation_vocabulary: ``CHUNK_CITATION_VOCABULARY``.
+        quantity_chapter: The unit's quantity chapter, empty when its text
+            states no number (:func:`unit_quantity_chapter`).
+        scope: The unit's conditional rules; without one, none applies.
 
     Returns:
         Dictionary containing formatted prompt components
@@ -298,7 +322,12 @@ def _prepare_prompt_data(
     facts_instruction_str = profile.facts_operational_guidelines(
         facts_namespace=DEFAULT_IRI,
         domain_ontologies_clause=format_ontologies_clause(domain_pairs),
-        quantity_fallback_vocabulary=quantity_fallback_vocabulary,
+        quantity_chapter=quantity_chapter,
+        statement_rules=scope is not None and scope.statements,
+        # A citation-metadata unit is governed by the citation lane alone.
+        citation_vocabulary=citation_vocabulary
+        if scope is not None and scope.attribution
+        else None,
         search_guidelines=search_guidelines,
         vocabulary=vocabulary,
         additional_namespaces=additional_namespaces,
@@ -403,12 +432,15 @@ async def render_facts_fresh(
     web_search_enabled = tools.web_grounding_enabled_for_node(
         WorkflowNode.TEXT_TO_FACTS
     )
+    ontology_graph = access.effective_ontology_for_prompt().graph
+    scope = unit_prompt_scope_for(state, tools, ontology_graph)
     prompt_data = _prepare_prompt_data(
         state,
         access,
         profile,
         citation_vocabulary=tools.citation_vocabulary,
-        quantity_fallback_vocabulary=tools.quantity_fallback_vocabulary,
+        quantity_chapter=unit_quantity_chapter(scope, tools, ontology_graph),
+        scope=scope,
         search_guidelines=search_guidelines_for(
             WorkflowNode.TEXT_TO_FACTS, web_search_enabled
         ),
@@ -449,6 +481,9 @@ async def render_facts_fresh(
             web_search_enabled,
         )
         render_report.semantic_graph.sanitize_prefixes_namespaces()
+        # A well-known term spelled in a variant of its namespace is that term
+        # for every check that follows.
+        render_report.semantic_graph.canonicalize_well_known_iris()
         state.applied_repairs.extend(drop_malformed_iris(render_report.semantic_graph))
         clean_graph, rejected = finalize_llm_graph(render_report.semantic_graph)
         ontology_context_graph = access.effective_ontology_for_prompt().graph
@@ -464,10 +499,13 @@ async def render_facts_fresh(
                 clean_graph, ontology_context_graph
             )
             rejected = rejected + op_rejected
-        clean_graph, temporal_rejected = partition_literals_outside_temporal_ranges(
+        # A literal that is no value of its property's declared datatype
+        # range is set aside for the critic, as an invalid literal is.
+        for triple, record in range_mismatches(
             clean_graph, ontology_context_graph, tools.catalog_roles()
-        )
-        rejected = rejected + temporal_rejected
+        ):
+            clean_graph.remove(triple)
+            rejected.append(record)
         state.content_unit.graph = clean_graph
         state.quarantined_literal_triples = rejected
         if rejected:

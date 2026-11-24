@@ -403,6 +403,35 @@ def test_postprocess_facts_units_merged_graph_has_single_schema_binding(
     }
 
 
+@pytest.mark.parametrize(
+    ("written", "canonical"),
+    [
+        ("http://schema.org/Person", "https://schema.org/Person"),
+        ("https://schema.org#Person", "https://schema.org/Person"),
+        ("https://www.w3.org/2002/07/owl#Class", "http://www.w3.org/2002/07/owl#Class"),
+        (
+            "http://www.w3.org/ns/sosa#Observation",
+            "http://www.w3.org/ns/sosa/Observation",
+        ),
+        ("https://qudt.org/vocab/unit/M", "http://qudt.org/vocab/unit/M"),
+        ("https://ex.org/v#Thing", "https://ex.org/v#Thing"),
+        ("http://ex.org/schema.org/Person", "http://ex.org/schema.org/Person"),
+    ],
+)
+def test_a_scheme_or_separator_variant_of_a_well_known_namespace_is_canonical(
+    written: str, canonical: str
+) -> None:
+    from ontocast.onto.well_known import canonical_iri
+
+    assert canonical_iri(written) == canonical
+    graph = RDFGraph()
+    graph.add((URIRef("https://ex.org/doc/a"), RDF.type, URIRef(written)))
+    graph.canonicalize_well_known_iris()
+    assert set(graph.objects(URIRef("https://ex.org/doc/a"), RDF.type)) == {
+        URIRef(canonical)
+    }
+
+
 def test_a_prefix_shaped_namespace_never_becomes_the_working_ontology_iri() -> None:
     """``fro:`` is an undeclared JSON-LD prefix parsed as a scheme, not an IRI."""
     from ontocast.agent.normalize_ontology import _working_anchor_from_graph

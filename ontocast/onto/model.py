@@ -547,7 +547,7 @@ class FactsCompletionReport(BaseModel):
             "One fix per new subject closure, action ADD only -- never REMOVE "
             "or REPLACE, and `triple_ids` is unused. `correct_value` holds "
             "every triple the closure needs (rdf:type, the recovered "
-            "measurement, rdfs:label), attached to an existing catalog-typed "
+            "fact, rdfs:label), attached to an existing catalog-typed "
             "subject when the EXISTING SUBJECTS chapter offers one for the "
             "same entity rather than minting a duplicate."
         ),
@@ -628,15 +628,15 @@ class ExternalEvidenceCacheEntry(BaseModel):
 class CoreferenceCandidate(BaseModel):
     """A pair of unit-minted entities whose identity is put to the model.
 
-    ``kind`` says why: ``unconfirmed_merge`` (merged on a plausible lexical
-    tier only), ``near_miss`` (refused for ``lexical`` alone) or
+    ``kind`` says why: ``overlap`` (named alike but not equally, so merging
+    waits for a verdict), ``near_miss`` (refused for wording alone) or
     ``shared_link`` (same type, different units, pointing to one node by one
     predicate).
     """
 
     left: str
     right: str
-    kind: Literal["unconfirmed_merge", "near_miss", "shared_link"]
+    kind: Literal["overlap", "near_miss", "shared_link"]
     similarity: float = 0.0
 
 
@@ -999,15 +999,34 @@ class FactsUnitFindingKind(StrEnum):
     NUMERIC_COVERAGE = "numeric_coverage"
     LABEL_ONLY_NUMBER = "label_only_number"
     SCALAR_AS_BOUNDS = "scalar_as_bounds"
-    UNIT_SYMBOL_CASE_MISMATCH = "unit_symbol_case_mismatch"
+    #: A number of a value that neither the value's label nor the unit's
+    #: text writes in digits.
+    UNGROUNDED_NUMBER = "ungrounded_number"
+    #: An individual of a value (on a property whose range is a closed class)
+    #: that a catalog cue written next to the value's number contradicts.
+    CONTRADICTED_INDIVIDUAL = "contradicted_individual"
     DOMAIN_VIOLATION = "domain_violation"
     #: A fact-namespace instance with no ``rdf:type`` naming a concrete class
     #: outside the fact namespaces (a metaclass or ``owl:Thing`` is no type).
     UNTYPED_INSTANCE = "untyped_instance"
-    #: An instance of a statement or value class (an observation, a quantity
-    #: value) that states a value but is linked to no other instance: a
-    #: value of nothing until it names what it is about.
-    STATEMENT_WITHOUT_SUBJECT = "statement_without_subject"
+    #: A statement that states a value without a role its class requires
+    #: (its subject, its property, or a link a catalog restriction requires),
+    #: or a value linked to no other instance. ``facet`` names the role.
+    MISSING_ROLE = "missing_role"
+    #: A link playing a statement role (subject, property, result, context)
+    #: whose statement end is a node its declared side admits none of the
+    #: types of: a value, subject or property held by what is not a
+    #: statement. ``facet`` names the role; ``subject``, ``predicate`` and
+    #: ``value`` the link.
+    ROLE_OUTSIDE_STATEMENT = "role_outside_statement"
+    #: A value node that states nothing: no triple but its types and
+    #: annotations.
+    EMPTY_VALUE = "empty_value"
+    #: Results reported for one property node, or by one statement, in
+    #: measurement units of different dimensions, where the catalog declares
+    #: what the property measures (a quantity kind or an applicable unit).
+    #: ``suggestions`` names the statements whose results disagree with it.
+    DIMENSION_CONFLICT = "dimension_conflict"
     #: The render used no term from the ontology it was given. Not a
     #: property of any single triple, so no other kind can express it.
     DOMAIN_ADHERENCE = "domain_adherence"
@@ -1050,6 +1069,15 @@ class UnitFinding(BaseModel, Generic[FindingKindT]):
 
 class FactsUnitFinding(UnitFinding[FactsUnitFindingKind]):
     """One deterministic, machine-found issue in a rendered facts graph."""
+
+    position: Literal["", "predicate", "type", "object"] = Field(
+        default="",
+        description=(
+            "For a finding about a term: where the facts use it -- as a "
+            "predicate, as an ``rdf:type`` object, or as another object. "
+            "Removing the term at exit removes only those uses."
+        ),
+    )
 
 
 class OntologyUnitFindingKind(StrEnum):
@@ -1167,8 +1195,8 @@ class FactsGateRepairKind(StrEnum):
     #: A node standing for a date, given the typed ISO 8601 value its label
     #: names.
     DATE_VALUE_ADDED = "date_value_added"
-    #: A text set aside for not being a date, time or duration value, put
-    #: back on its subject as ``rdfs:comment`` when the unit left its loop.
+    #: A literal set aside for not being a value of its datatype, put back on
+    #: its subject as ``rdfs:comment`` when the unit left its loop.
     QUARANTINE_AS_COMMENT = "quarantine_as_comment"
     #: A rendered triple naming an IRI no SPARQL ``IRIREF`` can hold (a
     #: space, a quote, a brace), dropped at parse time; one record per IRI.
@@ -1180,6 +1208,24 @@ class FactsGateRepairKind(StrEnum):
     #: A statement linking a node to itself through a property not declared
     #: reflexive, removed after aggregation.
     SELF_LOOP_DROPPED = "self_loop_dropped"
+    #: A statement using a term a vocabulary check rejects with error
+    #: severity, removed when the unit left its loop.
+    UNKNOWN_TERM_DROPPED = "unknown_term_dropped"
+    #: A number of a value that neither its label nor the text states,
+    #: removed when the unit left its loop; the label stays.
+    UNGROUNDED_NUMBER_DROPPED = "ungrounded_number_dropped"
+    #: A value whose numbers were all removed as ungrounded, removed with the
+    #: link to it; its carrier stays.
+    VALUE_WITHOUT_NUMBER_DROPPED = "value_without_number_dropped"
+    #: A statement's role link held by a node that is not a statement,
+    #: removed when the unit left its loop, with a blank node only it reached.
+    ROLE_OUTSIDE_STATEMENT_DROPPED = "role_outside_statement_dropped"
+    #: A value node stating nothing, removed with the links to it when the
+    #: unit left its loop; its carrier stays.
+    EMPTY_VALUE_DROPPED = "empty_value_dropped"
+    #: An individual of a value that a catalog cue in the text contradicts,
+    #: removed when the unit left its loop.
+    CONTRADICTED_INDIVIDUAL_DROPPED = "contradicted_individual_dropped"
 
 
 class GraphRepairRecord(BaseModel):
@@ -1198,6 +1244,9 @@ class GraphRepairRecord(BaseModel):
     source: str
     target: str
     triple_count: int = 1
+    #: Terms the finding behind a removal suggested in place of ``source``;
+    #: reported, never applied.
+    suggestions: list[str] = Field(default_factory=list)
 
 
 class UnitFailure(BaseModel):
@@ -1341,11 +1390,20 @@ class LoopAttempt(BaseModel):
             "no longer lists after the inserts that stayed."
         ),
     )
-    n_subjects_linked: int = Field(
+    n_roles_filled: int = Field(
         default=0,
         description=(
-            "Completion pass only: statement_without_subject findings that no "
-            "longer hold after the inserts that stayed."
+            "Completion pass only: missing_role findings that no longer hold "
+            "after the inserts that stayed."
+        ),
+    )
+    n_fixes_refused_by_reason: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Completion pass only: proposed fixes the gap mandate refused "
+            "before compilation, by reason (``value_not_listed``: a number "
+            "the request did not list; ``outside_mandate``: any other "
+            "statement the request did not ask for)."
         ),
     )
     n_detached_linked: int = Field(
@@ -1404,8 +1462,31 @@ class FactsValidationFindingKind(StrEnum):
     DEGENERATE_COREFERENCE = "degenerate_coreference"
     SHACL = "shacl"
     NON_CATALOG_VOCABULARY = "non_catalog_vocabulary"
+    #: A term a closed vocabulary does not have: a well-known vocabulary's
+    #: term list, or a closed range of a value's property.
+    UNKNOWN_TERM = "unknown_term"
     DANGLING_REFERENCE = "dangling_reference"
     MIXED_OBJECT_KINDS = "mixed_object_kinds"
+    STATEMENT_CONFLICT = "statement_conflict"
+    #: Results served under one property node, or by one statement, in
+    #: measurement units of different dimensions.
+    DIMENSION_CONFLICT = "dimension_conflict"
+
+
+class MergeProvenance(BaseModel):
+    """Facts of the merged graph that only a merge brought together.
+
+    A source subject is a subject as one unit wrote it.
+
+    Attributes:
+        joined_values: Canonical (subject, predicate) pairs whose distinct
+            values no single source subject asserted.
+        joined_links: Canonical (subject, object) pairs whose linking
+            predicates no single source subject wrote to one source object.
+    """
+
+    joined_values: list[tuple[str, str]] = Field(default_factory=list)
+    joined_links: list[tuple[str, str]] = Field(default_factory=list)
 
 
 class FactsValidationFinding(BaseModel):
@@ -1437,6 +1518,13 @@ class FactsValidationFinding(BaseModel):
     source_shape: str = Field(
         default="",
         description="SHACL shape that reported the violation; empty otherwise.",
+    )
+    suggestions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Terms that exist and are spelled like an unknown term; never "
+            "applied. Empty for other kinds."
+        ),
     )
 
 

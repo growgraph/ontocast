@@ -209,10 +209,11 @@ Inside each block, every unit runs the same short loop:
   [`ONTOLOGY_CRITIC_PASSES`](../reference/configuration/ontology-validation.md#ontology_critic_passes)
   (off by default; at one pass, spent only on a part with a mandatory finding).
 - **Gap passes** (facts only, one by default) run only on a part with a gap:
-  an observation that names nothing it is about, an instance linked to
+  an observation missing its subject or its property, an instance linked to
   nothing, or, with `FACTS_COMPLETION_MEASUREMENTS`, a measurement the render
   missed. A small call (no ontology chapter) adds the missing facts or links
-  and never removes any. With the same budget, a part holding a statement
+  and never removes any; a fix adding anything it was not asked for is
+  refused. With the same budget, a part holding a statement
   whose subject does not fit its property's domain gets one call that may
   only swap that property; see
   [`FACTS_COMPLETION_PASSES`](../reference/configuration/facts-validation.md#facts_completion_passes).

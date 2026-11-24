@@ -76,7 +76,6 @@ __all__ = [
     "PathConfig",
     "QdrantConfig",
     "ServerConfig",
-    "SiblingGuardScope",
     "SymbolCaseMismatchPolicy",
     "ToolConfig",
     "VectorStoreConfig",
@@ -784,6 +783,7 @@ class ChunkConfig(BaseSettings):
             "venue": "schema:isPartOf",
             "identifier": "schema:identifier",
             "cites": "schema:citation",
+            "attributed_to": "dcterms:source",
         },
         description=(
             "Terms the citation-metadata prompt uses in 'citations_only' mode, "
@@ -792,7 +792,11 @@ class ChunkConfig(BaseSettings):
             "catalog -- they default to schema.org and are overridden here for "
             "catalogs that model citations with another vocabulary (e.g. "
             "bibo, FaBiO, DCMI). Keys are fixed roles; values are CURIEs or "
-            "IRIs. Setting an empty mapping drops the vocabulary guidance."
+            "IRIs. The attributed_to role is the property that links a "
+            "statement the text attributes to other work to that work, typed "
+            "work_class, in every facts prompt; without it the facts prompts "
+            "carry no attribution rule. Setting an empty mapping drops the "
+            "vocabulary guidance."
         ),
     )
 
@@ -1626,13 +1630,6 @@ class WebSearchConfig(BaseSettings):
     )
 
 
-class SiblingGuardScope(StrEnum):
-    """Scope of the co-object sibling merge guard."""
-
-    SUBJECT = "subject"
-    PREDICATE = "predicate"
-
-
 class AggregationConfig(BaseSettings):
     """Aggregation settings for entity clustering/disambiguation."""
 
@@ -1678,42 +1675,27 @@ class AggregationConfig(BaseSettings):
             "permissive — candidates are validated symbolically afterwards."
         ),
     )
-    literal_conflict_guard: bool = Field(
-        default=True,
-        description=(
-            "Veto identity merges between entities asserting disjoint literal "
-            "values on a shared predicate (numeric/temporal disjointness, or "
-            "string sets with no compatible cross-pair). Turning it off "
-            "isolates this guard's contribution to rejected merges."
-        ),
-    )
-    initials_distinct_guard: bool = Field(
-        default=True,
-        description=(
-            "Veto identity merges between entities whose labels are identical "
-            "except for conflicting initials or single-letter identifiers "
-            "('company S.' vs 'company T.') — the shape authors write to "
-            "distinguish entities."
-        ),
-    )
     llm_coreference: bool = Field(
         default=True,
         description=(
             "After aggregation, put the identity pairs the symbolic tiers "
             "cannot settle to the model in one call per document of two or "
-            "more units: merges made on a plausible lexical tier only, "
-            "candidates refused for wording alone, and same-type entities of "
-            "different units pointing to one node by one predicate. A 'same' "
-            "verdict merges like a shared key and 'different' vetoes; every "
-            "distinctness guard still applies."
+            "more units: pairs named alike but not equally (one name inside "
+            "the other, overlapping words, similar strings), which merge only "
+            "on a 'same' verdict, other candidates refused for wording alone, "
+            "and same-type entities of different units pointing to one node "
+            "by one predicate. A 'same' verdict merges like a shared key and "
+            "'different' vetoes; every distinctness guard still applies."
         ),
     )
     llm_coreference_max_pairs: int = Field(
-        default=40,
+        default=80,
         ge=1,
         description=(
-            "Most pairs put to the model per document; the three kinds of "
-            "candidate take turns up to it."
+            "Most pairs put to the model per document, in one call. Pairs "
+            "named alike but not equally come first; then pairs refused for "
+            "wording alone and pairs sharing a link take turns; the most "
+            "similar first within each."
         ),
     )
     natural_key_merge: bool = Field(
@@ -1741,7 +1723,8 @@ class AggregationConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "Minimum label token-set Jaccard for the fuzzy lexical-alias merge tier."
+            "Minimum label token-set Jaccard for the label-overlap tier, "
+            "which makes a pair a coreference candidate."
         ),
     )
     lexical_sequence_ratio: float = Field(
@@ -1749,8 +1732,9 @@ class AggregationConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "Minimum SequenceMatcher ratio on URI normal forms for the fuzzy "
-            "lexical-alias merge tier."
+            "Minimum SequenceMatcher ratio on URI normal forms for the "
+            "string-similarity tier, which makes a pair a coreference "
+            "candidate."
         ),
     )
     lexical_token_jaccard: float = Field(
@@ -1758,8 +1742,9 @@ class AggregationConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description=(
-            "Minimum normal-form token Jaccard for the fuzzy lexical-alias "
-            "merge tier (both sides >= 2 tokens)."
+            "Minimum normal-form token Jaccard for the token-overlap tier "
+            "(both sides >= 2 tokens), which makes a pair a coreference "
+            "candidate."
         ),
     )
     functional_min_empirical_support: int = Field(
@@ -1769,14 +1754,6 @@ class AggregationConfig(BaseSettings):
             "Minimum distinct subjects a predicate must be observed on "
             "before it counts as empirically single-valued for the "
             "functional-object merge guard."
-        ),
-    )
-    sibling_guard_scope: SiblingGuardScope = Field(
-        default=SiblingGuardScope.SUBJECT,
-        description=(
-            "Co-object sibling guard scope: 'subject' forbids merging any "
-            "two objects of one subject; 'predicate' restricts the "
-            "prohibition to objects sharing the same predicate."
         ),
     )
     unit_scoped_fact_iris: bool = Field(
@@ -2856,15 +2833,15 @@ class FactsValidationConfig(BaseSettings):
             "the un-merge repair."
         ),
     )
-    suspect_multi_value_require_cross_unit: bool = Field(
+    suspect_multi_value_require_merge: bool = Field(
         default=True,
         description=(
-            "Report a multi-valued IRI predicate as an error only when the "
-            "values came from merging different units; otherwise report a "
-            "warning. Errors trigger the un-merge repair, which would remove "
-            "a statement that one unit genuinely made with two objects. "
-            "Numeric and string values are not affected: two distinct "
-            "quantities on one node are always a defect."
+            "Report a SUSPECT_MULTI_VALUE or DEGENERATE_COREFERENCE finding "
+            "as an error only when a merge brought its values or links "
+            "together, i.e. no single source subject wrote all of them; "
+            "otherwise report a warning. Errors trigger the un-merge repair, "
+            "which cannot split what one subject was written with and would "
+            "dissolve a correct merge trying."
         ),
     )
     domain_adherence_min_share: float = Field(
@@ -3066,10 +3043,11 @@ class FactsValidationConfig(BaseSettings):
         ge=0,
         description=(
             "Insert-only gap passes per facts unit, in LLM calls, run after "
-            "the critic loop only when the unit has a gap: statements and "
-            "values linked to nothing (statement_without_subject findings), "
-            "and, with FACTS_COMPLETION_MEASUREMENTS, numbers written with a "
-            "unit missing from the graph. A pass "
+            "the critic loop only when the unit has a gap: statements "
+            "missing a role their class requires and values linked to nothing "
+            "(missing_role findings), and, with FACTS_COMPLETION_MEASUREMENTS, "
+            "numbers written with a unit missing from the graph. A fix adding "
+            "anything the pass was not asked for is refused. A pass "
             "sees a term sheet, the unit's typed subjects, the text and the "
             "gaps, not the ontology chapter; each fix it adds is kept or "
             "rolled back by the same regression check as a critic fix. A "

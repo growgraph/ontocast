@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Collection
+import weakref
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from weakref import WeakKeyDictionary
 
 from rdflib import RDF, RDFS, SKOS, Graph, Literal, URIRef
 
@@ -28,10 +28,6 @@ from ontocast.util.measurement_lexicon import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Numbers incl. decimals; exponents like 1.4e3; range/uncertainty separators
-# are handled by extracting each side separately.
-_NUMBER_PATTERN = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?![\w])")
 
 # Bare 4-digit integers in this span are treated as publication years and left
 # out of coverage checking, because citation/date noise otherwise dominates the
@@ -87,11 +83,16 @@ def extract_numeric_tokens(
 ) -> set[str]:
     """Extract canonical numeric tokens from free text.
 
+    Reads the numbers :func:`stated_number_spans` reads, the one reader of
+    digits in text, less a number glued to a letter after it or to a point
+    before it: with a unit ("5kg") it is a measurement, read with its unit by
+    :func:`inventory_numeric_mentions`; otherwise it is part of a name ("3D",
+    "v1.2").
+
     Args:
         text: Source text.
-        ignore_year_like: Drop bare integers in the 1900-2100 range (years,
-            citation artifacts). Values that also occur with a decimal point
-            are kept.
+        ignore_year_like: Drop bare four-digit integers in the 1900-2100 range
+            (years, citation artifacts).
         ignore_identifier_fragments: Drop digit groups sitting against an
             identifier separator -- see :func:`_is_identifier_fragment`. A
             digit group standing alone as its own token is *not* covered:
@@ -102,24 +103,21 @@ def extract_numeric_tokens(
         Set of canonical decimal strings.
     """
     tokens: set[str] = set()
-    for match in _NUMBER_PATTERN.finditer(text):
-        raw = match.group(1)
-        if ignore_identifier_fragments and _is_identifier_fragment(
-            text, match.start(1), match.end(1)
-        ):
+    for value, start, end in stated_number_spans(text):
+        # Glued to a letter after it, or to a point before it ("v1.2", "No.5").
+        if (end < len(text) and text[end].isalpha()) or text[start - 1 : start] == ".":
             continue
-        canonical = canonical_number(raw)
-        if canonical is None:
+        if ignore_identifier_fragments and _is_identifier_fragment(text, start, end):
             continue
+        raw = text[start:end]
         if (
             ignore_year_like
-            and "." not in raw
-            and "e" not in raw.lower()
-            and _YEAR_RANGE[0] <= int(canonical.split(".")[0] or 0) <= _YEAR_RANGE[1]
-            and canonical.isdigit()
+            and raw.isdigit()
+            and len(raw) == 4
+            and _YEAR_RANGE[0] <= int(raw) <= _YEAR_RANGE[1]
         ):
             continue
-        tokens.add(canonical)
+        tokens.add(value)
     return tokens
 
 
@@ -150,10 +148,7 @@ def numeric_literals_in_graph(
         if canonical is not None:
             values.add(canonical)
             continue
-        for match in _NUMBER_PATTERN.finditer(text):
-            canonical = canonical_number(match.group(1))
-            if canonical is not None:
-                values.add(canonical)
+        values |= stated_numbers(text)
     return values
 
 
@@ -211,9 +206,12 @@ def inventory_numeric_mentions(
     measurements: list[Mention] = []
     seen: set[tuple[str, str]] = set()
     measurement_numbers: set[str] = set()
+    # One reader: a measurement is a number :func:`stated_number_spans` reads,
+    # so every number listed here is one the text is judged to state.
+    stated = {(value, start) for value, start, _ in stated_number_spans(text)}
     for mention in unit_adjacent_numbers(text, unit_surfaces):
         canonical = canonical_number(mention.value)
-        if canonical is None:
+        if canonical is None or (canonical, mention.start) not in stated:
             continue
         key = (canonical, mention.unit)
         if key in seen:
@@ -233,6 +231,25 @@ def inventory_numeric_mentions(
         measurements=measurements,
         unclassified=sorted(bare, key=lambda value: (len(value), value)),
     )
+
+
+def states_quantity(
+    text: str,
+    *,
+    unit_surfaces: Collection[str] = frozenset(),
+    ignore_identifier_fragments: bool = False,
+) -> bool:
+    """Whether ``text`` states a quantity: its inventory holds a number.
+
+    A number with a unit or a bare one counts (:func:`inventory_numeric_mentions`);
+    a year-like bare integer and, with ``ignore_identifier_fragments``, a
+    digit group of an identifier do not. Number words are not numbers.
+    """
+    return not inventory_numeric_mentions(
+        text,
+        unit_surfaces=unit_surfaces,
+        ignore_identifier_fragments=ignore_identifier_fragments,
+    ).is_empty
 
 
 #: Separators inside a unit kept as text (``"unit: °C; direction: east"``).
@@ -448,9 +465,40 @@ _CODE_LOCAL_NAMES = ("symbol", "code", "notation", "abbreviation")
 _MAX_SURFACE_CHARS = 12
 
 _SurfaceIndex = dict[str, tuple[str, ...]]
-_surface_memo: WeakKeyDictionary[Graph, tuple[int, frozenset[str], _SurfaceIndex]] = (
-    WeakKeyDictionary()
-)
+
+
+class _GraphMemo:
+    """Indexes of one graph object, kept while its content is unchanged.
+
+    Keyed by the graph's identity, never by graph equality (two graphs with
+    one identifier are equal), and checked against a digest of its triples,
+    so a graph mutated in place is indexed again. Entries go with the graph.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[int, tuple[int, dict[frozenset[str], _SurfaceIndex]]] = {}
+
+    def get(
+        self, graph: Graph, key: frozenset[str], build: Callable[[], _SurfaceIndex]
+    ) -> _SurfaceIndex:
+        digest = hash(frozenset(graph))
+        entry = self._entries.get(id(graph))
+        if entry is None or entry[0] != digest:
+            if entry is None:
+                try:
+                    weakref.finalize(graph, self._entries.pop, id(graph), None)
+                except TypeError:  # not weakly referenceable: not kept
+                    return build()
+            entry = (digest, {})
+            self._entries[id(graph)] = entry
+        index = entry[1].get(key)
+        if index is None:
+            index = build()
+            entry[1][key] = index
+        return index
+
+
+_surface_memo = _GraphMemo()
 
 
 def _local(iri: str) -> str:
@@ -525,9 +573,9 @@ def unit_surface_index(
     Unit individuals are found through the ranges of the configured unit-role
     properties and through classes named ``*Unit``, with their subclasses.
     Surfaces are labels, notations and code/symbol literals short enough to
-    stand next to a number. Memoised per graph object (validated by size, so
-    a graph mutated in place is re-indexed), because the snapshot is shared
-    by reference across a whole fan-out and this walks it whole.
+    stand next to a number. Memoised per graph object and its content
+    (:class:`_GraphMemo`), because the snapshot is shared by reference across
+    a whole fan-out and this walks it whole.
 
     Args:
         ontology_graph: The unit's ontology context; ``None`` yields nothing.
@@ -539,18 +587,9 @@ def unit_surface_index(
     if ontology_graph is None or len(ontology_graph) == 0:
         return {}
     key = frozenset(unit_properties)
-    try:
-        cached = _surface_memo.get(ontology_graph)
-    except TypeError:
-        cached = None
-    if cached is not None and cached[0] == len(ontology_graph) and cached[1] == key:
-        return cached[2]
-    index = _build_surface_index(ontology_graph, key)
-    try:
-        _surface_memo[ontology_graph] = (len(ontology_graph), key, index)
-    except TypeError:
-        pass
-    return index
+    return _surface_memo.get(
+        ontology_graph, key, lambda: _build_surface_index(ontology_graph, key)
+    )
 
 
 def unit_surfaces_in_ontology(
@@ -560,50 +599,217 @@ def unit_surfaces_in_ontology(
     return frozenset(unit_surface_index(ontology_graph, unit_properties))
 
 
-def unit_symbol_index(
-    ontology_graph: Graph | None, unit_properties: Collection[str] = ()
-) -> dict[str, frozenset[str]]:
-    """Unit individual -> the *symbol* surfaces it declares, case preserved.
+#: Predicates whose literals are an individual's cues, beside the code and
+#: symbol literals recognised by local name: what a text writes next to a
+#: number to say which individual it means.
+_CUE_PREDICATES = (SKOS.altLabel, SKOS.notation)
 
-    The subset of :func:`unit_surface_index` that comes from code, symbol
-    and notation predicates rather than labels. Symbols are case-significant
-    by definition -- two units can differ by letter case alone -- while a
-    label is prose and is not. Kept separate so a check on symbol case never
-    fires on a label spelt with a capital.
+_cue_memo = _GraphMemo()
 
-    Args:
-        ontology_graph: The unit's ontology context; ``None`` yields nothing.
-        unit_properties: IRIs of the unit-role properties (``qudt:unit``).
 
-    Returns:
-        Unit IRI -> its declared symbol surfaces. Empty when the graph
-        declares no symbols.
-    """
-    if ontology_graph is None or len(ontology_graph) == 0:
-        return {}
-    classes = _unit_classes(ontology_graph, unit_properties)
-    if not classes:
-        return {}
-    symbols: dict[str, set[str]] = {}
-    for cls in classes:
-        for individual in ontology_graph.subjects(RDF.type, cls):
+def _cue_index(graph: Graph, classes: frozenset[str]) -> _SurfaceIndex:
+    closure = {URIRef(cls) for cls in classes}
+    frontier = list(closure)
+    while frontier:
+        current = frontier.pop()
+        for sub in graph.subjects(RDFS.subClassOf, current):
+            if isinstance(sub, URIRef) and sub not in closure:
+                closure.add(sub)
+                frontier.append(sub)
+    index: dict[str, set[str]] = {}
+    for cls in closure:
+        for individual in graph.subjects(RDF.type, cls):
             if not isinstance(individual, URIRef):
                 continue
-            for predicate, value in ontology_graph.predicate_objects(individual):
+            for predicate, value in graph.predicate_objects(individual):
                 if not isinstance(value, Literal):
                     continue
                 local = _local(str(predicate)).lower()
-                if predicate != SKOS.notation and not any(
+                if predicate not in _CUE_PREDICATES and not any(
                     token in local for token in _CODE_LOCAL_NAMES
                 ):
                     continue
                 text = str(value).strip()
-                if (
-                    not text
-                    or len(text) > _MAX_SURFACE_CHARS
-                    or any(ch.isspace() for ch in text)
-                    or canonical_number(text) is not None
-                ):
-                    continue
-                symbols.setdefault(str(individual), set()).add(text)
-    return {iri: frozenset(found) for iri, found in symbols.items()}
+                if text and canonical_number(text) is None:
+                    index.setdefault(text, set()).add(str(individual))
+    return {cue: tuple(sorted(iris)) for cue, iris in index.items()}
+
+
+def cue_index(ontology_graph: Graph | None, classes: Collection[str]) -> _SurfaceIndex:
+    """Cue -> the individuals of ``classes`` declaring it, case preserved.
+
+    The individuals are those typed with one of ``classes`` or with a
+    subclass the graph states. Their cues are ``skos:altLabel`` and
+    ``skos:notation`` literals and code or symbol literals (a predicate whose
+    local name says so); a number is never a cue. Case is kept: two
+    individuals may differ by the case of a symbol alone. Memoised per graph
+    object and its content (:class:`_GraphMemo`).
+
+    Args:
+        ontology_graph: The unit's ontology context; ``None`` yields nothing.
+        classes: Class IRIs whose individuals are indexed.
+
+    Returns:
+        Cue -> sorted individual IRIs. Treat as read-only.
+    """
+    if ontology_graph is None or len(ontology_graph) == 0 or not classes:
+        return {}
+    key = frozenset(classes)
+    return _cue_memo.get(ontology_graph, key, lambda: _cue_index(ontology_graph, key))
+
+
+#: A number written in digits: integer, decimal or exponent form, or with a
+#: leading point. A unit or a word may follow it directly ("5kg", "20s").
+_STATED_PIECE = re.compile(r"(?<![\w])(\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(?!\d)")
+#: Digits grouped by thousands: with commas and a decimal point; with points
+#: and a decimal comma; or with spaces or apostrophes and either decimal mark.
+_STATED_GROUPED = (
+    (
+        re.compile(r"(?<![\w.,])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?!\d)"),
+        ",",
+    ),
+    (
+        re.compile(r"(?<![\w.,])\d{1,3}(?:(?:\.\d{3})+,\d+|(?:\.\d{3}){2,})(?![\d.,])"),
+        ".",
+    ),
+    (
+        re.compile(
+            r"(?<![\w.,'’])\d{1,3}(?:['’ \u00a0\u2009\u202f]\d{3})+(?:[.,]\d+)?(?!\d)"
+        ),
+        "'’ \u00a0\u2009\u202f",
+    ),
+)
+#: A decimal comma.
+_STATED_DECIMAL_COMMA = re.compile(r"(?<![\w.,])\d+,\d+(?![\d,])")
+#: Scientific notation: ``1.4 × 10^3``, ``10^-15``, ``10⁻³``, and with a
+#: mantissa, an exponent written with its sign alone: ``1.5 × 10−3``.
+_STATED_SCIENTIFIC = re.compile(
+    r"(?<![\w.])(?:(\d+(?:[.,]\d+)?)\s*[x×·⋅*]\s*)?10"
+    r"(?:\s*(?:\^|\*\*)\s*\(?\s*([-−–+]?\d+)\s*\)?|([⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)"
+    r"|([-−–]\d+))(?!\d)"
+)
+_SUPERSCRIPT = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺", "0123456789-+")
+#: How far a power of ten may rescale a stated number and still ground it.
+_MAX_SHIFT = 12
+
+
+def _magnitude(text: str) -> str | None:
+    """The canonical absolute value of a numeric string, or ``None``."""
+    canonical = canonical_number(text)
+    return None if canonical is None else canonical.lstrip("-")
+
+
+def stated_number_spans(text: str) -> list[tuple[str, int, int]]:
+    """Every number ``text`` writes in digits, with where it is written.
+
+    Each reading counts: a number grouped by thousands (``1,000``,
+    ``1'000``, ``1.234,5``) is read whole and in its digit groups, a decimal
+    comma (``6,8``) both ways, and scientific notation (``1.4 × 10^3``,
+    ``1.5 × 10−3``) as its value. A unit written against the number
+    (``5kg``) does not hide it. Values are canonical and unsigned: the sides
+    of a range (``10-15``) are two numbers. Number words are not numbers.
+
+    Returns:
+        ``(canonical value, start, end)`` per reading, in text order.
+    """
+    spans: list[tuple[str, int, int]] = []
+    for match in _STATED_PIECE.finditer(text):
+        value = _magnitude(match.group(0))
+        if value is not None:
+            spans.append((value, match.start(), match.end()))
+    for pattern, separators in _STATED_GROUPED:
+        for match in pattern.finditer(text):
+            digits = "".join(ch for ch in match.group(0) if ch not in separators)
+            value = _magnitude(digits.replace(",", "."))
+            if value is not None:
+                spans.append((value, match.start(), match.end()))
+    for match in _STATED_DECIMAL_COMMA.finditer(text):
+        value = _magnitude(match.group(0).replace(",", "."))
+        if value is not None:
+            spans.append((value, match.start(), match.end()))
+    for match in _STATED_SCIENTIFIC.finditer(text):
+        if match.group(4) and not match.group(1):
+            continue  # "10-15" with no mantissa is a range
+        mantissa = (match.group(1) or "1").replace(",", ".")
+        exponent = match.group(2) or match.group(3) or match.group(4) or ""
+        exponent = exponent.translate(_SUPERSCRIPT)
+        exponent = exponent.replace("−", "-").replace("–", "-")
+        try:
+            value = Decimal(mantissa) * (Decimal(10) ** int(exponent))
+        except (InvalidOperation, ValueError):
+            continue
+        magnitude = _magnitude(str(value))
+        if magnitude is not None:
+            spans.append((magnitude, match.start(), match.end()))
+    spans.sort(key=lambda span: (span[1], span[2]))
+    return spans
+
+
+def stated_numbers(text: str) -> set[str]:
+    """The canonical unsigned numbers ``text`` writes; see :func:`stated_number_spans`."""
+    return {value for value, _, _ in stated_number_spans(text)}
+
+
+#: Languages whose number words :func:`worded_numbers` reads.
+NUMBER_WORD_LANGUAGES = ("en", "fr", "es", "pt", "de", "it", "nl")
+#: A hyphen joining two letters.
+_WORD_HYPHEN = re.compile(r"(?<=[^\W\d_])-(?=[^\W\d_])")
+
+
+def worded_numbers(mention: str) -> set[str]:
+    """The canonical unsigned numbers ``mention`` writes, in digits or in words.
+
+    Number words are read compositionally ("twenty-five", "three hundred
+    thousand", "fifth") in every language of :data:`NUMBER_WORD_LANGUAGES`.
+    Call it on the short mention a number belongs to, never on running text:
+    a word of one language can be a number in another ("once" is 11 in
+    Spanish), which only a mention that also claims that number makes
+    harmless. A hyphen between words is also read as a space, so a compound
+    adjective ("two-month") states its number. Vague quantities ("several",
+    "a few") are not numbers.
+    """
+    from text_to_num import alpha2digit
+
+    found = stated_numbers(mention)
+    for reading in {mention, _WORD_HYPHEN.sub(" ", mention)}:
+        for language in NUMBER_WORD_LANGUAGES:
+            found |= stated_numbers(alpha2digit(reading, language, threshold=0))
+    return found
+
+
+def _scaled(number: str) -> tuple[tuple[int, ...], int] | None:
+    """``number`` as its significant digits and power of ten, or ``None``."""
+    try:
+        value = Decimal(number).copy_abs().normalize()
+    except (InvalidOperation, ValueError):
+        return None
+    if not value.is_finite():
+        return None
+    _, digits, exponent = value.as_tuple()
+    return tuple(digits), int(exponent)
+
+
+def grounds(number: str, stated: Collection[str]) -> bool:
+    """Whether ``stated`` numbers ground ``number``.
+
+    A number is grounded when it equals a stated number times a power of ten,
+    from 10^-12 to 10^12 (``5`` grounds ``5000000`` and ``0.05``): a scale
+    word, a percent and scientific notation rescale what is written. The
+    comparison is exact. A fraction or a unit conversion is not grounded.
+
+    Args:
+        number: A canonical number, signed or not.
+        stated: Canonical numbers a text writes (:func:`stated_numbers`).
+    """
+    own = _scaled(number)
+    if own is None:
+        return False
+    for candidate in stated:
+        other = _scaled(candidate)
+        if (
+            other is not None
+            and other[0] == own[0]
+            and abs(own[1] - other[1]) <= _MAX_SHIFT
+        ):
+            return True
+    return False

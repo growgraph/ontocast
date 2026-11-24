@@ -35,6 +35,7 @@ from ontocast.onto.model import FactsCritiqueReport, Suggestions, TripleFix
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.unit_states import UnitFactsState
 from ontocast.tool.atomic import AtomicToolBox
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.facts_validation.terms import CatalogRoles
 from test.snapshot_helpers import empty_snapshot
 
@@ -79,9 +80,11 @@ def _tools() -> AtomicToolBox:
             property_alias_min_ratio=0.85,
             catalog_terms=lambda: set(),
             catalog_roles=lambda: CatalogRoles(),
-            subject_contract=lambda: None,
+            statement_contract=StatementContract,
             code_predicates=(),
             citation_vocabulary={},
+            facts_completion_passes=0,
+            facts_completion_measurements=False,
             quantity_fallback_vocabulary=None,
             additional_standard_namespaces=(),
             validation_policy=None,

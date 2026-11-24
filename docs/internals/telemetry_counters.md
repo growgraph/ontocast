@@ -171,15 +171,16 @@ Facts fan-out, written in `ontocast/stategraph/node_factories.py`:
 | `facts_anchor_count`, `facts_anchor_units` | Distinct anchor ontologies, and units assigned one |
 | `facts_findings_residual`, `facts_mandatory_residual` | Findings left on the facts units after their loops, all and mandatory |
 | `facts_mandatory_residual_by_kind` | The mandatory ones counted per finding kind |
-| `facts_statements_without_subject_rendered`, `facts_statements_without_subject` | `statement_without_subject` findings: on the units' renders, and left after the critic and gap passes |
+| `facts_statements_missing_role_rendered`, `facts_statements_missing_role` | `missing_role` findings: on the units' renders, and left after the critic and gap passes |
 | `facts_critic_calls`, `facts_critic_accepted` | Facts critic calls, and those whose verdict let the unit leave the loop |
 | `facts_critic_fixes_applied`, `facts_critic_fixes_residual`, `facts_critic_fixes_noop` | Fixes that reached the graph, fixes left for judgement, and fixes that removed exactly what they added |
 | `facts_critic_fixes_rolled_back`, `facts_critic_patches_rolled_back` | Fixes undone for leaving the unit worse, and passes in which that happened |
 | `facts_critic_fixes_junk_refused` | Inserts refused for minting a placeholder node |
 | `facts_critic_fixes_unresolved_prefix` | Fixes naming a prefix nothing declares |
 | `facts_critic_units_unreviewed`, `facts_critic_units_skipped` | Units whose critic call failed, and units not sent to the critic |
-| `facts_completion_calls`, `facts_completion_triples_inserted`, `facts_completion_measurements_recovered` | The gap pass: calls, triples that stayed, and missed measurements found. Each pass's loop attempt also records `n_subjects_linked` |
+| `facts_completion_calls`, `facts_completion_triples_inserted`, `facts_completion_measurements_recovered` | The gap pass: calls, triples that stayed, and missed measurements found. Each pass's loop attempt also records `n_roles_filled` and `n_fixes_refused_by_reason` (fixes its mandate refused) |
 | `facts_completion_detached_linked` | Instances linked to nothing before a gap pass and linked after it (`n_detached_linked` on the pass's loop attempt) |
+| `facts_exit_repairs_by_kind` | Triples removed or written back when the units left their loops, by repair kind (`domain_violation_dropped`, `role_outside_statement_dropped`, `unknown_term_dropped`, `ungrounded_number_dropped`, `value_without_number_dropped`, `empty_value_dropped`, `contradicted_individual_dropped`, `quarantine_as_comment`) |
 | `facts_domain_repair_calls`, `facts_domain_repair_fixed`, `facts_domain_violations_dropped` | The domain repair: calls (loop attempts of kind `domain_repair`), statements given a property that fits their subject, and statements removed because they were still in domain violation when the unit left its loop (`domain_violation_dropped` repair records) |
 
 Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
@@ -188,9 +189,9 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | Key | Meaning |
 |---|---|
 | `facts_rejected_merges` | Entity merges the aggregator's guards refused, for the graph returned |
-| `facts_merge_rejections_by_reason` | Those refusals by reason (`same_unit`, `sibling`, `literal_conflict`, `functional_iri_conflict`, `initials_conflict`, `role`, `type`, `lexical`, `cluster_veto`); a pair refused for several reasons counts under each |
+| `facts_merge_rejections_by_reason` | Those refusals by reason (`same_unit`, `relation`, `literal_conflict`, `functional_iri_conflict`, `statement_conflict`, `dimension_conflict`, `initials_conflict`, `role`, `type`, `overlap`, `lexical`, `cluster_veto`); a pair refused for several reasons counts under each. `overlap` pairs are coreference candidates |
 | `facts_merge_repair_passes`, `facts_merge_vetoes`, `facts_merge_repairs_rejected` | The un-merge repair: passes kept, merge pairs vetoed, passes reverted |
-| `facts_coreference_pairs`, `facts_coreference_same`, `facts_coreference_different` | Coreference resolution: pairs put to the model, and those it judged one entity or two |
+| `facts_coreference_pairs`, `facts_coreference_same`, `facts_coreference_different`, `facts_coreference_retracted` | Coreference resolution: pairs put to the model, those it judged one entity or two, and the "same" verdicts not repeated when the pair was asked again on its own |
 | `validated_without_ontology_context` | `true` when the facts were validated with an empty ontology context |
 | `facts_validation_findings`, `facts_validation_errors` | Findings after validation, and those of error severity |
 | `facts_shacl_violations_before`, `facts_shacl_violations_after` | SHACL violations around the automatic repair. Present only when the repair ran |
@@ -202,7 +203,7 @@ Aggregation and validation, written in `ontocast/stategraph/node_factories.py`,
 | `facts_date_values_added` | Nodes standing for a date (object of a temporal property, typed with an OWL-Time class, or labelled with a whole date) that held only a label, given the typed ISO 8601 value the label names |
 | `facts_links_removed` | Links between instances that the gate's SHACL prune and untyped drop removed |
 | `facts_components`, `facts_isolated` | Connected groups of instances in the served facts (the document node joins what it links), and instances linked to no other instance (each holds a value of its own), in the served graph. The instances themselves are listed in the run manifest's `facts_isolated` (IRI, label, `holds_value` or `other`) |
-| `facts_twin_labels` | Labels that two or more served instances share: duplicates aggregation left, or distinct things with one name |
+| `facts_twin_labels` | Labels that two or more served instances of one role share (statements, observed properties, other instances; values and instances one links to the other left out): duplicates aggregation left, or distinct things with one name |
 | `structural_ontology_components_max` | The highest connected-component count among the ontologies the structural check examined |
 | `consistency_conflicts` | Conflicts the consistency critic reported |
 
