@@ -281,10 +281,12 @@ def _collect_facts_findings(
         is_citation_metadata=unit_state.content_unit.is_citation_metadata,
         is_non_content=unit_state.content_unit.is_non_content,
         # Read over the whole catalog: a unit's snapshot may lack the
-        # hierarchy placing its observation class under a statement class.
+        # hierarchy placing its observation class under a statement class,
+        # or a property's domain and range.
         contract=atomic.statement_contract()
         if atomic is not None
         else StatementContract(),
+        catalog_roles=atomic.catalog_roles() if atomic is not None else None,
     )
 
 
@@ -786,7 +788,10 @@ async def _run_domain_repair(
         fixes, graph, index=index, policy=atomic.facts_patch_policy
     )
     patches = property_swaps(
-        compiled.patches, index, graph, unit_state.ontology_snapshot.graph
+        compiled.patches,
+        index,
+        graph,
+        atomic.catalog_roles().with_axioms(unit_state.ontology_snapshot.graph),
     )
     run = _apply_patches(
         unit_state,
@@ -877,6 +882,12 @@ async def _run_completion_passes(
     ``atomic.facts_completion_passes > 0`` and that this is the facts phase.
     """
     fact_namespaces = [DEFAULT_IRI, str(unit_state.content_unit.doc_iri)]
+    # A misplaced result is asked for once: an insert cannot remove the link
+    # its finding names, so only the exit clears it.
+    asked: set[tuple[str, str, str]] = set()
+
+    def misplaced_key(finding: FactsUnitFinding) -> tuple[str, str, str]:
+        return finding.subject, finding.predicate, finding.value
 
     def missing_measurements() -> NumericInventory:
         if not atomic.facts_completion_measurements:
@@ -899,7 +910,12 @@ async def _run_completion_passes(
             else []
         )
         return GapMandate.of(
-            findings,
+            [
+                finding
+                for finding in findings
+                if finding.kind != FactsUnitFindingKind.ROLE_OUTSIDE_STATEMENT
+                or misplaced_key(finding) not in asked
+            ],
             isolated,
             missing_measurements(),
             atomic.statement_contract(),
@@ -915,6 +931,7 @@ async def _run_completion_passes(
         mandate_before = sum(1 for finding in findings if finding.mandatory)
 
         proposed = await complete_facts(unit_state, atomic, mandate)
+        asked.update(misplaced_key(finding) for finding in mandate.misplaced)
         fixes, refused = mandate.admit(proposed, unit_state.patch_target_graph())
         if refused:
             logger.info(

@@ -31,6 +31,7 @@ from ontocast.prompt.complete_facts import (
     asks_property,
     build_catalog_subjects_chapter,
     build_detached_chapter,
+    build_misplaced_chapter,
     build_missing_measurements_chapter,
     build_role_gaps_chapter,
     build_task_chapter,
@@ -82,6 +83,7 @@ def _build_prompt() -> PromptTemplate:
             "text_chapter",
             "missing_measurements_chapter",
             "role_gaps_chapter",
+            "misplaced_chapter",
             "detached_chapter",
             "output_instruction",
             "format_instructions",
@@ -109,7 +111,7 @@ async def complete_facts(
         is dropped defensively rather than trusted -- this pass is
         insert-only by contract, not by the model's cooperation.
     """
-    if not (mandate.inventory.measurements or mandate.role_gaps or mandate.detached):
+    if not mandate.calls and not mandate.detached:
         return []
 
     llm_tool = await atomic.get_llm_tool(state.budget_tracker)
@@ -127,7 +129,9 @@ async def complete_facts(
     quantities = unit_prompt_scope_for(state, atomic, ontology_graph).quantities
     # The statement roles are shown only to a call that repairs or recovers a
     # statement.
-    statements = bool(mandate.role_gaps or mandate.inventory.measurements)
+    statements = bool(
+        mandate.role_gaps or mandate.misplaced or mandate.inventory.measurements
+    )
     unit_properties = _unit_role_property(atomic, ontology_graph, fact_graph)
     term_sheet = build_term_sheet(
         ontology_graph,
@@ -144,6 +148,9 @@ async def complete_facts(
     )
     missing_measurements_chapter = build_missing_measurements_chapter(mandate.inventory)
     role_gaps_chapter = build_role_gaps_chapter(fact_graph, mandate.role_gaps)
+    misplaced_chapter = build_misplaced_chapter(
+        fact_graph, mandate.misplaced_values(fact_graph)
+    )
     detached_chapter = build_detached_chapter(
         fact_graph,
         [
@@ -170,6 +177,7 @@ async def complete_facts(
         "text_chapter": text_chapter,
         "missing_measurements_chapter": missing_measurements_chapter,
         "role_gaps_chapter": role_gaps_chapter,
+        "misplaced_chapter": misplaced_chapter,
         "detached_chapter": detached_chapter,
         "output_instruction": output_instruction_for(profile.format, mandate),
         "format_instructions": profile.format_instructions(

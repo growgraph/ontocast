@@ -2833,15 +2833,15 @@ class FactsValidationConfig(BaseSettings):
             "the un-merge repair."
         ),
     )
-    suspect_multi_value_require_cross_unit: bool = Field(
+    suspect_multi_value_require_merge: bool = Field(
         default=True,
         description=(
-            "Report a multi-valued IRI predicate as an error only when the "
-            "values came from merging different units; otherwise report a "
-            "warning. Errors trigger the un-merge repair, which would remove "
-            "a statement that one unit genuinely made with two objects. "
-            "Numeric and string values are not affected: two distinct "
-            "quantities on one node are always a defect."
+            "Report a SUSPECT_MULTI_VALUE or DEGENERATE_COREFERENCE finding "
+            "as an error only when a merge brought its values or links "
+            "together, i.e. no single source subject wrote all of them; "
+            "otherwise report a warning. Errors trigger the un-merge repair, "
+            "which cannot split what one subject was written with and would "
+            "dissolve a correct merge trying."
         ),
     )
     domain_adherence_min_share: float = Field(

@@ -22,6 +22,7 @@ from ontocast.onto.annotation import is_annotation
 from ontocast.onto.model import FactsIsolatedInstance
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.scaffolding import FactScope
+from ontocast.tool.facts_validation.statements import StatementContract
 
 # Predicates that link nothing: typing and alias handles.
 _NON_LINKS: frozenset[URIRef] = frozenset({RDF.type, OWL.sameAs})
@@ -187,28 +188,87 @@ def isolated_report(
 
 
 def twin_labels(
-    graph: RDFGraph, fact_namespaces: Sequence[str], document: URIRef | None = None
+    graph: RDFGraph,
+    fact_namespaces: Sequence[str],
+    document: URIRef | None = None,
+    *,
+    contract: StatementContract,
 ) -> dict[str, int]:
-    """Labels two or more instances share, with how many share each.
+    """Labels two or more instances of one role share, with how many share each.
 
-    A label is compared case-folded with its whitespace collapsed. Twins are
-    the duplicates aggregation left, or distinct things with one name; the
-    count says how many identities one name still carries.
+    A label is compared case-folded with its whitespace collapsed, and only
+    between instances that could be one thing: statements with statements,
+    the properties statements observe with properties, other instances with
+    other instances. Values are left out, since a value is identified by what
+    it states, not by its label; an observation labelled like the property it
+    observes is no twin of it, and neither are two instances one links to the
+    other (a series and its edition). Twins are the duplicates aggregation left, or
+    distinct things with one name; the count says how many identities one
+    name still carries.
     """
-    holders: dict[str, set[URIRef]] = {}
+    observed = _observed_properties(graph, contract)
+    holders: dict[tuple[str, str], set[URIRef]] = {}
     for instance in FactScope.of(graph, fact_namespaces, document).instances - {
         document
     }:
+        role = _twin_role(graph, instance, contract, observed)
+        if role is None:
+            continue
         for label in graph.objects(instance, RDFS.label):
             if isinstance(label, Literal):
                 key = " ".join(str(label).split()).casefold()
                 if key:
-                    holders.setdefault(key, set()).add(instance)
-    return {
-        label: len(instances)
-        for label, instances in sorted(holders.items())
-        if len(instances) > 1
-    }
+                    holders.setdefault((key, role), set()).add(instance)
+    counts: dict[str, int] = {}
+    for (label, _), instances in sorted(holders.items()):
+        twins = {
+            instance
+            for instance in instances
+            if any(
+                other != instance and not _linked(graph, instance, other)
+                for other in instances
+            )
+        }
+        if twins:
+            counts[label] = counts.get(label, 0) + len(twins)
+    return counts
+
+
+def _linked(graph: RDFGraph, a: URIRef, b: URIRef) -> bool:
+    """Whether a triple other than an annotation joins ``a`` and ``b``."""
+    return any(
+        not is_annotation(predicate)
+        for predicate in (*graph.predicates(a, b), *graph.predicates(b, a))
+    )
+
+
+def _observed_properties(graph: RDFGraph, contract: StatementContract) -> set[Node]:
+    """Nodes a statement's ``property`` link names, in either direction."""
+    if "property" not in contract.roles:
+        return set()
+    links = contract.links("property")
+    found: set[Node] = set()
+    for link in links.forward:
+        found.update(graph.objects(None, URIRef(link)))
+    for link in links.inverse:
+        found.update(graph.subjects(URIRef(link), None))
+    return found
+
+
+def _twin_role(
+    graph: RDFGraph, instance: URIRef, contract: StatementContract, observed: set[Node]
+) -> str | None:
+    """The role ``instance`` is compared within, or ``None`` for a value."""
+    types = set(graph.objects(instance, RDF.type))
+    if contract.is_value(types):
+        return None
+    if contract.is_statement(types):
+        return "statement"
+    if instance in observed or any(
+        str(cls) in contract.property_classes for cls in types
+    ):
+        return "property"
+    return "instance"
 
 
 def links_lost(before: Iterable[tuple[Node, Node, Node]], after: RDFGraph) -> int:

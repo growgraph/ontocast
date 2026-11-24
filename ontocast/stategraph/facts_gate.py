@@ -696,10 +696,10 @@ def run_facts_gate(
             shacl_inference=facts_validation.shacl_inference,
             shacl_advanced=facts_validation.shacl_advanced,
             shacl_max_triples=facts_validation.shacl_max_triples,
-            key_supported_subjects=state.aggregation_key_clusters,
-            cross_unit_pairs=(
-                state.aggregation_cross_unit_pairs
-                if facts_validation.suspect_multi_value_require_cross_unit
+            confirmed_subjects=state.aggregation_confirmed_clusters,
+            merge_provenance=(
+                state.aggregation_merge_provenance
+                if facts_validation.suspect_multi_value_require_merge
                 else None
             ),
             non_catalog_severity=(
@@ -779,14 +779,14 @@ def run_facts_gate(
         # coreference for nothing and must not be kept.
         previous_graph = state.aggregated_facts
         previous_clusters = state.aggregation_clusters
-        previous_key_clusters = state.aggregation_key_clusters
-        previous_cross_unit_pairs = state.aggregation_cross_unit_pairs
+        previous_confirmed_clusters = state.aggregation_confirmed_clusters
+        previous_merge_provenance = state.aggregation_merge_provenance
         state.aggregated_facts = result.graph
         state.aggregation_clusters = result.merged_clusters
-        state.aggregation_key_clusters = result.key_supported_clusters
+        state.aggregation_confirmed_clusters = result.confirmed_clusters
         # Re-aggregation rewrites subject IRIs, so the pairs the validator
         # keys on have to come from the pass it is about to score.
-        state.aggregation_cross_unit_pairs = result.cross_unit_object_pairs
+        state.aggregation_merge_provenance = result.merge_provenance
         candidate_report = run_validation()
         candidate_errors = merge_signature_errors(candidate_report)
         if candidate_errors >= previous_errors:
@@ -800,8 +800,8 @@ def run_facts_gate(
             )
             state.aggregated_facts = previous_graph
             state.aggregation_clusters = previous_clusters
-            state.aggregation_key_clusters = previous_key_clusters
-            state.aggregation_cross_unit_pairs = previous_cross_unit_pairs
+            state.aggregation_confirmed_clusters = previous_confirmed_clusters
+            state.aggregation_merge_provenance = previous_merge_provenance
             rejected_repairs += 1
             break
         repair_passes += 1
@@ -912,7 +912,9 @@ def run_facts_gate(
         isolated_instances(state.aggregated_facts, fact_namespaces, state.doc_iri),
     )[:_ISOLATED_STATE_CAP]
     state.retrieval_metrics[RetrievalMetric.FACTS_TWIN_LABELS] = len(
-        twin_labels(state.aggregated_facts, fact_namespaces, state.doc_iri)
+        twin_labels(
+            state.aggregated_facts, fact_namespaces, state.doc_iri, contract=contract
+        )
     )
     # Values are blank nodes under their carriers until here, so the counts
     # above see them as parts of statements; the served graph names them.

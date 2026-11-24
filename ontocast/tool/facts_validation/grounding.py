@@ -4,12 +4,14 @@ A value (an instance of a value class, blank or named) states numbers and
 names individuals (:func:`~ontocast.tool.facts_validation.statements.value_components`).
 Two checks read it against the content unit's text:
 
-* each number is *grounded*: written in digits in the value's label or in the
-  text (:func:`~ontocast.util.numeric_inventory.stated_numbers`), as written
-  or rescaled by a power of ten
-  (:func:`~ontocast.util.numeric_inventory.grounds`); a number the text gives
-  only in words, a fraction, a converted value, or a conventional value for a
-  vague phrase, is not stated;
+* each number is *grounded*: the text writes it in digits
+  (:func:`~ontocast.util.numeric_inventory.stated_numbers`), or in number
+  words within a label of the value that the text writes verbatim, up to case
+  and spacing (:func:`~ontocast.util.numeric_inventory.worded_numbers`), as
+  written or rescaled by a power of ten
+  (:func:`~ontocast.util.numeric_inventory.grounds`). A label the text does
+  not write grounds nothing, since the model wrote it. A fraction, a converted
+  value, or a conventional value for a vague phrase is not stated;
 * each individual whose property's range is a closed class agrees with the
   catalog's *cues* written next to the value's numbers -- in the value's label
   when it writes the number, the value's own mention, else in the text: the
@@ -37,7 +39,12 @@ from ontocast.tool.facts_validation.statements import (
     value_components,
 )
 from ontocast.util.measurement_lexicon import is_unit_surface
-from ontocast.util.numeric_inventory import cue_index, grounds, stated_number_spans
+from ontocast.util.numeric_inventory import (
+    cue_index,
+    grounds,
+    stated_number_spans,
+    worded_numbers,
+)
 
 #: Predicates naming a value in words: where its verbatim text is kept.
 _LABEL_PREDICATES = (RDFS.label, SKOS.prefLabel)
@@ -107,6 +114,21 @@ def _label_text(graph: Graph, node: Node) -> str:
     )
 
 
+def _folded(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+def _mentions(graph: Graph, node: Node, text: str) -> list[str]:
+    """The labels of ``node`` that ``text`` writes, ignoring case and spacing."""
+    folded = _folded(text)
+    return [
+        str(value)
+        for predicate in _LABEL_PREDICATES
+        for value in graph.objects(node, predicate)
+        if isinstance(value, Literal) and _folded(value) and _folded(value) in folded
+    ]
+
+
 #: Characters that end a sentence or a clause: a cue followed by one ends there.
 _CLOSING = frozenset(".,;:!?)]}\"'»”’")
 #: The first word after a cue and its spacing.
@@ -168,9 +190,10 @@ def value_grounding_findings(
 ) -> list[FactsUnitFinding]:
     """Ungrounded numbers and contradicted individuals of the values in ``scope``.
 
-    ``ungrounded_number``: a number of a value that neither the value's label
-    nor ``text`` writes in digits, as written or rescaled by a power of ten
-    (``1e3`` is grounded by "1000", ``0.05`` by "5%"). Its
+    ``ungrounded_number``: a number of a value that ``text`` writes neither in
+    digits nor in the number words of a label of the value that ``text``
+    writes verbatim ("five constituencies"), as written or rescaled by a power
+    of ten (``1e3`` is grounded by "1000", ``0.05`` by "5%"). Its
     ``subject`` is the value (:func:`node_key`), ``predicate`` and ``value``
     the number's property and lexical form.
 
@@ -206,7 +229,9 @@ def value_grounding_findings(
             continue
         label = _label_text(graph, node)
         label_spans = stated_number_spans(label)
-        stated = text_numbers | {value for value, _, _ in label_spans}
+        stated = text_numbers.union(
+            *(worded_numbers(mention) for mention in _mentions(graph, node, text))
+        )
         name = node_name(graph, node)
         magnitudes: set[str] = set()
         for number in components.numbers:
@@ -219,9 +244,9 @@ def value_grounding_findings(
                     kind=FactsUnitFindingKind.UNGROUNDED_NUMBER,
                     message=(
                         f"{name} records {number.value} on <{number.predicate}>, "
-                        "a number neither its label nor the text writes. Record "
-                        "only a number the text states, as written; a quantity "
-                        "the text gives in words stays in the label."
+                        "a number the text does not state. Record only a number "
+                        "the text writes in digits, or in words that the value's "
+                        "label quotes exactly as the text writes them."
                     ),
                     subject=node_key(node),
                     predicate=number.predicate,

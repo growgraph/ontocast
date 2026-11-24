@@ -346,6 +346,61 @@ def test_an_overlapping_name_merges_on_a_same_verdict(monkeypatch) -> None:
     )
 
 
+def test_a_cluster_a_same_verdict_joined_is_confirmed(monkeypatch) -> None:
+    """The gate reads text disagreement on a confirmed cluster as name variance."""
+    units = [
+        _unit(0, 'cd:count a ex:Quantity ; rdfs:label "number of teams" .'),
+        _unit(1, 'cd:teams a ex:Quantity ; rdfs:label "team count" .'),
+    ]
+
+    result = _aggregate(monkeypatch, units, confirmed=[("count__u0", "teams__u1")])
+
+    assert _together(result, "count__u0", "teams__u1")
+    (final,) = [f for f, m in result.merged_clusters.items() if CD + "count__u0" in m]
+    assert final in result.confirmed_clusters
+
+
+def test_different_alternate_names_do_not_keep_one_league_apart(monkeypatch) -> None:
+    """A property one entity holds several names on is a list of names.
+
+    One unit gives the league's French names, another a former name; neither
+    list shows the two subjects are different leagues.
+    """
+    units = [
+        _unit(
+            0,
+            'cd:cfl a ex:League ; rdfs:label "canadian football league" ;'
+            ' ex:alternateName "lcf" , "ligue canadienne de football" .',
+        ),
+        _unit(
+            1,
+            'cd:league a ex:League ; rdfs:label "canadian football league" ;'
+            ' ex:alternateName "canadian football council" .',
+        ),
+    ]
+
+    result = _aggregate(monkeypatch, units)
+
+    assert _together(result, "cfl__u0", "league__u1")
+
+
+def test_different_single_names_still_keep_two_people_apart(monkeypatch) -> None:
+    """On a property every entity holds once, disjoint names are a conflict."""
+    units = [
+        _unit(
+            0, 'cd:judge a ex:Person ; rdfs:label "the judge" ; ex:name "mrs e palm" .'
+        ),
+        _unit(
+            1,
+            'cd:judge a ex:Person ; rdfs:label "the judge" ; ex:name "mrs w thomassen" .',
+        ),
+    ]
+
+    result = _aggregate(monkeypatch, units)
+
+    assert not _together(result, "judge__u0", "judge__u1")
+
+
 # --- values -----------------------------------------------------------------
 
 

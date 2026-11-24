@@ -22,6 +22,7 @@ from ontocast.onto.model import (
     FactsValidationFinding,
     FactsValidationFindingKind,
     GraphRepairRecord,
+    MergeProvenance,
 )
 from ontocast.onto.rdfgraph import (
     RDFGraph,
@@ -564,8 +565,8 @@ def validate_aggregated_facts(
     shacl_inference: str = "rdfs",
     shacl_advanced: bool = True,
     shacl_max_triples: int = 0,
-    key_supported_subjects: Sequence[str] | None = None,
-    cross_unit_pairs: Sequence[tuple[str, str]] | None = None,
+    confirmed_subjects: Sequence[str] | None = None,
+    merge_provenance: MergeProvenance | None = None,
     non_catalog_severity: str = "warning",
     additional_standard_namespaces: Sequence[str] = (),
     catalog_terms: AbstractSet[str] = frozenset(),
@@ -591,11 +592,11 @@ def validate_aggregated_facts(
           majority (distinct names collapsed into one node); or >= 2 IRI
           objects on a predicate that is single-valued for a dominant
           majority of other subjects. Severity is configurable — legitimate
-          multi-value modeling exists, bad merges are far more common. The
-          IRI branch additionally accepts ``cross_unit_pairs``, which
-          separates the two by provenance rather than by frequency.
+          multi-value modeling exists, bad merges are far more common.
+          ``merge_provenance`` separates the two in all three branches.
         - ``DEGENERATE_COREFERENCE``: one IRI object shared by >= 2 distinct
-          functional-ish predicates of one subject (collapsed range bounds).
+          functional-ish predicates of one subject (collapsed range bounds);
+          an error only for a link ``merge_provenance`` says a merge made.
         - ``SHACL``: optional, when ``pyshacl`` is installed and shapes exist.
         - ``UNKNOWN_TERM``: a term a closed vocabulary does not have, in any
           position (an individual of a value by its property's closed range,
@@ -622,19 +623,18 @@ def validate_aggregated_facts(
         shacl_inference: pyshacl pre-inference mode (see :func:`run_shacl`).
         shacl_advanced: Enable SHACL Advanced Features.
         shacl_max_triples: Skip SHACL above this graph size; 0 disables.
-        cross_unit_pairs: Canonical (subject, predicate) pairs whose IRI
-            objects came from more than one unit. When supplied, an
-            IRI-branch SUSPECT_MULTI_VALUE finding on a pair *not* listed
-            here is reported as a warning and never vetoes a cluster: a
-            single unit asserting two objects on one predicate is reading
-            one sentence, not the residue of a bad identity decision.
-            None disables the distinction.
-        key_supported_subjects: Final URIs of merge clusters backed by
-            natural-key evidence. Irreconcilable *string* values on these
-            subjects are reported as warnings, not errors: a registry number
-            and a full title can be two names for one key-confirmed record,
-            and an error here would drive the un-merge repair to split a
-            correct merge.
+        merge_provenance: Which values and links of the graph only a merge
+            brought together. When supplied, a SUSPECT_MULTI_VALUE or
+            DEGENERATE_COREFERENCE finding it does not list is reported as a
+            warning and never vetoes a cluster: what one subject was written
+            with is one reading of the text, not the residue of a bad identity
+            decision. None disables the distinction.
+        confirmed_subjects: Final URIs of merge clusters confirmed as one
+            entity by a shared key or a coreference "same" verdict.
+            Irreconcilable *string* values on these subjects are reported as
+            warnings, not errors: "number of teams" and "team count" can be
+            two names for one confirmed entity, and an error here would drive
+            the un-merge repair to split a correct merge.
         catalog_terms: Every term of the whole catalog, so NON_CATALOG_VOCABULARY
             agrees with the unit validator on what "in the catalog" means.
         contract: The catalog's statement contract, for UNKNOWN_TERM by role.
@@ -645,7 +645,7 @@ def validate_aggregated_facts(
         Report with all findings, ordered by subject.
     """
     namespaces = [ns for ns in (fact_namespaces or []) if ns]
-    key_supported = set(key_supported_subjects or ())
+    confirmed = set(confirmed_subjects or ())
     functional = harvest_max_one_predicates(ontology_graph)
 
     # Provenance machinery (chunks, reifiers) and the document node's metadata
@@ -696,9 +696,17 @@ def validate_aggregated_facts(
 
     findings: list[FactsValidationFinding] = []
     flagged_pairs: set[tuple[URIRef, URIRef]] = set()
-    cross_unit_object_keys = (
-        set(cross_unit_pairs) if cross_unit_pairs is not None else None
+    joined_values = (
+        set(merge_provenance.joined_values) if merge_provenance is not None else None
     )
+    joined_links = (
+        set(merge_provenance.joined_links) if merge_provenance is not None else None
+    )
+
+    def joined_by_merge(subject: URIRef, predicate: URIRef) -> bool:
+        # Only values a merge brought together are a merge signature; the
+        # rest are reported as warnings and never drive the un-merge repair.
+        return joined_values is None or (str(subject), str(predicate)) in joined_values
 
     for (subject, predicate), objects in sorted(
         object_groups.items(), key=lambda item: (str(item[0][0]), str(item[0][1]))
@@ -730,14 +738,16 @@ def validate_aggregated_facts(
             and (canonical := canonical_literal(obj)) is not None
             and canonical[1] == "numeric"
         }
+        merge_created = joined_by_merge(subject, predicate)
         if len(numeric_values) >= 2:
-            flagged_pairs.add((subject, predicate))
+            if merge_created:
+                flagged_pairs.add((subject, predicate))
             findings.append(
                 FactsValidationFinding(
                     kind=FactsValidationFindingKind.SUSPECT_MULTI_VALUE,
                     severity=(
                         "error"
-                        if suspect_multi_value_severity == "error"
+                        if suspect_multi_value_severity == "error" and merge_created
                         else "warning"
                     ),
                     message=(
@@ -758,22 +768,21 @@ def validate_aggregated_facts(
             # "mr karlheinz beer"); irreconcilable values ("mrs e palm" /
             # "mrs w thomassen") mark distinct entities collapsed into one
             # node — the failure the numeric branch cannot see. On a merge
-            # backed by a shared identifier value, disagreement is name
-            # variance of one confirmed entity: warning, never a veto.
+            # confirmed by a shared key or a "same" verdict, disagreement is
+            # name variance of one confirmed entity: warning, never a veto.
             if any(
                 not string_values_compatible(left, right)
                 for left, right in combinations(string_forms, 2)
             ):
-                subject_key_supported = str(subject) in key_supported
-                if not subject_key_supported:
+                is_error = merge_created and str(subject) not in confirmed
+                if is_error:
                     flagged_pairs.add((subject, predicate))
                 findings.append(
                     FactsValidationFinding(
                         kind=FactsValidationFindingKind.SUSPECT_MULTI_VALUE,
                         severity=(
                             "error"
-                            if suspect_multi_value_severity == "error"
-                            and not subject_key_supported
+                            if suspect_multi_value_severity == "error" and is_error
                             else "warning"
                         ),
                         message=(
@@ -799,13 +808,7 @@ def validate_aggregated_facts(
         ):
             # Frequency says this predicate is usually single-valued, which on
             # its own is evidence of nothing: a genuinely multi-valued
-            # statement is rare by construction. Provenance is what separates
-            # the two cases -- only objects arriving from different units could
-            # have been brought together by an identity decision.
-            merge_created = (
-                cross_unit_object_keys is None
-                or (str(subject), str(predicate)) in cross_unit_object_keys
-            )
+            # statement is rare by construction. Provenance separates the two.
             if merge_created:
                 flagged_pairs.add((subject, predicate))
             findings.append(
@@ -838,9 +841,11 @@ def validate_aggregated_facts(
     ):
         if len(predicates) < 2:
             continue
+        merge_made = joined_links is None or (str(subject), str(obj)) in joined_links
         findings.append(
             FactsValidationFinding(
                 kind=FactsValidationFindingKind.DEGENERATE_COREFERENCE,
+                severity="error" if merge_made else "warning",
                 message=(
                     f"<{subject}> reaches <{obj}> through "
                     f"{len(predicates)} single-valued predicates "

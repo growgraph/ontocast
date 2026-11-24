@@ -100,7 +100,9 @@ def _normal_form_aggregator(
     aggregator = EmbeddingBasedAggregator(AggregationConfig(**overrides))
     if ablate_literal_guard:
         monkeypatch.setattr(
-            aggregator, "_have_conflicting_literals", lambda left, right: False
+            aggregator,
+            "_have_conflicting_literals",
+            lambda left, right, name_lists: False,
         )
 
     def cluster_by_normal_form(representations):

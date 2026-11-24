@@ -261,3 +261,25 @@ def test_the_prompt_template_and_its_variables_agree() -> None:
         field for _, field, _, _ in string.Formatter().parse(template_prompt) if field
     }
     assert named == set(_build_prompt().input_variables)
+
+
+@pytest.mark.anyio
+async def test_a_swap_to_a_property_the_catalog_says_does_not_fit_is_refused(
+    monkeypatch,
+) -> None:
+    """The swap is judged by the catalog's domain, not only what retrieval kept."""
+    state = _state()
+    catalog = _ontology()
+    # The snapshot never shows this property's domain; the catalog does.
+    catalog.add((PROV.wasInformedBy, RDFS.domain, PROV.Activity))
+    atomic = _atomic()
+    cast(SimpleNamespace, atomic).catalog_roles = lambda: CatalogRoles.of([catalog])
+    fake, _ = _fake_repair(
+        _replace(_statement(_DATASET, PROV.wasInformedBy, _SOURCE), [1])
+    )
+    monkeypatch.setattr(atomic_module, "repair_domain_violations", fake)
+
+    await _run_domain_repair(state, atomic, _PHASE, render_attempt=1)
+
+    assert (_DATASET, PROV.wasInformedBy, _SOURCE) not in state.content_unit.graph
+    assert state.attempt_log[-1].n_fixes_applied == 0

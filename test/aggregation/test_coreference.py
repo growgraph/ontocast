@@ -264,6 +264,56 @@ async def test_an_overlapping_name_merges_only_on_a_same_verdict(monkeypatch) ->
 
 
 @pytest.mark.anyio
+async def test_a_same_verdict_not_repeated_alone_neither_merges_nor_vetoes(
+    monkeypatch,
+) -> None:
+    tools = _tools(_one_cluster_aggregator(monkeypatch))
+    state = _state(_overlapping_names())
+    make_merge_facts_node(tools)(state)
+    calls: list[int] = []
+
+    async def judge(state, tools, candidates):
+        calls.append(len(candidates))
+        return {1: "same"} if len(calls) == 1 else {1: "different"}
+
+    monkeypatch.setattr(node_factories, "judge_coreference", judge)
+    await make_resolve_coreference_node(tools)(state)
+
+    assert calls == [1, 1]
+    assert len(_subjects(state)) == 2
+    assert not state.coreference_confirmations
+    assert not state.coreference_vetoes
+    metrics = state.retrieval_metrics
+    assert metrics[RetrievalMetric.FACTS_COREFERENCE_SAME] == 1
+    assert metrics[RetrievalMetric.FACTS_COREFERENCE_RETRACTED] == 1
+
+
+@pytest.mark.anyio
+async def test_only_same_verdicts_are_asked_again_one_pair_per_call(
+    monkeypatch,
+) -> None:
+    tools = _tools(_one_cluster_aggregator(monkeypatch))
+    state = _state(_overlapping_names())
+    make_merge_facts_node(tools)(state)
+    pair = state.coreference_candidates[0]
+    state.coreference_candidates = [pair, pair.model_copy(), pair.model_copy()]
+    asked: list[int] = []
+
+    async def judge(state, tools, candidates):
+        asked.append(len(candidates))
+        return (
+            {1: "same", 2: "different", 3: "unsure"} if len(asked) == 1 else {1: "same"}
+        )
+
+    monkeypatch.setattr(node_factories, "judge_coreference", judge)
+    await make_resolve_coreference_node(tools)(state)
+
+    assert asked == [3, 1]
+    assert state.retrieval_metrics[RetrievalMetric.FACTS_COREFERENCE_RETRACTED] == 0
+    assert len(state.coreference_confirmations) == 1
+
+
+@pytest.mark.anyio
 async def test_a_different_verdict_keeps_an_overlapping_name_apart(monkeypatch) -> None:
     tools = _tools(_one_cluster_aggregator(monkeypatch))
     state = _state(_overlapping_names())

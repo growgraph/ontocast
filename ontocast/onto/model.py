@@ -1013,6 +1013,15 @@ class FactsUnitFindingKind(StrEnum):
     #: (its subject, its property, or a link a catalog restriction requires),
     #: or a value linked to no other instance. ``facet`` names the role.
     MISSING_ROLE = "missing_role"
+    #: A link playing a statement role (subject, property, result, context)
+    #: whose statement end is a node its declared side admits none of the
+    #: types of: a value, subject or property held by what is not a
+    #: statement. ``facet`` names the role; ``subject``, ``predicate`` and
+    #: ``value`` the link.
+    ROLE_OUTSIDE_STATEMENT = "role_outside_statement"
+    #: A value node that states nothing: no triple but its types and
+    #: annotations.
+    EMPTY_VALUE = "empty_value"
     #: Results reported for one property node, or by one statement, in
     #: measurement units of different dimensions, where the catalog declares
     #: what the property measures (a quantity kind or an applicable unit).
@@ -1208,6 +1217,12 @@ class FactsGateRepairKind(StrEnum):
     #: A value whose numbers were all removed as ungrounded, removed with the
     #: link to it; its carrier stays.
     VALUE_WITHOUT_NUMBER_DROPPED = "value_without_number_dropped"
+    #: A statement's role link held by a node that is not a statement,
+    #: removed when the unit left its loop, with a blank node only it reached.
+    ROLE_OUTSIDE_STATEMENT_DROPPED = "role_outside_statement_dropped"
+    #: A value node stating nothing, removed with the links to it when the
+    #: unit left its loop; its carrier stays.
+    EMPTY_VALUE_DROPPED = "empty_value_dropped"
     #: An individual of a value that a catalog cue in the text contradicts,
     #: removed when the unit left its loop.
     CONTRADICTED_INDIVIDUAL_DROPPED = "contradicted_individual_dropped"
@@ -1456,6 +1471,22 @@ class FactsValidationFindingKind(StrEnum):
     #: Results served under one property node, or by one statement, in
     #: measurement units of different dimensions.
     DIMENSION_CONFLICT = "dimension_conflict"
+
+
+class MergeProvenance(BaseModel):
+    """Facts of the merged graph that only a merge brought together.
+
+    A source subject is a subject as one unit wrote it.
+
+    Attributes:
+        joined_values: Canonical (subject, predicate) pairs whose distinct
+            values no single source subject asserted.
+        joined_links: Canonical (subject, object) pairs whose linking
+            predicates no single source subject wrote to one source object.
+    """
+
+    joined_values: list[tuple[str, str]] = Field(default_factory=list)
+    joined_links: list[tuple[str, str]] = Field(default_factory=list)
 
 
 class FactsValidationFinding(BaseModel):

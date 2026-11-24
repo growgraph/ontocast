@@ -2,7 +2,8 @@
 
 Runs after the facts render/critic loop, only on a unit with a mandatory
 ``domain_violation`` finding: a statement whose property declares an
-``rdfs:domain`` its subject's asserted types contradict. One LLM call per unit
+``rdfs:domain``, in the unit's snapshot or anywhere in the catalog, that its
+subject's asserted types contradict. One LLM call per unit
 is shown those statements under citable ids and may replace each one's
 property; :func:`property_swaps` keeps only patches that do exactly that and
 leave the subject fitting the new property's domain. The unit loop
@@ -159,7 +160,9 @@ async def repair_domain_violations(
         Any other action is dropped.
     """
     graph = state.content_unit.graph
-    ontology_graph = state.ontology_snapshot.graph
+    # The catalog's axioms with the snapshot: a violation may rest on a domain
+    # retrieval did not keep, and a fitting property may be one it left out.
+    ontology_graph = atomic.catalog_roles().with_axioms(state.ontology_snapshot.graph)
     statements = violating_statements(graph, findings)
     index = violations_index(graph, statements)
     if not statements:

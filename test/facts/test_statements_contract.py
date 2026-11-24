@@ -21,6 +21,7 @@ from ontocast.onto.state import AgentState
 from ontocast.stategraph.facts_gate import drop_unlinked_instances, run_facts_gate
 from ontocast.tool.agg.value_names import carrierless_values, name_values
 from ontocast.tool.facts_validation import isolated_instances, silent_instances
+from ontocast.tool.facts_validation.terms import CatalogRoles, value_class_base
 from ontocast.toolbox import ToolBox
 
 pytestmark = pytest.mark.unit
@@ -37,6 +38,10 @@ PREFIXES = f"""
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 """
+
+
+#: The well-known statement model (SOSA, QUDT values), with no catalog.
+_CONTRACT = CatalogRoles.of([]).statement_contract(value_class_base(None, {}))
 
 
 def _facts(body: str) -> RDFGraph:
@@ -272,7 +277,82 @@ def test_twin_labels_are_labels_several_instances_share() -> None:
         """
     )
 
-    assert twin_labels(graph, [CD], document=DOC) == {"portland": 2}
+    assert twin_labels(graph, [CD], document=DOC, contract=_CONTRACT) == {"portland": 2}
+
+
+_SOSA = """
+@prefix sosa: <http://www.w3.org/ns/sosa/> .
+@prefix qudt: <http://qudt.org/schema/qudt/> .
+"""
+
+
+def test_values_sharing_a_label_are_no_twins() -> None:
+    from ontocast.tool.facts_validation import twin_labels
+
+    graph = _facts(
+        _SOSA
+        + """
+        cd:o1 a sosa:Observation ; rdfs:label "seats 1977" ; sosa:hasResult cd:v1 .
+        cd:o2 a sosa:Observation ; rdfs:label "seats 1984" ; sosa:hasResult cd:v2 .
+        cd:v1 a qudt:QuantityValue ; rdfs:label "39" ; qudt:numericValue 39 .
+        cd:v2 a qudt:QuantityValue ; rdfs:label "39" ; qudt:numericValue 39 .
+        """
+    )
+
+    assert twin_labels(graph, [CD], document=DOC, contract=_CONTRACT) == {}
+
+
+def test_an_observation_labelled_like_its_property_is_no_twin() -> None:
+    from ontocast.tool.facts_validation import twin_labels
+
+    graph = _facts(
+        _SOSA
+        + """
+        cd:area_obs a sosa:Observation ; rdfs:label "campus area" ;
+            sosa:observedProperty cd:area .
+        cd:area rdfs:label "campus area" .
+        """
+    )
+
+    assert twin_labels(graph, [CD], document=DOC, contract=_CONTRACT) == {}
+
+
+def test_two_instances_one_links_to_the_other_are_no_twins() -> None:
+    from ontocast.tool.facts_validation import twin_labels
+
+    graph = _facts(
+        """
+        cd:series a ex:Tournament ; rdfs:label "IPL5" ; ex:hasEdition cd:edition .
+        cd:edition a ex:Edition ; rdfs:label "IPL5" .
+        cd:other a ex:Edition ; rdfs:label "IPL5" .
+        """
+    )
+
+    # cd:other is linked to neither: it may be a duplicate of both.
+    assert twin_labels(graph, [CD], document=DOC, contract=_CONTRACT) == {"ipl5": 3}
+    graph.remove((URIRef(f"{CD}other"), None, None))
+    assert twin_labels(graph, [CD], document=DOC, contract=_CONTRACT) == {}
+
+
+def test_two_statements_or_two_properties_sharing_a_label_are_twins() -> None:
+    from ontocast.tool.facts_validation import twin_labels
+
+    graph = _facts(
+        _SOSA
+        + """
+        cd:o1 a sosa:Observation ; rdfs:label "campus area" ;
+            sosa:observedProperty cd:p1 .
+        cd:o2 a sosa:Observation ; rdfs:label "Campus area" ;
+            sosa:observedProperty cd:p2 .
+        cd:p1 rdfs:label "area" .
+        cd:p2 rdfs:label "area" .
+        """
+    )
+
+    assert twin_labels(graph, [CD], document=DOC, contract=_CONTRACT) == {
+        "area": 2,
+        "campus area": 2,
+    }
 
 
 def test_gate_counts_twin_labels() -> None:

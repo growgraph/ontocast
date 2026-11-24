@@ -29,11 +29,13 @@ from ontocast.tool.facts_validation.connectivity import (
     twin_labels,
 )
 from ontocast.tool.facts_validation.gate import validate_aggregated_facts
+from ontocast.tool.facts_validation.grounding import node_of
 from ontocast.tool.facts_validation.literal_repair import (
     range_mismatches,
     schema_retypings,
 )
 from ontocast.tool.facts_validation.shacl import run_shacl
+from ontocast.tool.facts_validation.statements import StatementContract
 from ontocast.tool.facts_validation.term_verdict import (
     TermPosition,
     TermVerdict,
@@ -50,7 +52,11 @@ from ontocast.tool.facts_validation.terms import (
     collect_declared_namespaces,
     value_class_base,
 )
-from ontocast.tool.facts_validation.unit_findings import domain_violation_findings
+from ontocast.tool.facts_validation.unit_findings import (
+    domain_violation_findings,
+    empty_value_findings,
+    role_outside_statement_findings,
+)
 
 _SEVERITY_ORDER = {"error": 0, "warning": 1}
 _KIND_ORDER = {kind: index for index, kind in enumerate(FactsCheckKind)}
@@ -130,6 +136,7 @@ def check_facts(
 
     findings: list[FactsCheckFinding] = []
     roles = CatalogRoles.of([catalog] if catalog is not None else [])
+    contract = roles.statement_contract(value_class_base(None, {}))
     term_findings, complete = _term_findings(
         work, catalog, catalog_terms, policy, names, roles, instance_namespaces
     )
@@ -139,13 +146,18 @@ def check_facts(
     if catalog is not None:
         findings.extend(_domain_findings(work, catalog, instance_iris, names))
         findings.extend(
+            _statement_shape_findings(
+                work, catalog, contract, instance_namespaces, names
+            )
+        )
+        findings.extend(
             _functional_findings(
                 work, catalog, catalog_terms, instance_iris, policy, names
             )
         )
 
     structure = _structure_findings(
-        work, catalog, catalog_terms, instance_iris, policy, names
+        work, catalog, catalog_terms, instance_iris, policy, names, contract
     )
     findings.extend(structure.findings)
     shacl_evaluated: bool | None = None
@@ -469,6 +481,43 @@ def _domain_findings(
     return findings
 
 
+def _statement_shape_findings(
+    graph: RDFGraph,
+    catalog: RDFGraph,
+    contract: StatementContract,
+    instance_namespaces: Sequence[str] | None,
+    names: _Names,
+) -> list[FactsCheckFinding]:
+    """``role_outside_statement`` and ``empty_value``, as extraction finds them."""
+    scope = FactScope.of(graph, instance_namespaces)
+    findings = [
+        FactsCheckFinding(
+            kind=FactsCheckKind.ROLE_OUTSIDE_STATEMENT,
+            severity="error",
+            message=messages.role_outside_statement(
+                _node_name(node_of(found.subject), names),
+                names(found.predicate),
+                found.facet,
+            ),
+            subject=found.subject,
+            predicate=found.predicate,
+            value=found.value,
+            suggestions=list(found.suggestions),
+        )
+        for found in role_outside_statement_findings(scope, contract, catalog)
+    ]
+    findings.extend(
+        FactsCheckFinding(
+            kind=FactsCheckKind.EMPTY_VALUE,
+            severity="warning",
+            message=messages.empty_value(_node_name(node_of(found.subject), names)),
+            subject=found.subject,
+        )
+        for found in empty_value_findings(scope, contract)
+    )
+    return findings
+
+
 def _functional_findings(
     graph: RDFGraph,
     catalog: RDFGraph,
@@ -482,8 +531,8 @@ def _functional_findings(
         graph,
         catalog,
         fact_namespaces=sorted({_namespace_of(iri) for iri in instance_iris}),
-        key_supported_subjects=None,
-        cross_unit_pairs=None,
+        confirmed_subjects=None,
+        merge_provenance=None,
         non_catalog_severity="error" if policy.vocabulary == "strict" else "warning",
         additional_standard_namespaces=policy.additional_standard_namespaces,
         catalog_terms=catalog_terms,
@@ -723,6 +772,7 @@ def _structure_findings(
     instance_iris: AbstractSet[str],
     policy: ValidationPolicy,
     names: _Names,
+    contract: StatementContract,
 ) -> _Structure:
     """Untyped, isolated, silent, dangling and twin-label findings.
 
@@ -770,7 +820,7 @@ def _structure_findings(
                 kind = FactsCheckKind.ISOLATED_INSTANCE
             result.isolated += 1
             result.warn(kind, message, iri)
-        twins = twin_labels(graph, namespaces)
+        twins = twin_labels(graph, namespaces, contract=contract)
         result.twin_labels = len(twins)
         for label, count in twins.items():
             result.warn(FactsCheckKind.TWIN_LABELS, messages.twin_labels(label, count))

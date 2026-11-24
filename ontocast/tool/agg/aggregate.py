@@ -16,7 +16,7 @@ Pipeline:
 import logging
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from difflib import SequenceMatcher
 from enum import StrEnum
 from itertools import combinations
@@ -41,6 +41,7 @@ from ontocast.onto.iri_policy import (
     join_namespace_local,
     normalize_namespace_iri,
 )
+from ontocast.onto.model import MergeProvenance
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.well_known import well_known_value_classes
 from ontocast.tool.facts_validation.terms import CatalogRoles, superclass_closure
@@ -51,6 +52,7 @@ from ontocast.tool.representation_text import (
 )
 
 from .clustering import ClusterRepresentativeSelector
+from .merge_provenance import build_merge_provenance
 from .normalizer import EntityNormalizer, EntityRepresentation
 from .rewriter import GraphRewriter
 from .signatures import (
@@ -500,55 +502,6 @@ def build_merged_clusters(
     return merged_clusters
 
 
-def build_cross_unit_object_pairs(
-    units: Sequence[ContentUnit],
-    final_mapping: dict[URIRef, URIRef],
-) -> list[tuple[str, str]]:
-    """(subject, predicate) pairs whose IRI objects came from more than one unit.
-
-    A statement asserted with several objects *by a single unit* cannot be the
-    product of an identity merge -- two applicants who jointly lodged one
-    application are one unit's reading of one sentence. Only a pair whose
-    objects arrive from different units could have been created by merging, so
-    this is the evidence the validation gate needs before treating a
-    multi-valued IRI predicate as a merge signature.
-
-    Keys are canonicalized through ``final_mapping``, because the gate sees the
-    post-merge graph and a pre-merge subject IRI would never match.
-
-    Args:
-        units: The content units that contributed to the merged graph.
-        final_mapping: Source entity -> final URI, as used for the rewrite.
-
-    Returns:
-        Sorted (subject, predicate) IRI-string pairs, each with at least two
-        distinct objects spanning at least two units.
-    """
-    contributions: dict[tuple[str, str], dict[str, set[int]]] = {}
-    for index, unit in enumerate(units):
-        if unit.graph is None:
-            continue
-        for subject, predicate, obj in unit.graph:
-            if not isinstance(subject, URIRef) or not isinstance(obj, URIRef):
-                continue
-            if not isinstance(predicate, URIRef):
-                continue
-            key = (str(final_mapping.get(subject, subject)), str(predicate))
-            objects = contributions.setdefault(key, {})
-            objects.setdefault(str(final_mapping.get(obj, obj)), set()).add(index)
-
-    pairs: list[tuple[str, str]] = []
-    for key, objects in contributions.items():
-        if len(objects) < 2:
-            continue
-        contributing_units: set[int] = set()
-        for unit_indices in objects.values():
-            contributing_units |= unit_indices
-        if len(contributing_units) > 1:
-            pairs.append(key)
-    return sorted(pairs)
-
-
 class AggregationResult(BaseModel):
     """Outcome of one aggregation pass, including merge bookkeeping.
 
@@ -573,14 +526,13 @@ class AggregationResult(BaseModel):
             ``type``, ``overlap``,
             ``lexical``, ``cluster_veto``); a pair refused for several
             reasons counts under each.
-        key_supported_clusters: Final URIs of merged clusters containing at
-            least one natural-key pair (a shared identifier value). The
-            validation gate treats label disagreement inside these clusters
-            as name variance rather than a merge signature.
-        cross_unit_object_pairs: Canonical (subject, predicate) pairs whose IRI
-            objects were contributed by more than one unit -- the only ones a
-            merge could have created. See
-            :func:`build_cross_unit_object_pairs`.
+        confirmed_clusters: Final URIs of merged clusters containing a pair
+            confirmed as one entity: a shared identifier value or a
+            coreference "same" verdict. The validation gate treats text-value
+            disagreement inside these clusters as name variance rather than a
+            merge signature.
+        merge_provenance: Which multi-valued facts of the graph only a merge
+            brought together. See :func:`build_merge_provenance`.
         lexical_near_misses: Candidate source pairs refused only for want of
             identity evidence -- no guard said they are distinct -- as
             ``(left, right, similarity, reason)``: ``overlap`` when named alike
@@ -595,8 +547,8 @@ class AggregationResult(BaseModel):
     merged_clusters: dict[str, list[str]] = Field(default_factory=dict)
     rejected_merge_count: int = 0
     rejected_by_reason: dict[str, int] = Field(default_factory=dict)
-    key_supported_clusters: list[str] = Field(default_factory=list)
-    cross_unit_object_pairs: list[tuple[str, str]] = Field(default_factory=list)
+    confirmed_clusters: list[str] = Field(default_factory=list)
+    merge_provenance: MergeProvenance = Field(default_factory=MergeProvenance)
     lexical_near_misses: list[tuple[str, str, float, str]] = Field(default_factory=list)
 
 
@@ -1024,6 +976,7 @@ class EmbeddingBasedAggregator:
         cls,
         left_rep: EntityRepresentation,
         right_rep: EntityRepresentation,
+        name_lists: AbstractSet[URIRef] = frozenset(),
     ) -> bool:
         """Return True when the entities assert disjoint values per predicate.
 
@@ -1033,6 +986,8 @@ class EmbeddingBasedAggregator:
         String payloads (identifiers, codes) conflict only when NO cross-pair
         is compatible (equality, prefix, or initial-abbreviation) — "d" vs
         "dmitry" is a re-mention, "S-2024-001" vs "S-2024-002" is a conflict.
+        A predicate in ``name_lists`` holds several names per entity (alternate
+        names), so two entities listing different ones are not told apart.
         """
         for predicate, left_values in left_rep.predicate_literals.items():
             right_values = right_rep.predicate_literals.get(predicate)
@@ -1042,7 +997,7 @@ class EmbeddingBasedAggregator:
                 return True
         for predicate, left_strings in left_rep.predicate_string_literals.items():
             right_strings = right_rep.predicate_string_literals.get(predicate)
-            if not right_strings or not left_strings:
+            if not right_strings or not left_strings or predicate in name_lists:
                 continue
             if not any(
                 cls._string_values_compatible(left_value, right_value)
@@ -1166,9 +1121,9 @@ class EmbeddingBasedAggregator:
         right_rep = representations.get(right)
         if guard_context is not None:
             if left_rep is not None and right_rep is not None:
-                if self._have_conflicting_literals(left_rep, right_rep) and found(
-                    "literal_conflict"
-                ):
+                if self._have_conflicting_literals(
+                    left_rep, right_rep, guard_context.name_list_predicates
+                ) and found("literal_conflict"):
                     return reasons
                 if self._have_conflicting_functional_objects(
                     left_rep, right_rep, guard_context.functional_predicates, same
@@ -2000,6 +1955,12 @@ class EmbeddingBasedAggregator:
         representations = self.normalizer.create_representations_batch(
             entities, entity_graphs
         )
+        guard_context.name_list_predicates = {
+            predicate
+            for representation in representations.values()
+            for predicate, values in representation.predicate_string_literals.items()
+            if len(values) >= 2
+        } - guard_context.functional_predicates
         for representation in representations.values():
             for class_iri in representation.types:
                 if class_iri not in guard_context.class_ancestors:
@@ -2305,10 +2266,10 @@ class EmbeddingBasedAggregator:
             logger.info("Merged %d value(s) equal by content", merged_values)
 
         merged_clusters = build_merged_clusters(final_mapping, identity_mapping)
-        key_supported_clusters = sorted(
+        confirmed_clusters = sorted(
             {
                 str(final_mapping[left])
-                for pair in key_pairs
+                for pair in key_pairs | (confirmed_pairs or set())
                 for left, right in [tuple(pair)]
                 if left in final_mapping
                 and final_mapping.get(right) == final_mapping[left]
@@ -2328,10 +2289,8 @@ class EmbeddingBasedAggregator:
                     ).items()
                 )
             ),
-            key_supported_clusters=key_supported_clusters,
-            cross_unit_object_pairs=build_cross_unit_object_pairs(
-                active_units, final_mapping
-            ),
+            confirmed_clusters=confirmed_clusters,
+            merge_provenance=build_merge_provenance(active_units, final_mapping),
             lexical_near_misses=[
                 (str(left), str(right), score or 0.0, failed[0])
                 for left, right, score, failed in rejected_merges

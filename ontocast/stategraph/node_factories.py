@@ -69,6 +69,7 @@ from ontocast.stategraph.term_decisions import (
     decide_minted_terms,
 )
 from ontocast.stategraph.unit_context import UnitLoopContext
+from ontocast.stategraph.unit_exit import EXIT_REPAIR_KINDS
 from ontocast.tool.agg.aggregate import AggregationResult
 from ontocast.tool.agg.coreference import coreference_candidates, verdict_pairs
 from ontocast.tool.llm import RUN_STOPPING_ERRORS
@@ -105,18 +106,6 @@ T = TypeVar("T")
 #: call the run meter refuses. Each is identical for every sibling unit, so
 #: _gather_units re-raises them instead of counting N of them as unit errors.
 _DEPLOYMENT_FAULTS = (OntologyContextConfigError, *RUN_STOPPING_ERRORS)
-
-#: The repairs a unit's exit applies (:mod:`ontocast.stategraph.unit_exit`).
-_EXIT_REPAIR_KINDS = frozenset(
-    {
-        FactsGateRepairKind.DOMAIN_VIOLATION_DROPPED,
-        FactsGateRepairKind.UNKNOWN_TERM_DROPPED,
-        FactsGateRepairKind.UNGROUNDED_NUMBER_DROPPED,
-        FactsGateRepairKind.VALUE_WITHOUT_NUMBER_DROPPED,
-        FactsGateRepairKind.CONTRADICTED_INDIVIDUAL_DROPPED,
-        FactsGateRepairKind.QUARANTINE_AS_COMMENT,
-    }
-)
 
 
 def _insert_only(tools: ToolBox) -> bool:
@@ -1167,7 +1156,7 @@ def make_render_facts_node(tools: ToolBox):
         exit_repairs: Counter[str] = Counter()
         for records in state.facts_repairs_applied.values():
             for record in records:
-                if record.kind in _EXIT_REPAIR_KINDS:
+                if record.kind in EXIT_REPAIR_KINDS:
                     exit_repairs[str(record.kind)] += record.triple_count
         state.retrieval_metrics[RetrievalMetric.FACTS_EXIT_REPAIRS_BY_KIND] = dict(
             sorted(exit_repairs.items())
@@ -1305,8 +1294,8 @@ def _store_aggregation(state: AgentState, result: AggregationResult) -> None:
     """Make ``result`` the aggregation the later nodes read."""
     state.aggregated_facts = result.graph
     state.aggregation_clusters = result.merged_clusters
-    state.aggregation_key_clusters = result.key_supported_clusters
-    state.aggregation_cross_unit_pairs = result.cross_unit_object_pairs
+    state.aggregation_confirmed_clusters = result.confirmed_clusters
+    state.aggregation_merge_provenance = result.merge_provenance
     state.retrieval_metrics[RetrievalMetric.FACTS_REJECTED_MERGES] = (
         result.rejected_merge_count
     )
@@ -1320,8 +1309,11 @@ def make_resolve_coreference_node(tools: ToolBox):
         """Put the pairs aggregation could not settle to the model, then re-aggregate.
 
         ``same`` verdicts merge like a shared key and ``different`` ones veto;
-        the aggregator's guards still apply. The verdicts are kept on the state
-        so the facts gate's own re-aggregation honours them.
+        the aggregator's guards still apply. A ``same`` verdict counts only if
+        the pair, asked again on its own, is judged ``same`` again: in one call
+        over many pairs a verdict can answer for a neighbouring pair, and a
+        wrong merge costs more than a duplicate. The verdicts are kept on the
+        state so the facts gate's own re-aggregation honours them.
         """
         candidates = state.coreference_candidates
         if not candidates:
@@ -1335,6 +1327,14 @@ def make_resolve_coreference_node(tools: ToolBox):
         metrics[RetrievalMetric.FACTS_COREFERENCE_DIFFERENT] = sum(
             1 for v in verdicts.values() if v == "different"
         )
+        same = sorted(n for n, v in verdicts.items() if v == "same")
+        alone = await asyncio.gather(
+            *(judge_coreference(state, tools, [candidates[n - 1]]) for n in same)
+        )
+        retracted = [n for n, again in zip(same, alone) if again.get(1) != "same"]
+        for number in retracted:
+            verdicts[number] = "unsure"
+        metrics[RetrievalMetric.FACTS_COREFERENCE_RETRACTED] = len(retracted)
         vetoes, confirmations = verdict_pairs(candidates, verdicts)
         if not vetoes and not confirmations:
             return state

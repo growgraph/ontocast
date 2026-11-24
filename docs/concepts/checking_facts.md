@@ -46,6 +46,8 @@ tenant options cannot be combined with `--ontology-dir` or `--shapes-dir`.
 | `non_catalog_vocabulary` | a term the catalog does not define, whether in another namespace or missing from a namespace the catalog declares terms in |
 | `unknown_term` | an IRI missing from a well-known vocabulary in any position (`unit:Million` gets `unit:MILLION` suggested, never applied), an individual of a value whose property's range is a closed class that neither the catalog nor a shipped list holds, or a term the catalog does not define in a placeholder namespace such as `example.org`; an error in both modes |
 | `domain_violation` | a property used on a subject outside its declared domain |
+| `role_outside_statement` | a statement's result, subject, property or context link held by a node that is not a statement |
+| `empty_value` | a value node with no number, bound, unit or qualifier (warning) |
 | `functional_violation` | a functional property with several values |
 | `untyped_value` | a plain value that would be valid typed (warning) |
 | `invalid_literal` | a value that cannot be read as its datatype, or a literal that is no value of its property's declared range: the catalog's, or one a well-known vocabulary publishes (`qudt:numericValue` takes any XSD number). A numeric range takes any XSD numeric form, so `"1e3"` fits `xsd:decimal`; language-tagged text fits no numeric, temporal or boolean range |

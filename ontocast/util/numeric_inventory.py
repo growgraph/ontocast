@@ -750,6 +750,33 @@ def stated_numbers(text: str) -> set[str]:
     return {value for value, _, _ in stated_number_spans(text)}
 
 
+#: Languages whose number words :func:`worded_numbers` reads.
+NUMBER_WORD_LANGUAGES = ("en", "fr", "es", "pt", "de", "it", "nl")
+#: A hyphen joining two letters.
+_WORD_HYPHEN = re.compile(r"(?<=[^\W\d_])-(?=[^\W\d_])")
+
+
+def worded_numbers(mention: str) -> set[str]:
+    """The canonical unsigned numbers ``mention`` writes, in digits or in words.
+
+    Number words are read compositionally ("twenty-five", "three hundred
+    thousand", "fifth") in every language of :data:`NUMBER_WORD_LANGUAGES`.
+    Call it on the short mention a number belongs to, never on running text:
+    a word of one language can be a number in another ("once" is 11 in
+    Spanish), which only a mention that also claims that number makes
+    harmless. A hyphen between words is also read as a space, so a compound
+    adjective ("two-month") states its number. Vague quantities ("several",
+    "a few") are not numbers.
+    """
+    from text_to_num import alpha2digit
+
+    found = stated_numbers(mention)
+    for reading in {mention, _WORD_HYPHEN.sub(" ", mention)}:
+        for language in NUMBER_WORD_LANGUAGES:
+            found |= stated_numbers(alpha2digit(reading, language, threshold=0))
+    return found
+
+
 def _scaled(number: str) -> tuple[tuple[int, ...], int] | None:
     """``number`` as its significant digits and power of ten, or ``None``."""
     try:

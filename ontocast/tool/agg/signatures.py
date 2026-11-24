@@ -115,14 +115,25 @@ def labels_alias_with_initials(
             shared_full_token = False
             matched_all = True
             for token in shorter:
+                # An identical token first: matching a full word to an initial
+                # of it would leave the identical word unmatched.
                 match_index = next(
                     (
                         index
                         for index, candidate in enumerate(available)
-                        if tokens_alias_compatible(token, candidate)
+                        if candidate == token
                     ),
                     None,
                 )
+                if match_index is None:
+                    match_index = next(
+                        (
+                            index
+                            for index, candidate in enumerate(available)
+                            if tokens_alias_compatible(token, candidate)
+                        ),
+                        None,
+                    )
                 if match_index is None:
                     matched_all = False
                     break
@@ -134,16 +145,61 @@ def labels_alias_with_initials(
     return False
 
 
+#: Longest token an acronym may leave out of its expansion: the function words
+#: ("of", "the", "de", "und") that acronyms skip, in any language.
+_ACRONYM_SKIPPABLE_LENGTH = 3
+
+
+def is_acronym_of(acronym: str, expansion: str) -> bool:
+    """True when ``acronym`` is one token spelling the initials of ``expansion``'s words.
+
+    "cfl" / "canadian football league", "iww" / "industrial workers of the
+    world", "u.s." / "united states". The letters are matched in order to the
+    words' initials; a word may be left out only when it is short enough to
+    be a function word, so every content word is accounted for.
+    """
+    acronym_tokens, words = label_tokens(acronym), label_tokens(expansion)
+    if len(acronym_tokens) != 1 or len(words) < 2:
+        return False
+    token = acronym_tokens[0]
+    if not all(ch.isalpha() or ch == "." for ch in token):
+        return False
+    letters = token.replace(".", "")
+    if len(letters) < 2:
+        return False
+
+    def spells(word_index: int, letter_index: int) -> bool:
+        if word_index == len(words):
+            return letter_index == len(letters)
+        word = words[word_index]
+        if (
+            letter_index < len(letters)
+            and word[0] == letters[letter_index]
+            and spells(word_index + 1, letter_index + 1)
+        ):
+            return True
+        return len(word) <= _ACRONYM_SKIPPABLE_LENGTH and spells(
+            word_index + 1, letter_index
+        )
+
+    return spells(0, 0)
+
+
 def string_values_compatible(left: str, right: str) -> bool:
     """Compatible when equal, or carrying the same numbers (:func:`numbers_agree`)
-    and prefix-related or initial-abbreviations."""
+    and prefix-related, initial-abbreviations, or an acronym and its expansion
+    (:func:`is_acronym_of`)."""
     if left == right:
         return True
     if not numbers_agree(left, right):
         return False
     if left.startswith(right) or right.startswith(left):
         return True
-    return labels_alias_with_initials({left}, {right})
+    return (
+        labels_alias_with_initials({left}, {right})
+        or is_acronym_of(left, right)
+        or is_acronym_of(right, left)
+    )
 
 
 def labels_differ_only_by_initials(
@@ -253,6 +309,20 @@ def canonical_literal(literal: Literal) -> tuple[str, str] | None:
     return None
 
 
+def object_value_key(obj: object) -> str:
+    """One key per distinct value: canonical for numbers and dates, normalized for strings.
+
+    Aggregation's merge provenance keys values by it, so it must agree with
+    how the validation gate's multi-value checks tell two values apart.
+    """
+    if isinstance(obj, Literal):
+        canonical = canonical_literal(obj)
+        if canonical is not None:
+            return f"lit:{canonical[0]}"
+        return f"str:{normalize_string_value(str(obj))}"
+    return f"iri:{obj}"
+
+
 def harvest_disjoint_classes(
     ontology_graph: RDFGraph | None,
 ) -> set[frozenset[URIRef]]:
@@ -329,6 +399,9 @@ class MergeGuardContext:
             unit's reading; a catalog entity's types define it.
         statements: The units' statements, for the statement-conflict guard;
             ``None`` reads none.
+        name_list_predicates: Text-valued predicates some entity holds with
+            several distinct values, such as alternate names. Two entities
+            listing different values on one are not shown to be distinct.
     """
 
     functional_predicates: set[URIRef] = field(default_factory=set)
@@ -336,6 +409,7 @@ class MergeGuardContext:
     class_ancestors: dict[URIRef, frozenset[URIRef]] = field(default_factory=dict)
     fact_entities: set[URIRef] = field(default_factory=set)
     statements: StatementIndex | None = None
+    name_list_predicates: set[URIRef] = field(default_factory=set)
 
 
 def empirically_functional_predicates(

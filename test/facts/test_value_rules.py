@@ -67,7 +67,11 @@ from ontocast.tool.facts_validation.unit_findings import (
     missing_role_findings,
 )
 from ontocast.util.measurement_lexicon import Mention
-from ontocast.util.numeric_inventory import NumericInventory, stated_numbers
+from ontocast.util.numeric_inventory import (
+    NumericInventory,
+    stated_numbers,
+    worded_numbers,
+)
 from test.snapshot_helpers import snapshot_from_ontology
 from test.test_agent_facts import _build_ontology, _build_tools, render_facts_module
 
@@ -640,13 +644,52 @@ def test_a_number_the_text_writes_is_grounded(number: str, text: str) -> None:
     assert not _kinds(_findings(graph, text), FactsUnitFindingKind.UNGROUNDED_NUMBER)
 
 
-def test_a_number_word_does_not_ground_a_number() -> None:
-    graph = _value("5", "five")
-    assert _kinds(
-        _findings(graph, "The item has five parts."),
-        FactsUnitFindingKind.UNGROUNDED_NUMBER,
-    )
+@pytest.mark.parametrize(
+    ("number", "label", "text"),
+    [
+        ("5", "five parts", "The item has Five  parts."),
+        ("25", "twenty-five parts", "The item has twenty-five parts."),
+        (
+            "325000",
+            "three hundred and twenty-five thousand parts",
+            "It has three hundred and twenty-five thousand parts.",
+        ),
+        ("5", "fifth place", "The item finished fifth place."),
+        ("2", "two-month window", "It opened a two-month window."),
+        ("5", "cinq parties", "L'objet a cinq parties."),
+    ],
+)
+def test_number_words_the_label_quotes_from_the_text_ground_the_number(
+    number: str, label: str, text: str
+) -> None:
+    graph = _value(number, label)
+    assert not _kinds(_findings(graph, text), FactsUnitFindingKind.UNGROUNDED_NUMBER)
+
+
+@pytest.mark.parametrize(
+    ("number", "label", "text"),
+    [
+        # the words are in the text, but the label does not quote them
+        ("5", "parts", "The item has five parts."),
+        # the label writes the number, but the text does not
+        ("5", "5 parts", "The item has several parts."),
+        # vague and fractional words are no numbers
+        ("3", "several parts", "The item has several parts."),
+        ("2.5", "two and a half years", "It lasted two and a half years."),
+    ],
+)
+def test_a_number_no_quoted_mention_states_is_ungrounded(
+    number: str, label: str, text: str
+) -> None:
+    graph = _value(number, label)
+    assert _kinds(_findings(graph, text), FactsUnitFindingKind.UNGROUNDED_NUMBER)
+
+
+def test_running_text_is_read_in_digits_only() -> None:
+    # A word of one language can be a number in another ("once" is 11 in
+    # Spanish): words are read only inside a value's quoted mention.
     assert stated_numbers("five parts, 2 more") == {"2"}
+    assert "11" in worded_numbers("once")
 
 
 def test_a_cue_of_another_individual_contradicts_the_qualifier() -> None:

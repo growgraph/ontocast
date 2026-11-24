@@ -3,6 +3,7 @@
 Runs after the facts render/critic loop, only when the unit has a gap, as its
 :class:`~ontocast.tool.facts_validation.mandate.GapMandate` lists them:
 statements missing a role their class requires (``missing_role`` findings),
+results held by a node that is not a statement (to restate as statements),
 instances linked to nothing, and, when measurement recovery is on,
 measurements the numeric-coverage inventory still lists as absent. The TASK
 chapter and the guidelines are rendered from the mandate, so they ask only for
@@ -21,7 +22,7 @@ subject links and role guideline only to a call that repairs or recovers a
 statement. The quantity classes follow the render's quantity chapter. Chapter order matches the render/critic templates:
 preamble -> conformance -> term sheet (in place of the ontology chapter) ->
 task -> guidelines -> user instruction -> text -> missing measurements ->
-statement gaps -> detached instances.
+statement gaps -> values outside a statement -> detached instances.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Mapping, Sequence
 
-from rdflib import OWL, RDF, RDFS, URIRef
+from rdflib import OWL, RDF, RDFS, BNode, URIRef
+from rdflib.term import Node
 
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.enum import LLMGraphFormat
@@ -68,6 +70,8 @@ template_prompt = """
 
 {role_gaps_chapter}
 
+{misplaced_chapter}
+
 {detached_chapter}
 
 {output_instruction}
@@ -78,6 +82,7 @@ template_prompt = """
 _GAP_KINDS = (
     ("measurements", "measurements the source text states that are missing"),
     ("roles", "statements that lack a role their class requires"),
+    ("misplaced", "values held by a node that is not a statement"),
     ("detached", "instances linked to nothing"),
 )
 
@@ -86,6 +91,7 @@ def _gap_kinds(mandate: GapMandate) -> list[str]:
     present = {
         "measurements": bool(mandate.inventory.measurements),
         "roles": bool(mandate.role_gaps),
+        "misplaced": bool(mandate.misplaced),
         "detached": bool(mandate.detached),
     }
     return [text for key, text in _GAP_KINDS if present[key]]
@@ -155,6 +161,15 @@ _GUIDELINE_ROLES = """For each statement under STATEMENT GAPS, add the triple gi
    mint a new `cd:` instance only for a thing the text names. Leave a gap
    the text does not fill."""
 
+_GUIDELINE_MISPLACED = """For each value under VALUES OUTSIDE A STATEMENT, restate it as a
+   statement about its holder: a new `cd:` node of a statement class of the
+   TERM SHEET, with its subject link to the holder, its property link to
+   the exact quantity the value measures, and its result -- the listed
+   value's IRI when it has one, otherwise a blank-node value with exactly
+   the listed numbers, unit and qualifier. Never change a number. Leave a
+   value whose quantity the text does not name; the link it hangs on is
+   removed either way."""
+
 _GUIDELINE_DETACHED = """For each instance under DETACHED INSTANCES, add the one triple linking it
    to another instance of this unit that the text relates it to, with one of
    its candidate properties in the direction given (`from`: the detached
@@ -171,7 +186,8 @@ def completion_guidelines(mandate: GapMandate) -> str:
     asks for nothing :meth:`GapMandate.admits` refuses: the measurement and
     measurement-unit guidelines when it lists measurements, the
     exact-quantity guideline then or when a statement lacks its property, the
-    role and detached-instance guidelines when it lists those gaps.
+    role, restatement and detached-instance guidelines when it lists those
+    gaps.
     """
     measurements = bool(mandate.inventory.measurements)
     guidelines = [
@@ -184,6 +200,7 @@ def completion_guidelines(mandate: GapMandate) -> str:
         *([_GUIDELINE_UNPLACED] if measurements else []),
         _GUIDELINE_PREFIXES,
         *([_GUIDELINE_ROLES] if mandate.role_gaps else []),
+        *([_GUIDELINE_MISPLACED] if mandate.misplaced else []),
         *([_GUIDELINE_DETACHED] if mandate.detached else []),
     ]
     numbered = "\n\n".join(
@@ -247,8 +264,9 @@ Example: "{\\"@context\\": {\\"qudt\\": \\"http://qudt.org/schema/qudt/\\"}, \\"
 
 def asks_property(mandate: GapMandate) -> bool:
     """Whether the call may name a statement's observed property: it recovers
-    measurements, or a statement lacks its property."""
-    return bool(mandate.inventory.measurements) or any(
+    measurements, restates a misplaced result, or a statement lacks its
+    property."""
+    return bool(mandate.inventory.measurements or mandate.misplaced) or any(
         gap.facet == "property" for gap in mandate.role_gaps
     )
 
@@ -256,10 +274,10 @@ def asks_property(mandate: GapMandate) -> bool:
 def output_instruction_for(fmt: LLMGraphFormat, mandate: GapMandate) -> str:
     """The GRAPH FORMAT INSTRUCTION for ``correct_value``, by wire format.
 
-    Its example is a recovered value when the mandate lists measurements, the
-    only call that may add one; a link otherwise.
+    Its example is a recovered value when the mandate lists measurements or
+    misplaced results, the only calls that may add one; a link otherwise.
     """
-    values = bool(mandate.inventory.measurements)
+    values = bool(mandate.inventory.measurements or mandate.misplaced)
     if fmt == LLMGraphFormat.JSONLD:
         return _OUTPUT_INSTRUCTION_JSONLD if values else _OUTPUT_INSTRUCTION_LINK_JSONLD
     return _OUTPUT_INSTRUCTION_TURTLE if values else _OUTPUT_INSTRUCTION_LINK_TURTLE
@@ -561,6 +579,66 @@ def build_role_gaps_chapter(
     if candidates:
         lines.append("\nCandidate subjects in the graph:")
         lines.extend(describe(URIRef(c)) for c in candidates[:limit])
+    return "\n".join(lines) + "\n"
+
+
+def build_misplaced_chapter(
+    fact_graph: RDFGraph,
+    misplaced: Sequence[tuple[Node, Node, Node]],
+    *,
+    limit: int = 30,
+) -> str:
+    """The VALUES OUTSIDE A STATEMENT chapter: each holder, link and value.
+
+    A blank value is written inline with its components, so the pass can
+    restate its numbers, unit and qualifier exactly.
+
+    Args:
+        fact_graph: The unit's current facts graph.
+        misplaced: (holder, link, value) of each misplaced result.
+        limit: Cap on listed values.
+
+    Returns:
+        The chapter text, or "" when there is none.
+    """
+    if not misplaced:
+        return ""
+    nsm = fact_graph.namespace_manager
+
+    def term(node: Node) -> str:
+        return _qname(fact_graph, node) if isinstance(node, URIRef) else node.n3(nsm)
+
+    def value(node: Node) -> str:
+        if not isinstance(node, BNode):
+            return term(node)
+        parts = [
+            f"{term(p)} {term(o)}"
+            for p, o in sorted(fact_graph.predicate_objects(node), key=str)
+            if not isinstance(o, BNode)
+        ]
+        return "[ " + " ; ".join(parts) + " ]"
+
+    lines = [
+        "\n\n# VALUES OUTSIDE A STATEMENT",
+        "Values held by a node that is not a statement, so they name no "
+        "quantity. Restate each as a statement about its holder:",
+    ]
+    for holder, link, node in list(misplaced)[:limit]:
+        types = ", ".join(
+            sorted(
+                _qname(fact_graph, t)
+                for t in fact_graph.objects(holder, RDF.type)
+                if isinstance(t, URIRef)
+            )
+        )
+        row = f"  {term(holder)}"
+        if types:
+            row += f"  a {types}"
+        label = _first_label(fact_graph, holder) if isinstance(holder, URIRef) else ""
+        if label:
+            row += f'  rdfs:label "{label}"'
+        lines.append(row)
+        lines.append(f"    via {term(link)}: {value(node)}")
     return "\n".join(lines) + "\n"
 
 

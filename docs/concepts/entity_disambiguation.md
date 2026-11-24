@@ -84,7 +84,7 @@ the log names each pair and the reasons, which can be several:
 |---|---|---|
 | `same_unit` | One unit minted both: a unit names each thing once, so its two IRIs are two things | |
 | `relation` | One points to the other, or validation or a coreference "different" verdict split them | |
-| `literal_conflict` | They state different values for the same property, such as two different sizes | |
+| `literal_conflict` | They state different values for the same property, such as two different sizes. Text values that are variants of one name do not conflict: one a prefix of the other, initials ("D. Baranov", "Dmitry Baranov") or an acronym spelling the initials of the other's words ("CFL", "Canadian Football League"; short words such as "of" may be skipped). A property some entity holds with several values, such as alternate names, is a list: two different lists do not conflict | |
 | `functional_iri_conflict` | They point to different things through a property that allows one value, such as two different units; things merged in the same pass count as one | [`AGG_FUNCTIONAL_MIN_EMPIRICAL_SUPPORT`](../reference/configuration/aggregation.md#agg_functional_min_empirical_support) |
 | `statement_conflict` | Statements about them report one property with conflicting results and no differing time, condition or procedure: one sample cannot have two sizes at once. Statements with different times (a time series) do not conflict | |
 | `dimension_conflict` | They are properties, and the results reported for them are in measurement units of different dimensions: a length and a duration are two quantities. Inert for results without a unit, or with a unit whose dimension OntoCast does not ship | |
@@ -122,7 +122,10 @@ Within each group the most similar pair comes first.
 
 The model sees each entity as its part stated it (labels, types, values,
 relations, and the sentence that names it) and answers same, different or
-unsure for each pair. "Same" merges the pair like a shared key, "different"
+unsure for each pair. A "same" verdict is checked by asking the pair again
+on its own, one pair per call: in one call over many pairs a verdict can
+answer for a neighbouring pair. If the second answer is not "same", the pair
+counts as unsure. "Same" merges the pair like a shared key, "different"
 keeps it apart, and every guard above still applies: the model cannot merge
 two things one part told apart. Its verdicts also hold when validation
 re-merges the parts.
@@ -130,9 +133,11 @@ The step is on by default;
 [`AGG_LLM_COREFERENCE=false`](../reference/configuration/aggregation.md#agg_llm_coreference)
 turns it off, and
 [`AGG_LLM_COREFERENCE_MAX_PAIRS`](../reference/configuration/aggregation.md#agg_llm_coreference_max_pairs)
-bounds the pairs per call (80 by default), all asked in that one call.
+bounds the pairs per call (80 by default), all asked in that one call, plus
+one small call per "same" verdict.
 `facts_coreference_pairs`,
-`facts_coreference_same` and `facts_coreference_different` in
+`facts_coreference_same`, `facts_coreference_different` and
+`facts_coreference_retracted` (a "same" not repeated alone) in
 `retrieval_metrics` count them.
 
 ## Tuning

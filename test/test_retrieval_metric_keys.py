@@ -75,6 +75,7 @@ EXPECTED_WIRE_NAMES = {
     "FACTS_COREFERENCE_PAIRS": "facts_coreference_pairs",
     "FACTS_COREFERENCE_SAME": "facts_coreference_same",
     "FACTS_COREFERENCE_DIFFERENT": "facts_coreference_different",
+    "FACTS_COREFERENCE_RETRACTED": "facts_coreference_retracted",
     "VALIDATED_WITHOUT_ONTOLOGY_CONTEXT": "validated_without_ontology_context",
     "FACTS_VALIDATION_FINDINGS": "facts_validation_findings",
     "FACTS_VALIDATION_ERRORS": "facts_validation_errors",

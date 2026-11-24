@@ -1,17 +1,21 @@
 """What one gap pass is asked for, and the only thing it may add.
 
 The gap pass (an insert-only model call after the critic loop) is called for
-three kinds of gap: statements missing a role their class requires, instances
-linked to nothing, and measurements the text states that the graph lacks
-(listed only when measurement recovery is on). :class:`GapMandate` holds the
+four kinds of gap: statements missing a role their class requires, results
+held by a node that is not a statement, instances linked to nothing, and
+measurements the text states that the graph lacks (listed only when
+measurement recovery is on). :class:`GapMandate` holds the
 gaps of one call. The prompt's chapters are rendered from it, and
 :meth:`GapMandate.admits` refuses any proposed fix that adds something the
 request did not list, so the request and the filter cannot disagree.
 
 Admitted: a role link on a listed statement, a link with a listed detached
-instance at one end, a value whose every number the measurement list holds
-(with its components and the link to it), and the type and label of a node an
+instance at one end, a value whose every number the measurement list or a
+misplaced result holds (with its components and the link to it), a statement's
+result link to a misplaced named value, and the type and label of a node an
 admitted triple introduces, with the role links of a statement it introduces.
+A misplaced result is restated, never moved: the pass inserts only, and the
+exit removes the misplaced link.
 """
 
 from __future__ import annotations
@@ -27,7 +31,11 @@ from ontocast.onto.annotation import is_annotation
 from ontocast.onto.model import FactsUnitFinding, FactsUnitFindingKind, TripleFix
 from ontocast.tool.agg.signatures import canonical_literal
 from ontocast.tool.facts_validation.critic_patch import _parse_fragment
-from ontocast.tool.facts_validation.statements import StatementContract
+from ontocast.tool.facts_validation.grounding import node_key, node_of
+from ontocast.tool.facts_validation.statements import (
+    StatementContract,
+    value_components,
+)
 from ontocast.util.numeric_inventory import NumericInventory, canonical_number
 
 RefusalReason = TypingLiteral["value_not_listed", "outside_mandate"]
@@ -49,6 +57,8 @@ class GapMandate(BaseModel):
 
     Attributes:
         role_gaps: The unit's ``missing_role`` findings.
+        misplaced: The unit's ``role_outside_statement`` findings of the
+            result role: values to restate as statements.
         detached: Instances linked to nothing that no role gap names.
         inventory: The missing measurements; empty when recovery is off.
         contract: The catalog's statement contract.
@@ -58,6 +68,7 @@ class GapMandate(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     role_gaps: tuple[FactsUnitFinding, ...] = ()
+    misplaced: tuple[FactsUnitFinding, ...] = ()
     detached: tuple[URIRef, ...] = ()
     inventory: NumericInventory = NumericInventory()
     contract: StatementContract = StatementContract()
@@ -75,7 +86,8 @@ class GapMandate(BaseModel):
         """The mandate for the unit's current findings.
 
         Args:
-            findings: The unit's findings; only ``missing_role`` is read.
+            findings: The unit's findings; ``missing_role`` and the result
+                role's ``role_outside_statement`` are read.
             isolated: The unit's instances linked to nothing; those a role gap
                 names are left out.
             inventory: The missing measurements, empty when recovery is off.
@@ -90,6 +102,12 @@ class GapMandate(BaseModel):
         named = {finding.subject for finding in gaps}
         return cls(
             role_gaps=gaps,
+            misplaced=tuple(
+                finding
+                for finding in findings
+                if finding.kind == FactsUnitFindingKind.ROLE_OUTSIDE_STATEMENT
+                and finding.facet == "result"
+            ),
             detached=tuple(
                 sorted((node for node in isolated if str(node) not in named), key=str)
             ),
@@ -102,18 +120,50 @@ class GapMandate(BaseModel):
     def calls(self) -> bool:
         """Whether the gaps pay for a call.
 
-        A measurement or a role gap does; detached instances do from
-        :data:`DETACHED_TRIGGER_MIN` on.
+        A measurement, a role gap or a misplaced result does; detached
+        instances do from :data:`DETACHED_TRIGGER_MIN` on.
         """
         return (
             bool(self.inventory.measurements)
             or bool(self.role_gaps)
+            or bool(self.misplaced)
             or len(self.detached) >= DETACHED_TRIGGER_MIN
         )
 
     def _numbers(self) -> frozenset[str]:
         found = {canonical_number(m.value) for m in self.inventory.measurements}
         return frozenset(value.lstrip("-") for value in found if value is not None)
+
+    def misplaced_values(self, graph: Graph) -> list[tuple[Node, URIRef, Node]]:
+        """(holder, link, value) of each misplaced result still in ``graph``."""
+        inverse = self.contract.links("result").inverse
+        found: list[tuple[Node, URIRef, Node]] = []
+        for finding in self.misplaced:
+            subject = node_of(finding.subject)
+            for obj in graph.objects(subject, URIRef(finding.predicate)):
+                if node_key(obj) != finding.value:
+                    continue
+                link = URIRef(finding.predicate)
+                found.append(
+                    (obj, link, subject)
+                    if finding.predicate in inverse
+                    else (subject, link, obj)
+                )
+        return found
+
+    def _misplaced_numbers(self, graph: Graph) -> frozenset[str]:
+        found: set[str] = set()
+        for _, _, value in self.misplaced_values(graph):
+            if isinstance(value, Literal):
+                if _is_number(value):
+                    found.add(_magnitude(value))
+                continue
+            found |= {
+                component.number.lstrip("-")
+                for component in value_components(graph, value, self.contract).numbers
+                if component.number is not None
+            }
+        return frozenset(found)
 
     def _instance(self, node: Node) -> bool:
         return isinstance(node, URIRef) and str(node).startswith(self.fact_namespaces)
@@ -144,7 +194,7 @@ class GapMandate(BaseModel):
             return None
         earlier = set(introduced)
         admitted: set[Triple] = set()
-        numbers = self._numbers()
+        numbers = self._numbers() | self._misplaced_numbers(graph)
         holders = {s for s, p, o in inserts if _is_number(o) and not is_annotation(p)}
         for holder in holders:
             stated = {
@@ -167,7 +217,10 @@ class GapMandate(BaseModel):
             if not _known(graph, holder):
                 admitted |= {triple for triple in inserts if triple[2] == holder}
         admitted |= {
-            triple for triple in inserts if self._role_link(triple, graph, parsed)
+            triple
+            for triple in inserts
+            if self._role_link(triple, graph, parsed)
+            or self._restates(triple, graph, parsed)
         }
         detached = set(self.detached)
         admitted |= {
@@ -259,6 +312,33 @@ class GapMandate(BaseModel):
             if (
                 obj == node
                 and str(predicate) in links.inverse
+                and self.contract.serves(str(predicate), types)
+            ):
+                return True
+        return False
+
+    def _restates(self, triple: Triple, graph: Graph, parsed: Graph) -> bool:
+        """Whether ``triple`` gives a statement a misplaced named value as its result."""
+        values = {
+            value
+            for _, _, value in self.misplaced_values(graph)
+            if isinstance(value, URIRef)
+        }
+        if not values:
+            return False
+        links = self.contract.links("result")
+        subject, predicate, obj = triple
+        for node, value, pool in (
+            (subject, obj, links.forward),
+            (obj, subject, links.inverse),
+        ):
+            types = set(parsed.objects(node, RDF.type)) | set(
+                graph.objects(node, RDF.type)
+            )
+            if (
+                value in values
+                and str(predicate) in pool
+                and self.contract.is_statement(types)
                 and self.contract.serves(str(predicate), types)
             ):
                 return True

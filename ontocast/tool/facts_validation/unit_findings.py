@@ -13,9 +13,10 @@ from collections.abc import Sequence
 from typing import Literal as TypingLiteral
 
 from pydantic import BaseModel, ConfigDict
-from rdflib import RDF, RDFS, SKOS, Literal, URIRef
+from rdflib import OWL, RDF, RDFS, SKOS, Literal, URIRef
 from rdflib.term import Node
 
+from ontocast.onto.annotation import is_annotation
 from ontocast.onto.model import (
     FactsUnitFinding,
     FactsUnitFindingKind,
@@ -38,10 +39,11 @@ from ontocast.tool.facts_validation.connectivity import (
     states_a_value,
 )
 from ontocast.tool.facts_validation.grounding import (
-    node_name as _node_name,
+    node_key,
+    value_grounding_findings,
 )
 from ontocast.tool.facts_validation.grounding import (
-    value_grounding_findings,
+    node_name as _node_name,
 )
 from ontocast.tool.facts_validation.statements import (
     StatementContract,
@@ -55,6 +57,7 @@ from ontocast.tool.facts_validation.term_verdict import (
 )
 from ontocast.tool.facts_validation.terms import (
     _STANDARD_NAMESPACES,
+    CatalogRoles,
     ValidationPolicy,
     _alias_candidates,
     _catalog_term_roles,
@@ -501,6 +504,182 @@ def missing_role_findings(
     ]
 
 
+def _role_link_sides(
+    contract: StatementContract, ontology_graph: RDFGraph
+) -> dict[str, set[URIRef]]:
+    """Each role link with the classes its statement end is declared to be.
+
+    The side is the link's domain when it runs from the statement, its range
+    when it runs to it (``rdfs`` or ``schema:*Includes``); a link declaring
+    none takes those of its catalog super-properties. A link with no side
+    anywhere is left out.
+    """
+    sides = {
+        "forward": sides_by_property(ontology_graph, "domain"),
+        "inverse": sides_by_property(ontology_graph, "range"),
+    }
+    found: dict[str, set[URIRef]] = {}
+    for role in contract.roles:
+        links = contract.links(role)
+        for direction, props in (
+            ("forward", links.forward),
+            ("inverse", links.inverse),
+        ):
+            for prop in props:
+                own = sides[direction].get(URIRef(prop))
+                declared = (
+                    set(own)
+                    if own
+                    else set().union(
+                        *(
+                            sides[direction].get(URIRef(parent), set())
+                            for parent in contract.properties_of(prop) - {prop}
+                        )
+                    )
+                )
+                if declared:
+                    found[prop] = declared
+    return found
+
+
+def _outside_message(node: Node, role: str, link: str, expected: str) -> str:
+    if role == "result":
+        advice = (
+            "A value held this way names no quantity. Restate it as a "
+            "statement about the node that names the quantity it measures; "
+            "this link is removed when the unit leaves the loop."
+        )
+    else:
+        advice = (
+            "Give the link to the statement it belongs to; this link is "
+            "removed when the unit leaves the loop."
+        )
+    return (
+        f"<{node}> is not a statement, but carries <{link}>, which links a "
+        f"statement ({expected}) to its {role}. {advice}"
+    )
+
+
+def role_outside_statement_findings(
+    scope: FactScope,
+    contract: StatementContract,
+    ontology_graph: RDFGraph | None,
+) -> list[FactsUnitFinding]:
+    """Report every statement role link whose statement end is no statement.
+
+    A role link (:meth:`StatementContract.links`) runs from a statement or to
+    one; its statement end must fit the link's declared side
+    (:func:`_role_link_sides`). The end is reported when the catalog places
+    its types and the side in a hierarchy and they are unrelated
+    (:func:`types_compatible` is ``False``): the link then gives a value,
+    subject or property to what is not a statement, and a result held so
+    names no quantity. An untyped end, or a pair the catalog cannot decide,
+    is not reported.
+
+    Args:
+        scope: The unit's fact scope.
+        contract: The catalog's statement contract.
+        ontology_graph: Ontology context the renderer was given.
+
+    Returns:
+        list: One mandatory finding per link, ordered by subject, link and
+        object; ``facet`` is the role, ``suggestions`` the declared classes.
+    """
+    if ontology_graph is None or not len(ontology_graph):
+        return []
+    sides = _role_link_sides(contract, ontology_graph)
+    if not sides:
+        return []
+    graph = scope.graph
+    described = _described_classes(ontology_graph)
+    closures: dict[URIRef, set[URIRef]] = {}
+    findings: list[FactsUnitFinding] = []
+    for role in sorted(contract.roles):
+        links = contract.links(role)
+        for direction, props in (
+            ("forward", links.forward),
+            ("inverse", links.inverse),
+        ):
+            for prop in sorted(props):
+                declared = sides.get(prop)
+                if not declared:
+                    continue
+                for subject, obj in graph.subject_objects(URIRef(prop)):
+                    triple = (subject, URIRef(prop), obj)
+                    node = subject if direction == "forward" else obj
+                    if not scope.is_fact(triple) or not scope.holds(node):
+                        continue
+                    asserted = {
+                        value
+                        for value in graph.objects(node, RDF.type)
+                        if isinstance(value, URIRef)
+                    }
+                    fits = types_compatible(
+                        asserted,
+                        declared,
+                        ontology_graph,
+                        described=described,
+                        closures=closures,
+                    )
+                    if fits is not False:
+                        continue
+                    classes = sorted(str(value) for value in declared)
+                    findings.append(
+                        FactsUnitFinding(
+                            kind=FactsUnitFindingKind.ROLE_OUTSIDE_STATEMENT,
+                            message=_outside_message(
+                                node,
+                                role,
+                                prop,
+                                ", ".join(f"<{value}>" for value in classes),
+                            ),
+                            subject=node_key(subject),
+                            predicate=prop,
+                            value=node_key(obj),
+                            facet=role,
+                            suggestions=classes,
+                        )
+                    )
+    return sorted(findings, key=lambda f: (f.subject, f.predicate, f.value))
+
+
+def empty_value_findings(
+    scope: FactScope, contract: StatementContract
+) -> list[FactsUnitFinding]:
+    """Report every value node that states nothing.
+
+    A value (an instance of a value class, blank or named) states nothing
+    when it carries no triple but its types and annotations: no number,
+    bound, unit, qualifier or text. Such a node is a label, not a value.
+
+    Returns:
+        list: One mandatory finding per value, ordered by node.
+    """
+    graph = scope.graph
+    values = {URIRef(iri) for iri in contract.value_classes}
+    if not values:
+        return []
+    found: list[FactsUnitFinding] = []
+    for node in {s for s, _, o in scope.triples((None, RDF.type, None)) if o in values}:
+        if not scope.holds(node) or any(
+            predicate not in (RDF.type, OWL.sameAs) and not is_annotation(predicate)
+            for predicate in graph.predicates(node, None)
+        ):
+            continue
+        found.append(
+            FactsUnitFinding(
+                kind=FactsUnitFindingKind.EMPTY_VALUE,
+                message=(
+                    f"{_node_name(graph, node)} is a value that states nothing: "
+                    "no number, bound, unit or qualifier. It is removed when "
+                    "the unit leaves the loop."
+                ),
+                subject=node_key(node),
+            )
+        )
+    return sorted(found, key=lambda f: f.subject)
+
+
 def _closed_range_suggestions(
     rejected: RejectedLiteralTriple, ontology_graph: RDFGraph | None
 ) -> list[str]:
@@ -807,6 +986,7 @@ def collect_unit_findings(
     contract: StatementContract = StatementContract(),
     full_catalog_terms: set[str] | None = None,
     document: Node | None = None,
+    catalog_roles: CatalogRoles | None = None,
 ) -> list[FactsUnitFinding]:
     """Assemble all deterministic findings for one rendered unit graph.
 
@@ -816,7 +996,9 @@ def collect_unit_findings(
     (:func:`~ontocast.tool.facts_validation.term_verdict.used_terms`; an
     individual of a value whose property's range is a closed class by role),
     unresolved catalog near-misses, predicates asserted on a subject whose
-    type contradicts their ``rdfs:domain``, statements missing a role their
+    type contradicts their ``rdfs:domain``, statement role links held by a
+    node that is not a statement (:func:`role_outside_statement_findings`),
+    values that state nothing, statements missing a role their
     class requires and values linked to nothing (``contract``), instances
     with no concrete type, value nodes whose only numeric content sits in a
     label, and the numbers and individuals of values the text does not bear
@@ -848,6 +1030,13 @@ def collect_unit_findings(
 
     ``document`` is the IRI of the document the unit belongs to: a work the
     text cites is a fact instance, never the document node.
+
+    ``catalog_roles`` carries the whole catalog's axioms. The checks that read
+    a property's domain or range (``domain_violation``,
+    ``role_outside_statement``) read them over the snapshot together with
+    those axioms (:meth:`CatalogRoles.with_axioms`): a snapshot may list a
+    property without its sides, and what retrieval kept must not decide what
+    is a violation. The other checks read the snapshot the unit was given.
     """
     policy = policy or ValidationPolicy()
     known_terms = set(full_catalog_terms or ())
@@ -1073,7 +1262,14 @@ def collect_unit_findings(
     findings.extend(
         value_grounding_findings(scope, contract, extraction_text, ontology_graph)
     )
-    findings.extend(domain_violation_findings(graph, ontology_graph))
+    sides_graph = (
+        catalog_roles.with_axioms(ontology_graph or RDFGraph())
+        if catalog_roles is not None
+        else ontology_graph
+    )
+    findings.extend(domain_violation_findings(graph, sides_graph))
+    findings.extend(role_outside_statement_findings(scope, contract, sides_graph))
+    findings.extend(empty_value_findings(scope, contract))
     findings.extend(
         untyped_instance_findings(graph, ontology_graph, normalized_fact_namespaces)
     )

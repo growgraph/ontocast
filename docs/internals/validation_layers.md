@@ -194,13 +194,15 @@ fix. Every kind is mandatory except numeric coverage:
 | `quarantined_literal` | A quarantined triple, with the catalog individuals of the property's range as suggestions |
 | `unknown_term` | A predicate or class under `example.org` or minted in the facts namespace; any IRI, in any position, missing from a closed namespace (a well-known vocabulary's term list, such as the QUDT units, or a namespace the catalog declares terms in); or an individual of a value, on a property whose range is a closed class, that neither the catalog nor a shipped term list holds. `facet` names the verdict |
 | `literal_type_object` | An `rdf:type` written as a string that layer 1 could not resolve |
-| `domain_violation` | A predicate asserted on a subject whose stated type contradicts the predicate's `rdfs:domain`. A class `schema:domainIncludes` lists is an expected one and is never contradicted |
+| `domain_violation` | A predicate asserted on a subject whose stated type contradicts the predicate's `rdfs:domain`. A class `schema:domainIncludes` lists is an expected one and is never contradicted. Domains are read over the unit's snapshot together with the whole catalog's axioms, so a domain retrieval did not keep still counts |
+| `role_outside_statement` | A link playing a statement role (subject, property, result, context; the catalog's sub-properties and inverses included) whose statement end is a node the link's declared side does not admit: its domain from the statement, its range to it, `rdfs` or `schema:*Includes`, else a catalog super-property's. Reported only when the catalog places both in a hierarchy and they are unrelated; an untyped node is not. `facet` names the role. A misplaced result is listed for the gap pass to restate as a statement about its holder; at exit the link goes, with a blank value only it reached |
+| `empty_value` | A value-class instance with no triple but its types and annotations. Removed with the links to it at exit; its carrier stays |
 | `missing_role` | A statement that states a value without a role its class requires, named in `facet`. `sosa:Observation` and `sosa:Actuation` (and catalog classes under them) need a subject and a property, `sosa:Sampling` a subject; a link counts, counting the catalog's sub-properties and inverses, only when its declared domain (from the statement) or range (to it) admits the statement's class, so `sosa:observedProperty` gives an actuation no property. A link a catalog restriction requires on the class (`owl:someValuesFrom`, a minimum or exact cardinality of at least one) is a role too (`facet` `link`). A value-class instance linked to no other instance lacks its subject. An instance of another class stating its own values is a fact about itself and is not reported. Suggestions are the unit's other instances. Not raised on citation or non-content units; counted per document as `facts_statements_missing_role_rendered` (on the renders) and `facts_statements_missing_role` (after the passes) |
 | `untyped_instance` | A facts-namespace IRI in subject or IRI-object position with no `rdf:type` naming a concrete class: one outside the facts namespaces that is neither a metaclass (`owl:Class`, `rdf:Property`, `owl:NamedIndividual`, …) nor vacuous (`owl:Thing`, `rdfs:Resource`, `schema:Thing`). Blank nodes and the chunk and document nodes are not instances. Suggestions are the domain and range classes of the predicates the instance carries, then catalog classes sharing a name token with its label |
 | `domain_adherence` | Too few of the render's schema terms come from the ontology context (`FACTS_DOMAIN_ADHERENCE_MIN_SHARE`, judged from `FACTS_DOMAIN_ADHERENCE_MIN_TERMS` terms up); not judged on citation or non-content units |
 | `scalar_as_bounds` | One value written into two single-valued numeric properties of one node |
 | `label_only_number` | A value node with a unit but no numeric literal, whose number sits only in its label |
-| `ungrounded_number` | A number of a value (blank or named) that neither the value's label nor the unit's text writes in digits, as written or scaled by a power of ten from 10^-12 to 10^12, compared exactly. `1e3` is grounded by "1000", "1,000" or "1'000", `0.05` by "5%", `5000000` by "5 million"; a number written against its unit ("5kg"), grouped with points ("1.234,5") or in scientific notation ("1.5 × 10−3") counts, each side of a range ("10-15") counts, and a number the text gives only in words, a fraction or a converted value is not stated. A literal is a number when it is typed numeric, or untyped on a property with a numeric range; a digit string elsewhere (an identifier) is not. The numeric inventory reads the text with the same reader, so a measurement the gap pass is asked for is never one this finding removes |
+| `ungrounded_number` | A number of a value (blank or named) that the unit's text writes neither in digits nor in the number words of a value label the text writes verbatim ("five constituencies", "twenty-five", "fifth", "two-month"; read in English, French, Spanish, Portuguese, German, Italian and Dutch), as written or scaled by a power of ten from 10^-12 to 10^12, compared exactly. `1e3` is grounded by "1000", "1,000" or "1'000", `0.05` by "5%", `5000000` by "5 million"; a number written against its unit ("5kg"), grouped with points ("1.234,5") or in scientific notation ("1.5 × 10−3") counts, each side of a range ("10-15") counts, and a vague quantity ("several"), a fraction or a converted value is not stated. A label the text does not write grounds nothing. A literal is a number when it is typed numeric, or untyped on a property with a numeric range; a digit string elsewhere (an identifier) is not. The numeric inventory reads the text with the same reader, so a measurement the gap pass is asked for is never one this finding removes |
 | `contradicted_individual` | An individual of a value, on a property whose range is a closed class (a unit, a qualifier), when the text writes next to one of the value's numbers a cue of another individual of that class and none of its own, and the individual has cues of its own. Cues are the individuals' `skos:altLabel`, `skos:notation` and symbol or code literals, case kept; a catalog without them gives no finding. A cue after the number counts only as a whole token: followed by the end of the text, punctuation, or a space and a word that is no further unit token, never by `/`, `·`, `*`, `^`, a digit or a sign ("m" in "5 m/s" or "5 m s-2" names nothing). Suggestions are the individuals the cue names |
 | `dimension_conflict` | Results reported for one property node, or by one statement, in measurement units of different dimensions, when the catalog declares what the property measures: a link of the contract's anchor role (`qudt:hasQuantityKind`, `qudt:applicableUnit`, or a catalog sub-property of either) from it, to a unit or to a quantity kind whose units the catalog names. With a declared unit of known dimension, a single result in a unit of another dimension is enough, and the disagreeing statements are the suggestions. Without a declaration the conflict is reported only by the post-merge gate. Inert for results without a unit; blind among dimensionless quantities, which share one dimension |
 | `numeric_coverage` | Numbers in the source text missing from the graph, split into measurements (number with unit) and bare numbers. A measurement is present when one node, blank or named, states the number outside an annotation (as a value or a bound) together with its unit, as a unit IRI or as the unit's token kept in a literal on that node. Advisory unless `FACTS_NUMERIC_COVERAGE_MANDATORY` says otherwise; `FACTS_NUMERIC_IDENTIFIER_GUARD` keeps digit groups of identifiers out |
@@ -357,8 +359,9 @@ a score rule (`success`, or a score above 90) would have decided.
 
 The critic judges whether what was rendered is right, not whether something is
 missing. `FACTS_COMPLETION_PASSES` (default 1) adds insert-only passes after the
-critic loop, run only while the unit has a gap: a `missing_role` finding holds;
-with `FACTS_COMPLETION_DETACHED=true` (the default), at least two instances are
+critic loop, run only while the unit has a gap: a `missing_role` finding holds,
+or a `role_outside_statement` finding names a misplaced result (asked for once
+per unit, since an insert cannot remove the link; the exit does); with `FACTS_COMPLETION_DETACHED=true` (the default), at least two instances are
 linked to no other instance (a pass called for another gap lists a lone one
 too); or, with `FACTS_COMPLETION_MEASUREMENTS=true` (off by default), the
 numeric inventory still lists a measurement (a number with its unit) absent
@@ -368,7 +371,8 @@ The gaps of one call form its mandate. The prompt's task names only the gap
 kinds present, and only what the mandate lists is admitted: a link giving a
 listed statement the role it lacks, a link with a listed detached instance at
 one end, a value whose every number is a listed measurement (none when
-measurement recovery is off), and the type and label of a node an admitted
+measurement recovery is off) or a number of a misplaced result, a statement's
+result link to a misplaced named value, and the type and label of a node an admitted
 triple introduces, with the role links of a statement it introduces. Any other
 fix is refused before it is applied, and counted by reason on the pass's loop
 attempt (`n_fixes_refused_by_reason`: `value_not_listed`, `outside_mandate`).
@@ -407,8 +411,9 @@ it linked on its loop attempt.
 
 ### Domain repair
 
-A `domain_violation` is a statement whose property declares an `rdfs:domain`
-that the subject's asserted types contradict; served, it would entail a type
+A `domain_violation` is a statement whose property declares an `rdfs:domain`,
+in the unit's snapshot or anywhere in the catalog, that the subject's asserted
+types contradict; served, it would entail a type
 the subject does not have. With `FACTS_COMPLETION_PASSES` above 0, a unit that
 still holds one after the critic loop gets one call before the gap passes:
 
@@ -470,10 +475,18 @@ document in `facts_exit_repairs_by_kind`.
     | `statement_conflict`: statements about one node report one property with conflicting results and no differing time, condition or procedure | warning | reported; aggregation refuses the merges that make one |
     | `dimension_conflict`: results served under one property node, or by one statement, in measurement units of different dimensions, whether or not the catalog declares what the property measures | warning | reported |
 
-    String values on a cluster confirmed by a natural key are reported as
-    warnings. With `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT` (on by
-    default), two IRI objects asserted by a single unit are a warning: only
-    objects from different units can come from a bad merge.
+    String values on a cluster confirmed as one entity, by a shared key or a
+    coreference "same" verdict, are reported as warnings: "number of teams"
+    and "team count" are two names of one confirmed thing. With
+    `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_MERGE` (on by default),
+    `suspect_multi_value` and `degenerate_coreference` are errors only when a
+    merge brought their values or links together. When one source subject (a
+    subject as one unit wrote it) asserted every distinct value, such as a
+    league's English and French abbreviations, or wrote every link, such as
+    a final's winner that is also its competitor, the finding is a warning,
+    since no identity decision joined them and an un-merge cannot separate
+    them. Values are compared as the finding compares them: numbers by value,
+    strings after normalization, IRIs after the merge's rewrite.
 3. **Un-merge repair** (document path only). The first three kinds are merge
    signatures: two things that are not the same got one IRI. A finding
    implicates a cluster: the subject's for `functional_violation` and
@@ -543,7 +556,9 @@ document in `facts_exit_repairs_by_kind`.
    vocabulary, PROV-O included). An isolated instance left holds a value of its
    own and is kept; the run manifest lists each (`facts_isolated`: IRI, label,
    and `holds_value` or `other`). `facts_twin_labels` counts the labels two or
-   more instances share.
+   more instances of one role share (statements, the properties statements
+   observe, other instances), leaving out values and instances one links to
+   the other.
    Then each blank-node value is named under its carrier
    (`<carrier>.<property>`), with the reifiers of its statements repointed.
 7. **Summary**: `facts_conformance`, `facts_validation_findings` and

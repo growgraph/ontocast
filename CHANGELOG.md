@@ -10,13 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `ontocast process --keep-provenance` also writes `<name>.units.trig`, each unit's facts as aggregation receives them, so aggregation can be re-run without a model call.
-- Each number of a value must be written in the value's label or the unit's text, as written or scaled by a power of ten (`ungrounded_number`); a unit or qualifier contradicted by the catalog's cue next to the number is flagged (`contradicted_individual`).
+- `twin_labels` and `facts_twin_labels` compare labels only between instances of one role (statements, observed properties, other instances) that are not linked to each other; values are left out.
+- The ontology plan reuses a term in a well-known namespace only when that vocabulary has it; a name it lacks (`schema:leader`) is minted in the home ontology instead.
+- Each number of a value must be written in the unit's text, in digits or in the number words of a value label the text writes verbatim ("five constituencies"), as written or scaled by a power of ten (`ungrounded_number`). Number words are read with `text2num`, a new dependency; a unit or qualifier contradicted by the catalog's cue next to the number is flagged (`contradicted_individual`).
 - When a facts unit leaves its loop, what a deterministic check rejects is removed with a repair record: unknown terms (only where misused), ungrounded numbers and values left without one, contradicted units and qualifiers. Missing things are reported, not removed. Telemetry `facts_exit_repairs_by_kind`.
 - Aggregation keeps two entities apart when statements about them report one property with conflicting results or with units of different dimensions; the gate reports what remains (`statement_conflict`, `dimension_conflict`).
 - Values on one carrier and property that state one number and nothing different are served as one value.
 - The facts prompts ask that a statement attributed to other work link to it with the new `attributed_to` role of `CHUNK_CITATION_VOCABULARY` (default `dcterms:source`), and that an observed property name exactly the quantity stated.
 - QUDT currency units are a shipped term list.
 - A non-catalog term is offered catalog terms of its kind whose local name matches after folding case and separators; suggestions are never applied.
+- A statement's result, subject, property or context link held by a node its declared side does not admit is flagged (`role_outside_statement`); the gap pass is asked to restate a misplaced result as a statement about its holder, and the link is removed at exit.
+- A value node carrying nothing but its types and annotations is flagged (`empty_value`) and removed at exit. `check_facts` reports both.
 
 ### Changed
 
@@ -26,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every declared datatype range is enforced in the render, in patches and in `check_facts` (`range_mismatches`). Any XSD number fits a numeric range; any valid `xsd:date`, `dateTime`, `gYear` or `gYearMonth` fits a range declaring another of them.
 - `write_back_quarantine` replaces `write_back_temporal_quarantine`; `RejectedLiteralTriple.expected_datatypes` replaces `expected_datatype`.
 - `unknown_term` covers a closed vocabulary's IRIs in any position, in the unit loop, the gate and `check_facts`, and a value's unit or qualifier that neither the catalog nor a shipped list holds.
+- The facts unit checks that read a property's domain or range (`domain_violation`, `role_outside_statement`), the domain repair's candidates and its swap check read the whole catalog's axioms with the unit's snapshot, so a domain retrieval did not keep is still enforced.
 - `missing_role` replaces `statement_without_subject` and covers a statement's property and the links a restriction requires; the telemetry names follow (`facts_statements_missing_role*`, `n_roles_filled`).
 - The gap pass works from a `GapMandate`: its prompt asks only for the gaps listed, and fixes adding anything else are refused and counted (`n_fixes_refused_by_reason`).
 - An identity merge needs a shared key, a coreference "same" verdict, an equal label or initials; overlapping labels are coreference candidates only (`overlap`). A merge that makes two members of a cluster distinct is undone, and no result depends on IRI order.
@@ -33,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The quantity rules of the facts prompts are given only to a unit whose text states a number, and the statement rules and measurement vocabularies only when it does or the catalog has a statement class of its own. Prompt examples are domain-neutral, and no prompt asks for a unit token in `rdfs:comment`.
 - `format_facts_operational_guidelines` takes `quantity_chapter`, `statement_rules` and `citation_vocabulary`; `evaluation_instruction_for` replaces `evaluation_instruction`.
 - A well-known term or literal datatype written with another scheme or trailing separator is rewritten to the vocabulary's namespace as soon as a render or patch is parsed.
+- An acronym and the name whose words it spells ("CFL" / "Canadian Football League") are compatible text values, so aggregation's `literal_conflict` and the gate's `suspect_multi_value` no longer read them as two things.
+- `suspect_multi_value` and `degenerate_coreference` are errors, and drive the un-merge repair, only when a merge brought their values or links together; what one source subject was written with is a warning. `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_MERGE` replaces `FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT`, `AggregationResult.merge_provenance` (a `MergeProvenance`, from `build_merge_provenance`) replaces `cross_unit_object_pairs` and `build_cross_unit_object_pairs`.
+- Text values that disagree on a cluster joined by a coreference "same" verdict are a warning, as on a cluster joined by a shared key. `AggregationResult.confirmed_clusters` replaces `key_supported_clusters`, `AgentState.aggregation_confirmed_clusters` replaces `aggregation_key_clusters`, and the gate's `confirmed_subjects` replaces `key_supported_subjects`.
+- A text property that an entity holds with several values (alternate names) no longer keeps two entities apart when their lists differ (`literal_conflict`).
+- An initial-bearing name matches the same name without the initial ("D. Baranov" / "Baranov").
+- A coreference "same" verdict merges only if the pair, asked again on its own, is judged "same" again; otherwise it counts as unsure. One small model call per "same" verdict; `facts_coreference_retracted` counts the verdicts not repeated.
 - The document node is identified by the document's IRI where known, so a cited work typed like a document stays a fact.
 
 ### Removed

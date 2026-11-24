@@ -49,6 +49,8 @@ class ExitAction(StrEnum):
 
     #: Every statement of the (subject, property) pair goes.
     DROP_STATEMENTS = "drop_statements"
+    #: The one link goes, with a blank node only it reached.
+    DROP_LINK = "drop_link"
     #: Every statement using a term a vocabulary check rejects goes, when the
     #: finding is of error severity (mandatory); its suggested terms are
     #: reported on the record, never applied.
@@ -60,6 +62,8 @@ class ExitAction(StrEnum):
     DROP_NUMBER = "drop_number"
     #: The value's link to the individual goes.
     DROP_INDIVIDUAL = "drop_individual"
+    #: The value goes with the links to it; its carrier stays.
+    DROP_VALUE = "drop_value"
     #: The literal set aside goes back on its subject as text.
     WRITE_BACK = "write_back"
     #: Nothing is removed; the finding is carried to the document report.
@@ -72,8 +76,10 @@ EXIT_ACTIONS: dict[FactsUnitFindingKind, ExitAction] = {
     FactsUnitFindingKind.UNKNOWN_TERM: ExitAction.DROP_TERM,
     FactsUnitFindingKind.LITERAL_TYPE_OBJECT: ExitAction.DROP_TRIPLE,
     FactsUnitFindingKind.DOMAIN_VIOLATION: ExitAction.DROP_STATEMENTS,
+    FactsUnitFindingKind.ROLE_OUTSIDE_STATEMENT: ExitAction.DROP_LINK,
     FactsUnitFindingKind.UNGROUNDED_NUMBER: ExitAction.DROP_NUMBER,
     FactsUnitFindingKind.CONTRADICTED_INDIVIDUAL: ExitAction.DROP_INDIVIDUAL,
+    FactsUnitFindingKind.EMPTY_VALUE: ExitAction.DROP_VALUE,
     FactsUnitFindingKind.NUMERIC_COVERAGE: ExitAction.REPORT,
     FactsUnitFindingKind.LABEL_ONLY_NUMBER: ExitAction.REPORT,
     FactsUnitFindingKind.SCALAR_AS_BOUNDS: ExitAction.REPORT,
@@ -109,6 +115,21 @@ NOT_FINDINGS: frozenset[FactsUnitFindingKind] = frozenset(
         FactsUnitFindingKind.CLASS_ALIAS,
         FactsUnitFindingKind.PAIRED_OBJECT_PROPERTY,
         FactsUnitFindingKind.CRITIC_FIX,
+    }
+)
+
+
+#: The repair kinds an exit records, one or more per handler.
+EXIT_REPAIR_KINDS: frozenset[FactsGateRepairKind] = frozenset(
+    {
+        FactsGateRepairKind.DOMAIN_VIOLATION_DROPPED,
+        FactsGateRepairKind.ROLE_OUTSIDE_STATEMENT_DROPPED,
+        FactsGateRepairKind.UNKNOWN_TERM_DROPPED,
+        FactsGateRepairKind.UNGROUNDED_NUMBER_DROPPED,
+        FactsGateRepairKind.VALUE_WITHOUT_NUMBER_DROPPED,
+        FactsGateRepairKind.EMPTY_VALUE_DROPPED,
+        FactsGateRepairKind.CONTRADICTED_INDIVIDUAL_DROPPED,
+        FactsGateRepairKind.QUARANTINE_AS_COMMENT,
     }
 )
 
@@ -210,6 +231,27 @@ def _drop_statements(state: _Exit, findings: Sequence[FactsUnitFinding]) -> None
     state.records.extend(drop_domain_violations(state.graph, findings))
 
 
+def _drop_link(state: _Exit, findings: Sequence[FactsUnitFinding]) -> None:
+    graph = state.graph
+    for finding in findings:
+        subject, predicate = node_of(finding.subject), URIRef(finding.predicate)
+        triples = [
+            (subject, predicate, obj)
+            for obj in graph.objects(subject, predicate)
+            if node_key(obj) == finding.value
+        ]
+        removed = _remove(graph, triples)
+        if removed:
+            state.records.append(
+                GraphRepairRecord(
+                    kind=FactsGateRepairKind.ROLE_OUTSIDE_STATEMENT_DROPPED,
+                    source=finding.subject,
+                    target=finding.predicate,
+                    triple_count=removed,
+                )
+            )
+
+
 def _drop_term(state: _Exit, findings: Sequence[FactsUnitFinding]) -> None:
     for finding in findings:
         removed = _remove(state.graph, _uses(state.graph, finding, state.contract))
@@ -296,6 +338,22 @@ def _drop_number(state: _Exit, findings: Sequence[FactsUnitFinding]) -> None:
         )
 
 
+def _drop_empty_value(state: _Exit, findings: Sequence[FactsUnitFinding]) -> None:
+    for finding in findings:
+        value = node_of(finding.subject)
+        if (value, None, None) not in state.graph:
+            continue
+        removed, carriers = _drop_value(state.graph, value)
+        state.records.append(
+            GraphRepairRecord(
+                kind=FactsGateRepairKind.EMPTY_VALUE_DROPPED,
+                source=finding.subject,
+                target=", ".join(carriers),
+                triple_count=removed,
+            )
+        )
+
+
 def _write_back(state: _Exit, findings: Sequence[FactsUnitFinding]) -> None:
     # The unit's quarantine is the record, the findings only mirror it.
     written, state.marked = write_back_quarantine(state.graph, state.quarantined)
@@ -309,10 +367,12 @@ ExitHandler = Callable[[_Exit, Sequence[FactsUnitFinding]], None]
 #: set aside go back last, so a subject removed meanwhile gets none.
 EXIT_HANDLERS: dict[ExitAction, ExitHandler] = {
     ExitAction.DROP_STATEMENTS: _drop_statements,
+    ExitAction.DROP_LINK: _drop_link,
     ExitAction.DROP_TERM: _drop_term,
     ExitAction.DROP_TRIPLE: _drop_triple,
     ExitAction.DROP_INDIVIDUAL: _drop_individual,
     ExitAction.DROP_NUMBER: _drop_number,
+    ExitAction.DROP_VALUE: _drop_empty_value,
     ExitAction.WRITE_BACK: _write_back,
 }
 
@@ -326,14 +386,15 @@ def exit_unit(
     """Apply :data:`EXIT_ACTIONS` to the unit's unresolved findings.
 
     Each mandatory finding goes to the handler of its kind's action
-    (:data:`EXIT_HANDLERS`), in the handlers' order: domain violations; every
+    (:data:`EXIT_HANDLERS`), in the handlers' order: domain violations; a
+    statement's role link held by what is not a statement; every
     use of a term an ``unknown_term`` finding names, in the position it names
     -- a term a closed vocabulary does not have, a placeholder term, a class
     or property minted in a facts namespace, a term outside a strict
     vocabulary -- with the finding's suggested terms on its record, never
     applied; literal type objects; contradicted individuals; ungrounded
     numbers, a value whose numbers all went removed with the links to it;
-    then literals still set aside go back on their subjects. Only mandatory
+    values that state nothing, with the links to them; then literals still set aside go back on their subjects. Only mandatory
     findings act: a warning stays in the graph and on the unit, and a kind
     whose action is to report is carried to the document report.
 
@@ -357,6 +418,7 @@ __all__ = [
     "ABSENCE_KINDS",
     "EXIT_ACTIONS",
     "EXIT_HANDLERS",
+    "EXIT_REPAIR_KINDS",
     "NOT_FINDINGS",
     "ExitAction",
     "UnitExit",

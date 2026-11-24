@@ -67,7 +67,7 @@ def test_same_local_name_in_two_units_stays_two_nodes(
     assert all(unit_scope_index(str(sample)) is None for sample in samples)
     assert result.merged_clusters == {}
     assert result.rejected_merge_count == 0
-    assert result.key_supported_clusters == []
+    assert result.confirmed_clusters == []
 
 
 def test_provenance_still_names_each_source_unit(

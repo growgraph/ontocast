@@ -18,7 +18,11 @@ from ontocast.config import AggregationConfig, FactsValidationConfig
 from ontocast.onto.constants import DEFAULT_IRI
 from ontocast.onto.content_unit import ContentUnit, OutputType
 from ontocast.onto.enum import RetrievalMetric
-from ontocast.onto.model import FactsValidationFinding, FactsValidationFindingKind
+from ontocast.onto.model import (
+    FactsValidationFinding,
+    FactsValidationFindingKind,
+    MergeProvenance,
+)
 from ontocast.onto.prefixes import PrefixTable
 from ontocast.onto.rdfgraph import RDFGraph
 from ontocast.onto.state import AgentState
@@ -28,10 +32,8 @@ from ontocast.stategraph.node_factories import (
     make_validate_facts_node,
 )
 from ontocast.tool import EmbeddingBasedAggregator
-from ontocast.tool.agg.aggregate import (
-    build_cross_unit_object_pairs,
-    build_merged_clusters,
-)
+from ontocast.tool.agg.aggregate import build_merged_clusters
+from ontocast.tool.agg.merge_provenance import build_merge_provenance
 from ontocast.tool.facts_validation import validate_aggregated_facts
 from ontocast.toolbox import ToolBox
 
@@ -61,7 +63,9 @@ def _normal_form_aggregator(
     aggregator = EmbeddingBasedAggregator(AggregationConfig())
     if ablate_literal_guard:
         monkeypatch.setattr(
-            aggregator, "_have_conflicting_literals", lambda left, right: False
+            aggregator,
+            "_have_conflicting_literals",
+            lambda left, right, name_lists: False,
         )
 
     def cluster_by_normal_form(representations):
@@ -641,7 +645,7 @@ cd:condition_1 rdfs:label "77 K"@en .
 
 
 # ---------------------------------------------------------------------------
-# Cross-unit evidence for the IRI branch of SUSPECT_MULTI_VALUE
+# Merge provenance for SUSPECT_MULTI_VALUE
 # ---------------------------------------------------------------------------
 
 
@@ -667,86 +671,159 @@ def _joint_agents_graph() -> tuple[RDFGraph, URIRef, URIRef]:
     return graph, subject, predicate
 
 
-def test_iri_multi_value_is_an_error_without_provenance() -> None:
-    """Unchanged default: no evidence supplied means the old behaviour."""
-    graph, subject, predicate = _joint_agents_graph()
-
-    report = validate_aggregated_facts(graph, None, fact_namespaces=[CD])
-
-    errors = [
-        finding
-        for finding in report.error_findings
-        if finding.kind == FactsValidationFindingKind.SUSPECT_MULTI_VALUE
-        and finding.subject == str(subject)
-    ]
-    assert len(errors) == 1
+def _two_abbreviations_graph() -> tuple[RDFGraph, URIRef, URIRef]:
+    """A league with an English and a French abbreviation, among single-abbreviation neighbours."""
+    graph = RDFGraph()
+    subject = URIRef(CD + "league")
+    predicate = URIRef("http://dbpedia.org/ontology/abbreviation")
+    graph.add((subject, predicate, Literal("CFL")))
+    graph.add((subject, predicate, Literal("LCF")))
+    for index, name in enumerate(("IRFU", "WIFU", "CRU")):
+        graph.add((URIRef(f"{CD}union{index}"), predicate, Literal(name)))
+    return graph, subject, predicate
 
 
-def test_single_unit_multi_value_is_only_a_warning() -> None:
-    """Two objects one unit asserted cannot be the residue of a merge.
-
-    Reporting it as an error drives the un-merge repair, which dissolves a
-    correct joint statement.
-    """
-    graph, subject, predicate = _joint_agents_graph()
-
-    report = validate_aggregated_facts(
-        graph, None, fact_namespaces=[CD], cross_unit_pairs=[]
-    )
-
-    suspects = [
-        finding
-        for finding in report.findings
-        if finding.kind == FactsValidationFindingKind.SUSPECT_MULTI_VALUE
-        and finding.subject == str(subject)
-    ]
-    assert len(suspects) == 1
-    assert suspects[0].severity == "warning"
-    assert not report.error_findings
-
-
-def test_only_cross_unit_multi_values_are_errors_by_default(monkeypatch) -> None:
-    monkeypatch.delenv("FACTS_SUSPECT_MULTI_VALUE_REQUIRE_CROSS_UNIT", raising=False)
-    assert FactsValidationConfig().suspect_multi_value_require_cross_unit is True
-
-
-def test_cross_unit_multi_value_stays_an_error() -> None:
-    """Objects from different units could have been brought together."""
-    graph, subject, predicate = _joint_agents_graph()
-
-    report = validate_aggregated_facts(
-        graph,
-        None,
-        fact_namespaces=[CD],
-        cross_unit_pairs=[(str(subject), str(predicate))],
-    )
-
-    errors = [
-        finding
-        for finding in report.error_findings
-        if finding.kind == FactsValidationFindingKind.SUSPECT_MULTI_VALUE
-        and finding.subject == str(subject)
-    ]
-    assert len(errors) == 1
-
-
-def test_numeric_branch_ignores_cross_unit_evidence() -> None:
-    """Two quantities on one node are a defect whatever their provenance."""
+def _two_quantities_graph() -> tuple[RDFGraph, URIRef, URIRef]:
     graph = RDFGraph()
     subject = URIRef(CD + "q1")
     predicate = URIRef(Q + "numericValue")
     graph.add((subject, predicate, Literal("12.5", datatype=XSD.double)))
     graph.add((subject, predicate, Literal("96", datatype=XSD.double)))
+    return graph, subject, predicate
 
-    report = validate_aggregated_facts(
-        graph, None, fact_namespaces=[CD], cross_unit_pairs=[]
-    )
-    assert [f.kind for f in report.error_findings] == [
-        FactsValidationFindingKind.SUSPECT_MULTI_VALUE
+
+_BRANCHES = pytest.mark.parametrize(
+    "build", [_joint_agents_graph, _two_abbreviations_graph, _two_quantities_graph]
+)
+
+
+def _suspects(report, subject: URIRef) -> list[FactsValidationFinding]:
+    return [
+        finding
+        for finding in report.findings
+        if finding.kind == FactsValidationFindingKind.SUSPECT_MULTI_VALUE
+        and finding.subject == str(subject)
     ]
 
 
-def test_build_cross_unit_object_pairs_separates_the_two_cases() -> None:
+@_BRANCHES
+def test_multi_value_is_an_error_without_provenance(build) -> None:
+    """No evidence supplied: every branch reports an error."""
+    graph, subject, _ = build()
+
+    report = validate_aggregated_facts(graph, None, fact_namespaces=[CD])
+
+    assert [finding.severity for finding in _suspects(report, subject)] == ["error"]
+
+
+@_BRANCHES
+def test_values_one_subject_was_written_with_are_only_a_warning(build) -> None:
+    """No merge brought them together, so the un-merge repair must not act.
+
+    An error here would dissolve a correct merge elsewhere in the cluster.
+    """
+    graph, subject, _ = build()
+
+    report = validate_aggregated_facts(
+        graph, None, fact_namespaces=[CD], merge_provenance=MergeProvenance()
+    )
+
+    assert [finding.severity for finding in _suspects(report, subject)] == ["warning"]
+    assert not report.error_findings
+
+
+@_BRANCHES
+def test_values_a_merge_joined_stay_an_error(build) -> None:
+    graph, subject, predicate = build()
+
+    report = validate_aggregated_facts(
+        graph,
+        None,
+        fact_namespaces=[CD],
+        merge_provenance=MergeProvenance(
+            joined_values=[(str(subject), str(predicate))]
+        ),
+    )
+
+    assert [finding.severity for finding in _suspects(report, subject)] == ["error"]
+
+
+def test_only_merge_joined_multi_values_are_errors_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("FACTS_SUSPECT_MULTI_VALUE_REQUIRE_MERGE", raising=False)
+    assert FactsValidationConfig().suspect_multi_value_require_merge is True
+
+
+def _winner_graph() -> tuple[RDFGraph, URIRef, URIRef]:
+    """A final whose winner is also a competitor, among one-winner finals."""
+    graph = RDFGraph()
+    winner = URIRef("https://schema.org/winner")
+    competitor = URIRef("https://schema.org/competitor")
+    final = URIRef(CD + "final1950")
+    team = URIRef(CD + "cityCollege")
+    graph.add((final, winner, team))
+    graph.add((final, competitor, team))
+    for index in range(3):
+        other = URIRef(f"{CD}final{index}")
+        graph.add((other, winner, URIRef(f"{CD}champion{index}")))
+        graph.add((other, competitor, URIRef(f"{CD}entrant{index}")))
+    return graph, final, team
+
+
+def _degenerate(report, subject: URIRef) -> list[FactsValidationFinding]:
+    return [
+        finding
+        for finding in report.findings
+        if finding.kind == FactsValidationFindingKind.DEGENERATE_COREFERENCE
+        and finding.subject == str(subject)
+    ]
+
+
+def test_a_link_one_subject_wrote_twice_is_not_a_degenerate_merge() -> None:
+    """The winner of a final is also its competitor: one reading, no merge."""
+    graph, final, _ = _winner_graph()
+
+    report = validate_aggregated_facts(
+        graph, None, fact_namespaces=[CD], merge_provenance=MergeProvenance()
+    )
+
+    assert [f.severity for f in _degenerate(report, final)] == ["warning"]
+    assert not report.error_findings
+
+
+def test_a_link_a_merge_made_stays_a_degenerate_error() -> None:
+    graph, final, team = _winner_graph()
+
+    report = validate_aggregated_facts(
+        graph,
+        None,
+        fact_namespaces=[CD],
+        merge_provenance=MergeProvenance(joined_links=[(str(final), str(team))]),
+    )
+
+    assert [f.severity for f in _degenerate(report, final)] == ["error"]
+
+
+def test_merge_provenance_records_links_a_merge_made() -> None:
+    """Two bounds merged into one node: the link to it is merge-made."""
+    lower, upper = "https://x.org/onto#lowerBound", "https://x.org/onto#upperBound"
+    range_node = URIRef(CD + "range")
+    unit = _fact_unit(
+        0,
+        f"<{range_node}> <{lower}> <{CD}low> ; <{upper}> <{CD}high> .\n"
+        f"<{CD}final> <https://schema.org/winner> <{CD}team> ;"
+        f" <https://schema.org/competitor> <{CD}team> .",
+    )
+    merged = URIRef(CD + "bound")
+
+    links = build_merge_provenance(
+        [unit], {URIRef(CD + "low"): merged, URIRef(CD + "high"): merged}
+    ).joined_links
+
+    assert (str(range_node), str(merged)) in links
+    assert (CD + "final", CD + "team") not in links
+
+
+def test_merge_provenance_separates_the_two_cases() -> None:
     subject = URIRef(CD + "application1")
     predicate = "https://schema.org/agent"
     shared = URIRef(CD + "sharedSubject")
@@ -760,15 +837,15 @@ def test_build_cross_unit_object_pairs_separates_the_two_cases() -> None:
     first = _fact_unit(1, f"<{shared}> <{predicate}> <{CD}alpha> .")
     second = _fact_unit(2, f"<{shared}> <{predicate}> <{CD}beta> .")
 
-    pairs = build_cross_unit_object_pairs([joint_unit, first, second], {})
+    pairs = build_merge_provenance([joint_unit, first, second], {}).joined_values
 
-    # Two objects from one unit: not merge-created.
+    # Two objects one subject was written with: not merge-created.
     assert (str(subject), predicate) not in pairs
     # One object each from two units: a merge could have produced this.
     assert (str(shared), predicate) in pairs
 
 
-def test_build_cross_unit_object_pairs_canonicalizes_subjects() -> None:
+def test_merge_provenance_canonicalizes_subjects() -> None:
     """Keys must match the post-merge graph the gate actually validates."""
     predicate = "https://schema.org/agent"
     raw_left = URIRef(CD + "app_a")
@@ -778,18 +855,60 @@ def test_build_cross_unit_object_pairs_canonicalizes_subjects() -> None:
     left = _fact_unit(0, f"<{raw_left}> <{predicate}> <{CD}alpha> .")
     right = _fact_unit(1, f"<{raw_right}> <{predicate}> <{CD}beta> .")
 
-    pairs = build_cross_unit_object_pairs(
+    pairs = build_merge_provenance(
         [left, right], {raw_left: canonical, raw_right: canonical}
-    )
+    ).joined_values
     assert (str(canonical), predicate) in pairs
 
 
-def test_build_cross_unit_object_pairs_ignores_literals() -> None:
+def test_a_merge_inside_one_unit_joins_values() -> None:
+    """Two subjects of one unit merged into one: their values were joined."""
+    predicate = "http://dbpedia.org/ontology/abbreviation"
+    raw_left = URIRef(CD + "cfl")
+    raw_right = URIRef(CD + "league")
+    canonical = URIRef(CD + "canadianFootballLeague")
     unit = _fact_unit(
-        0,
-        f'<{CD}s> <https://schema.org/name> "a" , "b" .',
+        0, f'<{raw_left}> <{predicate}> "CFL" . <{raw_right}> <{predicate}> "AFL" .'
     )
-    assert build_cross_unit_object_pairs([unit], {}) == []
+
+    pairs = build_merge_provenance(
+        [unit], {raw_left: canonical, raw_right: canonical}
+    ).joined_values
+    assert (str(canonical), predicate) in pairs
+
+
+def test_a_source_repeating_one_value_does_not_join_the_others() -> None:
+    """One unit wrote "CFL" and "LCF"; another wrote "CFL" again.
+
+    Every distinct value is still held by the first source, so the conflict
+    the gate sees predates the merge.
+    """
+    predicate = "http://dbpedia.org/ontology/abbreviation"
+    raw_left = URIRef(CD + "cfl_u0")
+    raw_right = URIRef(CD + "cfl_u1")
+    canonical = URIRef(CD + "canadianFootballLeague")
+    first = _fact_unit(0, f'<{raw_left}> <{predicate}> "CFL" , "LCF" .')
+    second = _fact_unit(1, f'<{raw_right}> <{predicate}> "cfl"@en .')
+
+    pairs = build_merge_provenance(
+        [first, second], {raw_left: canonical, raw_right: canonical}
+    ).joined_values
+    assert (str(canonical), predicate) not in pairs
+
+
+def test_numbers_are_compared_by_value() -> None:
+    """``"16"`` and ``16.0`` from two sources are one value: nothing was joined."""
+    predicate = Q + "numericValue"
+    raw_left = URIRef(CD + "q_u0")
+    raw_right = URIRef(CD + "q_u1")
+    canonical = URIRef(CD + "q")
+    first = _fact_unit(0, f'<{raw_left}> <{predicate}> "16" , 18 .')
+    second = _fact_unit(1, f"<{raw_right}> <{predicate}> 16.0 .")
+
+    pairs = build_merge_provenance(
+        [first, second], {raw_left: canonical, raw_right: canonical}
+    ).joined_values
+    assert (str(canonical), predicate) not in pairs
 
 
 def test_the_gate_lists_an_isolated_statement_it_keeps(monkeypatch) -> None:

@@ -59,6 +59,21 @@ def domain_violation(
     )
 
 
+def role_outside_statement(node: str, predicate: str, role: str) -> str:
+    """A statement's role link held by a node that is not a statement."""
+    return (
+        f"{node} is not a statement but has {predicate}, which gives a "
+        f"statement its {role}; held here, it states nothing about a quantity."
+    )
+
+
+def empty_value(node: str) -> str:
+    """A value node with no number, bound, unit or qualifier."""
+    return (
+        f"{node} is a value that states nothing: no number, bound, unit or qualifier."
+    )
+
+
 def untyped_value(subject: str, predicate: str, lexical: str, datatype: str) -> str:
     """A plain or ``xsd:string`` value that reads as the property's datatype."""
     return f'"{lexical}" on {subject} {predicate} is given as text; it reads as {datatype}.'

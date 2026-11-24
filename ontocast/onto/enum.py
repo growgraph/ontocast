@@ -181,6 +181,9 @@ class RetrievalMetric(StrEnum):
     FACTS_COREFERENCE_PAIRS = "facts_coreference_pairs"
     FACTS_COREFERENCE_SAME = "facts_coreference_same"
     FACTS_COREFERENCE_DIFFERENT = "facts_coreference_different"
+    #: "Same" verdicts not repeated when the pair is asked again on its own;
+    #: they neither merge nor veto.
+    FACTS_COREFERENCE_RETRACTED = "facts_coreference_retracted"
 
     # Validation gate. Written identically by both entry paths.
     VALIDATED_WITHOUT_ONTOLOGY_CONTEXT = "validated_without_ontology_context"

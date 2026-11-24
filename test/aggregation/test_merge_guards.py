@@ -17,6 +17,8 @@ from ontocast.tool.agg.signatures import (
     canonical_literal,
     empirically_functional_predicates,
     harvest_max_one_predicates,
+    is_acronym_of,
+    labels_alias_with_initials,
     numbers_agree,
     string_values_compatible,
 )
@@ -340,6 +342,50 @@ def test_names_with_different_numbers_are_not_variants() -> None:
     assert string_values_compatible("mr beer", "mr karlheinz beer")
     assert not string_values_compatible("june 2021", "29 june 2021")
     assert not string_values_compatible("grant 1165", "grant 11654005")
+
+
+@pytest.mark.parametrize(
+    ("acronym", "expansion"),
+    [
+        ("cfl", "canadian football league"),
+        ("wifu", "western interprovincial football union"),
+        ("iww", "industrial workers of the world"),
+        ("lcf", "ligue canadienne de football"),
+        ("u.s.", "united states"),
+    ],
+)
+def test_an_acronym_is_compatible_with_its_expansion(acronym, expansion) -> None:
+    assert is_acronym_of(acronym, expansion)
+    assert string_values_compatible(acronym, expansion)
+    assert string_values_compatible(expansion, acronym)
+
+
+@pytest.mark.parametrize(
+    ("acronym", "expansion"),
+    [
+        # The French acronym does not spell the English name.
+        ("lcf", "canadian football league"),
+        # A content word the acronym leaves out.
+        ("cl", "canadian football league"),
+        # A letter no word accounts for.
+        ("cfla", "canadian football league"),
+        # Two words are not an acronym.
+        ("bf", "bigger"),
+        ("b f", "bigger fourth"),
+        # One word is not an expansion.
+        ("cfl", "league"),
+        # Digits make a code, not an acronym.
+        ("g7", "group seven"),
+    ],
+)
+def test_a_value_spelling_other_initials_is_not_an_acronym(acronym, expansion) -> None:
+    assert not is_acronym_of(acronym, expansion)
+
+
+def test_an_initial_and_a_full_name_alias_a_full_name() -> None:
+    """The full word matches its identical token, not the initial before it."""
+    assert labels_alias_with_initials({"j. jayalalithaa"}, {"jayalalithaa"})
+    assert string_values_compatible("j. jayalalithaa", "jayalalithaa")
 
 
 def test_date_nodes_are_told_apart_by_their_iso_value() -> None:

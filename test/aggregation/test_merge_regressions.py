@@ -365,6 +365,24 @@ def test_compatible_name_variants_are_not_flagged() -> None:
     assert not [finding for finding in report.findings if finding.subject == str(beer)]
 
 
+def test_an_acronym_and_its_expansion_are_not_flagged() -> None:
+    """A merged league named "CFL" in one unit and in full in another is one league."""
+    from ontocast.tool.facts_validation import validate_aggregated_facts
+
+    graph = RDFGraph()
+    name = URIRef(f"{ECHR}hasPersonName")
+    for index in range(3):
+        graph.add((URIRef(CD + f"league_{index}"), name, Literal(f"League {index}")))
+    league = URIRef(CD + "canadianFootballLeague")
+    graph.add((league, name, Literal("CFL")))
+    graph.add((league, name, Literal("Canadian Football League")))
+
+    report = validate_aggregated_facts(graph, None, fact_namespaces=[CD])
+    assert not [
+        finding for finding in report.findings if finding.subject == str(league)
+    ]
+
+
 # --- literal variant dedupe -----------------------------------------------------
 
 
@@ -417,17 +435,17 @@ def test_key_supported_merge_label_variance_is_warning_not_error() -> None:
             graph,
             None,
             fact_namespaces=[CD],
-            key_supported_subjects=[str(merged)],
+            confirmed_subjects=[str(merged)],
         ).findings
         if finding.subject == str(merged)
     ]
     assert downgraded and downgraded[0].severity == "warning"
 
 
-def test_natural_key_merge_reports_key_supported_cluster(monkeypatch) -> None:
+def test_natural_key_merge_reports_a_confirmed_cluster(monkeypatch) -> None:
     aggregator = _singleton_cluster_aggregator(monkeypatch)
     result = aggregator.aggregate_graphs(
         _case_units("36760/06", "36760/06"), ontology_graph=RDFGraph()
     )
-    assert result.key_supported_clusters
-    assert set(result.key_supported_clusters) <= set(result.merged_clusters)
+    assert result.confirmed_clusters
+    assert set(result.confirmed_clusters) <= set(result.merged_clusters)
