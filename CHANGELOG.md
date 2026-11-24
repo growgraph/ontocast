@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-24
+
 ### Added
 
 - `ontocast process --keep-provenance` also writes `<name>.units.trig`, each unit's facts as aggregation receives them, so aggregation can be re-run without a model call.
